@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#
+# Refuses a commit that records a C++ source formatted differently from what .clang-format
+# asks. cmake/git_hooks.cmake activates it at configure time; by hand:
+#
+#   git config core.hooksPath .githooks
+#
+# `git commit --no-verify` skips it. CI runs the same script on every pull request.
+
+set -euo pipefail
+
+exec "$(dirname -- "${BASH_SOURCE[0]}")/../scripts/check-format.sh" --staged
