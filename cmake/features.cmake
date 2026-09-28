@@ -1,0 +1,5 @@
+option(USE_TESTS "Tests activated" ON)
+option(DO_BENCHMARKS "Benchmarks activated" ON)
+option(BUILD_EXAMPLES "Build example apps" ON)
+option(KEEP_FRAME_POINTERS "Keep frame pointers in Release (perf call graphs)" OFF)
+option(BUILD_DOCS "Generate API documentation with Doxygen (target: docs)" OFF)

@@ -1,0 +1,297 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 29,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "/usr/bin/clang++",
+        "CMAKE_CXX_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_C_COMPILER_LAUNCHER": "ccache",
+        "CMAKE_EXE_LINKER_FLAGS": "-fuse-ld=mold",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fuse-ld=mold",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/cmake/vcpkg-bootstrap.cmake",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_COLOR_DIAGNOSTICS": "ON",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/triplets",
+        "VCPKG_TARGET_TRIPLET": "x64-linux-clang"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      },
+      "binaryDir": "build/debug"
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      },
+      "binaryDir": "build/release"
+    },
+    {
+      "name": "ci",
+      "displayName": "CI (Release, no benchmarks/examples)",
+      "description": "What PR CI builds: release codegen with the unit, integration and functional suites, but no benchmark or example targets and no benchmark-only vcpkg features.",
+      "inherits": "release",
+      "cacheVariables": {
+        "DO_BENCHMARKS": "OFF",
+        "BUILD_EXAMPLES": "OFF",
+        "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON"
+      },
+      "binaryDir": "build/ci"
+    },
+    {
+      "name": "gcc-debug",
+      "displayName": "Debug with GCC",
+      "description": "Debug build of the project with GCC. The vcpkg ports are still the clang-built ones; both compilers use libstdc++, so they link together. clang-tidy does not run in this preset.",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "/usr/bin/g++"
+      },
+      "binaryDir": "build/gcc-debug"
+    },
+    {
+      "name": "asan",
+      "displayName": "ASan + UBSan (Debug)",
+      "description": "Debug build with AddressSanitizer and UndefinedBehaviorSanitizer",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-optimize-sibling-calls",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined -fuse-ld=mold",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined -fuse-ld=mold"
+      },
+      "binaryDir": "build/asan"
+    },
+    {
+      "name": "tsan",
+      "displayName": "ThreadSanitizer (Debug)",
+      "description": "Debug build with ThreadSanitizer; no benchmarks",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread -fuse-ld=mold",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=thread -fuse-ld=mold",
+        "DO_BENCHMARKS": "OFF"
+      },
+      "binaryDir": "build/tsan"
+    },
+    {
+      "name": "llvm-coverage",
+      "displayName": "Code Coverage - llvm-cov (Debug)",
+      "description": "Debug build with llvm source-based coverage (use llvm-profdata + llvm-cov)",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS": "-fprofile-instr-generate -fcoverage-mapping",
+        "CMAKE_EXE_LINKER_FLAGS": "-fprofile-instr-generate -fuse-ld=mold"
+      },
+      "binaryDir": "build/llvm-coverage"
+    },
+    {
+      "name": "gcc-coverage",
+      "displayName": "Code Coverage - gcov (Debug)",
+      "description": "Debug build with gcov coverage (compatible with CLion CTest coverage)",
+      "inherits": "debug",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS": "--coverage",
+        "CMAKE_EXE_LINKER_FLAGS": "--coverage -fuse-ld=mold"
+      },
+      "binaryDir": "build/gcc-coverage"
+    },
+    {
+      "name": "release-lto",
+      "displayName": "Release + LTO",
+      "description": "Release build with Link-Time Optimization",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
+      },
+      "binaryDir": "build/release-lto"
+    },
+    {
+      "name": "release-perf",
+      "displayName": "Release + perf symbols",
+      "description": "Release codegen with frame pointers, for `perf record -g`. Timing numbers come from the plain `release` preset; this one only exists so profiles symbolize.",
+      "inherits": "release",
+      "cacheVariables": {
+        "KEEP_FRAME_POINTERS": "ON"
+      },
+      "binaryDir": "build/release-perf"
+    },
+    {
+      "name": "release-instrprof",
+      "displayName": "Release + LLVM Instrumented Profiling",
+      "description": "Release build with llvm source-based profiling instrumentation (hotspot analysis via llvm-profdata; not for timing runs)",
+      "inherits": "release",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS": "-fprofile-instr-generate -fcoverage-mapping",
+        "CMAKE_EXE_LINKER_FLAGS": "-fprofile-instr-generate -fuse-ld=mold"
+      },
+      "binaryDir": "build/release-instrprof"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "configuration": "Release"
+    },
+    {
+      "name": "ci",
+      "configurePreset": "ci",
+      "configuration": "Release"
+    },
+    {
+      "name": "gcc-debug",
+      "configurePreset": "gcc-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "configuration": "Debug"
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "configuration": "Debug"
+    },
+    {
+      "name": "llvm-coverage",
+      "configurePreset": "llvm-coverage",
+      "configuration": "Debug"
+    },
+    {
+      "name": "gcc-coverage",
+      "configurePreset": "gcc-coverage",
+      "configuration": "Debug"
+    },
+    {
+      "name": "release-lto",
+      "configurePreset": "release-lto",
+      "configuration": "Release"
+    },
+    {
+      "name": "release-perf",
+      "configurePreset": "release-perf",
+      "configuration": "Release"
+    },
+    {
+      "name": "release-instrprof",
+      "configurePreset": "release-instrprof",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "ci",
+      "configurePreset": "ci",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "gcc-debug",
+      "configurePreset": "gcc-debug",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "llvm-coverage",
+      "configurePreset": "llvm-coverage",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "gcc-coverage",
+      "configurePreset": "gcc-coverage",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-lto",
+      "configurePreset": "release-lto",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-perf",
+      "configurePreset": "release-perf",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "release-instrprof",
+      "configurePreset": "release-instrprof",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

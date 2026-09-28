@@ -1,0 +1,10 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe core module. Aggregates every public header of
+ * the module; consumers link Aloe::Common::Core and write
+ * `#include <aloe/core>`.
+ */
+
+#include <execution.hpp>
+#include <version.hpp>

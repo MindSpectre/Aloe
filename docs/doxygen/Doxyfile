@@ -1,0 +1,27 @@
+PROJECT_NAME           = Aloe
+PROJECT_NUMBER         = 0.1.0
+PROJECT_BRIEF          = "Userspace TCP/IP stack on DPDK with a sender-based API"
+OUTPUT_DIRECTORY       = build/docs
+
+INPUT                  = README.md \
+                         docs/roadmap.md \
+                         docs/architecture \
+                         docs/guides \
+                         common \
+                         component
+RECURSIVE              = YES
+FILE_PATTERNS          = *.hpp *.md
+USE_MDFILE_AS_MAINPAGE = README.md
+
+EXTRACT_ALL            = NO
+GENERATE_LATEX         = NO
+QUIET                  = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_LOGFILE           = build/docs/doxygen-warnings.log
+
+GENERATE_TREEVIEW      = YES
+DISABLE_INDEX          = NO
+FULL_SIDEBAR           = NO
+HTML_COLORSTYLE        = LIGHT
+HTML_EXTRA_STYLESHEET  = docs/doxygen/doxygen-awesome/doxygen-awesome.css \
+                         docs/doxygen/doxygen-awesome/doxygen-awesome-sidebar-only.css

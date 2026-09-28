@@ -1,0 +1,44 @@
+# Core Module
+
+The core module (`common/core/`) is Aloe's foundation: the library version, and the one header that names
+the execution facilities every asynchronous part of the stack is written in. It depends on stdexec and on
+nothing else in Aloe. Everything is reached through the umbrella `#include <aloe/core>`
+(`export/aloe/core`), and targets link `Aloe::Common::Core`.
+
+## Key types
+
+- **`aloe::ex`** -- namespace alias for the senders-and-receivers facilities: `aloe::ex::just`,
+  `aloe::ex::then`, `aloe::ex::sync_wait`, schedulers, stop tokens. It names stdexec today.
+- **`aloe::task<T>`** -- coroutine task type. Inside one, `co_await` accepts any sender.
+- **`aloe::version_major`, `version_minor`, `version_patch`, `version_string`** -- the library version as
+  `constexpr` values, generated from the version in the root `CMakeLists.txt`, so the two cannot drift.
+
+## Usage
+
+```cpp
+#include <aloe/core>
+
+aloe::task<int> add_one(int value) {
+    co_return value + 1;
+}
+
+aloe::task<int> twice_plus_one(int value) {
+    const int incremented = co_await add_one(value);
+    co_return co_await (aloe::ex::just(incremented) | aloe::ex::then([](int v) { return v * 2; }));
+}
+
+int main() {
+    const auto result = aloe::ex::sync_wait(twice_plus_one(1));  // std::optional<std::tuple<int>>
+    return std::get<0>(*result) == 4 ? 0 : 1;
+}
+```
+
+## Design notes
+
+Only `common/core/execution/execution.hpp` spells `stdexec::` or `exec::`; the rest of the code base writes
+`aloe::ex::` and `aloe::task`. When libstdc++ ships `std::execution`, that header changes and nothing else
+does. The alias is a namespace alias rather than a set of wrappers, so there is no forwarding layer between
+Aloe code and the sender algorithms, and every stdexec facility is available the day it is needed.
+
+The version header is a CMake template (`version/version.hpp.in`) instead of hand-written constants. The
+version therefore has one source, the `project()` call, and a release cannot ship with a stale number.

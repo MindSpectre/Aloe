@@ -1,0 +1,29 @@
+# Line endings: LF in the repository and in every checkout. Shell scripts,
+# CMake and the Dockerfile break under CRLF, and clang-format enforces LF.
+* text=auto eol=lf
+
+# Binary files: never diffed or converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.pcap binary
+*.pcapng binary
+
+# Umbrella headers have no extension; tell diff and GitHub they are C++.
+**/export/aloe/* diff=cpp linguist-language=C++
+*.hpp diff=cpp
+*.cpp diff=cpp
+*.hpp.in diff=cpp linguist-language=C++
+
+# Third-party code, kept out of language statistics and review diffs.
+docs/doxygen/doxygen-awesome/** linguist-vendored -diff
+
+# Release source archives (git archive, GitHub release downloads) carry the
+# library, its build and its tests, but not IDE and CI plumbing.
+.github/ export-ignore
+.devcontainer/ export-ignore
+.run/ export-ignore
+.gitattributes export-ignore

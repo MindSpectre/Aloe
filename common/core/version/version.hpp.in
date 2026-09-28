@@ -1,0 +1,16 @@
+#pragma once
+
+#include <string_view>
+
+namespace aloe {
+
+    /// Library version. Generated from the project() version in the root
+    /// CMakeLists.txt, so the two cannot drift apart.
+    inline constexpr unsigned version_major = @PROJECT_VERSION_MAJOR@;
+    inline constexpr unsigned version_minor = @PROJECT_VERSION_MINOR@;
+    inline constexpr unsigned version_patch = @PROJECT_VERSION_PATCH@;
+
+    /// The same version as "major.minor.patch".
+    inline constexpr std::string_view version_string = "@PROJECT_VERSION@";
+
+}  // namespace aloe
