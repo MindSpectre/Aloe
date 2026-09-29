@@ -68,6 +68,11 @@ message("Triplet:   ${VCPKG_TARGET_TRIPLET}")
 message("Commit:    ${VCPKG_COMMIT}")
 PrintLineSeparator()
 
+message("\tGIT HOOKS")
+include(cmake/git_hooks.cmake)
+install_git_hooks("${CMAKE_SOURCE_DIR}")
+PrintLineSeparator()
+
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 
 # Toggles. Included before the compile options because KEEP_FRAME_POINTERS

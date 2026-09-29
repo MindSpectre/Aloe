@@ -1,3 +1,5 @@
+# Published as ghcr.io/<owner>/aloe_toolchain:stable by .github/workflows/toolchain-deployment.yaml
+# when a push to main changes this directory.
 FROM fedora:44
 
 ENV VCPKG_ROOT=/opt/vcpkg

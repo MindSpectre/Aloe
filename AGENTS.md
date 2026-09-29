@@ -23,6 +23,10 @@ ctest --preset debug -L unit     # or: integration, functional
 - A change is done when `debug`, `gcc-debug` and `asan` all build and pass,
   and the format check passes. clang-tidy runs inside the clang builds and its
   warnings are errors, so a clean clang build is the lint check.
+- A pre-commit hook (`.githooks/pre-commit`) runs `./scripts/check-format.sh --staged`
+  on the staged `.cpp`/`.hpp` files. The first configure switches it on by setting
+  `core.hooksPath`, unless one is already set. CI runs `./scripts/check-format.sh` on
+  every pull request, so `git commit --no-verify` does not get past it.
 - Tests need no root, no hugepages and no network card. Keep it that way.
 - `build/` and `vcpkg/` are generated and git-ignored.
 

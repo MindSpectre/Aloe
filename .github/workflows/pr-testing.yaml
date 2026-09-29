@@ -93,6 +93,18 @@ jobs:
         run: |
           docker pull ghcr.io/${{ steps.env.outputs.owner }}/aloe_toolchain:stable
 
+      # The pre-commit hook runs this script on staged files, but a hook can be skipped
+      # and is only installed by a configure. This is the check that cannot be. It runs
+      # in the image the build uses, so the formatter is the toolchain's clang-format,
+      # and before the caches and the build, so a badly formatted PR fails in seconds.
+      - name: Format check
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            ${{ steps.container.outputs.image }} \
+            ./scripts/check-format.sh
+
       # Both caches are populated on main by cache-warm.yaml. Actions caches are
       # branch-scoped: a PR can read its own ref and the default branch, nothing
       # else. Without that workflow every PR run is cold no matter what is saved

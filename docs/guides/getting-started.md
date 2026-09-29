@@ -118,6 +118,31 @@ ctest --preset debug
 one label. The integration tests start DPDK with no hugepages, no PCI scan and one null
 device, so they need neither root nor a network card.
 
+## Formatting and the pre-commit hook
+
+`.clang-format` decides how C++ is laid out. `./scripts/check-format.sh` checks every
+`.cpp` and `.hpp` under `common/`, `component/`, `tests/`, `examples/` and `benchmarks/`
+against it and fails if any of them differs, and `clang-format -i <files>` fixes them.
+`clang-format` comes with the toolchain that `scripts/install-linux.sh` installs.
+
+The repository ships a pre-commit hook, `.githooks/pre-commit`, that runs
+`./scripts/check-format.sh --staged`. It checks the staged version of each staged C++
+file, which is what the commit would record, and rejects the commit with the
+`clang-format -i` command to run. A commit that stages no C++ is not checked, and the hook
+never rewrites a file.
+
+There is nothing to set up: configuring, which every build does first, sets
+`core.hooksPath` to `.githooks` in the checkout, and the configure output says what it
+did. It leaves alone a `core.hooksPath` that is already set, in the checkout or in your
+global git configuration. In that case, enable the hook by hand:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+`git commit --no-verify` skips the hook. CI does not: every pull request runs
+`./scripts/check-format.sh` on the whole tree, in the toolchain image, before it builds.
+
 ## Options
 
 Feature toggles live in `cmake/features.cmake` and are set with `-D<NAME>=ON|OFF` on the
