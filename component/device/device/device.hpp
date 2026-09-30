@@ -53,9 +53,9 @@ namespace aloe {
      * - A packet's data is a whole Ethernet frame from the destination address to the end of the
      *   payload, without the frame check sequence.
      * - Frames longer than `mtu() + 14`, or shorter than an Ethernet header, are never transmitted by
-     *   the stack. A backend that is handed one refuses it and counts it as oversized on the
-     *   transmitting queue; a backend that receives one drops it and counts it as oversized on the
-     *   receiving queue.
+     *   the stack. A backend that is handed one drops it and counts it as oversized: on the
+     *   transmitting queue when the transmitter refuses to send it, on the receiving queue when the
+     *   receiver drops it. `transmit` counts such a packet as accepted.
      * - `receive` fills `out` from the front and returns how many; the slots it fills must hold empty
      *   packets. `transmit` takes packets from the front of `in` and returns how many it accepted.
      *   Accepted packets are moved from; the rest stay untouched with the caller, who retries or

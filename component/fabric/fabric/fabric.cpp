@@ -135,6 +135,7 @@ namespace aloe::fabric {
             if (!packet) {
                 break;
             }
+            assert(out[count].empty() && "receive writes only into empty slots");
             const PendingFrame& frame = source.pending.front();
             const auto room           = packet->append(frame.bytes.size());
             assert(room.has_value() && "add_port guarantees a packet holds a maximum-size frame");
@@ -183,9 +184,7 @@ namespace aloe::fabric {
             if (packet.empty()) {
                 continue;
             }
-            if (config_.offloads == EmulatedOffloads::Checksums) {
-                fill_checksums(packet);
-            }
+            fill_checksums(packet);
             const std::span<const std::byte> frame = packet.data();
             if (frame.size() < ethernet_header_size ||
                 frame.size() > static_cast<std::size_t>(config_.mtu) + ethernet_header_size) {

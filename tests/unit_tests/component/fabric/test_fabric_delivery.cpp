@@ -1,8 +1,11 @@
 #include <aloe/fabric>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <stdexcept>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <frames.hpp>

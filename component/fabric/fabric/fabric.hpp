@@ -42,11 +42,12 @@ namespace aloe::fabric {
      * receive, so a pool is only ever touched by its queue's thread.
      */
     class Port {
+        struct PrivateTag {};
+
     public:
         using Packet = fabric::Packet;
 
-        struct PrivateTag {};
-
+        /// Only Fabric::add_port can name the tag, so every port passes its validation.
         Port(PrivateTag, Fabric& fabric, const PortConfig& config);
         Port(const Port&)            = delete;
         Port& operator=(const Port&) = delete;
