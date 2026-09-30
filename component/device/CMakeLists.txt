@@ -23,6 +23,21 @@ target_include_directories(${DEVICE}.Bytes INTERFACE
 ##############################################################################
 
 ##############################################################################
+# Internet checksum
+##############################################################################
+add_library(${DEVICE}.Checksum INTERFACE
+        checksum/checksum.hpp
+)
+target_include_directories(${DEVICE}.Checksum INTERFACE
+        checksum/
+)
+target_link_libraries(${DEVICE}.Checksum INTERFACE
+        ${DEVICE}.Address
+        ${DEVICE}.Bytes
+)
+##############################################################################
+
+##############################################################################
 # Device exported library
 ##############################################################################
 add_combined_library(${DEVICE}
@@ -33,6 +48,7 @@ add_combined_library(${DEVICE}
         LIBRARIES
         ${DEVICE}.Address
         ${DEVICE}.Bytes
+        ${DEVICE}.Checksum
         Aloe::Common::Core
 )
 
