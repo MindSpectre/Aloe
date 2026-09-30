@@ -52,8 +52,8 @@ namespace aloe::testing {
         static int next           = 100;
         const std::string name    = std::string{driver} + std::to_string(next++);
         const std::string devargs = arguments.empty() ? name : name + "," + std::string{arguments};
-        if (rte_dev_probe(devargs.c_str()) < 0) {
-            throw std::runtime_error{"rte_dev_probe failed for " + devargs};
+        if (const int result = rte_dev_probe(devargs.c_str()); result < 0) {
+            throw std::runtime_error{ethdev::detail::describe("rte_dev_probe(" + devargs + ")", result)};
         }
         return name;
     }
