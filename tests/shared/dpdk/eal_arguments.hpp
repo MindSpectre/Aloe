@@ -58,4 +58,21 @@ namespace aloe::testing {
                             "--vdev=net_null0"};
     }
 
+    /**
+     * @brief The same unprivileged options as a list of strings, with `vdev` as the one virtual
+     * device, for aloe::ethdev::Eal.
+     */
+    [[nodiscard]] inline std::vector<std::string> unprivileged_eal_options(std::string_view vdev) {
+        return {"aloe-test",
+                "--no-huge",
+                "--no-pci",
+                "--in-memory",
+                "--no-telemetry",
+                "-m",
+                "64",
+                "-l",
+                "0",
+                "--vdev=" + std::string{vdev}};
+    }
+
 }  // namespace aloe::testing

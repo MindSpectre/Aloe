@@ -27,3 +27,18 @@ target_link_libraries(${SHARED_TESTING_TARGET}.Device INTERFACE
         ${TEST_LIBS}
 )
 ##############################################################################
+
+##############################################################################
+# The EAL as a gtest environment, and fresh virtual devices per test
+##############################################################################
+add_library(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
+        dpdk/eal_environment.hpp
+)
+target_include_directories(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
+        dpdk/
+)
+target_link_libraries(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
+        ${SHARED_TESTING_TARGET}.Dpdk
+        Aloe::Component::Ethdev
+)
+##############################################################################
