@@ -1,12 +1,15 @@
 #include <aloe/ethdev>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <arpa/inet.h>
@@ -44,6 +47,7 @@ namespace {
             }
             index_ = static_cast<int>(if_nametoindex(std::string{name}.c_str()));
             if (index_ == 0) {
+                close(fd_);
                 throw std::runtime_error{"no interface named " + std::string{name}};
             }
             sockaddr_ll address{};
@@ -51,7 +55,9 @@ namespace {
             address.sll_protocol = htons(ETH_P_ALL);
             address.sll_ifindex  = index_;
             if (bind(fd_, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) < 0) {
-                throw std::runtime_error{std::string{"bind: "} + std::strerror(errno)};
+                const int error = errno;
+                close(fd_);
+                throw std::runtime_error{std::string{"bind: "} + std::strerror(error)};
             }
         }
 
@@ -134,7 +140,7 @@ TEST(EthdevTap, FramesCrossBetweenTheKernelAndThePort) {
 
     const auto inbound = aloe::testing::ethernet_frame(
         port.mac(), peer, aloe::testing::ethertype_experimental, aloe::testing::pattern(60, 1));
-    kernel.send(inbound);
+    ASSERT_NO_FATAL_FAILURE(kernel.send(inbound));
     EXPECT_TRUE(port_receives(port, inbound)) << "a frame written on the kernel side reaches the port";
 
     const auto outbound = aloe::testing::ethernet_frame(aloe::MacAddress::broadcast(),
