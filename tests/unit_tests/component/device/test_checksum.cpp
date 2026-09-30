@@ -1,6 +1,7 @@
 #include <aloe/device>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 
 #include <gtest/gtest.h>

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -54,6 +55,7 @@ namespace aloe {
 
     /// The checksum of an IPv4 header, whatever its checksum field currently holds.
     [[nodiscard]] constexpr std::uint16_t ipv4_header_checksum(std::span<const std::byte> header) noexcept {
+        assert(header.size() >= ipv4_checksum_offset + 2);
         std::uint32_t sum = checksum_add(0, header.first(ipv4_checksum_offset));
         sum               = checksum_add(sum, header.subspan(ipv4_checksum_offset + 2));
         return checksum_finish(sum);
@@ -85,6 +87,7 @@ namespace aloe {
                                                            Ipv4Address destination,
                                                            std::uint8_t protocol,
                                                            std::span<const std::byte> l4) noexcept {
+        assert(l4.size() <= 0xffff);
         const std::uint32_t pseudo =
             ipv4_pseudo_header_sum(source, destination, protocol, static_cast<std::uint16_t>(l4.size()));
         return checksum_finish(checksum_add(pseudo, l4));
