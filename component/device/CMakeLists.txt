@@ -38,6 +38,21 @@ target_link_libraries(${DEVICE}.Checksum INTERFACE
 ##############################################################################
 
 ##############################################################################
+# Receive-side scaling: the Toeplitz hash and the steering rule
+##############################################################################
+add_library(${DEVICE}.Steering INTERFACE
+        steering/rss.hpp
+)
+target_include_directories(${DEVICE}.Steering INTERFACE
+        steering/
+)
+target_link_libraries(${DEVICE}.Steering INTERFACE
+        ${DEVICE}.Address
+        ${DEVICE}.Bytes
+)
+##############################################################################
+
+##############################################################################
 # Device exported library
 ##############################################################################
 add_combined_library(${DEVICE}
@@ -49,6 +64,7 @@ add_combined_library(${DEVICE}
         ${DEVICE}.Address
         ${DEVICE}.Bytes
         ${DEVICE}.Checksum
+        ${DEVICE}.Steering
         Aloe::Common::Core
 )
 

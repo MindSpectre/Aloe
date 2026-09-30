@@ -9,3 +9,4 @@
 #include <address.hpp>
 #include <bytes.hpp>
 #include <checksum.hpp>
+#include <rss.hpp>

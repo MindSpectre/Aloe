@@ -22,8 +22,6 @@ namespace {
         return header;
     }();
 
-    constexpr std::uint8_t udp = 17;  // aloe::ipv4_protocol_udp arrives with receive-side scaling
-
 }  // namespace
 
 TEST(Checksum, ComputesTheTextbookIpv4HeaderChecksum) {
@@ -67,16 +65,16 @@ TEST(Checksum, CompletesAnL4ChecksumFromThePseudoHeaderSumLikeACard) {
                                          std::byte{'t'},
                                          std::byte{'a'}};
 
-    const std::uint16_t full = aloe::ipv4_l4_checksum(source, destination, udp, segment);
+    const std::uint16_t full = aloe::ipv4_l4_checksum(source, destination, aloe::ipv4_protocol_udp, segment);
     EXPECT_NE(full, 0);
 
     // The caller seeds the field with the pseudo-header sum; the device sums the segment as it is.
     aloe::store_be16(std::span<std::byte>{segment}.subspan(6, 2),
-                     aloe::ipv4_pseudo_header_sum(source, destination, udp, 12));
+                     aloe::ipv4_pseudo_header_sum(source, destination, aloe::ipv4_protocol_udp, 12));
     EXPECT_EQ(aloe::internet_checksum(segment), full);
 
     // With the full checksum in place, verification over pseudo-header and segment yields zero.
     aloe::store_be16(std::span<std::byte>{segment}.subspan(6, 2), full);
-    const std::uint32_t pseudo = aloe::ipv4_pseudo_header_sum(source, destination, udp, 12);
+    const std::uint32_t pseudo = aloe::ipv4_pseudo_header_sum(source, destination, aloe::ipv4_protocol_udp, 12);
     EXPECT_EQ(aloe::checksum_finish(aloe::checksum_add(pseudo, segment)), 0);
 }
