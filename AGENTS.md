@@ -3,8 +3,9 @@
 Guidance for coding agents, and for people, working in this repository.
 
 Aloe is a C++26 userspace TCP/IP stack on DPDK for Linux, with senders and
-receivers (stdexec) as its asynchronous model. The repository currently holds
-the build skeleton: toolchain, dependencies, and smoke tests. The stack is
+receivers (stdexec) as its asynchronous model. The repository holds the build
+skeleton and the device layer: the packet and device concepts, an in-memory
+backend (`fabric`) for tests and the DPDK backend (`ethdev`). The stack is
 built in phases: shard runtime, minimal TCP, full TCP, TLS, HTTP/1.1 with
 WebSocket.
 
@@ -35,11 +36,11 @@ ctest --preset debug -L unit     # or: integration, functional
 | Path | Contents |
 |---|---|
 | `common/<module>/` | Foundation modules. `core` holds the version and the execution alias. |
-| `component/<module>/` | Stack modules, added as the phases land. |
+| `component/<module>/` | Stack modules: `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK). |
 | `<module>/export/aloe/<module>` | Umbrella header, no extension. Consumers write `#include <aloe/<module>>`. |
 | `tests/unit_tests/`, `tests/integration_tests/`, `tests/functional_tests/` | One CTest label each. |
 | `tests/manual_tests/` | Label `manual`: tests that need privileges or hardware. Every test preset excludes the label; run the binary by hand. |
-| `tests/shared/` | Test helpers, such as the unprivileged EAL arguments. |
+| `tests/shared/` | Test helpers: the unprivileged EAL arguments, the EAL as a gtest environment, frame builders, and the device conformance suite every backend runs. |
 | `cmake/` | `vcpkg-bootstrap.cmake` (the toolchain file), `dpdk.cmake`, test and library helpers. |
 | `triplets/` | The vcpkg overlay triplet every port is built with. |
 | `examples/`, `benchmarks/` | Living examples; benchmark targets as the stack grows. |
@@ -47,6 +48,10 @@ ctest --preset debug -L unit     # or: integration, functional
 Targets are named `Aloe.<Group>.<Module>` with an `Aloe::<Group>::<Module>`
 alias. Register tests with `add_unit_test`, `add_integration_test`,
 `add_functional_test` or `add_manual_test` from `cmake/tests.cmake`.
+
+Every module's public headers sit on one flat include path, so header
+basenames are unique across modules: `packet.hpp` is the concept,
+`fabric_packet.hpp` and `ethdev_packet.hpp` are the backends' types.
 
 ## Rules
 
@@ -75,7 +80,14 @@ alias. Register tests with `add_unit_test`, `add_integration_test`,
 - clang-tidy rejects `std::move` on a sender whose type is trivially copyable.
   Pass the sender expression directly.
 - One process can start DPDK's EAL once. Keep all EAL checks of a test binary
-  in one test, or fork, as `test_eal_concurrent.cpp` does.
+  in one test, or fork, as `test_eal_concurrent.cpp` does. Tests of the DPDK
+  backend start it in a gtest environment, `aloe::testing::EalEnvironment`.
+- A closed DPDK port cannot be reopened. A test that constructs and destroys an
+  `ethdev::Port` probes a fresh virtual device with `aloe::testing::probe_vdev`.
+- The ring driver (`net_ring`) sets no MTU and has no RSS; the null driver
+  (`net_null`) has both. Ethdev tolerates `-ENOTSUP` from either.
+- `EXPECT_THROW(std::ignore = T{.a = 1, .b = 2}, E)` needs the expression in
+  an extra pair of parentheses, or the macro splits it at the commas.
 - DPDK is built for the generic x86-64 baseline (`-Dplatform=generic` in the
   triplet), so a cached build starts on any CPU. `cmake/dpdk.cmake` refuses a
   DPDK built with `-march=native`.

@@ -70,13 +70,14 @@ concept, expressed as senders. That concept is defined in phase 1 and reused by 
 why phase 1 gets the most design care although its code is the simplest.
 
 The device layer has two backends: DPDK's ethdev for real network cards and for tap devices, and an
-in-memory simulated fabric with scripted loss, reordering and delay for deterministic tests.
+in-memory fabric for deterministic tests. Scripted loss, reordering and delay join the fabric in phase 2.
 
 Network cards vary, so offloads such as checksums and segmentation are queried from the card at run time,
-and every offload has a software fallback.
+and every offload has a software fallback. Steering is a pure function of what the card reports, so the
+runtime can predict which queue any flow lands on.
 
-Status: design. Devices arrive in phase 0, IPv4 and TCP in phases 1 and 2, TLS in phase 3, HTTP/1.1 and
-WebSocket in phase 4.
+Status: the device layer exists, see [device](device.md). IPv4 and TCP arrive in phases 1 and 2, TLS in
+phase 3, HTTP/1.1 and WebSocket in phase 4.
 
 ## Build decisions
 
