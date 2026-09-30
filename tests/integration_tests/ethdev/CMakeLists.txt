@@ -3,6 +3,7 @@
 ##############################################################################
 add_integration_test(${INTEGRATION_TESTING_TARGET}.Ethdev.Null
         test_ethdev_eal.cpp
+        test_ethdev_null.cpp
         test_ethdev_packet.cpp
 )
 target_link_libraries(${INTEGRATION_TESTING_TARGET}.Ethdev.Null

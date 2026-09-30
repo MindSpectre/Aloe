@@ -31,6 +31,22 @@ target_link_libraries(${ETHDEV}.Packet INTERFACE
 ##############################################################################
 
 ##############################################################################
+# Ports
+##############################################################################
+add_library(${ETHDEV}.Port STATIC
+        port/port.hpp
+        port/port.cpp
+)
+target_include_directories(${ETHDEV}.Port PUBLIC
+        port/
+)
+target_link_libraries(${ETHDEV}.Port PUBLIC
+        ${ETHDEV}.Eal
+        ${ETHDEV}.Packet
+)
+##############################################################################
+
+##############################################################################
 # Ethdev exported library
 ##############################################################################
 add_combined_library(${ETHDEV}
@@ -41,6 +57,7 @@ add_combined_library(${ETHDEV}
         LIBRARIES
         ${ETHDEV}.Eal
         ${ETHDEV}.Packet
+        ${ETHDEV}.Port
 )
 
 add_library(Aloe::Component::Ethdev ALIAS ${ETHDEV})
