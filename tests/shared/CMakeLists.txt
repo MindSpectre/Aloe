@@ -17,11 +17,13 @@ target_link_libraries(${SHARED_TESTING_TARGET}.Dpdk INTERFACE
 ##############################################################################
 add_library(${SHARED_TESTING_TARGET}.Device INTERFACE
         device/frames.hpp
+        device/device_conformance.hpp
 )
 target_include_directories(${SHARED_TESTING_TARGET}.Device INTERFACE
         device/
 )
 target_link_libraries(${SHARED_TESTING_TARGET}.Device INTERFACE
         Aloe::Component::Device
+        ${TEST_LIBS}
 )
 ##############################################################################
