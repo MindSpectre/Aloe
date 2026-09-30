@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stdexcept>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -86,7 +88,7 @@ TEST(Rss, HashesZeroWhenNoTypeApplies) {
 TEST(Rss, QueueForIndexesTheTableWithTheHash) {
     const auto rss = microsoft_key_rss();
     for (const Vector& vector : vectors) {
-        const std::uint16_t expected = rss.table[vector.hash_4_tuple % rss.table.size()];
+        const std::uint16_t expected = rss.table[vector.hash_4_tuple & (rss.table.size() - 1)];
         EXPECT_EQ(aloe::queue_for(rss, tuple(vector, aloe::ipv4_protocol_tcp)), expected);
         EXPECT_EQ(expected, vector.hash_4_tuple % 4) << "round robin table";
     }
@@ -107,4 +109,26 @@ TEST(Rss, RoundRobinDescriptionSpreadsQueuesOverTheTable) {
     EXPECT_EQ(rss.key, aloe::aloe_rss_key);
     EXPECT_EQ(rss.types, (aloe::RssHashTypes{.ipv4 = true, .ipv4_tcp = true, .ipv4_udp = true}));
     EXPECT_EQ(rss.table, (std::vector<std::uint16_t>{0, 1, 2, 0, 1, 2, 0, 1}));
+}
+
+TEST(Rss, RoundRobinDescriptionRejectsImpossibleArguments) {
+    EXPECT_THROW(std::ignore = aloe::round_robin_rss(0), std::invalid_argument);
+    EXPECT_THROW(std::ignore = aloe::round_robin_rss(4, 128, 3), std::invalid_argument);
+    EXPECT_THROW(std::ignore = aloe::round_robin_rss(4, 128, 53), std::invalid_argument);
+}
+
+TEST(Rss, AnOverlongKeyLengthIsClampedToTheKey) {
+    auto rss       = aloe::round_robin_rss(4);
+    const auto key = aloe::flow_hash(rss,
+                                     {
+                                         .source = {10, 0, 0, 1},
+                                           .destination = {10, 0, 0, 2}
+    });
+    rss.key_length = 255;
+    EXPECT_EQ(aloe::flow_hash(rss,
+                              {
+                                  .source = {10, 0, 0, 1},
+                                    .destination = {10, 0, 0, 2}
+    }),
+              key);
 }

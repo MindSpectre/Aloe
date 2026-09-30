@@ -1,10 +1,12 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 #include <address.hpp>
@@ -115,7 +117,7 @@ namespace aloe {
             input[index]     = flow.source.bytes()[index];
             input[4 + index] = flow.destination.bytes()[index];
         }
-        const std::span<const std::byte> key{rss.key.data(), rss.key_length};
+        const std::span<const std::byte> key{rss.key.data(), std::min<std::size_t>(rss.key_length, rss_key_capacity)};
         const bool with_ports = (flow.protocol == ipv4_protocol_tcp && rss.types.ipv4_tcp) ||
                                 (flow.protocol == ipv4_protocol_udp && rss.types.ipv4_udp);
         if (with_ports) {
@@ -129,23 +131,34 @@ namespace aloe {
         return 0;
     }
 
-    /// The queue a flow lands on: the table entry its hash selects, or 0 when steering is off.
+    /**
+     * @brief The queue a flow lands on: the table entry its hash selects, or 0 when steering is off.
+     *
+     * The hash is masked with the table size less one, as cards index their table; the size is a
+     * power of two on real cards.
+     */
     [[nodiscard]] constexpr std::uint16_t queue_for(const RssDescription& rss, const FlowTuple& flow) noexcept {
         if (!rss.enabled || rss.table.empty()) {
             return 0;
         }
-        return rss.table[flow_hash(rss, flow) % rss.table.size()];
+        return rss.table[flow_hash(rss, flow) & (rss.table.size() - 1)];
     }
 
     /**
      * @brief A description that spreads `queues` round robin over a table, under Aloe's key.
      *
      * The fabric programs its ports with this, and ethdev assumes it for a card that accepts RSS
-     * but cannot report its table.
+     * but cannot report its table. Throws std::invalid_argument for zero queues or a key length
+     * outside 4 to 52 bytes.
      */
     [[nodiscard]] inline RssDescription
     round_robin_rss(std::uint16_t queues, std::uint16_t table_size = 128, std::uint8_t key_length = rss_key_capacity) {
-        assert(queues > 0);
+        if (queues == 0) {
+            throw std::invalid_argument{"round_robin_rss needs at least one queue"};
+        }
+        if (key_length < 4 || key_length > rss_key_capacity) {
+            throw std::invalid_argument{"round_robin_rss needs a key of 4 to 52 bytes"};
+        }
         RssDescription rss;
         rss.enabled    = true;
         rss.key        = aloe_rss_key;
