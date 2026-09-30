@@ -4,7 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <set>
+#include <span>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -66,9 +68,12 @@ TEST(FabricThreads, FramesFromManyThreadsArriveExactlyOnce) {
         consumers.emplace_back([&, queue] {
             std::array<aloe::fabric::Packet, 16> burst;
             while (true) {
+                // Read before receiving: every delivery happens before its producer counts itself
+                // done, so an empty queue after the producers finished stays empty.
+                const bool done         = producers_done.load() == producers;
                 const std::size_t count = sink.receive(queue, burst);
                 if (count == 0) {
-                    if (producers_done.load() == producers && sink.receive(queue, burst) == 0) {
+                    if (done) {
                         break;
                     }
                     std::this_thread::yield();
@@ -93,16 +98,19 @@ TEST(FabricThreads, FramesFromManyThreadsArriveExactlyOnce) {
         for (std::size_t producer = 0; producer < producers; ++producer) {
             threads.emplace_back([&, producer] {
                 aloe::fabric::Port& source = *sources[producer];
-                for (std::size_t sequence = 0; sequence < frames_per_producer; ++sequence) {
-                    std::optional<aloe::fabric::Packet> packet;
-                    while (!(packet = source.allocate(0))) {
-                        std::this_thread::yield();
+                const auto send_all        = [&] {
+                    for (std::size_t sequence = 0; sequence < frames_per_producer; ++sequence) {
+                        std::optional<aloe::fabric::Packet> packet;
+                        while (!(packet = source.allocate(0))) {
+                            std::this_thread::yield();
+                        }
+                        ASSERT_TRUE(aloe::testing::fill(*packet, frame_of(producer, sequence)));
+                        std::array<aloe::fabric::Packet, 1> burst{std::move(*packet)};
+                        ASSERT_EQ(source.transmit(0, burst), 1);
                     }
-                    ASSERT_TRUE(aloe::testing::fill(*packet, frame_of(producer, sequence)));
-                    std::array<aloe::fabric::Packet, 1> burst{std::move(*packet)};
-                    ASSERT_EQ(source.transmit(0, burst), 1);
-                }
-                ++producers_done;
+                };
+                send_all();
+                ++producers_done;  // even after a failed assertion, so the consumers stop
             });
         }
     }
@@ -118,4 +126,10 @@ TEST(FabricThreads, FramesFromManyThreadsArriveExactlyOnce) {
         counted += counters.received;
     }
     EXPECT_EQ(counted, producers * frames_per_producer);
+    for (std::size_t producer = 0; producer < producers; ++producer) {
+        EXPECT_EQ(sources[producer]->counters(0).transmitted, frames_per_producer) << "producer " << producer;
+        for (std::size_t sequence = 0; sequence < frames_per_producer; ++sequence) {
+            EXPECT_TRUE(seen.contains({static_cast<std::uint32_t>(producer), static_cast<std::uint32_t>(sequence)}));
+        }
+    }
 }
