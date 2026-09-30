@@ -52,12 +52,16 @@ namespace aloe {
      *   queue it came from; a received packet is freed on the queue it arrived on.
      * - A packet's data is a whole Ethernet frame from the destination address to the end of the
      *   payload, without the frame check sequence.
-     * - Frames longer than `mtu() + 14` are never transmitted. A backend that receives one drops it and
-     *   counts it as oversized.
+     * - Frames longer than `mtu() + 14`, or shorter than an Ethernet header, are never transmitted by
+     *   the stack. A backend that is handed one refuses it and counts it as oversized on the
+     *   transmitting queue; a backend that receives one drops it and counts it as oversized on the
+     *   receiving queue.
      * - `receive` fills `out` from the front and returns how many; the slots it fills must hold empty
-     *   packets. `transmit` takes packets from the front of `in`, returns how many it accepted, and
-     *   leaves the rest untouched with the caller.
-     * - The hot-path operations never throw. Construction and destruction are cold paths.
+     *   packets. `transmit` takes packets from the front of `in` and returns how many it accepted.
+     *   Accepted packets are moved from; the rest stay untouched with the caller, who retries or
+     *   drops them. Empty slots are skipped and count as accepted.
+     * - The hot-path operations never throw and never allocate anything but packets. Construction
+     *   and destruction are cold paths.
      */
     template <typename D>
     concept IsDevice =
