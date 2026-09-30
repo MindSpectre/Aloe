@@ -32,7 +32,8 @@ namespace aloe::ethdev {
      * Construction looks the port up by name, configures it with the requested queues, the MTU,
      * every checksum offload the driver has and receive-side scaling under Aloe's key when the
      * driver has that, and starts it. It claims the device through DPDK's ownership API first, so a
-     * second Port on the same name fails without touching it. Destruction stops and closes the port and frees its
+     * second Port on the same name fails without touching it. A construction that fails after that
+     * closes the port, and DPDK cannot reopen a closed port. Destruction stops and closes the port and frees its
      * pools; every packet must be gone by then. The port does not know which driver is behind it.
      */
     class Port {
@@ -75,7 +76,8 @@ namespace aloe::ethdev {
         [[nodiscard]] std::size_t receive(std::uint16_t queue, std::span<Packet> out) noexcept;
         [[nodiscard]] std::size_t transmit(std::uint16_t queue, std::span<Packet> in) noexcept;
 
-        /// Read from the queue's own thread.
+        /// Read from the queue's own thread. `dropped` stays zero: DPDK reports receive-ring
+        /// overruns per port, in `rte_eth_stats`, not per queue.
         [[nodiscard]] QueueCounters counters(std::uint16_t queue) const noexcept;
 
         [[nodiscard]] std::uint16_t port_id() const noexcept {

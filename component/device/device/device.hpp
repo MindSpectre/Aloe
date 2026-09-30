@@ -60,6 +60,7 @@ namespace aloe {
      *   packets. `transmit` takes packets from the front of `in` and returns how many it accepted.
      *   Accepted packets are moved from; the rest stay untouched with the caller, who retries or
      *   drops them. Empty slots are skipped and count as accepted.
+     * - `counters(queue)` is read from the queue's own thread, like every other per-queue operation.
      * - The hot-path operations never throw and never allocate anything but packets. Construction
      *   and destruction are cold paths.
      */

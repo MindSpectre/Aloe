@@ -151,6 +151,7 @@ namespace aloe::testing {
         EXPECT_EQ(received[0].rx().l3, ChecksumVerdict::Unknown);
         EXPECT_EQ(received[0].rx().l4, ChecksumVerdict::Unknown);
         EXPECT_EQ(received[0].headroom(), packet_headroom) << "a received frame keeps its headroom";
+        EXPECT_EQ(received[0].tx(), TxMetadata{}) << "a received frame asks for no transmit offloads";
     }
 
     TYPED_TEST_P(DeviceConformance, AMaximumSizeFrameComesBack) {
@@ -169,6 +170,18 @@ namespace aloe::testing {
         ASSERT_EQ(this->device().transmit(0, burst), 1);
         EXPECT_TRUE(this->receive_up_to(1, 20).empty());
         EXPECT_EQ(this->device().counters(0).oversized, 1);
+    }
+
+    TYPED_TEST_P(DeviceConformance, ARuntIsRefusedAndCountedByTheTransmitter) {
+        const QueueCounters before = this->device().counters(0);
+        const std::vector<std::byte> runt(ethernet_header_size - 1);
+        std::array<typename TestFixture::Packet, 1> burst{this->packet_with(runt)};
+        ASSERT_EQ(this->device().transmit(0, burst), 1) << "a refused frame counts as accepted";
+        EXPECT_TRUE(burst[0].empty());
+        EXPECT_TRUE(this->receive_up_to(1, 20).empty());
+        const QueueCounters after = this->device().counters(0);
+        EXPECT_EQ(after.oversized, before.oversized + 1);
+        EXPECT_EQ(after.transmitted, before.transmitted);
     }
 
     TYPED_TEST_P(DeviceConformance, ABurstComesBackInOrder) {
@@ -281,6 +294,7 @@ namespace aloe::testing {
                                 ATransmittedFrameComesBackByteForByte,
                                 AMaximumSizeFrameComesBack,
                                 AnOversizedFrameIsDroppedAndCounted,
+                                ARuntIsRefusedAndCountedByTheTransmitter,
                                 ABurstComesBackInOrder,
                                 TransmitAcceptsAtMostWhatIsOfferedAndLeavesTheRestUntouched,
                                 EmptySlotsInABurstAreSkipped,

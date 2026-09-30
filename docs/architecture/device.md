@@ -121,8 +121,10 @@ is the one place they plug in.
 
 **Ethdev reports what is in effect.** A driver that cannot set the MTU keeps its own, one that
 cannot update or read the indirection table is assumed to hold DPDK's default round-robin table,
-and one that cannot report its key is assumed to hold Aloe's key truncated to its size. The ring
-driver, which the CI tests use, has none of these; the null driver has all of them.
+and one that cannot report its key is assumed to hold Aloe's key truncated to its size. A table
+whose size is not a power of two is not used: `queue_for` masks the hash, as cards do. Of the two
+drivers the CI tests use, the ring driver has no RSS and sets no MTU, and the null driver implements
+every RSS call. A port's MTU is at most what one mbuf of its pools carries.
 
 **Bursts.** A single `receive` or `transmit` moves at most `aloe::ethdev::Port::max_burst`, 64
 packets, the size of the pointer array it hands to DPDK. `transmit` never accepts more than

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cassert>
 #include <cerrno>
 #include <cstddef>
@@ -32,6 +33,9 @@ namespace aloe::ethdev {
         constexpr std::uint64_t wanted_rss_types =
             RTE_ETH_RSS_IPV4 | RTE_ETH_RSS_NONFRAG_IPV4_TCP | RTE_ETH_RSS_NONFRAG_IPV4_UDP;
 
+        /// The largest MTU whose frames fit the data room of one mbuf of the port's pools.
+        constexpr std::uint16_t largest_mtu = RTE_MBUF_DEFAULT_DATAROOM - ethernet_header_size;
+
         /// Toeplitz reads at most this much key for an IPv4 4-tuple.
         constexpr std::uint8_t smallest_usable_key = 16;
 
@@ -60,14 +64,15 @@ namespace aloe::ethdev {
         [[nodiscard]] Capabilities capabilities_of(const rte_eth_dev_info& info) noexcept {
             const std::uint64_t rss_types = info.flow_type_rss_offloads & wanted_rss_types;
             const bool rss                = rss_types != 0 && info.hash_key_size >= smallest_usable_key &&
-                                            info.hash_key_size <= rss_key_capacity && info.reta_size > 0;
+                                            info.hash_key_size <= rss_key_capacity &&
+                                            std::has_single_bit(info.reta_size);  // queue_for masks, as cards do
             constexpr std::uint64_t rx_l4 = RTE_ETH_RX_OFFLOAD_UDP_CKSUM | RTE_ETH_RX_OFFLOAD_TCP_CKSUM;
             constexpr std::uint64_t tx_l4 = RTE_ETH_TX_OFFLOAD_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
             return Capabilities{
                 .max_rx_queues    = info.max_rx_queues,
                 .max_tx_queues    = info.max_tx_queues,
                 .min_mtu          = info.min_mtu,
-                .max_mtu          = info.max_mtu,
+                .max_mtu          = std::min<std::uint16_t>(info.max_mtu, largest_mtu),
                 .rss              = rss,
                 .rss_key_size     = rss ? info.hash_key_size : std::uint8_t{0},
                 .rss_table_size   = rss ? info.reta_size : std::uint16_t{0},
@@ -116,6 +121,12 @@ namespace aloe::ethdev {
                                               capabilities_.max_rx_queues,
                                               capabilities_.max_tx_queues,
                                               config.queues)};
+            }
+            if (config.mtu > capabilities_.max_mtu) {
+                throw EthdevError{std::format("{} carries an MTU of at most {} in one mbuf, {} was asked for",
+                                              config.name,
+                                              capabilities_.max_mtu,
+                                              config.mtu)};
             }
             configure(config, info);
             check(rte_eth_dev_start(port_id_), "rte_eth_dev_start");
@@ -289,7 +300,10 @@ namespace aloe::ethdev {
                 continue;
             }
             assert(out[count].empty());
-            out[count] = Packet{mbuf};
+            // A looped-back or recycled mbuf may still carry transmit requests; a received packet has none.
+            mbuf->ol_flags   &= ~RTE_MBUF_F_TX_OFFLOAD_MASK;
+            mbuf->tx_offload  = 0;
+            out[count]        = Packet{mbuf};
             ++count;
         }
         counters_[queue].received += count;

@@ -158,9 +158,20 @@ namespace aloe::fabric {
                "a fill was requested from a port without the capability");
         const std::span<std::byte> frame = packet.data();
         const auto ipv4                  = detail::parse_ipv4(frame);
+        assert(ipv4.has_value() && "a checksum fill was requested for a frame that is not IPv4");
         if (!ipv4) {
             return;
         }
+        // A card finds the headers by the metadata, not by parsing; a wrong length fails there, so it fails here.
+        assert(tx.l2_length == ethernet_header_size && "TxMetadata::l2_length is not the Ethernet header");
+        assert(tx.l3_length == ipv4->header_length && "TxMetadata::l3_length is not the IPv4 header length");
+        assert((tx.fill_l4_checksum != L4Checksum::Tcp || ipv4->protocol == ipv4_protocol_tcp) &&
+               "a TCP checksum was requested for a segment that is not TCP");
+        assert((tx.fill_l4_checksum != L4Checksum::Udp || ipv4->protocol == ipv4_protocol_udp) &&
+               "a UDP checksum was requested for a segment that is not UDP");
+        assert(
+            (!tx.fill_ipv4_checksum || load_be16(frame.subspan(ethernet_header_size + ipv4_checksum_offset, 2)) == 0) &&
+            "an IPv4 checksum fill needs zero in the field");
         if (tx.fill_ipv4_checksum) {
             const std::uint16_t checksum = ipv4_header_checksum(ipv4->header(frame));
             store_be16(frame.subspan(ethernet_header_size + ipv4_checksum_offset, 2), checksum);
