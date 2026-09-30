@@ -53,6 +53,33 @@ target_link_libraries(${DEVICE}.Steering INTERFACE
 ##############################################################################
 
 ##############################################################################
+# The Packet concept and its metadata
+##############################################################################
+add_library(${DEVICE}.Packet INTERFACE
+        packet/packet.hpp
+)
+target_include_directories(${DEVICE}.Packet INTERFACE
+        packet/
+)
+##############################################################################
+
+##############################################################################
+# The Device concept, capabilities and counters
+##############################################################################
+add_library(${DEVICE}.Device INTERFACE
+        device/device.hpp
+)
+target_include_directories(${DEVICE}.Device INTERFACE
+        device/
+)
+target_link_libraries(${DEVICE}.Device INTERFACE
+        ${DEVICE}.Address
+        ${DEVICE}.Packet
+        ${DEVICE}.Steering
+)
+##############################################################################
+
+##############################################################################
 # Device exported library
 ##############################################################################
 add_combined_library(${DEVICE}
@@ -65,6 +92,8 @@ add_combined_library(${DEVICE}
         ${DEVICE}.Bytes
         ${DEVICE}.Checksum
         ${DEVICE}.Steering
+        ${DEVICE}.Packet
+        ${DEVICE}.Device
         Aloe::Common::Core
 )
 
