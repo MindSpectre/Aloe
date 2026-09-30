@@ -156,6 +156,9 @@ namespace aloe::fabric {
         }
         assert(config_.offloads == EmulatedOffloads::Checksums &&
                "a fill was requested from a port without the capability");
+        if (config_.offloads != EmulatedOffloads::Checksums) {
+            return;
+        }
         const std::span<std::byte> frame = packet.data();
         const auto ipv4                  = detail::parse_ipv4(frame);
         assert(ipv4.has_value() && "a checksum fill was requested for a frame that is not IPv4");
