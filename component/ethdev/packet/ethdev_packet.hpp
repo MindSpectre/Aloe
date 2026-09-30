@@ -1,11 +1,13 @@
 #pragma once
 
+#include <algorithm>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <span>
+#include <tuple>
 #include <utility>
 
 #include <packet.hpp>
