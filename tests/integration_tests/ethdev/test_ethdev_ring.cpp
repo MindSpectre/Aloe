@@ -149,3 +149,33 @@ TEST(EthdevRing, BurstsLargerThanMaxBurstMoveInParts) {
     EXPECT_EQ(port.receive(0, std::span{received}.subspan(aloe::ethdev::Port::max_burst)), 36);
     EXPECT_EQ(port.receive(0, std::span{received}.first(1)), 0);
 }
+
+TEST(EthdevRing, TheTransmitterRefusesRuntsAndOversizedFramesInOrder) {
+    aloe::ethdev::Port port{
+        {.name = aloe::testing::probe_vdev("net_ring"), .queues = 1, .pool_size = 256}
+    };
+    const auto first = aloe::testing::ethernet_frame(
+        port.mac(), aloe::testing::peer, aloe::testing::ethertype_experimental, aloe::testing::pattern(20, 1));
+    const auto last = aloe::testing::ethernet_frame(
+        port.mac(), aloe::testing::peer, aloe::testing::ethertype_experimental, aloe::testing::pattern(20, 2));
+    const auto huge = aloe::testing::ethernet_frame(port.mac(),
+                                                    aloe::testing::peer,
+                                                    aloe::testing::ethertype_experimental,
+                                                    aloe::testing::pattern(static_cast<std::size_t>(port.mtu()) + 1));
+    const std::vector<std::byte> runt(aloe::ethernet_header_size - 1);
+    std::array<aloe::ethdev::Packet, 4> burst;
+    for (std::size_t index = 0; const auto& frame : {first, runt, huge, last}) {
+        auto packet = port.allocate(0);
+        ASSERT_TRUE(packet.has_value());
+        ASSERT_TRUE(aloe::testing::fill(*packet, frame));
+        burst[index++] = std::move(*packet);
+    }
+    EXPECT_EQ(port.transmit(0, burst), 4) << "refused frames count as accepted";
+    EXPECT_EQ(port.counters(0).oversized, 2) << "counted on the transmitting queue";
+    EXPECT_EQ(port.counters(0).transmitted, 2);
+
+    std::array<aloe::ethdev::Packet, 4> received;
+    ASSERT_EQ(port.receive(0, received), 2);
+    EXPECT_EQ(aloe::testing::bytes_of(received[0]), first);
+    EXPECT_EQ(aloe::testing::bytes_of(received[1]), last);
+}

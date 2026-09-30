@@ -90,6 +90,7 @@ namespace aloe::ethdev {
         void program_rss(const rte_eth_dev_info& info);
         void teardown() noexcept;
 
+        std::uint64_t owner_   = 0;
         std::uint16_t port_id_ = 0;
         std::uint16_t queues_  = 0;
         std::uint16_t mtu_     = 0;

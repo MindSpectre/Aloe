@@ -1,13 +1,14 @@
 #include <aloe/ethdev>
 #include <array>
 #include <cstddef>
-#include <cstdint>
+#include <span>
 #include <string>
 #include <tuple>
-#include <vector>
 
 #include <eal_environment.hpp>
 #include <gtest/gtest.h>
+
+static_assert(aloe::IsDevice<aloe::ethdev::Port>);
 
 TEST(EthdevNull, ReportsCapabilitiesAndRoundRobinSteering) {
     const aloe::ethdev::Port port{
@@ -91,6 +92,12 @@ TEST(EthdevNull, APortIsTakenOnce) {
                           {.name = name, .queues = 1, .pool_size = 256}
     }),
                  aloe::ethdev::EthdevError)
-        << "a started port cannot be configured again";
+        << "a port is taken once";
+    EXPECT_THROW((std::ignore =
+                      aloe::ethdev::Port{
+                          {.name = name, .queues = 65535}
+    }),
+                 aloe::ethdev::EthdevError)
+        << "even a request that fails before configuring leaves the port alone";
     EXPECT_TRUE(first.link_up()) << "the first port is unharmed";
 }

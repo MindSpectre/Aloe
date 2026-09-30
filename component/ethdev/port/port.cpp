@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -96,6 +97,12 @@ namespace aloe::ethdev {
         }
         check(rte_eth_dev_get_port_by_name(config.name.c_str(), &port_id_),
               std::format("rte_eth_dev_get_port_by_name({})", config.name));
+        // Claiming the port first makes a second Port on the same name fail before it touches the device.
+        check(rte_eth_dev_owner_new(&owner_), "rte_eth_dev_owner_new");
+        rte_eth_dev_owner owner{};
+        owner.id = owner_;
+        std::format_to_n(owner.name, sizeof(owner.name) - 1, "aloe");
+        check(rte_eth_dev_owner_set(port_id_, &owner), std::format("{} is taken: rte_eth_dev_owner_set", config.name));
         owned_ = true;
         try {
             rte_eth_dev_info info{};
@@ -178,32 +185,35 @@ namespace aloe::ethdev {
             check(key_update, "rte_eth_dev_rss_hash_update");
         }
 
-        if (info.reta_size % RTE_ETH_RETA_GROUP_SIZE == 0) {
-            std::vector<rte_eth_rss_reta_entry64> entries(info.reta_size / RTE_ETH_RETA_GROUP_SIZE);
-            for (std::size_t group = 0; group < entries.size(); ++group) {
-                entries[group].mask = ~std::uint64_t{0};
-                for (std::size_t index = 0; index < RTE_ETH_RETA_GROUP_SIZE; ++index) {
-                    entries[group].reta[index] =
-                        static_cast<std::uint16_t>((group * RTE_ETH_RETA_GROUP_SIZE + index) % queues_);
-                }
+        // The table goes in groups of 64 entries; the last group of a table of another size is partial.
+        const std::size_t entries_total = info.reta_size;
+        std::vector<rte_eth_rss_reta_entry64> entries((entries_total + RTE_ETH_RETA_GROUP_SIZE - 1) /
+                                                      RTE_ETH_RETA_GROUP_SIZE);
+        const auto mask_of = [&](std::size_t group) {
+            const std::size_t remaining = entries_total - group * RTE_ETH_RETA_GROUP_SIZE;
+            return remaining >= RTE_ETH_RETA_GROUP_SIZE ? ~std::uint64_t{0} : (std::uint64_t{1} << remaining) - 1;
+        };
+        for (std::size_t entry = 0; entry < entries_total; ++entry) {
+            entries[entry / RTE_ETH_RETA_GROUP_SIZE].reta[entry % RTE_ETH_RETA_GROUP_SIZE] =
+                static_cast<std::uint16_t>(entry % queues_);
+        }
+        for (std::size_t group = 0; group < entries.size(); ++group) {
+            entries[group].mask = mask_of(group);
+        }
+        const int table_update = rte_eth_dev_rss_reta_update(port_id_, entries.data(), info.reta_size);
+        if (table_update < 0 && !unsupported(table_update)) {
+            check(table_update, "rte_eth_dev_rss_reta_update");
+        }
+        for (std::size_t group = 0; group < entries.size(); ++group) {
+            entries[group].mask = mask_of(group);
+        }
+        const int table_query = rte_eth_dev_rss_reta_query(port_id_, entries.data(), info.reta_size);
+        if (table_query == 0) {
+            for (std::size_t entry = 0; entry < entries_total; ++entry) {
+                steering_.table[entry] = entries[entry / RTE_ETH_RETA_GROUP_SIZE].reta[entry % RTE_ETH_RETA_GROUP_SIZE];
             }
-            const int table_update = rte_eth_dev_rss_reta_update(port_id_, entries.data(), info.reta_size);
-            if (table_update < 0 && !unsupported(table_update)) {
-                check(table_update, "rte_eth_dev_rss_reta_update");
-            }
-            for (rte_eth_rss_reta_entry64& entry : entries) {
-                entry.mask = ~std::uint64_t{0};
-            }
-            const int table_query = rte_eth_dev_rss_reta_query(port_id_, entries.data(), info.reta_size);
-            if (table_query == 0) {
-                for (std::size_t group = 0; group < entries.size(); ++group) {
-                    for (std::size_t index = 0; index < RTE_ETH_RETA_GROUP_SIZE; ++index) {
-                        steering_.table[group * RTE_ETH_RETA_GROUP_SIZE + index] = entries[group].reta[index];
-                    }
-                }
-            } else if (!unsupported(table_query)) {
-                check(table_query, "rte_eth_dev_rss_reta_query");
-            }
+        } else if (!unsupported(table_query)) {
+            check(table_query, "rte_eth_dev_rss_reta_query");
         }
 
         std::array<std::uint8_t, rss_key_capacity> buffer{};
@@ -230,12 +240,19 @@ namespace aloe::ethdev {
             std::ignore = rte_eth_dev_stop(port_id_);
             started_    = false;
         }
+        bool closed = true;
         if (owned_) {
-            std::ignore = rte_eth_dev_close(port_id_);
-            owned_      = false;
+            closed = rte_eth_dev_close(port_id_) == 0;
+            if (!closed) {
+                std::ignore = rte_eth_dev_owner_unset(port_id_, owner_);
+            }
+            owned_ = false;
         }
-        for (rte_mempool* pool : pools_) {
-            rte_mempool_free(pool);
+        // A device that would not close may still hold mbufs of these pools in its rings.
+        if (closed) {
+            for (rte_mempool* pool : pools_) {
+                rte_mempool_free(pool);
+            }
         }
         pools_.clear();
     }
@@ -263,7 +280,7 @@ namespace aloe::ethdev {
         std::size_t count       = 0;
         for (std::uint16_t index = 0; index < got; ++index) {
             rte_mbuf* mbuf = burst[index];
-            if (mbuf->nb_segs != 1 || mbuf->pkt_len > limit) {
+            if (mbuf->nb_segs != 1 || mbuf->pkt_len > limit || mbuf->pkt_len < ethernet_header_size) {
                 rte_pktmbuf_free(mbuf);
                 ++counters_[queue].oversized;
                 continue;
@@ -281,20 +298,45 @@ namespace aloe::ethdev {
         std::array<rte_mbuf*, max_burst> burst{};
         std::array<std::size_t, max_burst> slot_of{};
         const std::size_t offered = std::min(in.size(), max_burst);
+        const std::size_t limit   = static_cast<std::size_t>(mtu_) + ethernet_header_size;
         std::uint16_t pending     = 0;
-        for (std::size_t slot = 0; slot < offered; ++slot) {
-            if (!in[slot].empty()) {
-                burst[pending]   = in[slot].get();
-                slot_of[pending] = slot;
-                ++pending;
+
+        // Hands what is pending to the driver. Returns the first slot left with the caller, if any.
+        const auto flush = [&]() noexcept -> std::optional<std::size_t> {
+            const std::uint16_t sent = pending == 0 ? 0 : rte_eth_tx_burst(port_id_, queue, burst.data(), pending);
+            for (std::uint16_t index = 0; index < sent; ++index) {
+                std::ignore = in[slot_of[index]].release();
             }
+            counters_[queue].transmitted += sent;
+            const std::optional<std::size_t> rest =
+                sent == pending ? std::nullopt : std::optional<std::size_t>{slot_of[sent]};
+            pending = 0;
+            return rest;
+        };
+
+        for (std::size_t slot = 0; slot < offered; ++slot) {
+            Packet& packet = in[slot];
+            if (packet.empty()) {
+                continue;
+            }
+            if (packet.size() < ethernet_header_size || packet.size() > limit) {
+                // Refused and counted, in order: what came before it is sent first, and if the
+                // driver leaves some of that with the caller, this packet stays untouched too.
+                if (const auto rest = flush()) {
+                    return *rest;
+                }
+                packet = Packet{};
+                ++counters_[queue].oversized;
+                continue;
+            }
+            burst[pending]   = packet.get();
+            slot_of[pending] = slot;
+            ++pending;
         }
-        const std::uint16_t sent = pending == 0 ? 0 : rte_eth_tx_burst(port_id_, queue, burst.data(), pending);
-        for (std::uint16_t index = 0; index < sent; ++index) {
-            std::ignore = in[slot_of[index]].release();
+        if (const auto rest = flush()) {
+            return *rest;
         }
-        counters_[queue].transmitted += sent;
-        return sent == pending ? offered : slot_of[sent];
+        return offered;
     }
 
     QueueCounters Port::counters(std::uint16_t queue) const noexcept {
