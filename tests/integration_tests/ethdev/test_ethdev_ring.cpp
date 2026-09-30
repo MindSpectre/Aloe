@@ -2,6 +2,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,7 @@ namespace aloe::testing {
 
 }  // namespace aloe::testing
 
+// Closing a port releases it for good, so no other test may use net_ring0.
 TEST(EthdevRing, TheVdevFromTheEalArgumentsIsAPort) {
     const aloe::ethdev::Port port{
         {.name = "net_ring0", .queues = 1, .pool_size = 256}
@@ -178,4 +180,36 @@ TEST(EthdevRing, TheTransmitterRefusesRuntsAndOversizedFramesInOrder) {
     ASSERT_EQ(port.receive(0, received), 2);
     EXPECT_EQ(aloe::testing::bytes_of(received[0]), first);
     EXPECT_EQ(aloe::testing::bytes_of(received[1]), last);
+}
+
+TEST(EthdevRing, ARefusedFrameBehindAPartialSendStaysWithTheCaller) {
+    aloe::ethdev::Port port{
+        {.name = aloe::testing::probe_vdev("net_ring"), .queues = 1, .pool_size = 2048}
+    };
+    const auto frame = aloe::testing::ethernet_frame(
+        port.mac(), aloe::testing::peer, aloe::testing::ethertype_experimental, aloe::testing::pattern(20));
+    const auto packet_of = [&](std::span<const std::byte> bytes) {
+        auto packet = port.allocate(0);
+        EXPECT_TRUE(packet.has_value());
+        EXPECT_TRUE(aloe::testing::fill(*packet, bytes));
+        return std::move(*packet);
+    };
+
+    // The ring holds 1023 frames; leave room for exactly one.
+    std::size_t queued = 0;
+    while (queued < 1022) {
+        std::array<aloe::ethdev::Packet, 1> one{packet_of(frame)};
+        ASSERT_EQ(port.transmit(0, one), 1);
+        ++queued;
+    }
+
+    const std::vector<std::byte> runt(aloe::ethernet_header_size - 1);
+    std::array<aloe::ethdev::Packet, 4> burst{packet_of(frame), packet_of(frame), packet_of(runt), packet_of(frame)};
+    EXPECT_EQ(port.transmit(0, burst), 1) << "only the first frame fit";
+    EXPECT_TRUE(burst[0].empty());
+    EXPECT_EQ(aloe::testing::bytes_of(burst[1]), frame);
+    EXPECT_EQ(aloe::testing::bytes_of(burst[2]), runt) << "the runt behind the unsent frame is untouched";
+    EXPECT_EQ(aloe::testing::bytes_of(burst[3]), frame);
+    EXPECT_EQ(port.counters(0).oversized, 0) << "and not counted";
+    EXPECT_EQ(port.counters(0).transmitted, 1023);
 }

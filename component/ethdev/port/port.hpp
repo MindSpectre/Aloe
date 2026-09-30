@@ -31,8 +31,9 @@ namespace aloe::ethdev {
      *
      * Construction looks the port up by name, configures it with the requested queues, the MTU,
      * every checksum offload the driver has and receive-side scaling under Aloe's key when the
-     * driver has that, and starts it. Destruction stops and closes the port and frees its pools;
-     * every packet must be gone by then. The port does not know which driver is behind it.
+     * driver has that, and starts it. It claims the device through DPDK's ownership API first, so a
+     * second Port on the same name fails without touching it. Destruction stops and closes the port and frees its
+     * pools; every packet must be gone by then. The port does not know which driver is behind it.
      */
     class Port {
     public:

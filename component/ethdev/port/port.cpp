@@ -102,7 +102,8 @@ namespace aloe::ethdev {
         rte_eth_dev_owner owner{};
         owner.id = owner_;
         std::format_to_n(owner.name, sizeof(owner.name) - 1, "aloe");
-        check(rte_eth_dev_owner_set(port_id_, &owner), std::format("{} is taken: rte_eth_dev_owner_set", config.name));
+        check(rte_eth_dev_owner_set(port_id_, &owner),
+              std::format("rte_eth_dev_owner_set({}), which fails for a port already taken", config.name));
         owned_ = true;
         try {
             rte_eth_dev_info info{};
@@ -242,7 +243,9 @@ namespace aloe::ethdev {
         }
         bool closed = true;
         if (owned_) {
-            closed = rte_eth_dev_close(port_id_) == 0;
+            // DPDK releases the port even when the driver's own close fails; only a port it refused
+            // to close (still started, or no close operation) is still there.
+            closed = rte_eth_dev_close(port_id_) == 0 || rte_eth_dev_is_valid_port(port_id_) == 0;
             if (!closed) {
                 std::ignore = rte_eth_dev_owner_unset(port_id_, owner_);
             }
