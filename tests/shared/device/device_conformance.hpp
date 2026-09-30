@@ -85,8 +85,11 @@ namespace aloe::testing {
         EXPECT_EQ(device.queue_count(), 1);
         EXPECT_GE(device.capabilities().max_rx_queues, 1);
         EXPECT_GE(device.capabilities().max_tx_queues, 1);
-        EXPECT_GE(device.mtu(), 68);
+        EXPECT_GE(device.mtu(), 68) << "the IPv4 minimum";
+        EXPECT_GE(device.mtu(), device.capabilities().min_mtu);
         EXPECT_LE(device.mtu(), device.capabilities().max_mtu);
+        EXPECT_LE(device.queue_count(), device.capabilities().max_rx_queues);
+        EXPECT_LE(device.queue_count(), device.capabilities().max_tx_queues);
         EXPECT_TRUE(device.link_up());
         EXPECT_FALSE(device.steering().enabled) << "one queue has nothing to steer between";
         EXPECT_FALSE(device.mac().is_multicast());
@@ -125,11 +128,14 @@ namespace aloe::testing {
         EXPECT_EQ(packet->size(), 114) << "a refused growth changes nothing";
 
         (*header)[0] = std::byte{0xaa};
+        EXPECT_EQ(packet->data()[0], std::byte{0xaa}) << "the new bytes are the packet's own";
         packet->trim_front(14);
         EXPECT_EQ(packet->size(), 100);
+        EXPECT_EQ(packet->headroom(), packet_headroom);
         EXPECT_EQ(packet->data().data(), payload->data());
         packet->trim_back(100);
         EXPECT_EQ(packet->size(), 0);
+        EXPECT_EQ(packet->tailroom(), tailroom);
     }
 
     TYPED_TEST_P(DeviceConformance, ATransmittedFrameComesBackByteForByte) {
@@ -182,24 +188,39 @@ namespace aloe::testing {
     }
 
     TYPED_TEST_P(DeviceConformance, TransmitAcceptsAtMostWhatIsOfferedAndLeavesTheRestUntouched) {
-        std::array<typename TestFixture::Packet, 3> burst{this->packet_with(this->frame(20, 1)),
-                                                          this->packet_with(this->frame(20, 2)),
-                                                          this->packet_with(this->frame(20, 3))};
+        // Whether a backend ever accepts part of a burst is tested per backend, under back-pressure;
+        // here every packet it did not accept must be exactly as it was offered.
+        const std::vector<std::vector<std::byte>> frames{this->frame(20, 1), this->frame(20, 2), this->frame(20, 3)};
+        std::array<typename TestFixture::Packet, 3> burst{
+            this->packet_with(frames[0]), this->packet_with(frames[1]), this->packet_with(frames[2])};
         const std::size_t accepted = this->device().transmit(0, burst);
         EXPECT_LE(accepted, burst.size());
         for (std::size_t index = 0; index < burst.size(); ++index) {
             EXPECT_EQ(burst[index].empty(), index < accepted) << "slot " << index;
+            if (index >= accepted) {
+                EXPECT_EQ(bytes_of(burst[index]), frames[index]) << "slot " << index;
+                EXPECT_EQ(burst[index].tx(), TxMetadata{}) << "slot " << index;
+            }
         }
-        EXPECT_EQ(this->receive_up_to(accepted).size(), accepted);
+        auto received = this->receive_up_to(accepted);
+        ASSERT_EQ(received.size(), accepted);
+        for (std::size_t index = 0; index < accepted; ++index) {
+            EXPECT_EQ(bytes_of(received[index]), frames[index]) << "frame " << index;
+        }
     }
 
     TYPED_TEST_P(DeviceConformance, EmptySlotsInABurstAreSkipped) {
-        std::array<typename TestFixture::Packet, 3> burst{this->packet_with(this->frame(20, 1)),
-                                                          typename TestFixture::Packet{},
-                                                          this->packet_with(this->frame(20, 2))};
+        const QueueCounters before = this->device().counters(0);
+        const std::vector<std::vector<std::byte>> frames{this->frame(20, 1), this->frame(20, 2)};
+        std::array<typename TestFixture::Packet, 3> burst{
+            this->packet_with(frames[0]), typename TestFixture::Packet{}, this->packet_with(frames[1])};
         EXPECT_EQ(this->device().transmit(0, burst), 3);
-        EXPECT_EQ(this->receive_up_to(2).size(), 2);
-        EXPECT_EQ(this->device().counters(0).transmitted, 2);
+        auto received = this->receive_up_to(2);
+        ASSERT_EQ(received.size(), 2);
+        EXPECT_EQ(bytes_of(received[0]), frames[0]);
+        EXPECT_EQ(bytes_of(received[1]), frames[1]);
+        EXPECT_TRUE(this->receive_up_to(1, 20).empty()) << "nothing was sent for the empty slot";
+        EXPECT_EQ(this->device().counters(0).transmitted, before.transmitted + 2);
     }
 
     TYPED_TEST_P(DeviceConformance, CountersCount) {

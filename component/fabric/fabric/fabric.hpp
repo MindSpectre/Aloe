@@ -39,7 +39,9 @@ namespace aloe::fabric {
      *
      * Queue i is used from one thread. Any thread may transmit into the port through the fabric;
      * delivery takes the destination queue's lock. Frames are copied on transmit and again on
-     * receive, so a pool is only ever touched by its queue's thread.
+     * receive, so a pool is only ever touched by its queue's thread. The copy on transmit is a heap
+     * allocation, the one exception to "the hot path allocates nothing but packets": the fabric is
+     * a test tool, and an allocation failure there terminates the test.
      */
     class Port {
         struct PrivateTag {};
