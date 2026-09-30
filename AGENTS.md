@@ -38,14 +38,15 @@ ctest --preset debug -L unit     # or: integration, functional
 | `component/<module>/` | Stack modules, added as the phases land. |
 | `<module>/export/aloe/<module>` | Umbrella header, no extension. Consumers write `#include <aloe/<module>>`. |
 | `tests/unit_tests/`, `tests/integration_tests/`, `tests/functional_tests/` | One CTest label each. |
+| `tests/manual_tests/` | Label `manual`: tests that need privileges or hardware. Every test preset excludes the label; run the binary by hand. |
 | `tests/shared/` | Test helpers, such as the unprivileged EAL arguments. |
 | `cmake/` | `vcpkg-bootstrap.cmake` (the toolchain file), `dpdk.cmake`, test and library helpers. |
 | `triplets/` | The vcpkg overlay triplet every port is built with. |
 | `examples/`, `benchmarks/` | Living examples; benchmark targets as the stack grows. |
 
 Targets are named `Aloe.<Group>.<Module>` with an `Aloe::<Group>::<Module>`
-alias. Register tests with `add_unit_test`, `add_integration_test` or
-`add_functional_test` from `cmake/tests.cmake`.
+alias. Register tests with `add_unit_test`, `add_integration_test`,
+`add_functional_test` or `add_manual_test` from `cmake/tests.cmake`.
 
 ## Rules
 
