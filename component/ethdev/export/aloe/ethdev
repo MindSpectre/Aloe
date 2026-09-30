@@ -6,3 +6,4 @@
  */
 
 #include <eal.hpp>
+#include <ethdev_packet.hpp>

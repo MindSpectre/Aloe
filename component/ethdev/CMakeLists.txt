@@ -16,6 +16,21 @@ target_link_libraries(${ETHDEV}.Eal PUBLIC
 ##############################################################################
 
 ##############################################################################
+# The mbuf-backed packet
+##############################################################################
+add_library(${ETHDEV}.Packet INTERFACE
+        packet/ethdev_packet.hpp
+)
+target_include_directories(${ETHDEV}.Packet INTERFACE
+        packet/
+)
+target_link_libraries(${ETHDEV}.Packet INTERFACE
+        Aloe::Component::Device
+        Aloe::Dpdk
+)
+##############################################################################
+
+##############################################################################
 # Ethdev exported library
 ##############################################################################
 add_combined_library(${ETHDEV}
@@ -25,6 +40,7 @@ add_combined_library(${ETHDEV}
         export/aloe/ethdev
         LIBRARIES
         ${ETHDEV}.Eal
+        ${ETHDEV}.Packet
 )
 
 add_library(Aloe::Component::Ethdev ALIAS ${ETHDEV})
