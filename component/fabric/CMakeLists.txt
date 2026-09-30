@@ -16,6 +16,23 @@ target_link_libraries(${FABRIC}.Packet PUBLIC
 ##############################################################################
 
 ##############################################################################
+# Ports and delivery
+##############################################################################
+add_library(${FABRIC}.Fabric STATIC
+        fabric/fabric.hpp
+        fabric/fabric.cpp
+        fabric/detail/frame.hpp
+)
+target_include_directories(${FABRIC}.Fabric PUBLIC
+        fabric/
+)
+target_link_libraries(${FABRIC}.Fabric PUBLIC
+        ${FABRIC}.Packet
+        Threads::Threads
+)
+##############################################################################
+
+##############################################################################
 # Fabric exported library
 ##############################################################################
 add_combined_library(${FABRIC}
@@ -25,6 +42,7 @@ add_combined_library(${FABRIC}
         export/aloe/fabric
         LIBRARIES
         ${FABRIC}.Packet
+        ${FABRIC}.Fabric
 )
 
 add_library(Aloe::Component::Fabric ALIAS ${FABRIC})

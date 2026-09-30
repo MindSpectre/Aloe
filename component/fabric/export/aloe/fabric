@@ -5,4 +5,5 @@
  * Consumers link Aloe::Component::Fabric and write `#include <aloe/fabric>`.
  */
 
+#include <fabric.hpp>
 #include <fabric_packet.hpp>
