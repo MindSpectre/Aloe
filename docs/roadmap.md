@@ -6,15 +6,16 @@ these phases build towards is in [docs/architecture/overview.md](architecture/ov
 ## 0. Runtime core
 
 The repository skeleton is done: toolchain, dependencies through vcpkg, the `Aloe::Dpdk` target, the
-[`core`](architecture/core.md) module, smoke tests and CI.
+[`core`](architecture/core.md) module, smoke tests and CI. The [device layer](architecture/device.md) is
+done: the packet and device concepts, the in-memory fabric and the DPDK backend, with one conformance
+suite that runs against both without root or hugepages.
 
 Still to come: the shard runtime, meaning core launch, run loop, scheduler, run queue, cross-shard inbox,
 timer wheel and timer sender, counting scope, task type, stop and deadline plumbing, counters and logging.
-The device layer, with a DPDK backend and an in-memory simulated fabric with scripted loss, reordering and
-delay. The packet buffer abstraction.
+The runtime verifies steering and thread concurrency as a whole, on the fabric under ThreadSanitizer.
 
-Done when tasks and timers run on shards, work can be submitted across shards, raw Ethernet frames move on
-both backends, and CI runs the simulation tests without root or hugepages.
+Done when tasks and timers run on shards, work can be submitted across shards, and an Ethernet echo runs
+on several shards on both backends with every frame landing on the shard the hash selects.
 
 ## 1. Minimal TCP
 
@@ -29,7 +30,8 @@ a tap device, and the simulation tests pass on a loss-free fabric.
 ## 2. Full TCP
 
 Retransmission with RTO estimation, out-of-order reassembly, SACK, window scaling, timestamps, delayed ACK,
-zero-window probes, keepalive and TIME_WAIT. Congestion control as a pluggable policy, NewReno first and
+zero-window probes, keepalive and TIME_WAIT. Scripted loss, reordering and delay in the fabric, which is
+where they are first needed. Congestion control as a pluggable policy, NewReno first and
 CUBIC second, with optional pacing. The public API freezes as v1 at the end of this phase.
 
 Done when the simulation suite passes under scripted impairment, packetdrill-style scenario tests pass,

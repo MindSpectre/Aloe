@@ -1,0 +1,10 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe utils module: small header-only helpers with
+ * no dependencies. Consumers link Aloe::Common::Utils and write
+ * `#include <aloe/utils>`.
+ */
+
+#include <guards.hpp>
+#include <values.hpp>

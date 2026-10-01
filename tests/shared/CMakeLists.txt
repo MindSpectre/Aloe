@@ -11,3 +11,34 @@ target_link_libraries(${SHARED_TESTING_TARGET}.Dpdk INTERFACE
         Aloe::Dpdk
 )
 ##############################################################################
+
+##############################################################################
+# Frame builders and packet helpers shared by the device backend tests
+##############################################################################
+add_library(${SHARED_TESTING_TARGET}.Device INTERFACE
+        device/frames.hpp
+        device/device_conformance.hpp
+)
+target_include_directories(${SHARED_TESTING_TARGET}.Device INTERFACE
+        device/
+)
+target_link_libraries(${SHARED_TESTING_TARGET}.Device INTERFACE
+        Aloe::Component::Device
+        ${TEST_LIBS}
+)
+##############################################################################
+
+##############################################################################
+# The EAL as a gtest environment, and fresh virtual devices per test
+##############################################################################
+add_library(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
+        dpdk/eal_environment.hpp
+)
+target_include_directories(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
+        dpdk/
+)
+target_link_libraries(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
+        ${SHARED_TESTING_TARGET}.Dpdk
+        Aloe::Component::Ethdev
+)
+##############################################################################

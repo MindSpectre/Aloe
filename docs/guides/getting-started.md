@@ -115,8 +115,17 @@ ctest --preset debug
 ```
 
 `ctest --preset <name> -L unit`, `-L integration` or `-L functional` restricts the run to
-one label. The integration tests start DPDK with no hugepages, no PCI scan and one null
+one label. The integration tests start DPDK with no hugepages, no PCI scan and one virtual
 device, so they need neither root nor a network card.
+
+Tests under `tests/manual_tests/` carry the label `manual` and need privileges or hardware.
+Every test preset excludes that label, so they never run unasked; run the binary by hand. The
+one there today drives DPDK's tap driver against the kernel and needs `CAP_NET_ADMIN`:
+
+```bash
+cmake --build --preset debug
+sudo ./build/debug/tests/manual_tests/ethdev/Aloe.Tests.Manual.Ethdev.Tap
+```
 
 ## Formatting and the pre-commit hook
 
