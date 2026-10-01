@@ -28,3 +28,17 @@ target_link_libraries(${UNIT_TESTING_TARGET}.Core.Version
         ${TEST_LIBS}
 )
 ##############################################################################
+
+##############################################################################
+# Test Utils: discarding and choosing values, and the const and static guards
+##############################################################################
+add_unit_test(${UNIT_TESTING_TARGET}.Utils
+        utils/test_guards.cpp
+        utils/test_values.cpp
+)
+target_link_libraries(${UNIT_TESTING_TARGET}.Utils
+        PRIVATE
+        Aloe::Common::Utils
+        ${TEST_LIBS}
+)
+##############################################################################

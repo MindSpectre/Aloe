@@ -11,10 +11,8 @@
 #include <string_view>
 
 namespace aloe {
-
     namespace detail {
-
-        [[nodiscard]] constexpr std::optional<unsigned> hex_digit(char character) noexcept {
+        [[nodiscard]] constexpr std::optional<unsigned> hex_digit(const char character) noexcept {
             if (character >= '0' && character <= '9') {
                 return static_cast<unsigned>(character - '0');
             }
@@ -26,7 +24,6 @@ namespace aloe {
             }
             return std::nullopt;
         }
-
     }  // namespace detail
 
     /**
@@ -43,12 +40,12 @@ namespace aloe {
             : bytes_{bytes} {
         }
 
-        constexpr MacAddress(std::uint8_t b0,
-                             std::uint8_t b1,
-                             std::uint8_t b2,
-                             std::uint8_t b3,
-                             std::uint8_t b4,
-                             std::uint8_t b5) noexcept
+        constexpr MacAddress(const std::uint8_t b0,
+                             const std::uint8_t b1,
+                             const std::uint8_t b2,
+                             const std::uint8_t b3,
+                             const std::uint8_t b4,
+                             const std::uint8_t b5) noexcept
             : bytes_{std::byte{b0}, std::byte{b1}, std::byte{b2}, std::byte{b3}, std::byte{b4}, std::byte{b5}} {
         }
 
@@ -57,7 +54,7 @@ namespace aloe {
         }
 
         /// Parses `aa:bb:cc:dd:ee:ff`, either letter case. Anything else yields nothing.
-        [[nodiscard]] static constexpr std::optional<MacAddress> parse(std::string_view text) noexcept {
+        [[nodiscard]] static constexpr std::optional<MacAddress> parse(const std::string_view text) noexcept {
             if (text.size() != 17) {
                 return std::nullopt;
             }
@@ -100,7 +97,8 @@ namespace aloe {
                                std::to_integer<unsigned>(bytes_[5]));
         }
 
-        friend constexpr bool operator==(const MacAddress&, const MacAddress&) noexcept                  = default;
+        friend constexpr bool operator==(const MacAddress&, const MacAddress&) noexcept = default;
+
         friend constexpr std::strong_ordering operator<=>(const MacAddress&, const MacAddress&) noexcept = default;
 
         friend std::ostream& operator<<(std::ostream& stream, const MacAddress& address) {
@@ -125,12 +123,15 @@ namespace aloe {
             : bytes_{bytes} {
         }
 
-        constexpr Ipv4Address(std::uint8_t a, std::uint8_t b, std::uint8_t c, std::uint8_t d) noexcept
+        constexpr Ipv4Address(const std::uint8_t a,
+                              const std::uint8_t b,
+                              const std::uint8_t c,
+                              const std::uint8_t d) noexcept
             : bytes_{std::byte{a}, std::byte{b}, std::byte{c}, std::byte{d}} {
         }
 
         /// From a host-order value: 0xC0A80001 is 192.168.0.1.
-        [[nodiscard]] static constexpr Ipv4Address from_uint32(std::uint32_t value) noexcept {
+        [[nodiscard]] static constexpr Ipv4Address from_uint32(const std::uint32_t value) noexcept {
             return {static_cast<std::uint8_t>(value >> 24U),
                     static_cast<std::uint8_t>(value >> 16U),
                     static_cast<std::uint8_t>(value >> 8U),
@@ -138,7 +139,7 @@ namespace aloe {
         }
 
         /// Parses dotted decimal, `192.168.0.1`. Anything else yields nothing.
-        [[nodiscard]] static constexpr std::optional<Ipv4Address> parse(std::string_view text) noexcept {
+        [[nodiscard]] static constexpr std::optional<Ipv4Address> parse(const std::string_view text) noexcept {
             Bytes bytes{};
             std::size_t index = 0;
             unsigned value    = 0;
@@ -187,7 +188,8 @@ namespace aloe {
                                std::to_integer<unsigned>(bytes_[3]));
         }
 
-        friend constexpr bool operator==(const Ipv4Address&, const Ipv4Address&) noexcept                  = default;
+        friend constexpr bool operator==(const Ipv4Address&, const Ipv4Address&) noexcept = default;
+
         friend constexpr std::strong_ordering operator<=>(const Ipv4Address&, const Ipv4Address&) noexcept = default;
 
         friend std::ostream& operator<<(std::ostream& stream, const Ipv4Address& address) {
@@ -197,7 +199,6 @@ namespace aloe {
     private:
         Bytes bytes_{};
     };
-
 }  // namespace aloe
 
 template <>

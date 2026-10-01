@@ -51,7 +51,7 @@ namespace aloe::fabric {
             return RssDescription{};
         }
 
-        [[nodiscard]] ChecksumVerdict verdict(bool good) noexcept {
+        [[nodiscard]] ChecksumVerdict verdict(const bool good) noexcept {
             return good ? ChecksumVerdict::Good : ChecksumVerdict::Bad;
         }
 
@@ -70,18 +70,18 @@ namespace aloe::fabric {
 
     Port::~Port() = default;
 
-    std::optional<Packet> Port::allocate(std::uint16_t queue) noexcept {
+    std::optional<Packet> Port::allocate(const std::uint16_t queue) noexcept {
         assert(queue < queues_.size());
         return queues_[queue]->pool.allocate();
     }
 
-    QueueCounters Port::counters(std::uint16_t queue) const noexcept {
+    QueueCounters Port::counters(const std::uint16_t queue) const noexcept {
         assert(queue < queues_.size());
         const std::lock_guard lock{queues_[queue]->mutex};
         return queues_[queue]->counters;
     }
 
-    RxMetadata Port::inspect(std::span<const std::byte> frame, std::uint16_t& queue) const noexcept {
+    RxMetadata Port::inspect(const std::span<const std::byte> frame, std::uint16_t& queue) const noexcept {
         RxMetadata rx;
         queue           = 0;
         const auto ipv4 = detail::parse_ipv4(frame);
@@ -97,7 +97,7 @@ namespace aloe::fabric {
             rx.l3 = verdict(internet_checksum(ipv4->header(frame)) == 0);
             if (const auto offset = ipv4->l4_checksum_offset()) {
                 const bool udp_without_checksum =
-                    ipv4->protocol == ipv4_protocol_udp && load_be16(frame.subspan(*offset, 2)) == 0;
+                    ipv4->protocol == Ipv4Protocol::Udp && load_be16(frame.subspan(*offset, 2)) == 0;
                 if (!udp_without_checksum) {
                     const std::uint32_t pseudo = ipv4_pseudo_header_sum(
                         ipv4->source, ipv4->destination, ipv4->protocol, static_cast<std::uint16_t>(ipv4->l4_length));
@@ -108,7 +108,7 @@ namespace aloe::fabric {
         return rx;
     }
 
-    void Port::deliver(std::span<const std::byte> frame) {
+    void Port::deliver(const std::span<const std::byte> frame) {
         std::uint16_t queue = 0;
         const RxMetadata rx = inspect(frame, queue);
         Queue& destination  = *queues_[queue];
@@ -125,7 +125,7 @@ namespace aloe::fabric {
             PendingFrame{.bytes = std::vector<std::byte>(frame.begin(), frame.end()), .rx = rx});
     }
 
-    std::size_t Port::receive(std::uint16_t queue, std::span<Packet> out) noexcept {
+    std::size_t Port::receive(const std::uint16_t queue, std::span<Packet> out) noexcept {
         assert(queue < queues_.size());
         Queue& source = *queues_[queue];
         const std::lock_guard lock{source.mutex};
@@ -168,9 +168,9 @@ namespace aloe::fabric {
         // A card finds the headers by the metadata, not by parsing; a wrong length fails there, so it fails here.
         assert(tx.l2_length == ethernet_header_size && "TxMetadata::l2_length is not the Ethernet header");
         assert(tx.l3_length == ipv4->header_length && "TxMetadata::l3_length is not the IPv4 header length");
-        assert((tx.fill_l4_checksum != L4Checksum::Tcp || ipv4->protocol == ipv4_protocol_tcp) &&
+        assert((tx.fill_l4_checksum != L4Checksum::Tcp || ipv4->protocol == Ipv4Protocol::Tcp) &&
                "a TCP checksum was requested for a segment that is not TCP");
-        assert((tx.fill_l4_checksum != L4Checksum::Udp || ipv4->protocol == ipv4_protocol_udp) &&
+        assert((tx.fill_l4_checksum != L4Checksum::Udp || ipv4->protocol == Ipv4Protocol::Udp) &&
                "a UDP checksum was requested for a segment that is not UDP");
         assert(
             (!tx.fill_ipv4_checksum || load_be16(frame.subspan(ethernet_header_size + ipv4_checksum_offset, 2)) == 0) &&
@@ -183,7 +183,7 @@ namespace aloe::fabric {
             if (const auto offset = ipv4->l4_checksum_offset()) {
                 // The field holds the pseudo-header sum; summing the segment as it is completes it.
                 std::uint16_t checksum = internet_checksum(ipv4->l4(frame));
-                if (ipv4->protocol == ipv4_protocol_udp && checksum == 0) {
+                if (ipv4->protocol == Ipv4Protocol::Udp && checksum == 0) {
                     checksum = 0xffff;  // zero means "no checksum" in UDP
                 }
                 store_be16(frame.subspan(*offset, 2), checksum);
@@ -191,7 +191,7 @@ namespace aloe::fabric {
         }
     }
 
-    std::size_t Port::transmit(std::uint16_t queue, std::span<Packet> in) noexcept {
+    std::size_t Port::transmit(const std::uint16_t queue, std::span<Packet> in) noexcept {
         assert(queue < queues_.size());
         Queue& source = *queues_[queue];
         for (Packet& packet : in) {
@@ -230,7 +230,7 @@ namespace aloe::fabric {
         return *ports_.back();
     }
 
-    void Fabric::deliver(const Port& source, std::span<const std::byte> frame) {
+    void Fabric::deliver(const Port& source, const std::span<const std::byte> frame) {
         assert(frame.size() >= ethernet_header_size);
         const MacAddress destination{
             {frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]},

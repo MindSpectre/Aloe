@@ -5,18 +5,16 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <vector>
 
 #include <address.hpp>
 #include <bytes.hpp>
+#include <protocol.hpp>
 
 namespace aloe {
-
-    inline constexpr std::uint8_t ipv4_protocol_icmp = 1;
-    inline constexpr std::uint8_t ipv4_protocol_tcp  = 6;
-    inline constexpr std::uint8_t ipv4_protocol_udp  = 17;
 
     /// Which fields of an IPv4 packet the hash covers.
     struct RssHashTypes {
@@ -50,7 +48,8 @@ namespace aloe {
         Ipv4Address destination;
         std::uint16_t source_port      = 0;
         std::uint16_t destination_port = 0;
-        std::uint8_t protocol          = 0;  ///< IPv4 protocol number; zero for a fragment.
+        std::optional<Ipv4Protocol> protocol =
+            std::nullopt;  ///< Absent for a fragment: no protocol or ports take part.
     };
 
     /**
@@ -78,8 +77,8 @@ namespace aloe {
      * Bits are consumed most significant first. The key must be at least four bytes longer than the
      * input; missing key bits count as zero.
      */
-    [[nodiscard]] constexpr std::uint32_t toeplitz_hash(std::span<const std::byte> key,
-                                                        std::span<const std::byte> input) noexcept {
+    [[nodiscard]] constexpr std::uint32_t toeplitz_hash(const std::span<const std::byte> key,
+                                                        const std::span<const std::byte> input) noexcept {
         assert(key.size() >= 4);
         std::uint32_t result   = 0;
         std::uint32_t window   = load_be32(key.first(4));
@@ -118,8 +117,8 @@ namespace aloe {
             input[4 + index] = flow.destination.bytes()[index];
         }
         const std::span<const std::byte> key{rss.key.data(), std::min<std::size_t>(rss.key_length, rss_key_capacity)};
-        const bool with_ports = (flow.protocol == ipv4_protocol_tcp && rss.types.ipv4_tcp) ||
-                                (flow.protocol == ipv4_protocol_udp && rss.types.ipv4_udp);
+        const bool with_ports = (flow.protocol == Ipv4Protocol::Tcp && rss.types.ipv4_tcp) ||
+                                (flow.protocol == Ipv4Protocol::Udp && rss.types.ipv4_udp);
         if (with_ports) {
             store_be16(std::span<std::byte>{input}.subspan(8, 2), flow.source_port);
             store_be16(std::span<std::byte>{input}.subspan(10, 2), flow.destination_port);
@@ -151,8 +150,9 @@ namespace aloe {
      * but cannot report its table. Throws std::invalid_argument for zero queues or a key length
      * outside 4 to 52 bytes.
      */
-    [[nodiscard]] inline RssDescription
-    round_robin_rss(std::uint16_t queues, std::uint16_t table_size = 128, std::uint8_t key_length = rss_key_capacity) {
+    [[nodiscard]] inline RssDescription round_robin_rss(const std::uint16_t queues,
+                                                        const std::uint16_t table_size = 128,
+                                                        const std::uint8_t key_length  = rss_key_capacity) {
         if (queues == 0) {
             throw std::invalid_argument{"round_robin_rss needs at least one queue"};
         }

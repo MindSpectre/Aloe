@@ -27,6 +27,7 @@ target_include_directories(${ETHDEV}.Packet INTERFACE
 target_link_libraries(${ETHDEV}.Packet INTERFACE
         Aloe::Component::Device
         Aloe::Dpdk
+        Aloe::Common::Utils
 )
 ##############################################################################
 

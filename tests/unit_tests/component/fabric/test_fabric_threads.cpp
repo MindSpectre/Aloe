@@ -39,7 +39,7 @@ namespace {
                 .destination      = server_ip,
                 .source_port      = static_cast<std::uint16_t>(40000 + sequence),
                 .destination_port = 80,
-                .protocol         = aloe::ipv4_protocol_udp
+                .protocol         = aloe::Ipv4Protocol::Udp
         },
             payload);
     }

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <aloe/utils>
 #include <array>
 #include <bit>
 #include <cassert>
@@ -39,18 +40,18 @@ namespace aloe::ethdev {
         /// Toeplitz reads at most this much key for an IPv4 4-tuple.
         constexpr std::uint8_t smallest_usable_key = 16;
 
-        void check(int result, std::string_view step) {
+        void check(const int result, const std::string_view step) {
             if (result < 0) {
                 throw EthdevError{detail::describe(step, result)};
             }
         }
 
         /// True when a driver answered that it does not implement the operation.
-        [[nodiscard]] bool unsupported(int result) noexcept {
+        [[nodiscard]] bool unsupported(const int result) noexcept {
             return result == -ENOTSUP;
         }
 
-        [[nodiscard]] RssHashTypes types_of(std::uint64_t hash_functions) noexcept {
+        [[nodiscard]] RssHashTypes types_of(const std::uint64_t hash_functions) noexcept {
             return RssHashTypes{.ipv4     = (hash_functions & RTE_ETH_RSS_IPV4) != 0,
                                 .ipv4_tcp = (hash_functions & RTE_ETH_RSS_NONFRAG_IPV4_TCP) != 0,
                                 .ipv4_udp = (hash_functions & RTE_ETH_RSS_NONFRAG_IPV4_UDP) != 0};
@@ -189,11 +190,11 @@ namespace aloe::ethdev {
         // Some drivers take the key only through this call, not through configure.
         auto key = key_bytes();
         rte_eth_rss_conf wanted{};
-        wanted.rss_key       = key.data();
-        wanted.rss_key_len   = capabilities_.rss_key_size;
-        wanted.rss_hf        = hash_functions_of(capabilities_.rss_types);
-        const int key_update = rte_eth_dev_rss_hash_update(port_id_, &wanted);
-        if (key_update < 0 && !unsupported(key_update)) {
+        wanted.rss_key     = key.data();
+        wanted.rss_key_len = capabilities_.rss_key_size;
+        wanted.rss_hf      = hash_functions_of(capabilities_.rss_types);
+        if (const int key_update = rte_eth_dev_rss_hash_update(port_id_, &wanted);
+            key_update < 0 && !unsupported(key_update)) {
             check(key_update, "rte_eth_dev_rss_hash_update");
         }
 
@@ -201,7 +202,7 @@ namespace aloe::ethdev {
         const std::size_t entries_total = info.reta_size;
         std::vector<rte_eth_rss_reta_entry64> entries((entries_total + RTE_ETH_RETA_GROUP_SIZE - 1) /
                                                       RTE_ETH_RETA_GROUP_SIZE);
-        const auto mask_of = [&](std::size_t group) {
+        const auto mask_of = [&](const std::size_t group) {
             const std::size_t remaining = entries_total - group * RTE_ETH_RETA_GROUP_SIZE;
             return remaining >= RTE_ETH_RETA_GROUP_SIZE ? ~std::uint64_t{0} : (std::uint64_t{1} << remaining) - 1;
         };
@@ -212,15 +213,15 @@ namespace aloe::ethdev {
         for (std::size_t group = 0; group < entries.size(); ++group) {
             entries[group].mask = mask_of(group);
         }
-        const int table_update = rte_eth_dev_rss_reta_update(port_id_, entries.data(), info.reta_size);
-        if (table_update < 0 && !unsupported(table_update)) {
+        if (const int table_update = rte_eth_dev_rss_reta_update(port_id_, entries.data(), info.reta_size);
+            table_update < 0 && !unsupported(table_update)) {
             check(table_update, "rte_eth_dev_rss_reta_update");
         }
         for (std::size_t group = 0; group < entries.size(); ++group) {
             entries[group].mask = mask_of(group);
         }
-        const int table_query = rte_eth_dev_rss_reta_query(port_id_, entries.data(), info.reta_size);
-        if (table_query == 0) {
+        if (const int table_query = rte_eth_dev_rss_reta_query(port_id_, entries.data(), info.reta_size);
+            table_query == 0) {
             for (std::size_t entry = 0; entry < entries_total; ++entry) {
                 steering_.table[entry] = entries[entry / RTE_ETH_RETA_GROUP_SIZE].reta[entry % RTE_ETH_RETA_GROUP_SIZE];
             }
@@ -232,8 +233,7 @@ namespace aloe::ethdev {
         rte_eth_rss_conf programmed{};
         programmed.rss_key     = buffer.data();
         programmed.rss_key_len = rss_key_capacity;
-        const int key_query    = rte_eth_dev_rss_hash_conf_get(port_id_, &programmed);
-        if (key_query == 0) {
+        if (const int key_query = rte_eth_dev_rss_hash_conf_get(port_id_, &programmed); key_query == 0) {
             for (std::size_t index = 0; index < capabilities_.rss_key_size; ++index) {
                 steering_.key[index] = std::byte{buffer[index]};
             }
@@ -276,8 +276,9 @@ namespace aloe::ethdev {
         return rte_eth_link_get_nowait(port_id_, &link) == 0 && link.link_status == RTE_ETH_LINK_UP;
     }
 
-    std::optional<Packet> Port::allocate(std::uint16_t queue) noexcept {
+    std::optional<Packet> Port::allocate(const std::uint16_t queue) noexcept {
         assert(queue < queues_);
+        utils::force_non_const(this);  // takes an mbuf from the pool, which a const member could still do
         rte_mbuf* mbuf = rte_pktmbuf_alloc(pools_[queue]);
         if (mbuf == nullptr) {
             return std::nullopt;
@@ -285,7 +286,7 @@ namespace aloe::ethdev {
         return Packet{mbuf};
     }
 
-    std::size_t Port::receive(std::uint16_t queue, std::span<Packet> out) noexcept {
+    std::size_t Port::receive(const std::uint16_t queue, std::span<Packet> out) noexcept {
         assert(queue < queues_);
         std::array<rte_mbuf*, max_burst> burst{};
         const auto wanted       = static_cast<std::uint16_t>(std::min(out.size(), max_burst));
@@ -310,7 +311,7 @@ namespace aloe::ethdev {
         return count;
     }
 
-    std::size_t Port::transmit(std::uint16_t queue, std::span<Packet> in) noexcept {
+    std::size_t Port::transmit(const std::uint16_t queue, std::span<Packet> in) noexcept {
         assert(queue < queues_);
         std::array<rte_mbuf*, max_burst> burst{};
         std::array<std::size_t, max_burst> slot_of{};
@@ -324,10 +325,9 @@ namespace aloe::ethdev {
             for (std::uint16_t index = 0; index < sent; ++index) {
                 std::ignore = in[slot_of[index]].release();
             }
-            counters_[queue].transmitted += sent;
-            const std::optional<std::size_t> rest =
-                sent == pending ? std::nullopt : std::optional<std::size_t>{slot_of[sent]};
-            pending = 0;
+            counters_[queue].transmitted          += sent;
+            const std::optional<std::size_t> rest  = sent == pending ? std::nullopt : std::optional{slot_of[sent]};
+            pending                                = 0;
             return rest;
         };
 
@@ -356,7 +356,7 @@ namespace aloe::ethdev {
         return offered;
     }
 
-    QueueCounters Port::counters(std::uint16_t queue) const noexcept {
+    QueueCounters Port::counters(const std::uint16_t queue) const noexcept {
         assert(queue < queues_);
         return counters_[queue];
     }

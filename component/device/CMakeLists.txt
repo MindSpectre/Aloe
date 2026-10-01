@@ -23,6 +23,17 @@ target_include_directories(${DEVICE}.Bytes INTERFACE
 ##############################################################################
 
 ##############################################################################
+# The IPv4 protocol number as a type
+##############################################################################
+add_library(${DEVICE}.Protocol INTERFACE
+        protocol/protocol.hpp
+)
+target_include_directories(${DEVICE}.Protocol INTERFACE
+        protocol/
+)
+##############################################################################
+
+##############################################################################
 # Internet checksum
 ##############################################################################
 add_library(${DEVICE}.Checksum INTERFACE
@@ -34,6 +45,7 @@ target_include_directories(${DEVICE}.Checksum INTERFACE
 target_link_libraries(${DEVICE}.Checksum INTERFACE
         ${DEVICE}.Address
         ${DEVICE}.Bytes
+        ${DEVICE}.Protocol
 )
 ##############################################################################
 
@@ -49,6 +61,7 @@ target_include_directories(${DEVICE}.Steering INTERFACE
 target_link_libraries(${DEVICE}.Steering INTERFACE
         ${DEVICE}.Address
         ${DEVICE}.Bytes
+        ${DEVICE}.Protocol
 )
 ##############################################################################
 
@@ -90,6 +103,7 @@ add_combined_library(${DEVICE}
         LIBRARIES
         ${DEVICE}.Address
         ${DEVICE}.Bytes
+        ${DEVICE}.Protocol
         ${DEVICE}.Checksum
         ${DEVICE}.Steering
         ${DEVICE}.Packet

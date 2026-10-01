@@ -4,11 +4,11 @@ The device layer is the bottom of the stack: it moves Ethernet frames between th
 and whatever carries them, and it reports what that carrier can do. It is three modules under
 `component/`, so nothing above it links DPDK unless it chooses the DPDK backend.
 
-| Module | Include | Target | Holds |
-|---|---|---|---|
+| Module   | Include                  | Target                    | Holds                                                                                                        |
+|----------|--------------------------|---------------------------|--------------------------------------------------------------------------------------------------------------|
 | `device` | `#include <aloe/device>` | `Aloe::Component::Device` | The `IsPacket` and `IsDevice` concepts, addresses, checksums and receive-side scaling. Header-only, no DPDK. |
-| `fabric` | `#include <aloe/fabric>` | `Aloe::Component::Fabric` | The in-memory backend: a broadcast domain of ports for tests. No DPDK. |
-| `ethdev` | `#include <aloe/ethdev>` | `Aloe::Component::Ethdev` | The DPDK backend: one port of any driver. The only module that links `Aloe::Dpdk`. |
+| `fabric` | `#include <aloe/fabric>` | `Aloe::Component::Fabric` | The in-memory backend: a broadcast domain of ports, the fixture for tests, simulation and demos. No DPDK.    |
+| `ethdev` | `#include <aloe/ethdev>` | `Aloe::Component::Ethdev` | The DPDK backend: one port of any driver. The only module that links `Aloe::Dpdk`.                           |
 
 The layer exists because network cards differ in what they can do. It hides everything about the
 card; the shard runtime receives packets and a capability report, and nothing else that is
@@ -36,6 +36,8 @@ them on top of it.
   `queue_for(description, flow)` is a pure function of what the device reports, so the runtime can
   predict which queue any flow lands on. `aloe::toeplitz_hash` is the hash cards compute.
 - **`aloe::MacAddress`**, **`aloe::Ipv4Address`** -- value types with parsing and formatting.
+- **`aloe::Ipv4Protocol`** -- the IPv4 protocol number as a type: `Icmp`, `Tcp`, `Udp` named, any other
+  byte still representable. A `FlowTuple` carries it as `std::optional`, absent for a fragment.
 - **`aloe::internet_checksum`** and friends -- the Internet checksum, the IPv4 header checksum,
   and the IPv4 pseudo-header sum that transmit checksum offload starts from.
 
@@ -114,7 +116,8 @@ back from it. Aloe's key starts with Microsoft's published default key, so the R
 vectors apply, and an IPv4 4-tuple uses only the first 16 bytes of it, so a card that takes 40
 bytes and one that takes 52 compute the same hash.
 
-**The fabric is a test tool.** Delivery takes a lock per receive queue and copies frames twice, on
+**The fabric is a fixture.** It exists for tests, simulation and demos and never carries production
+traffic. Delivery takes a lock per receive queue and copies frames twice, on
 transmit and on receive, so a packet pool is only ever touched by its queue's thread. Simplicity
 wins over speed. Scripted loss, reordering and delay arrive in a later phase; the delivery function
 is the one place they plug in.

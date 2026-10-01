@@ -46,7 +46,7 @@ namespace {
             return result;
         }
 
-        static aloe::testing::Ipv4Spec spec(std::uint8_t protocol, std::uint16_t source_port) {
+        static aloe::testing::Ipv4Spec spec(const aloe::Ipv4Protocol protocol, const std::uint16_t source_port) {
             return {.destination_mac  = server,
                     .source_mac       = client,
                     .source           = client_ip,
@@ -73,7 +73,7 @@ TEST_F(FabricSteering, AMultiQueuePortSteersByRss) {
 TEST_F(FabricSteering, TcpAndUdpLandOnTheQueueTheirFourTupleSelects) {
     std::array<bool, 4> seen{};
     for (std::uint16_t port = 40000; port < 40064; ++port) {
-        for (const std::uint8_t protocol : {aloe::ipv4_protocol_tcp, aloe::ipv4_protocol_udp}) {
+        for (const aloe::Ipv4Protocol protocol : {aloe::Ipv4Protocol::Tcp, aloe::Ipv4Protocol::Udp}) {
             const auto frame_spec        = spec(protocol, port);
             const std::uint16_t expected = aloe::queue_for(server_port_.steering(), aloe::testing::flow_of(frame_spec));
             send(aloe::testing::ipv4_frame(frame_spec, aloe::testing::pattern(8)));
@@ -88,17 +88,17 @@ TEST_F(FabricSteering, TcpAndUdpLandOnTheQueueTheirFourTupleSelects) {
 }
 
 TEST_F(FabricSteering, OtherIpv4LandsOnTheQueueTheAddressesSelect) {
-    const auto frame_spec        = spec(aloe::ipv4_protocol_icmp, 0);
+    const auto frame_spec        = spec(aloe::Ipv4Protocol::Icmp, 0);
     const std::uint16_t expected = aloe::queue_for(server_port_.steering(), aloe::testing::flow_of(frame_spec));
     send(aloe::testing::ipv4_frame(frame_spec, aloe::testing::pattern(8)));
     EXPECT_FALSE(receive_only_on(expected).empty());
 }
 
 TEST_F(FabricSteering, AFragmentIsSteeredByAddressesOnly) {
-    auto fragment           = spec(aloe::ipv4_protocol_tcp, 40000);
+    auto fragment           = spec(aloe::Ipv4Protocol::Tcp, 40000);
     fragment.flags_fragment = 0x2000;  // more fragments, offset zero
-    auto whole              = spec(aloe::ipv4_protocol_icmp, 0);
-    EXPECT_EQ(aloe::testing::flow_of(fragment).protocol, 0);
+    auto whole              = spec(aloe::Ipv4Protocol::Icmp, 0);
+    EXPECT_FALSE(aloe::testing::flow_of(fragment).protocol.has_value());
     const std::uint16_t expected = aloe::queue_for(server_port_.steering(), aloe::testing::flow_of(whole));
     send(aloe::testing::ipv4_frame(fragment, aloe::testing::pattern(8)));
     EXPECT_FALSE(receive_only_on(expected).empty());
@@ -113,7 +113,7 @@ TEST_F(FabricSteering, NonIpv4GoesToQueueZeroWithoutAHash) {
 }
 
 TEST_F(FabricSteering, ASingleQueuePortHashesNothing) {
-    auto reply            = spec(aloe::ipv4_protocol_tcp, 40000);
+    auto reply            = spec(aloe::Ipv4Protocol::Tcp, 40000);
     reply.destination_mac = client;
     reply.source_mac      = server;
     auto packet           = server_port_.allocate(0);
@@ -128,7 +128,7 @@ TEST_F(FabricSteering, ASingleQueuePortHashesNothing) {
 }
 
 TEST_F(FabricSteering, ATruncatedFrameIsStillSteeredAndDoesNotCrash) {
-    const auto frame_spec = spec(aloe::ipv4_protocol_tcp, 40000);
+    const auto frame_spec = spec(aloe::Ipv4Protocol::Tcp, 40000);
     auto frame            = aloe::testing::ipv4_frame(frame_spec, aloe::testing::pattern(64));
     frame.resize(frame.size() - 40);  // the total length now claims more than the frame carries
     const std::uint16_t expected = aloe::queue_for(server_port_.steering(), aloe::testing::flow_of(frame_spec));
@@ -137,7 +137,7 @@ TEST_F(FabricSteering, ATruncatedFrameIsStillSteeredAndDoesNotCrash) {
 }
 
 TEST_F(FabricSteering, AnIpv4HeaderWithOptionsIsParsedByItsLength) {
-    const auto frame_spec        = spec(aloe::ipv4_protocol_udp, 40001);
+    const auto frame_spec        = spec(aloe::Ipv4Protocol::Udp, 40001);
     const std::uint16_t expected = aloe::queue_for(server_port_.steering(), aloe::testing::flow_of(frame_spec));
     send(aloe::testing::with_ipv4_options(aloe::testing::ipv4_frame(frame_spec, aloe::testing::pattern(8)), 2));
     aloe::fabric::Packet packet = receive_only_on(expected);

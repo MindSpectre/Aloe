@@ -289,6 +289,28 @@ constexpr Box() noexcept(std::is_nothrow_constructible_v<T>)
     requires std::default_initializable<T>;
 ```
 
+## Parameters
+
+In a definition, qualify by-value parameters `const`: scalars, addresses, read-only spans. The body then
+cannot reassign them, and the reader knows it does not.
+
+```cpp
+void Packet::trim_front(const std::size_t count) noexcept {
+    begin_ += std::min(count, size());
+}
+
+[[nodiscard]] constexpr std::uint16_t load_be16(const std::span<const std::byte> bytes) noexcept {
+    return static_cast<std::uint16_t>((std::to_integer<unsigned>(bytes[0]) << 8U) | std::to_integer<unsigned>(bytes[1]));
+}
+```
+
+Two exceptions:
+
+- A declaration without a body carries no `const`. It is not part of the signature, and clang-tidy's
+  `readability-avoid-const-params-in-decls` rejects it there.
+- A span the function writes through, `std::span<std::byte>` or `std::span<Packet>`, stays unqualified: the
+  `const` would say nothing about the elements, and the parameter is the function's output.
+
 ## Unreachable Code
 
 ### `std::unreachable()`
@@ -541,6 +563,14 @@ Consumers include the whole module via `#include <aloe/<module>>`:
 ```
 
 ## Namespaces
+
+### Which Namespace
+
+Vocabulary that every layer uses lives directly in `aloe`: the execution alias and the task type of `core`, the
+version, and the concepts, addresses, checksums and steering of `device`. A module whose names are its own, a
+backend or a collection of helpers, gets a namespace named after the module: `aloe::fabric`, `aloe::ethdev`,
+`aloe::utils`. There is no `aloe::core` for the same reason there is no `std::core`: its names are the ones
+written most, and `aloe::ex::just` reads better than `aloe::core::ex::just`.
 
 ### Opening Style
 

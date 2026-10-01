@@ -5,10 +5,12 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <utility>
 
 #include <address.hpp>
 #include <bytes.hpp>
 #include <device.hpp>
+#include <protocol.hpp>
 #include <rss.hpp>
 
 namespace aloe::fabric::detail {
@@ -28,17 +30,17 @@ namespace aloe::fabric::detail {
         std::size_t l4_length     = 0;  ///< L4 bytes present, bounded by the frame and the total length.
         Ipv4Address source;
         Ipv4Address destination;
-        std::uint8_t protocol          = 0;
+        Ipv4Protocol protocol{};
         bool fragment                  = false;
         bool has_ports                 = false;  ///< Unfragmented TCP or UDP with its ports present.
         std::uint16_t source_port      = 0;
         std::uint16_t destination_port = 0;
 
-        [[nodiscard]] std::span<const std::byte> header(std::span<const std::byte> frame) const noexcept {
+        [[nodiscard]] std::span<const std::byte> header(const std::span<const std::byte> frame) const noexcept {
             return frame.subspan(ethernet_header_size, header_length);
         }
 
-        [[nodiscard]] std::span<const std::byte> l4(std::span<const std::byte> frame) const noexcept {
+        [[nodiscard]] std::span<const std::byte> l4(const std::span<const std::byte> frame) const noexcept {
             return frame.subspan(l4_offset, l4_length);
         }
 
@@ -47,10 +49,10 @@ namespace aloe::fabric::detail {
             if (fragment) {
                 return std::nullopt;
             }
-            if (protocol == ipv4_protocol_tcp && l4_length >= tcp_minimum_header) {
+            if (protocol == Ipv4Protocol::Tcp && l4_length >= tcp_minimum_header) {
                 return l4_offset + tcp_checksum_offset;
             }
-            if (protocol == ipv4_protocol_udp && l4_length >= udp_header_size) {
+            if (protocol == Ipv4Protocol::Udp && l4_length >= udp_header_size) {
                 return l4_offset + udp_checksum_offset;
             }
             return std::nullopt;
@@ -58,7 +60,7 @@ namespace aloe::fabric::detail {
     };
 
     /// Parses the IPv4 header of an Ethernet frame. Nothing for any other frame.
-    [[nodiscard]] inline std::optional<Ipv4Frame> parse_ipv4(std::span<const std::byte> frame) noexcept {
+    [[nodiscard]] inline std::optional<Ipv4Frame> parse_ipv4(const std::span<const std::byte> frame) noexcept {
         if (frame.size() < ethernet_header_size + ipv4_minimum_header) {
             return std::nullopt;
         }
@@ -80,7 +82,7 @@ namespace aloe::fabric::detail {
             return std::nullopt;
         }
         result.fragment = (load_be16(ip.subspan(6, 2)) & ipv4_fragment_mask) != 0;
-        result.protocol = std::to_integer<std::uint8_t>(ip[9]);
+        result.protocol = static_cast<Ipv4Protocol>(std::to_integer<std::uint8_t>(ip[9]));
         result.source   = Ipv4Address{
             {ip[12], ip[13], ip[14], ip[15]}
         };
@@ -89,7 +91,7 @@ namespace aloe::fabric::detail {
         };
         result.l4_offset  = ethernet_header_size + result.header_length;
         result.l4_length  = std::min(total_length, ip.size()) - result.header_length;
-        const bool ported = result.protocol == ipv4_protocol_tcp || result.protocol == ipv4_protocol_udp;
+        const bool ported = result.protocol == Ipv4Protocol::Tcp || result.protocol == Ipv4Protocol::Udp;
         if (ported && !result.fragment && result.l4_length >= 4) {
             result.has_ports        = true;
             result.source_port      = load_be16(frame.subspan(result.l4_offset, 2));

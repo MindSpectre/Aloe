@@ -4,7 +4,9 @@
 #include <aloe/device>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 /**
@@ -53,7 +55,7 @@ namespace aloe::testing {
         Ipv4Address destination;
         std::uint16_t source_port      = 0;
         std::uint16_t destination_port = 0;
-        std::uint8_t protocol          = ipv4_protocol_udp;
+        Ipv4Protocol protocol          = Ipv4Protocol::Udp;
         std::uint16_t flags_fragment   = 0x4000;  ///< Don't-fragment set, offset zero.
         Checksums checksums            = Checksums::Correct;
     };
@@ -65,8 +67,8 @@ namespace aloe::testing {
      * protocol carries the payload straight after the IPv4 header.
      */
     [[nodiscard]] inline std::vector<std::byte> ipv4_frame(const Ipv4Spec& spec, std::span<const std::byte> payload) {
-        const std::size_t l4_header = spec.protocol == ipv4_protocol_tcp   ? 20
-                                      : spec.protocol == ipv4_protocol_udp ? 8
+        const std::size_t l4_header = spec.protocol == Ipv4Protocol::Tcp   ? 20
+                                      : spec.protocol == Ipv4Protocol::Udp ? 8
                                                                            : 0;
         const std::size_t l4_length = l4_header + payload.size();
         std::vector<std::byte> ip(20 + l4_length);
@@ -75,18 +77,18 @@ namespace aloe::testing {
         store_be16(header.subspan(2, 2), static_cast<std::uint16_t>(ip.size()));
         store_be16(header.subspan(6, 2), spec.flags_fragment);
         header[8] = std::byte{64};
-        header[9] = std::byte{spec.protocol};
+        header[9] = std::byte{std::to_underlying(spec.protocol)};
         std::ranges::copy(spec.source.bytes(), header.begin() + 12);
         std::ranges::copy(spec.destination.bytes(), header.begin() + 16);
 
         const std::span<std::byte> l4 = std::span<std::byte>{ip}.subspan(20);
         std::size_t checksum_offset   = 0;
-        if (spec.protocol == ipv4_protocol_udp) {
+        if (spec.protocol == Ipv4Protocol::Udp) {
             store_be16(l4.subspan(0, 2), spec.source_port);
             store_be16(l4.subspan(2, 2), spec.destination_port);
             store_be16(l4.subspan(4, 2), static_cast<std::uint16_t>(l4_length));
             checksum_offset = 6;
-        } else if (spec.protocol == ipv4_protocol_tcp) {
+        } else if (spec.protocol == Ipv4Protocol::Tcp) {
             store_be16(l4.subspan(0, 2), spec.source_port);
             store_be16(l4.subspan(2, 2), spec.destination_port);
             l4[12]          = std::byte{0x50};  // data offset 5 words
@@ -143,7 +145,7 @@ namespace aloe::testing {
                          .destination      = spec.destination,
                          .source_port      = fragment ? std::uint16_t{0} : spec.source_port,
                          .destination_port = fragment ? std::uint16_t{0} : spec.destination_port,
-                         .protocol         = fragment ? std::uint8_t{0} : spec.protocol};
+                         .protocol         = fragment ? std::nullopt : std::optional{spec.protocol}};
     }
 
     /// Appends `frame` to an empty packet. False when the packet has no room for it.

@@ -41,7 +41,7 @@ namespace aloe::fabric {
      * delivery takes the destination queue's lock. Frames are copied on transmit and again on
      * receive, so a pool is only ever touched by its queue's thread. The copy on transmit is a heap
      * allocation, the one exception to "the hot path allocates nothing but packets": the fabric is
-     * a test tool, and an allocation failure there terminates the test.
+     * a fixture, never a production path, and an allocation failure there terminates the test.
      */
     class Port {
         struct PrivateTag {};
@@ -100,7 +100,7 @@ namespace aloe::fabric {
         };
 
         struct Queue {
-            Queue(std::size_t pool_size, std::size_t data_capacity)
+            Queue(const std::size_t pool_size, const std::size_t data_capacity)
                 : pool{pool_size, data_capacity} {
             }
 
@@ -124,7 +124,8 @@ namespace aloe::fabric {
     };
 
     /**
-     * @brief An in-memory broadcast domain of ports.
+     * @brief An in-memory broadcast domain of ports: the fixture the layers above are tested,
+     * simulated and demonstrated on. Never a production path.
      *
      * Transmit delivers at once: unicast to the port with that MAC (the sender included), broadcast
      * and multicast to every other port. There is no loss, reordering or delay; `deliver` is where

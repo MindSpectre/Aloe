@@ -15,12 +15,13 @@ the design and the [roadmap](docs/roadmap.md) for the phases.
 
 ## Modules
 
-| Namespace | Directory      | Description                                                              | Docs                                                 |
-|-----------|----------------|--------------------------------------------------------------------------|------------------------------------------------------|
-| `aloe`    | `common/core/` | Library version, and the one header that names the execution facilities. | [docs/architecture/core.md](docs/architecture/core.md) |
-| `aloe` | `component/device/` | The Packet and Device concepts, addresses, checksums and receive-side scaling. | [docs/architecture/device.md](docs/architecture/device.md) |
-| `aloe::fabric` | `component/fabric/` | The in-memory device backend, for tests. | [docs/architecture/device.md](docs/architecture/device.md) |
-| `aloe::ethdev` | `component/ethdev/` | The DPDK device backend. | [docs/architecture/device.md](docs/architecture/device.md) |
+| Namespace      | Directory           | Description                                                                                                     | Docs                                                       |
+|----------------|---------------------|-----------------------------------------------------------------------------------------------------------------|------------------------------------------------------------|
+| `aloe`         | `common/core/`      | Library version, and the one header that names the execution facilities.                                        | [docs/architecture/core.md](docs/architecture/core.md)     |
+| `aloe::utils`  | `common/utils/`     | Small header-only helpers with no dependencies: discarding values, a fallback, and the const and static guards. | [docs/architecture/utils.md](docs/architecture/utils.md)   |
+| `aloe`         | `component/device/` | The Packet and Device concepts, addresses, checksums and receive-side scaling.                                  | [docs/architecture/device.md](docs/architecture/device.md) |
+| `aloe::fabric` | `component/fabric/` | The in-memory device backend: a fixture for tests, simulation and demos.                                        | [docs/architecture/device.md](docs/architecture/device.md) |
+| `aloe::ethdev` | `component/ethdev/` | The DPDK device backend.                                                                                        | [docs/architecture/device.md](docs/architecture/device.md) |
 
 Each module ships an umbrella header. Consumers link the module's target and
 include it by name:

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <aloe/utils>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -58,15 +59,14 @@ namespace aloe::ethdev {
             if (mbuf_ == nullptr) {
                 return {};
             }
-            return std::span<std::byte>{static_cast<std::byte*>(mbuf_->buf_addr) + mbuf_->data_off, mbuf_->data_len};
+            return std::span{static_cast<std::byte*>(mbuf_->buf_addr) + mbuf_->data_off, mbuf_->data_len};
         }
 
         [[nodiscard]] std::span<const std::byte> data() const noexcept {
             if (mbuf_ == nullptr) {
                 return {};
             }
-            return std::span<const std::byte>{static_cast<const std::byte*>(mbuf_->buf_addr) + mbuf_->data_off,
-                                              mbuf_->data_len};
+            return std::span{static_cast<const std::byte*>(mbuf_->buf_addr) + mbuf_->data_off, mbuf_->data_len};
         }
 
         [[nodiscard]] std::size_t size() const noexcept {
@@ -81,37 +81,37 @@ namespace aloe::ethdev {
             return mbuf_ == nullptr ? 0 : rte_pktmbuf_tailroom(mbuf_);
         }
 
-        [[nodiscard]] std::optional<std::span<std::byte>> prepend(std::size_t count) noexcept {
+        [[nodiscard]] std::optional<std::span<std::byte>> prepend(const std::size_t count) noexcept {
             if (mbuf_ == nullptr || count > std::numeric_limits<std::uint16_t>::max()) {
                 return std::nullopt;
             }
-            char* front = rte_pktmbuf_prepend(mbuf_, static_cast<std::uint16_t>(count));
-            if (front == nullptr) {
+            if (const char* front = rte_pktmbuf_prepend(mbuf_, static_cast<std::uint16_t>(count)); front == nullptr) {
                 return std::nullopt;
             }
             return data().first(count);
         }
 
-        [[nodiscard]] std::optional<std::span<std::byte>> append(std::size_t count) noexcept {
+        [[nodiscard]] std::optional<std::span<std::byte>> append(const std::size_t count) noexcept {
             if (mbuf_ == nullptr || count > std::numeric_limits<std::uint16_t>::max()) {
                 return std::nullopt;
             }
-            char* back = rte_pktmbuf_append(mbuf_, static_cast<std::uint16_t>(count));
-            if (back == nullptr) {
+            if (const char* back = rte_pktmbuf_append(mbuf_, static_cast<std::uint16_t>(count)); back == nullptr) {
                 return std::nullopt;
             }
             return data().last(count);
         }
 
-        void trim_front(std::size_t count) noexcept {
+        void trim_front(const std::size_t count) noexcept {
             assert(count <= size());
+            utils::force_non_const(this);  // writes the mbuf, which a const member could still do
             if (mbuf_ != nullptr) {
                 std::ignore = rte_pktmbuf_adj(mbuf_, static_cast<std::uint16_t>(std::min(count, size())));
             }
         }
 
-        void trim_back(std::size_t count) noexcept {
+        void trim_back(const std::size_t count) noexcept {
             assert(count <= size());
+            utils::force_non_const(this);  // writes the mbuf, which a const member could still do
             if (mbuf_ != nullptr) {
                 std::ignore = rte_pktmbuf_trim(mbuf_, static_cast<std::uint16_t>(std::min(count, size())));
             }
@@ -142,8 +142,7 @@ namespace aloe::ethdev {
             tx.l2_length              = static_cast<std::uint8_t>(mbuf_->l2_len);
             tx.l3_length              = static_cast<std::uint8_t>(mbuf_->l3_len);
             tx.fill_ipv4_checksum     = (flags & RTE_MBUF_F_TX_IP_CKSUM) != 0;
-            const std::uint64_t l4    = flags & RTE_MBUF_F_TX_L4_MASK;
-            if (l4 == RTE_MBUF_F_TX_TCP_CKSUM) {
+            if (const std::uint64_t l4 = flags & RTE_MBUF_F_TX_L4_MASK; l4 == RTE_MBUF_F_TX_TCP_CKSUM) {
                 tx.fill_l4_checksum = L4Checksum::Tcp;
             } else if (l4 == RTE_MBUF_F_TX_UDP_CKSUM) {
                 tx.fill_l4_checksum = L4Checksum::Udp;
@@ -152,6 +151,7 @@ namespace aloe::ethdev {
         }
 
         void set_tx(const TxMetadata& tx) noexcept {
+            utils::force_non_const(this);  // writes the mbuf, which a const member could still do
             if (mbuf_ == nullptr) {
                 return;
             }
@@ -183,7 +183,7 @@ namespace aloe::ethdev {
 
     private:
         [[nodiscard]] static constexpr ChecksumVerdict
-        verdict(std::uint64_t bits, std::uint64_t good, std::uint64_t bad) noexcept {
+        verdict(const std::uint64_t bits, const std::uint64_t good, const std::uint64_t bad) noexcept {
             if (bits == good) {
                 return ChecksumVerdict::Good;
             }

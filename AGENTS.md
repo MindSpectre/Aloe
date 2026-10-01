@@ -33,17 +33,17 @@ ctest --preset debug -L unit     # or: integration, functional
 
 ## Layout
 
-| Path | Contents |
-|---|---|
-| `common/<module>/` | Foundation modules. `core` holds the version and the execution alias. |
-| `component/<module>/` | Stack modules: `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK). |
-| `<module>/export/aloe/<module>` | Umbrella header, no extension. Consumers write `#include <aloe/<module>>`. |
-| `tests/unit_tests/`, `tests/integration_tests/`, `tests/functional_tests/` | One CTest label each. |
-| `tests/manual_tests/` | Label `manual`: tests that need privileges or hardware. Every test preset excludes the label; run the binary by hand. |
-| `tests/shared/` | Test helpers: the unprivileged EAL arguments, the EAL as a gtest environment, frame builders, and the device conformance suite every backend runs. |
-| `cmake/` | `vcpkg-bootstrap.cmake` (the toolchain file), `dpdk.cmake`, test and library helpers. |
-| `triplets/` | The vcpkg overlay triplet every port is built with. |
-| `examples/`, `benchmarks/` | Living examples; benchmark targets as the stack grows. |
+| Path                                                                       | Contents                                                                                                                                           |
+|----------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------|
+| `common/<module>/`                                                         | Foundation modules. `core` holds the version and the execution alias; `utils` holds small header-only helpers with no dependencies.                |
+| `component/<module>/`                                                      | Stack modules: `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK).               |
+| `<module>/export/aloe/<module>`                                            | Umbrella header, no extension. Consumers write `#include <aloe/<module>>`.                                                                         |
+| `tests/unit_tests/`, `tests/integration_tests/`, `tests/functional_tests/` | One CTest label each.                                                                                                                              |
+| `tests/manual_tests/`                                                      | Label `manual`: tests that need privileges or hardware. Every test preset excludes the label; run the binary by hand.                              |
+| `tests/shared/`                                                            | Test helpers: the unprivileged EAL arguments, the EAL as a gtest environment, frame builders, and the device conformance suite every backend runs. |
+| `cmake/`                                                                   | `vcpkg-bootstrap.cmake` (the toolchain file), `dpdk.cmake`, test and library helpers.                                                              |
+| `triplets/`                                                                | The vcpkg overlay triplet every port is built with.                                                                                                |
+| `examples/`, `benchmarks/`                                                 | Living examples; benchmark targets as the stack grows.                                                                                             |
 
 Targets are named `Aloe.<Group>.<Module>` with an `Aloe::<Group>::<Module>`
 alias. Register tests with `add_unit_test`, `add_integration_test`,
@@ -68,7 +68,13 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - **Public headers define no macros.** Implementation details go in a nested
   `detail` namespace.
 - **Style.** `codestyle.md` covers what `.clang-format` does not: naming,
-  attributes, error handling, include order.
+  namespaces, parameters, attributes, error handling, include order.
+- **Namespaces.** Vocabulary every layer uses lives in `aloe`; a backend or a
+  helper collection gets a namespace named after its module (`aloe::fabric`,
+  `aloe::ethdev`, `aloe::utils`). There is no `aloe::core`.
+- **stdexec stays out of hot-path headers.** Only the runtime and the public
+  surface include `<aloe/core>`; a device or protocol header that needs a
+  helper takes it from `<aloe/utils>`.
 - **Error handling.** `std::expected` on hot paths, exceptions on setup and
   cold paths.
 

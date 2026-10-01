@@ -36,7 +36,7 @@ namespace {
         return rss;
     }
 
-    aloe::FlowTuple tuple(const Vector& vector, std::uint8_t protocol) {
+    aloe::FlowTuple tuple(const Vector& vector, const aloe::Ipv4Protocol protocol) {
         return {.source           = vector.source,
                 .destination      = vector.destination,
                 .source_port      = vector.source_port,
@@ -49,15 +49,15 @@ namespace {
 TEST(Rss, ToeplitzMatchesTheVerificationVectorsWithPorts) {
     const auto rss = microsoft_key_rss();
     for (const Vector& vector : vectors) {
-        EXPECT_EQ(aloe::flow_hash(rss, tuple(vector, aloe::ipv4_protocol_tcp)), vector.hash_4_tuple);
-        EXPECT_EQ(aloe::flow_hash(rss, tuple(vector, aloe::ipv4_protocol_udp)), vector.hash_4_tuple);
+        EXPECT_EQ(aloe::flow_hash(rss, tuple(vector, aloe::Ipv4Protocol::Tcp)), vector.hash_4_tuple);
+        EXPECT_EQ(aloe::flow_hash(rss, tuple(vector, aloe::Ipv4Protocol::Udp)), vector.hash_4_tuple);
     }
 }
 
 TEST(Rss, ToeplitzMatchesTheVerificationVectorsWithoutPorts) {
     const auto rss = microsoft_key_rss();
     for (const Vector& vector : vectors) {
-        EXPECT_EQ(aloe::flow_hash(rss, tuple(vector, aloe::ipv4_protocol_icmp)), vector.hash_2_tuple);
+        EXPECT_EQ(aloe::flow_hash(rss, tuple(vector, aloe::Ipv4Protocol::Icmp)), vector.hash_2_tuple);
     }
 }
 
@@ -65,41 +65,41 @@ TEST(Rss, TheFullKeyHashesIpv4TheSameAsTheFortyByteKey) {
     const auto full  = aloe::round_robin_rss(4);
     const auto forty = microsoft_key_rss();
     for (const Vector& vector : vectors) {
-        EXPECT_EQ(aloe::flow_hash(full, tuple(vector, aloe::ipv4_protocol_tcp)), vector.hash_4_tuple);
-        EXPECT_EQ(aloe::flow_hash(forty, tuple(vector, aloe::ipv4_protocol_tcp)), vector.hash_4_tuple);
+        EXPECT_EQ(aloe::flow_hash(full, tuple(vector, aloe::Ipv4Protocol::Tcp)), vector.hash_4_tuple);
+        EXPECT_EQ(aloe::flow_hash(forty, tuple(vector, aloe::Ipv4Protocol::Tcp)), vector.hash_4_tuple);
     }
 }
 
 TEST(Rss, FallsBackToTheTwoTupleWhenThePortTypeIsOff) {
     auto rss           = microsoft_key_rss();
     rss.types.ipv4_udp = false;
-    EXPECT_EQ(aloe::flow_hash(rss, tuple(vectors[0], aloe::ipv4_protocol_udp)), vectors[0].hash_2_tuple);
-    EXPECT_EQ(aloe::flow_hash(rss, tuple(vectors[0], aloe::ipv4_protocol_tcp)), vectors[0].hash_4_tuple);
+    EXPECT_EQ(aloe::flow_hash(rss, tuple(vectors[0], aloe::Ipv4Protocol::Udp)), vectors[0].hash_2_tuple);
+    EXPECT_EQ(aloe::flow_hash(rss, tuple(vectors[0], aloe::Ipv4Protocol::Tcp)), vectors[0].hash_4_tuple);
 }
 
 TEST(Rss, HashesZeroWhenNoTypeApplies) {
     auto rss  = microsoft_key_rss();
     rss.types = {};
-    EXPECT_EQ(aloe::flow_hash(rss, tuple(vectors[0], aloe::ipv4_protocol_tcp)), 0U);
+    EXPECT_EQ(aloe::flow_hash(rss, tuple(vectors[0], aloe::Ipv4Protocol::Tcp)), 0U);
     aloe::RssDescription disabled;
-    EXPECT_EQ(aloe::flow_hash(disabled, tuple(vectors[0], aloe::ipv4_protocol_tcp)), 0U);
+    EXPECT_EQ(aloe::flow_hash(disabled, tuple(vectors[0], aloe::Ipv4Protocol::Tcp)), 0U);
 }
 
 TEST(Rss, QueueForIndexesTheTableWithTheHash) {
     const auto rss = microsoft_key_rss();
     for (const Vector& vector : vectors) {
         const std::uint16_t expected = rss.table[vector.hash_4_tuple & (rss.table.size() - 1)];
-        EXPECT_EQ(aloe::queue_for(rss, tuple(vector, aloe::ipv4_protocol_tcp)), expected);
+        EXPECT_EQ(aloe::queue_for(rss, tuple(vector, aloe::Ipv4Protocol::Tcp)), expected);
         EXPECT_EQ(expected, vector.hash_4_tuple % 4) << "round robin table";
     }
 }
 
 TEST(Rss, QueueForIsZeroWhenSteeringIsOff) {
     aloe::RssDescription disabled;
-    EXPECT_EQ(aloe::queue_for(disabled, tuple(vectors[0], aloe::ipv4_protocol_tcp)), 0);
+    EXPECT_EQ(aloe::queue_for(disabled, tuple(vectors[0], aloe::Ipv4Protocol::Tcp)), 0);
     auto no_table = microsoft_key_rss();
     no_table.table.clear();
-    EXPECT_EQ(aloe::queue_for(no_table, tuple(vectors[0], aloe::ipv4_protocol_tcp)), 0);
+    EXPECT_EQ(aloe::queue_for(no_table, tuple(vectors[0], aloe::Ipv4Protocol::Tcp)), 0);
 }
 
 TEST(Rss, RoundRobinDescriptionSpreadsQueuesOverTheTable) {

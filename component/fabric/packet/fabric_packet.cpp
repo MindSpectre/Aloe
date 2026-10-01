@@ -75,7 +75,7 @@ namespace aloe::fabric {
         return capacity() - end_;
     }
 
-    std::optional<std::span<std::byte>> Packet::prepend(std::size_t count) noexcept {
+    std::optional<std::span<std::byte>> Packet::prepend(const std::size_t count) noexcept {
         if (block_ == nullptr || count > headroom()) {
             return std::nullopt;
         }
@@ -83,7 +83,7 @@ namespace aloe::fabric {
         return data().first(count);
     }
 
-    std::optional<std::span<std::byte>> Packet::append(std::size_t count) noexcept {
+    std::optional<std::span<std::byte>> Packet::append(const std::size_t count) noexcept {
         if (block_ == nullptr || count > tailroom()) {
             return std::nullopt;
         }
@@ -91,17 +91,17 @@ namespace aloe::fabric {
         return data().last(count);
     }
 
-    void Packet::trim_front(std::size_t count) noexcept {
+    void Packet::trim_front(const std::size_t count) noexcept {
         assert(count <= size());
         begin_ += std::min(count, size());
     }
 
-    void Packet::trim_back(std::size_t count) noexcept {
+    void Packet::trim_back(const std::size_t count) noexcept {
         assert(count <= size());
         end_ -= std::min(count, size());
     }
 
-    Pool::Pool(std::size_t count, std::size_t data_capacity)
+    Pool::Pool(const std::size_t count, const std::size_t data_capacity)
         : data_capacity_{data_capacity} {
         blocks_.reserve(count);
         free_.reserve(count);
