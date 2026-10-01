@@ -13,8 +13,8 @@ namespace aloe::fabric {
     Packet::Packet(Pool& pool, detail::Block& block) noexcept
         : pool_{&pool},
           block_{&block},
-          begin_{packet_headroom},
-          end_{packet_headroom} {
+          begin_{device::packet_headroom},
+          end_{device::packet_headroom} {
     }
 
     Packet::Packet(Packet&& other) noexcept
@@ -22,8 +22,8 @@ namespace aloe::fabric {
           block_{std::exchange(other.block_, nullptr)},
           begin_{std::exchange(other.begin_, 0)},
           end_{std::exchange(other.end_, 0)},
-          rx_{std::exchange(other.rx_, RxMetadata{})},
-          tx_{std::exchange(other.tx_, TxMetadata{})} {
+          rx_{std::exchange(other.rx_, device::RxMetadata{})},
+          tx_{std::exchange(other.tx_, device::TxMetadata{})} {
     }
 
     Packet& Packet::operator=(Packet&& other) noexcept {
@@ -33,8 +33,8 @@ namespace aloe::fabric {
             block_ = std::exchange(other.block_, nullptr);
             begin_ = std::exchange(other.begin_, 0);
             end_   = std::exchange(other.end_, 0);
-            rx_    = std::exchange(other.rx_, RxMetadata{});
-            tx_    = std::exchange(other.tx_, TxMetadata{});
+            rx_    = std::exchange(other.rx_, device::RxMetadata{});
+            tx_    = std::exchange(other.tx_, device::TxMetadata{});
         }
         return *this;
     }
@@ -105,7 +105,7 @@ namespace aloe::fabric {
         : data_capacity_{data_capacity} {
         blocks_.reserve(count);
         free_.reserve(count);
-        const std::size_t capacity = packet_headroom + data_capacity;
+        const std::size_t capacity = device::packet_headroom + data_capacity;
         for (std::size_t index = 0; index < count; ++index) {
             blocks_.push_back(detail::Block{.storage = std::make_unique<std::byte[]>(capacity), .capacity = capacity});
         }

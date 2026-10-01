@@ -10,7 +10,7 @@
 #include <string>
 #include <string_view>
 
-namespace aloe {
+namespace aloe::device {
     namespace detail {
         [[nodiscard]] constexpr std::optional<unsigned> hex_digit(const char character) noexcept {
             if (character >= '0' && character <= '9') {
@@ -199,18 +199,18 @@ namespace aloe {
     private:
         Bytes bytes_{};
     };
-}  // namespace aloe
+}  // namespace aloe::device
 
 template <>
-struct std::formatter<aloe::MacAddress> : std::formatter<std::string_view> {
-    auto format(const aloe::MacAddress& address, auto& context) const {
+struct std::formatter<aloe::device::MacAddress> : std::formatter<std::string_view> {
+    auto format(const aloe::device::MacAddress& address, auto& context) const {
         return std::formatter<std::string_view>::format(address.to_string(), context);
     }
 };
 
 template <>
-struct std::formatter<aloe::Ipv4Address> : std::formatter<std::string_view> {
-    auto format(const aloe::Ipv4Address& address, auto& context) const {
+struct std::formatter<aloe::device::Ipv4Address> : std::formatter<std::string_view> {
+    auto format(const aloe::device::Ipv4Address& address, auto& context) const {
         return std::formatter<std::string_view>::format(address.to_string(), context);
     }
 };

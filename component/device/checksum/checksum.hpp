@@ -11,7 +11,7 @@
 #include <bytes.hpp>
 #include <protocol.hpp>
 
-namespace aloe {
+namespace aloe::device {
 
     /**
      * @brief Adds the 16-bit big-endian words of `data` to a running ones-complement sum.
@@ -96,4 +96,4 @@ namespace aloe {
         return checksum_finish(checksum_add(pseudo, l4));
     }
 
-}  // namespace aloe
+}  // namespace aloe::device

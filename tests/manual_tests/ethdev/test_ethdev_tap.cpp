@@ -31,7 +31,7 @@
 namespace {
 
     constexpr std::string_view interface = "aloe-test";
-    constexpr aloe::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
+    constexpr aloe::device::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
     constexpr std::chrono::milliseconds patience{2000};
 
     const auto* const environment =
@@ -72,8 +72,8 @@ namespace {
             sockaddr_ll address{};
             address.sll_family  = AF_PACKET;
             address.sll_ifindex = index_;
-            address.sll_halen   = aloe::MacAddress::size;
-            std::memcpy(address.sll_addr, frame.data(), aloe::MacAddress::size);
+            address.sll_halen   = aloe::device::MacAddress::size;
+            std::memcpy(address.sll_addr, frame.data(), aloe::device::MacAddress::size);
             const ssize_t sent = sendto(
                 fd_, frame.data(), frame.size(), 0, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
             ASSERT_EQ(sent, static_cast<ssize_t>(frame.size())) << std::strerror(errno);
@@ -143,7 +143,7 @@ TEST(EthdevTap, FramesCrossBetweenTheKernelAndThePort) {
     ASSERT_NO_FATAL_FAILURE(kernel.send(inbound));
     EXPECT_TRUE(port_receives(port, inbound)) << "a frame written on the kernel side reaches the port";
 
-    const auto outbound = aloe::testing::ethernet_frame(aloe::MacAddress::broadcast(),
+    const auto outbound = aloe::testing::ethernet_frame(aloe::device::MacAddress::broadcast(),
                                                         port.mac(),
                                                         aloe::testing::ethertype_experimental,
                                                         aloe::testing::pattern(60, 2));

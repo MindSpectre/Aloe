@@ -334,7 +334,7 @@ uses `std::expected<T, std::variant<E1, E2, ...>>`; build failures with `std::un
 
 ```cpp
 // Receive path - called for every packet
-[[nodiscard]] aloe::task<std::expected<Segment, ReceiveError>>
+[[nodiscard]] aloe::core::task<std::expected<Segment, ReceiveError>>
 next_segment();
 
 // Tight loop processing
@@ -566,11 +566,13 @@ Consumers include the whole module via `#include <aloe/<module>>`:
 
 ### Which Namespace
 
-Vocabulary that every layer uses lives directly in `aloe`: the execution alias and the task type of `core`, the
-version, and the concepts, addresses, checksums and steering of `device`. A module whose names are its own, a
-backend or a collection of helpers, gets a namespace named after the module: `aloe::fabric`, `aloe::ethdev`,
-`aloe::utils`. There is no `aloe::core` for the same reason there is no `std::core`: its names are the ones
-written most, and `aloe::ex::just` reads better than `aloe::core::ex::just`.
+Every module gets a namespace named after it: `aloe::core`, `aloe::utils`, `aloe::device`, `aloe::fabric`,
+`aloe::ethdev`. A name says which module it comes from, so `aloe::core::ex::just`, `aloe::device::MacAddress`
+and `aloe::fabric::Port` need no lookup to place. Nothing is declared directly in `aloe`.
+
+Code in one module names another module's vocabulary through the module namespace, never through a
+using-directive: inside `aloe::fabric`, write `device::MacAddress`. Inside the module itself the names stay
+unqualified.
 
 ### Opening Style
 
@@ -704,8 +706,8 @@ need `#ifdef` guards:
 
 ## Coroutines and Senders
 
-Name the execution facilities through `<aloe/core>`: `aloe::ex::` for senders,
-receivers and schedulers, `aloe::task<T>` for coroutine tasks. Never spell
+Name the execution facilities through `<aloe/core>`: `aloe::core::ex::` for senders,
+receivers and schedulers, `aloe::core::task<T>` for coroutine tasks. Never spell
 `stdexec::` or `exec::` outside `common/core/execution/execution.hpp`. That
 header is the only place that changes when the standard library ships
 std::execution.

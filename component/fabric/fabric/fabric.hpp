@@ -25,7 +25,7 @@ namespace aloe::fabric {
     };
 
     struct PortConfig {
-        MacAddress mac;
+        device::MacAddress mac;
         std::uint16_t queues      = 1;
         std::uint16_t mtu         = 1500;
         std::size_t data_capacity = 2048;  ///< Bytes of data a packet holds; at least `mtu + 14`.
@@ -61,7 +61,7 @@ namespace aloe::fabric {
             return config_.queues;
         }
 
-        [[nodiscard]] MacAddress mac() const noexcept {
+        [[nodiscard]] device::MacAddress mac() const noexcept {
             return config_.mac;
         }
 
@@ -74,11 +74,11 @@ namespace aloe::fabric {
             return !queues_.empty();
         }
 
-        [[nodiscard]] const Capabilities& capabilities() const noexcept {
+        [[nodiscard]] const device::Capabilities& capabilities() const noexcept {
             return capabilities_;
         }
 
-        [[nodiscard]] const RssDescription& steering() const noexcept {
+        [[nodiscard]] const device::RssDescription& steering() const noexcept {
             return steering_;
         }
 
@@ -89,14 +89,14 @@ namespace aloe::fabric {
         [[nodiscard]] std::optional<Packet> allocate(std::uint16_t queue) noexcept;
         [[nodiscard]] std::size_t receive(std::uint16_t queue, std::span<Packet> out) noexcept;
         [[nodiscard]] std::size_t transmit(std::uint16_t queue, std::span<Packet> in) noexcept;
-        [[nodiscard]] QueueCounters counters(std::uint16_t queue) const noexcept;
+        [[nodiscard]] device::QueueCounters counters(std::uint16_t queue) const noexcept;
 
     private:
         friend class Fabric;
 
         struct PendingFrame {
             std::vector<std::byte> bytes;
-            RxMetadata rx;
+            device::RxMetadata rx;
         };
 
         struct Queue {
@@ -107,19 +107,19 @@ namespace aloe::fabric {
             mutable std::mutex mutex;
             std::deque<PendingFrame> pending;
             Pool pool;
-            QueueCounters counters;
+            device::QueueCounters counters;
         };
 
         /// Called by the fabric from the transmitting thread.
         void deliver(std::span<const std::byte> frame);
 
         void fill_checksums(Packet& packet) const noexcept;
-        [[nodiscard]] RxMetadata inspect(std::span<const std::byte> frame, std::uint16_t& queue) const noexcept;
+        [[nodiscard]] device::RxMetadata inspect(std::span<const std::byte> frame, std::uint16_t& queue) const noexcept;
 
         Fabric& fabric_;
         PortConfig config_;
-        Capabilities capabilities_;
-        RssDescription steering_;
+        device::Capabilities capabilities_;
+        device::RssDescription steering_;
         std::vector<std::unique_ptr<Queue>> queues_;
     };
 

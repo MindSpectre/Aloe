@@ -63,15 +63,15 @@ namespace aloe::fabric {
         void trim_front(std::size_t count) noexcept;
         void trim_back(std::size_t count) noexcept;
 
-        [[nodiscard]] RxMetadata rx() const noexcept {
+        [[nodiscard]] device::RxMetadata rx() const noexcept {
             return rx_;
         }
 
-        [[nodiscard]] TxMetadata tx() const noexcept {
+        [[nodiscard]] device::TxMetadata tx() const noexcept {
             return tx_;
         }
 
-        void set_tx(const TxMetadata& tx) noexcept {
+        void set_tx(const device::TxMetadata& tx) noexcept {
             tx_ = tx;
         }
 
@@ -81,7 +81,7 @@ namespace aloe::fabric {
 
         Packet(Pool& pool, detail::Block& block) noexcept;
 
-        void set_rx(const RxMetadata& rx) noexcept {
+        void set_rx(const device::RxMetadata& rx) noexcept {
             rx_ = rx;
         }
 
@@ -91,8 +91,8 @@ namespace aloe::fabric {
         detail::Block* block_ = nullptr;
         std::size_t begin_    = 0;
         std::size_t end_      = 0;
-        RxMetadata rx_;
-        TxMetadata tx_;
+        device::RxMetadata rx_;
+        device::TxMetadata tx_;
     };
 
     /**

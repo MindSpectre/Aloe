@@ -35,7 +35,7 @@ namespace aloe::ethdev {
             RTE_ETH_RSS_IPV4 | RTE_ETH_RSS_NONFRAG_IPV4_TCP | RTE_ETH_RSS_NONFRAG_IPV4_UDP;
 
         /// The largest MTU whose frames fit the data room of one mbuf of the port's pools.
-        constexpr std::uint16_t largest_mtu = RTE_MBUF_DEFAULT_DATAROOM - ethernet_header_size;
+        constexpr std::uint16_t largest_mtu = RTE_MBUF_DEFAULT_DATAROOM - device::ethernet_header_size;
 
         /// Toeplitz reads at most this much key for an IPv4 4-tuple.
         constexpr std::uint8_t smallest_usable_key = 16;
@@ -51,25 +51,25 @@ namespace aloe::ethdev {
             return result == -ENOTSUP;
         }
 
-        [[nodiscard]] RssHashTypes types_of(const std::uint64_t hash_functions) noexcept {
-            return RssHashTypes{.ipv4     = (hash_functions & RTE_ETH_RSS_IPV4) != 0,
-                                .ipv4_tcp = (hash_functions & RTE_ETH_RSS_NONFRAG_IPV4_TCP) != 0,
-                                .ipv4_udp = (hash_functions & RTE_ETH_RSS_NONFRAG_IPV4_UDP) != 0};
+        [[nodiscard]] device::RssHashTypes types_of(const std::uint64_t hash_functions) noexcept {
+            return device::RssHashTypes{.ipv4     = (hash_functions & RTE_ETH_RSS_IPV4) != 0,
+                                        .ipv4_tcp = (hash_functions & RTE_ETH_RSS_NONFRAG_IPV4_TCP) != 0,
+                                        .ipv4_udp = (hash_functions & RTE_ETH_RSS_NONFRAG_IPV4_UDP) != 0};
         }
 
-        [[nodiscard]] std::uint64_t hash_functions_of(const RssHashTypes& types) noexcept {
+        [[nodiscard]] std::uint64_t hash_functions_of(const device::RssHashTypes& types) noexcept {
             return (types.ipv4 ? RTE_ETH_RSS_IPV4 : 0) | (types.ipv4_tcp ? RTE_ETH_RSS_NONFRAG_IPV4_TCP : 0) |
                    (types.ipv4_udp ? RTE_ETH_RSS_NONFRAG_IPV4_UDP : 0);
         }
 
-        [[nodiscard]] Capabilities capabilities_of(const rte_eth_dev_info& info) noexcept {
+        [[nodiscard]] device::Capabilities capabilities_of(const rte_eth_dev_info& info) noexcept {
             const std::uint64_t rss_types = info.flow_type_rss_offloads & wanted_rss_types;
-            const bool rss                = rss_types != 0 && info.hash_key_size >= smallest_usable_key &&
-                                            info.hash_key_size <= rss_key_capacity &&
-                                            std::has_single_bit(info.reta_size);  // queue_for masks, as cards do
+            const bool rss = rss_types != 0 && info.hash_key_size >= smallest_usable_key &&
+                             info.hash_key_size <= device::rss_key_capacity &&
+                             std::has_single_bit(info.reta_size);  // device::queue_for masks, as cards do
             constexpr std::uint64_t rx_l4 = RTE_ETH_RX_OFFLOAD_UDP_CKSUM | RTE_ETH_RX_OFFLOAD_TCP_CKSUM;
             constexpr std::uint64_t tx_l4 = RTE_ETH_TX_OFFLOAD_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
-            return Capabilities{
+            return device::Capabilities{
                 .max_rx_queues    = info.max_rx_queues,
                 .max_tx_queues    = info.max_tx_queues,
                 .min_mtu          = info.min_mtu,
@@ -77,7 +77,7 @@ namespace aloe::ethdev {
                 .rss              = rss,
                 .rss_key_size     = rss ? info.hash_key_size : std::uint8_t{0},
                 .rss_table_size   = rss ? info.reta_size : std::uint16_t{0},
-                .rss_types        = rss ? types_of(rss_types) : RssHashTypes{},
+                .rss_types        = rss ? types_of(rss_types) : device::RssHashTypes{},
                 .rx_ipv4_checksum = (info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) != 0,
                 .rx_l4_checksum   = (info.rx_offload_capa & rx_l4) == rx_l4,
                 .tx_ipv4_checksum = (info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) != 0,
@@ -85,10 +85,10 @@ namespace aloe::ethdev {
             };
         }
 
-        [[nodiscard]] std::array<std::uint8_t, rss_key_capacity> key_bytes() noexcept {
-            std::array<std::uint8_t, rss_key_capacity> key{};
+        [[nodiscard]] std::array<std::uint8_t, device::rss_key_capacity> key_bytes() noexcept {
+            std::array<std::uint8_t, device::rss_key_capacity> key{};
             for (std::size_t index = 0; index < key.size(); ++index) {
-                key[index] = std::to_integer<std::uint8_t>(aloe_rss_key[index]);
+                key[index] = std::to_integer<std::uint8_t>(device::aloe_rss_key[index]);
             }
             return key;
         }
@@ -135,11 +135,11 @@ namespace aloe::ethdev {
             check(rte_eth_dev_get_mtu(port_id_, &mtu_), "rte_eth_dev_get_mtu");
             rte_ether_addr address{};
             check(rte_eth_macaddr_get(port_id_, &address), "rte_eth_macaddr_get");
-            MacAddress::Bytes bytes{};
+            device::MacAddress::Bytes bytes{};
             for (std::size_t index = 0; index < bytes.size(); ++index) {
                 bytes[index] = std::byte{address.addr_bytes[index]};
             }
-            mac_ = MacAddress{bytes};
+            mac_ = device::MacAddress{bytes};
             if (capabilities_.rss && config.queues > 1) {
                 program_rss(info);
             }
@@ -185,7 +185,7 @@ namespace aloe::ethdev {
     }
 
     void Port::program_rss(const rte_eth_dev_info& info) {
-        steering_ = round_robin_rss(queues_, info.reta_size, capabilities_.rss_key_size);
+        steering_ = device::round_robin_rss(queues_, info.reta_size, capabilities_.rss_key_size);
 
         // Some drivers take the key only through this call, not through configure.
         auto key = key_bytes();
@@ -229,10 +229,10 @@ namespace aloe::ethdev {
             check(table_query, "rte_eth_dev_rss_reta_query");
         }
 
-        std::array<std::uint8_t, rss_key_capacity> buffer{};
+        std::array<std::uint8_t, device::rss_key_capacity> buffer{};
         rte_eth_rss_conf programmed{};
         programmed.rss_key     = buffer.data();
-        programmed.rss_key_len = rss_key_capacity;
+        programmed.rss_key_len = device::rss_key_capacity;
         if (const int key_query = rte_eth_dev_rss_hash_conf_get(port_id_, &programmed); key_query == 0) {
             for (std::size_t index = 0; index < capabilities_.rss_key_size; ++index) {
                 steering_.key[index] = std::byte{buffer[index]};
@@ -291,11 +291,11 @@ namespace aloe::ethdev {
         std::array<rte_mbuf*, max_burst> burst{};
         const auto wanted       = static_cast<std::uint16_t>(std::min(out.size(), max_burst));
         const std::uint16_t got = rte_eth_rx_burst(port_id_, queue, burst.data(), wanted);
-        const std::size_t limit = static_cast<std::size_t>(mtu_) + ethernet_header_size;
+        const std::size_t limit = static_cast<std::size_t>(mtu_) + device::ethernet_header_size;
         std::size_t count       = 0;
         for (std::uint16_t index = 0; index < got; ++index) {
             rte_mbuf* mbuf = burst[index];
-            if (mbuf->nb_segs != 1 || mbuf->pkt_len > limit || mbuf->pkt_len < ethernet_header_size) {
+            if (mbuf->nb_segs != 1 || mbuf->pkt_len > limit || mbuf->pkt_len < device::ethernet_header_size) {
                 rte_pktmbuf_free(mbuf);
                 ++counters_[queue].oversized;
                 continue;
@@ -316,7 +316,7 @@ namespace aloe::ethdev {
         std::array<rte_mbuf*, max_burst> burst{};
         std::array<std::size_t, max_burst> slot_of{};
         const std::size_t offered = std::min(in.size(), max_burst);
-        const std::size_t limit   = static_cast<std::size_t>(mtu_) + ethernet_header_size;
+        const std::size_t limit   = static_cast<std::size_t>(mtu_) + device::ethernet_header_size;
         std::uint16_t pending     = 0;
 
         // Hands what is pending to the driver. Returns the first slot left with the caller, if any.
@@ -336,7 +336,7 @@ namespace aloe::ethdev {
             if (packet.empty()) {
                 continue;
             }
-            if (packet.size() < ethernet_header_size || packet.size() > limit) {
+            if (packet.size() < device::ethernet_header_size || packet.size() > limit) {
                 // Refused and counted, in order: what came before it is sent first, and if the
                 // driver leaves some of that with the caller, this packet stays untouched too.
                 if (const auto rest = flush()) {
@@ -356,7 +356,7 @@ namespace aloe::ethdev {
         return offered;
     }
 
-    QueueCounters Port::counters(const std::uint16_t queue) const noexcept {
+    device::QueueCounters Port::counters(const std::uint16_t queue) const noexcept {
         assert(queue < queues_);
         return counters_[queue];
     }

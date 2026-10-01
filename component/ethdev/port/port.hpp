@@ -54,7 +54,7 @@ namespace aloe::ethdev {
             return queues_;
         }
 
-        [[nodiscard]] MacAddress mac() const noexcept {
+        [[nodiscard]] device::MacAddress mac() const noexcept {
             return mac_;
         }
 
@@ -64,11 +64,11 @@ namespace aloe::ethdev {
 
         [[nodiscard]] bool link_up() const noexcept;
 
-        [[nodiscard]] const Capabilities& capabilities() const noexcept {
+        [[nodiscard]] const device::Capabilities& capabilities() const noexcept {
             return capabilities_;
         }
 
-        [[nodiscard]] const RssDescription& steering() const noexcept {
+        [[nodiscard]] const device::RssDescription& steering() const noexcept {
             return steering_;
         }
 
@@ -78,7 +78,7 @@ namespace aloe::ethdev {
 
         /// Read from the queue's own thread. `dropped` stays zero: DPDK reports receive-ring
         /// overruns per port, in `rte_eth_stats`, not per queue.
-        [[nodiscard]] QueueCounters counters(std::uint16_t queue) const noexcept;
+        [[nodiscard]] device::QueueCounters counters(std::uint16_t queue) const noexcept;
 
         [[nodiscard]] std::uint16_t port_id() const noexcept {
             return port_id_;
@@ -99,12 +99,12 @@ namespace aloe::ethdev {
         std::uint16_t mtu_     = 0;
         bool owned_            = false;
         bool started_          = false;
-        MacAddress mac_;
+        device::MacAddress mac_;
         std::string driver_;
-        Capabilities capabilities_;
-        RssDescription steering_;
+        device::Capabilities capabilities_;
+        device::RssDescription steering_;
         std::vector<rte_mempool*> pools_;
-        std::vector<QueueCounters> counters_;
+        std::vector<device::QueueCounters> counters_;
     };
 
 }  // namespace aloe::ethdev

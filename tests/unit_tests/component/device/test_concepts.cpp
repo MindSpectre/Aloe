@@ -56,22 +56,22 @@ namespace {
         void trim_back(std::size_t count) noexcept {
             end_ -= std::min(count, size());
         }
-        [[nodiscard]] aloe::RxMetadata rx() const noexcept {
+        [[nodiscard]] aloe::device::RxMetadata rx() const noexcept {
             return rx_;
         }
-        [[nodiscard]] aloe::TxMetadata tx() const noexcept {
+        [[nodiscard]] aloe::device::TxMetadata tx() const noexcept {
             return tx_;
         }
-        void set_tx(const aloe::TxMetadata& tx) noexcept {
+        void set_tx(const aloe::device::TxMetadata& tx) noexcept {
             tx_ = tx;
         }
 
     private:
-        std::vector<std::byte> storage_ = std::vector<std::byte>(aloe::packet_headroom + 64);
-        std::size_t begin_              = aloe::packet_headroom;
-        std::size_t end_                = aloe::packet_headroom;
-        aloe::RxMetadata rx_;
-        aloe::TxMetadata tx_;
+        std::vector<std::byte> storage_ = std::vector<std::byte>(aloe::device::packet_headroom + 64);
+        std::size_t begin_              = aloe::device::packet_headroom;
+        std::size_t end_                = aloe::device::packet_headroom;
+        aloe::device::RxMetadata rx_;
+        aloe::device::TxMetadata tx_;
     };
 
     class FakeDevice {
@@ -81,7 +81,7 @@ namespace {
         [[nodiscard]] std::uint16_t queue_count() const noexcept {
             return static_cast<std::uint16_t>(counters_.size());
         }
-        [[nodiscard]] aloe::MacAddress mac() const noexcept {
+        [[nodiscard]] aloe::device::MacAddress mac() const noexcept {
             return mac_;
         }
         [[nodiscard]] std::uint16_t mtu() const noexcept {
@@ -90,10 +90,10 @@ namespace {
         [[nodiscard]] bool link_up() const noexcept {
             return steering_.enabled;
         }
-        [[nodiscard]] const aloe::Capabilities& capabilities() const noexcept {
+        [[nodiscard]] const aloe::device::Capabilities& capabilities() const noexcept {
             return capabilities_;
         }
-        [[nodiscard]] const aloe::RssDescription& steering() const noexcept {
+        [[nodiscard]] const aloe::device::RssDescription& steering() const noexcept {
             return steering_;
         }
         [[nodiscard]] std::optional<Packet> allocate(std::uint16_t queue) noexcept {
@@ -111,48 +111,48 @@ namespace {
             counters_[queue].transmitted += in.size();
             return in.size();
         }
-        [[nodiscard]] aloe::QueueCounters counters(std::uint16_t queue) const noexcept {
+        [[nodiscard]] aloe::device::QueueCounters counters(std::uint16_t queue) const noexcept {
             return counters_[queue];
         }
 
     private:
-        aloe::MacAddress mac_{0x02, 0, 0, 0, 0, 1};
-        aloe::Capabilities capabilities_{.max_mtu = 1500};
-        aloe::RssDescription steering_;
-        std::array<aloe::QueueCounters, 1> counters_{};
+        aloe::device::MacAddress mac_{0x02, 0, 0, 0, 0, 1};
+        aloe::device::Capabilities capabilities_{.max_mtu = 1500};
+        aloe::device::RssDescription steering_;
+        std::array<aloe::device::QueueCounters, 1> counters_{};
         std::size_t allocated_ = 0;
     };
 
     struct NotAPacket {};
 
-    static_assert(aloe::IsPacket<FakePacket>);
-    static_assert(!aloe::IsPacket<NotAPacket>);
-    static_assert(aloe::IsDevice<FakeDevice>);
-    static_assert(!aloe::IsDevice<NotAPacket>);
+    static_assert(aloe::device::IsPacket<FakePacket>);
+    static_assert(!aloe::device::IsPacket<NotAPacket>);
+    static_assert(aloe::device::IsDevice<FakeDevice>);
+    static_assert(!aloe::device::IsDevice<NotAPacket>);
 
 }  // namespace
 
 TEST(Concepts, MetadataDefaultsToUnknown) {
-    constexpr aloe::RxMetadata rx;
+    constexpr aloe::device::RxMetadata rx;
     static_assert(!rx.rss_hash.has_value());
-    static_assert(rx.l3 == aloe::ChecksumVerdict::Unknown);
-    static_assert(rx.l4 == aloe::ChecksumVerdict::Unknown);
+    static_assert(rx.l3 == aloe::device::ChecksumVerdict::Unknown);
+    static_assert(rx.l4 == aloe::device::ChecksumVerdict::Unknown);
 
-    constexpr aloe::TxMetadata tx;
+    constexpr aloe::device::TxMetadata tx;
     static_assert(!tx.fill_ipv4_checksum);
-    static_assert(tx.fill_l4_checksum == aloe::L4Checksum::None);
-    static_assert(aloe::packet_headroom == 128);
+    static_assert(tx.fill_l4_checksum == aloe::device::L4Checksum::None);
+    static_assert(aloe::device::packet_headroom == 128);
     SUCCEED();
 }
 
 TEST(Concepts, TheFakePacketGrowsAndShrinksAsTheConceptDescribes) {
     FakePacket packet;
     EXPECT_EQ(packet.size(), 0);
-    EXPECT_EQ(packet.headroom(), aloe::packet_headroom);
+    EXPECT_EQ(packet.headroom(), aloe::device::packet_headroom);
     ASSERT_TRUE(packet.append(10).has_value());
     ASSERT_TRUE(packet.prepend(14).has_value());
     EXPECT_EQ(packet.size(), 24);
-    EXPECT_FALSE(packet.prepend(aloe::packet_headroom).has_value());
+    EXPECT_FALSE(packet.prepend(aloe::device::packet_headroom).has_value());
     packet.trim_front(14);
     packet.trim_back(10);
     EXPECT_EQ(packet.size(), 0);

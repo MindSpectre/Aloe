@@ -8,7 +8,7 @@
 #include <eal_environment.hpp>
 #include <gtest/gtest.h>
 
-static_assert(aloe::IsDevice<aloe::ethdev::Port>);
+static_assert(aloe::device::IsDevice<aloe::ethdev::Port>);
 
 TEST(EthdevNull, ReportsCapabilitiesAndRoundRobinSteering) {
     const aloe::ethdev::Port port{
@@ -19,19 +19,19 @@ TEST(EthdevNull, ReportsCapabilitiesAndRoundRobinSteering) {
     EXPECT_EQ(port.mtu(), 1500);
     EXPECT_TRUE(port.link_up());
 
-    const aloe::Capabilities& capabilities = port.capabilities();
+    const aloe::device::Capabilities& capabilities = port.capabilities();
     EXPECT_TRUE(capabilities.rss);
     EXPECT_EQ(capabilities.rss_key_size, 40);
     EXPECT_EQ(capabilities.rss_table_size, 128);
-    EXPECT_EQ(capabilities.rss_types, (aloe::RssHashTypes{.ipv4 = true, .ipv4_tcp = true, .ipv4_udp = true}));
+    EXPECT_EQ(capabilities.rss_types, (aloe::device::RssHashTypes{.ipv4 = true, .ipv4_tcp = true, .ipv4_udp = true}));
     EXPECT_FALSE(capabilities.rx_ipv4_checksum);
     EXPECT_FALSE(capabilities.tx_ipv4_checksum);
 
-    const aloe::RssDescription& steering = port.steering();
+    const aloe::device::RssDescription& steering = port.steering();
     EXPECT_TRUE(steering.enabled);
     EXPECT_EQ(steering.key_length, 40);
     for (std::size_t index = 0; index < 40; ++index) {
-        EXPECT_EQ(steering.key[index], aloe::aloe_rss_key[index]) << "key byte " << index;
+        EXPECT_EQ(steering.key[index], aloe::device::aloe_rss_key[index]) << "key byte " << index;
     }
     EXPECT_EQ(steering.types, capabilities.rss_types);
     ASSERT_EQ(steering.table.size(), 128);
@@ -57,7 +57,7 @@ TEST(EthdevNull, ReceivesGeneratedFramesAndTransmitsIntoTheVoid) {
     EXPECT_EQ(received, 8) << "the null driver generates a frame per slot";
     for (std::size_t index = 0; index < received; ++index) {
         EXPECT_EQ(burst[index].size(), 64) << "the driver's default frame size";
-        EXPECT_EQ(burst[index].headroom(), aloe::packet_headroom);
+        EXPECT_EQ(burst[index].headroom(), aloe::device::packet_headroom);
     }
     EXPECT_EQ(port.transmit(0, std::span{burst}.first(received)), received);
     for (std::size_t index = 0; index < received; ++index) {

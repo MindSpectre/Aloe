@@ -19,26 +19,26 @@ them on top of it.
 
 ### Concepts, in `device`
 
-- **`aloe::IsPacket`** -- a move-only owning handle over one contiguous buffer laid out as headroom,
+- **`aloe::device::IsPacket`** -- a move-only owning handle over one contiguous buffer laid out as headroom,
   data, tailroom. `data()` is a byte span; `prepend` and `append` grow into the room and return the
   new bytes, or nothing when the room is too small; `trim_front` and `trim_back` shrink. `rx()`
   gives the `RxMetadata` the device filled on receive, `tx()` and `set_tx()` the `TxMetadata` the
   device reads on transmit. A default-constructed or moved-from packet is `empty()`. Every backend
-  gives a fresh packet `aloe::packet_headroom`, 128 bytes, of headroom.
-- **`aloe::IsDevice`** -- one port with N queues, queue i for shard i. `allocate(queue)`,
+  gives a fresh packet `aloe::device::packet_headroom`, 128 bytes, of headroom.
+- **`aloe::device::IsDevice`** -- one port with N queues, queue i for shard i. `allocate(queue)`,
   `receive(queue, out)` and `transmit(queue, in)` are the hot path and never throw.
   `capabilities()` reports what the device can do, `steering()` the receive-side scaling in effect,
   `counters(queue)` what happened. `mac()`, `mtu()` and `link_up()` describe the port.
-- **`aloe::Capabilities`** -- queue and MTU limits, whether the device hashes and steers, and which
+- **`aloe::device::Capabilities`** -- queue and MTU limits, whether the device hashes and steers, and which
   checksum offloads it verifies on receive or fills on transmit. Anything absent gets its software
   fallback in the stack above, never inside the device.
-- **`aloe::RssDescription`**, **`aloe::FlowTuple`**, **`aloe::queue_for`** -- the steering rule.
+- **`aloe::device::RssDescription`**, **`aloe::device::FlowTuple`**, **`aloe::device::queue_for`** -- the steering rule.
   `queue_for(description, flow)` is a pure function of what the device reports, so the runtime can
-  predict which queue any flow lands on. `aloe::toeplitz_hash` is the hash cards compute.
-- **`aloe::MacAddress`**, **`aloe::Ipv4Address`** -- value types with parsing and formatting.
-- **`aloe::Ipv4Protocol`** -- the IPv4 protocol number as a type: `Icmp`, `Tcp`, `Udp` named, any other
+  predict which queue any flow lands on. `aloe::device::toeplitz_hash` is the hash cards compute.
+- **`aloe::device::MacAddress`**, **`aloe::device::Ipv4Address`** -- value types with parsing and formatting.
+- **`aloe::device::Ipv4Protocol`** -- the IPv4 protocol number as a type: `Icmp`, `Tcp`, `Udp` named, any other
   byte still representable. A `FlowTuple` carries it as `std::optional`, absent for a fragment.
-- **`aloe::internet_checksum`** and friends -- the Internet checksum, the IPv4 header checksum,
+- **`aloe::device::internet_checksum`** and friends -- the Internet checksum, the IPv4 header checksum,
   and the IPv4 pseudo-header sum that transmit checksum offload starts from.
 
 ### Backends
@@ -62,7 +62,7 @@ backend. This moves a frame through a fabric port and back:
 ```cpp
 #include <aloe/fabric>
 
-template <aloe::IsDevice Device>
+template <aloe::device::IsDevice Device>
 std::size_t echo(Device& device, std::span<const std::byte> frame) {
     auto packet = device.allocate(0);
     if (!packet) {
@@ -76,7 +76,7 @@ std::size_t echo(Device& device, std::span<const std::byte> frame) {
 
 int main() {
     aloe::fabric::Fabric fabric;
-    aloe::fabric::Port& port = fabric.add_port({.mac = aloe::MacAddress{0x02, 0, 0, 0, 0, 1}});
+    aloe::fabric::Port& port = fabric.add_port({.mac = aloe::device::MacAddress{0x02, 0, 0, 0, 0, 1}});
     // build a frame addressed to port.mac() ...
 }
 ```
@@ -93,7 +93,7 @@ echo(port, frame);
 ```
 
 Transmit checksum offload follows DPDK's convention on both backends: before asking the device to
-fill the L4 checksum, write the IPv4 pseudo-header sum (`aloe::ipv4_pseudo_header_sum`) into the
+fill the L4 checksum, write the IPv4 pseudo-header sum (`aloe::device::ipv4_pseudo_header_sum`) into the
 checksum field and zero into the IPv4 checksum field, then set `TxMetadata` with the header lengths
 and the fills wanted. Ask only for what `capabilities()` offers.
 
