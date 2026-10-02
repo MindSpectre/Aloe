@@ -1,6 +1,8 @@
 # Shard runtime
 
-Status: draft for the author's review, 2026-10-02. Spec 2 of the four that lead to
+Status: approved by the author on 2026-10-02 ("write the plan"), amended the same day
+with the spot-check findings listed under "Findings from the spot checks". The plan is
+`docs/superpowers/plans/2026-10-02-shard-runtime.md`. Spec 2 of the four that lead to
 minimal TCP, and the last piece of roadmap phase 0. Tracks GitHub issue #4
 `[RUNTIME]`. The device layer (spec 1, PRs #2 and #3) is merged on `main` and is what
 this builds on. Everything under "Open questions" is left for the plan or for a later
@@ -122,13 +124,15 @@ Header basenames stay unique across the repository. `task_scope.hpp` and
   core, and the level. The destructor flushes and stops the backend.
 - `Logger`: a small handle, obtained from `logger(std::string_view name)`, for
   instance `"aloe.runtime"`.
-- `log<Level, "format">(logger, args...)` plus per-level helpers
-  `info<"format">(logger, args...)` and friends. The format string is a
-  `utils::FixedString` template parameter, so each call site owns one
+- `Logger::log<Level, "format">(args...)` plus per-level members,
+  `log.info<"format">(args...)` and friends, `set_level` and `flush`. The format string
+  is a `utils::FixedString` template parameter, so each call site owns one
   `static constexpr` metadata object as quill's macros would, and the public header
   defines no macro. Source location is not recorded; the logger name says where a
   line came from. Calls are cold-path only by convention; nothing in the runtime
   logs inside a tick.
+- `LoggingConfig`: the level, the backend thread's CPU, and an optional file to write
+  instead of the console, which is how the logging test reads what was logged.
 
 `utils` gains `fixed_string.hpp` with `FixedString<N>`, a structural type usable as a
 template parameter. Core links `Aloe::Common::Utils`.
@@ -182,8 +186,8 @@ needs.
 ### Timer wheel
 
 A hierarchical wheel, four levels of 256 slots, resolution set at construction, one
-millisecond by default. Four levels at one millisecond cover about fifty days, so
-nothing TCP arms falls off the end. Memory is 1024 slot heads, 16 KB.
+millisecond by default. Four levels at one millisecond cover about fifty days before a
+timer has to wait at the horizon, so nothing TCP arms is ever far out. Memory is 1024 slot heads, 16 KB.
 
 ```cpp
 struct Timer {
@@ -202,7 +206,10 @@ struct Timer {
   `now`, in slot order, timers in one slot in arm order, cascading higher levels down
   as the lower ones wrap. A timer fires on the first `advance` whose stamp reaches it,
   so lateness is bounded by one resolution plus the gap between ticks.
-- `armed(const Timer&)`, `pending()` for tests and counters.
+- `pending()` for tests and counters; `Timer::armed()` on the node.
+- A deadline more than 2^32 ticks out is placed at the horizon and re-placed at each
+  cascade until its real tick is within reach, so it fires at its deadline, late by
+  nothing more than any other timer.
 
 The node owner keeps the node alive while armed, or cancels it first; the destructor
 of an armed `Timer` asserts in debug builds.
@@ -212,16 +219,19 @@ of an armed `Timer` asserts in debug builds.
 `TaskScope` is shaped like the standard's `counting_scope`, `spawn` and `join`,
 without atomics because one thread uses it.
 
-- `spawn(Sender&&)`: shard thread only. Allocates the operation state, the one
+- `spawn(Sender&&, Env)`: shard thread only. Allocates the operation state, the one
   allocation per task until the arena arrives in phase 1, connects it to a receiver
-  whose environment answers `get_stop_token` with the scope's token and
-  `get_scheduler` with the shard's `Scheduler`, and starts it. On completion the
+  whose environment answers `get_stop_token` with the scope's token and forwards
+  every other query to `Env`, and starts it. The scope knows nothing of schedulers;
+  `Scheduler::spawn(sender)` is what code calls, and it passes an environment that
+  answers `get_scheduler` and `get_start_scheduler` with the shard's `Scheduler`.
+  The allocator of phase 1 arrives the same way, as a query of that environment. On completion the
   state is freed and counted: value, stopped, or error. An error completion is logged
   at `Error` with the exception text, counted as failed, and does not take the shard
   down.
 - `request_stop()`: trips the scope's `inplace_stop_source`. Every spawn afterwards
   starts with stop already requested.
-- `size()`, `empty()`.
+- `size()`, `empty()`, `stop_token()`.
 - `join()`: a sender that completes when the scope becomes empty. The shard's drain
   reads `empty()` directly; `join` is for tests and for code that wants to wait inside
   a task.
@@ -280,6 +290,9 @@ that concept. `now()` returns the tick stamp.
   exports, so a task awaiting them wraps nothing around them. They also answer
   `get_completion_scheduler<set_value_t>` with the `Scheduler`.
 
+- **`spawn(sender)`.** Shard thread only: spawns into the context's scope with this
+  scheduler in the environment. The one way to start a shard task.
+
 `Scheduler` reports a forward progress guarantee of `parallel`, as `run_loop` does.
 
 ## The shard task
@@ -307,8 +320,10 @@ shard, as today.
 ### ShardQueue
 
 `ShardQueue<Device>` is the stack's only view of the device: `allocate()`,
-`transmit(Packet&&)`, `index()`, and the device's facts, `mac()`, `mtu()`,
-`capabilities()`, `steering()`, `queue_count()`. It owns a bounded transmit ring of
+`transmit(Packet&&)`, `receive(span)` for the shard, `index()`, and the device's
+facts, `mac()`, `mtu()`, `capabilities()`, `steering()`, `queue_count()`. `discard()`
+drops what the device will not take and counts it refused; the shard calls it once,
+after the last flush at drain. It owns a bounded transmit ring of
 packets, `ShardConfig::transmit_ring` deep. `transmit` appends; when the ring is full
 it flushes to the device first and retries once; if the device still refuses it
 returns `false` and the caller keeps the packet. That `false` is the backpressure
@@ -332,9 +347,12 @@ else, timers, tasks, scheduling, the stack does through the context. The stack i
 destroyed before the queue and the context, so its armed timers and spawned tasks
 must be gone by then, which the drain guarantees.
 
-The only stack in this spec is the test's Ethernet echo: swap the MAC addresses,
-write the shard index into the last bytes of the payload, transmit. Phase 1's
-Ethernet and IPv4 layer fills the same slot.
+The only stack in this spec is the test's Ethernet echo: for a frame addressed to the
+port's own MAC, swap the addresses, write the shard index into the last two bytes of
+the payload, transmit; leave everything else for the shard to free. The address
+filter is what lets the echo terminate on a loopback device such as `net_ring`, where
+its own reply comes back addressed to the peer. Phase 1's Ethernet and IPv4 layer
+fills the same slot.
 
 ### Tick
 
@@ -574,6 +592,42 @@ Each becomes a test or a finding that amends this spec.
    `-l 0`, and mbuf allocation on that thread works.
 6. The echo over `net_ring` with four queues sees every frame on its own queue.
 7. The thread tests pass under `tsan` and the whole suite under `asan`.
+
+## Findings from the spot checks
+
+On 2026-10-02, after the design session, two throwaway probes checked the uncertain
+claims against the installed headers with the project's warning set on clang 22 and
+GCC 16. The implementation plan carries the details; what changed the spec:
+
+1. **The task never wraps shard senders in `affine`, by one attribute.** stdexec's
+   P3552 task inspects the attributes of its *scheduler's own `schedule()` sender*: if
+   `exec::get_completion_behavior_t<set_value_t>` answers
+   `exec::completion_behavior::asynchronous_affine`, every awaited sender is passed to
+   `as_awaitable` directly. So the mechanism is an attribute on the scheduler's
+   senders, aliased through core, and no customisation of `affine` is needed. Proven
+   by a parent and child task awaiting one `schedule()` and two timers: one run-queue
+   push, two timer arms, nothing else.
+2. **The environment that starts a task must answer `get_start_scheduler`.** That is
+   stdexec's P3552 spelling of the query, next to `start_scheduler_type` in the
+   environment type; both spellings are confined to core and the scheduler's
+   `SchedulerEnv`. Answering `get_scheduler` too keeps `read_env(get_scheduler)` working.
+3. **`stdexec::get_completion_behavior` is deprecated** and fails under `-Werror`;
+   core aliases the `exec::` spelling from `<exec/completion_behavior.hpp>`.
+4. **The default-environment `core::task` still runs under `sync_wait`**, so the
+   existing execution tests keep passing after the re-alias.
+5. **The macro-free quill wrapper works** on both compilers with the format string as
+   a `FixedString` template parameter and one `static constexpr quill::MacroMetadata`
+   per instantiation, calling `quill::Logger::log_statement<false>`. The wrapper's
+   logging functions are members of `Logger`, `log.info<"...">(args...)`, rather than
+   the free functions the first draft described.
+6. **The scope takes an environment, the scheduler supplies it.** `TaskScope::spawn`
+   knows nothing of schedulers; `Scheduler::spawn` passes the environment. This
+   removes a header cycle between the scope and the scheduler and is where phase 1's
+   allocator query will go.
+7. **The echo filters by destination address**, so the loopback tests terminate.
+
+Claims 5 to 7 of "Claims the prototype must prove", `rte_thread_register` on a shard
+thread, the ring echo and the sanitizer runs, are left to the plan's Tasks 13, 12 and 16.
 
 ## Risks
 
