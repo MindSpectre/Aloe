@@ -6,5 +6,6 @@
  * Aloe::Component::Runtime and write `#include <aloe/runtime>`.
  */
 
+#include <inbox.hpp>
 #include <run_queue.hpp>
 #include <work.hpp>

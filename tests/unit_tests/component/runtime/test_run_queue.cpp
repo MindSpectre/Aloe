@@ -18,7 +18,7 @@ namespace {
         }
 
         static void execute(aloe::runtime::Work& work) noexcept {
-            auto& self = static_cast<Recorder&>(work);  // NOLINT(cppcoreguidelines-pro-type-static-cast-downcast)
+            auto& self = static_cast<Recorder&>(work);
             self.record_->push_back(self.id_);
             if (self.requeue_ != nullptr) {
                 aloe::runtime::RunQueue* queue = self.requeue_;
@@ -55,7 +55,7 @@ TEST(RunQueue, RunsInPushOrderAndTakeEmptiesIt) {
     EXPECT_EQ(queue.take(), nullptr);
 }
 
-// Review Focus 1: work that re-pushes itself runs on the next step, not in the same chain.
+// Work that re-pushes itself runs on the next step, not in the same chain.
 TEST(RunQueue, WorkPushedWhileAChainRunsWaitsForTheNextTake) {
     aloe::runtime::RunQueue queue;
     std::vector<int> record;
