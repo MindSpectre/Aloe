@@ -42,6 +42,7 @@ Nothing in this plan was built end to end. The author asked for the plan without
 | A stop requested on the scope's stop source while the task is parked on a timer completes the task stopped. | Proven, with a timer sender that checks the token when it fires. The real timer sender adds a stop callback that cancels the timer early; the pattern is standard and Task 8 tests it. |
 | `ex::task<int>` with the default environment still runs under `ex::sync_wait`. | Proven. The existing tests in `test_execution.cpp` keep passing once `core::task` aliases `stdexec::task`. |
 | A macro-free quill wrapper with the format string as a `FixedString` template parameter, one `static constexpr quill::MacroMetadata` per instantiation, calling `quill::Logger::log_statement<false>`. | Proven. Both compilers accept it; both lines came out on the console with the logger name and level. |
+| quill 13.0.0, installed by the reconfigure at review time on 2026-10-02, has what Task 2 calls: `Logger::log_statement<bool, Args...>(MacroMetadata const*, Args&&...)`, `LoggerBase::should_log_statement<LogLevel>()`, `LoggerBase::set_log_level`, the six-argument `constexpr MacroMetadata` constructor with `Event::Log`, `BackendOptions::cpu_affinity` as `std::vector<uint16_t>`, `FileSinkConfig::set_open_mode(char)`, `Backend::start`, `stop` and `is_running`, `Frontend::create_or_get_sink<TSink>` and `create_or_get_logger(name, sink)`. | Checked against the headers, not compiled. `Logger::flush_log` spins until the backend acknowledges, so `core::Logger::flush` with no `Logging` alive never returns. |
 
 What the probes established about the exact mechanism, which the spec left to the prototype:
 
@@ -79,6 +80,11 @@ Configure, build and test presets share names: `debug`, `gcc-debug`, `asan`, `ts
 - `stdexec::get_completion_behavior` is deprecated and fails under `-Werror`; the `exec::` spelling in `<exec/completion_behavior.hpp>` is the one to alias.
 - `std::atomic` members make a type immovable. `Work` has one, so every operation state that derives from it is immovable, which is what stdexec requires of operation states anyway. Containers of such types use `std::unique_ptr` or `std::deque` with `emplace_back` and no reallocation moves.
 - clang-tidy's `cppcoreguidelines-pro-type-member-init` wants every member initialised; give members default member initialisers. `performance-unnecessary-value-param` fires on by-value parameters of non-trivial types that are only read; take those by `const&`.
+- clang-tidy's `readability-make-member-function-const` fires on a member that only writes through a pointer member, such as `ShardQueue::allocate` and `receive`, `Runtime::shard` and `spawn`, or a test wrapper that forwards to a port. Call `utils::force_non_const(this)` first, as `ethdev::Packet` does; never make such a function `const` to please the check.
+- clang-tidy's `readability-convert-member-functions-to-static` fires on a `query` member that never touches `this`, such as the completion-behaviour and forward-progress answers. Make those `static`; stdexec calls `env.query(tag)`, which a static member satisfies.
+- With `ShardEnvironment` the task awaits every sender directly, with no `affine` wrap, including one that completes on another thread. A shard task awaits only its own shard's senders and child tasks (spec, threading contract rule 4); the scope's owner assertion catches a task that ends elsewhere.
+- PR CI (`.github/workflows/pr-testing.yaml`) builds the `ci` preset only: Release, clang, examples off, asserts out. `gcc-debug`, `asan`, `tsan` and the example build are local gates; run them before the PR, CI will not.
+- `core::Logger::flush` spins forever when no `Logging` is alive: quill's `flush_log` waits for the backend to acknowledge. Flush only in code that owns or runs under a `Logging`.
 
 **Where things are.** Module layout and target names are in `AGENTS.md`. Test registration helpers are `add_unit_test`, `add_integration_test` and `add_manual_test` from `cmake/tests.cmake`, with the target name variables `${UNIT_TESTING_TARGET}`, `${INTEGRATION_TESTING_TARGET}`, `${MANUAL_TESTING_TARGET}`, `${SHARED_TESTING_TARGET}` and the gtest libraries in `${TEST_LIBS}`, all set in `tests/CMakeLists.txt`. Frame builders are in `tests/shared/device/frames.hpp`: `ethernet_frame(destination, source, ethertype, payload)`, `ipv4_frame(Ipv4Spec, payload)`, `flow_of(Ipv4Spec)`, `fill(packet, frame)`, `bytes_of(packet)`, `pattern(length)`, and `ethertype_experimental`. Steering is predicted with `aloe::device::queue_for(steering, flow_tuple)` in `component/device/steering/rss.hpp`.
 
@@ -114,7 +120,7 @@ Conditions the spec implies but does not spell out, most likely to bite first. E
 2. **A stop requested before the operation runs.** `schedule()` from the main thread, then `Runtime::stop()` before the shard gets to it: the operation completes stopped, the receiver is still invoked, and nothing leaks. Pinned in Task 8.
 3. **Cancellation racing with firing on the same thread.** A timer's stop callback runs while the wheel is firing another timer in the same slot; the cancelled node is unlinked from a list being walked. Pinned in Task 5 (cancel from inside another timer's `fire`) and Task 8.
 4. **The device refuses transmission.** The transmit ring fills, the device accepts nothing, and `transmit` must return false without losing the caller's packet or the ring's. Pinned in Task 10 with a fabric port whose peer's receive queue is full.
-5. **Stop while tasks are parked.** `Runtime::stop()` with tasks waiting on timers and other shards' inboxes: every task completes stopped, every shard drains, `join` returns. Pinned in Task 11 and Task 12.
+5. **Stop while tasks are parked.** `Runtime::stop()` with tasks waiting on timers: every task completes stopped, every shard drains, `join` returns. A task never waits in another shard's inbox (threading contract rule 4); the scope's owner assertion in Task 6 catches one that does. Pinned in Task 11.
 
 ---
 
@@ -437,7 +443,7 @@ Spec: "Core additions", "Logging in the runtime", decision "Logging".
 
 - [ ] **Step 1: Add quill to the manifest and find it**
 
-In `vcpkg.json`, add `"quill"` to `"dependencies"` after `"gtest"`. In the root `CMakeLists.txt`, after the line `find_package(stdexec CONFIG REQUIRED)` add:
+`vcpkg.json` already lists `"quill"` after `"gtest"`, added at review time on 2026-10-02, and the `debug` preset was reconfigured once with it. In the root `CMakeLists.txt`, after the line `find_package(stdexec CONFIG REQUIRED)` add:
 
 ```cmake
 find_package(quill CONFIG REQUIRED)
@@ -451,11 +457,11 @@ In `common/CMakeLists.txt` put `add_subdirectory(utils)` before `add_subdirector
 cmake --preset debug 2>&1 | tail -5
 ```
 
-Expected: vcpkg installs `quill` (a few seconds; it is header-only) and configure succeeds. Commit the manifest change on its own so the dependency bump is one commit:
+Expected: quill is already installed (the manifest change is committed as `build: add quill to the vcpkg manifest`) and configure succeeds. Commit the CMake wiring on its own:
 
 ```bash
-git add vcpkg.json CMakeLists.txt common/CMakeLists.txt
-git commit -m "build: add quill to the vcpkg manifest"
+git add CMakeLists.txt common/CMakeLists.txt
+git commit -m "build(core): find quill and configure utils before core"
 ```
 
 - [ ] **Step 3: Write the failing log test**
@@ -722,7 +728,8 @@ namespace aloe::core {
             logger_->set_log_level(detail::to_quill(level));
         }
 
-        /// Blocks until the backend has written everything this logger queued. Cold path only.
+        /// Blocks until the backend has written everything this logger queued. Cold path only, and only while a
+        /// `Logging` is alive: quill spins until the backend acknowledges, so with no backend this never returns.
         void flush() {
             logger_->flush_log();
         }
@@ -2189,7 +2196,7 @@ Spec: "Task scope", "Counters", "Logging in the runtime".
     - `template <core::ex::sender Sender, typename Env = detail::EmptyEnv> void spawn(Sender&&, Env = {})`. One allocation. The started operation's receiver environment answers `get_stop_token` with the scope's token and forwards every other query to `Env`. A value completion counts `tasks_completed`, a stopped one `tasks_stopped`, an error one `tasks_failed` plus an `Error` log line.
     - `void request_stop() noexcept`, `bool stop_requested() const noexcept`, `core::ex::inplace_stop_token stop_token() const noexcept`, `std::size_t size() const noexcept`, `bool empty() const noexcept`.
     - `JoinSender join() noexcept`: a sender of `set_value()` that completes when the scope is empty; at most one join operation pending at a time.
-  - All of it single-threaded; the destructor asserts `empty()`.
+  - All of it single-threaded; the destructor asserts `empty()`. The scope remembers the thread of its first `spawn` and, in debug builds, asserts that every completion arrives on it: a task that ended on another shard (threading contract rule 4) fails here, not silently.
 
 - [ ] **Step 1: `counters.hpp`**
 
@@ -2449,6 +2456,8 @@ cmake --preset debug > /dev/null && cmake --build --preset debug --target Aloe.T
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <optional>
+#include <thread>
 #include <type_traits>
 #include <utility>
 
@@ -2515,7 +2524,9 @@ namespace aloe::runtime {
      * arena arrives, and starts it with an environment that answers `get_stop_token` with the
      * scope's token and everything else from the environment the caller passed. Completions are
      * counted; an error completion is logged at Error and does not take the shard down.
-     * `request_stop` trips the stop source, and every later spawn starts already stopped.
+     * `request_stop` trips the stop source, and every later spawn starts already stopped. Debug
+     * builds assert that every completion arrives on the thread of the first spawn: a task that
+     * strayed to another shard (threading contract rule 4) fails here.
      */
     class TaskScope {
     public:
@@ -2570,6 +2581,7 @@ namespace aloe::runtime {
         core::ex::inplace_stop_source stop_source_;
         std::size_t live_          = 0;
         detail::JoinBase* joiner_  = nullptr;
+        std::optional<std::thread::id> owner_;  ///< The thread of the first spawn; every completion must arrive on it.
     };
 
     namespace detail {
@@ -2679,6 +2691,9 @@ namespace aloe::runtime {
     void TaskScope::spawn(Sender&& sender, Env env) {
         using Plain     = std::remove_cvref_t<Sender>;
         using Operation = detail::SpawnOperation<Plain, Env>;
+        if (!owner_) {
+            owner_ = std::this_thread::get_id();  // the shard thread by contract; the test's own thread in unit tests
+        }
         Plain owned{std::forward<Sender>(sender)};
         auto* operation = new Operation{this, std::move(owned), std::move(env)};
         ++live_;
@@ -2696,6 +2711,7 @@ namespace aloe::runtime {
 #include <cstdint>
 #include <exception>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include <task_scope.hpp>
@@ -2742,6 +2758,8 @@ namespace aloe::runtime {
     }
 
     void TaskScope::one_less() noexcept {
+        assert(owner_ == std::this_thread::get_id() &&
+               "a task completed off its shard: a shard task awaits only its own shard's senders (threading contract 4)");
         --live_;
         if (live_ == 0 && joiner_ != nullptr) {
             detail::JoinBase* join = std::exchange(joiner_, nullptr);
@@ -3886,6 +3904,16 @@ TEST_F(ShardTaskTest, ATaskReturningAValueCompletesAndTheValueIsDropped) {
     scheduler_.spawn(answers());
     EXPECT_EQ(context_.counters().tasks_completed, 1);
 }
+
+// Spec, "Task scope": every spawn after request_stop starts with stop already requested; here for a task.
+TEST_F(ShardTaskTest, ATaskSpawnedAfterStopNeverArmsItsTimerAndCompletesStopped) {
+    context_.request_stop();
+    scheduler_.spawn(parked(scheduler_));
+    EXPECT_EQ(context_.timers().pending(), 0) << "the timer sender saw the stop before arming";
+    EXPECT_EQ(context_.counters().tasks_stopped, 1);
+    EXPECT_TRUE(context_.scope().empty());
+    EXPECT_TRUE(context_.drained());
+}
 ```
 
 Add it to the `Runtime` target.
@@ -4380,6 +4408,8 @@ namespace aloe::runtime {
         }
 
         /// Hands the ring's front to the device, at most two calls because the ring wraps; returns how many it accepted.
+        /// A partial accept ends the flush. Ethdev takes at most `Port::max_burst` per call, so a ring holding more
+        /// than that drains over several ticks; harmless for the echo, noted in the spec's "Open questions" for TCP.
         std::size_t flush() noexcept {
             std::size_t accepted_total = 0;
             while (size_ > 0) {
@@ -4660,7 +4690,7 @@ Spec: "The runtime": Launch, Stop and drain, From outside; "Error handling"; "Lo
   - `aloe::runtime::RuntimeError : std::runtime_error`.
   - `aloe::runtime::ShardThread { std::optional<unsigned> cpu; std::string name; }`.
   - `aloe::runtime::RuntimeConfig { ShardConfig shard; std::vector<ShardThread> threads; std::function<void()> thread_hook; }`.
-  - `aloe::runtime::Runtime<Device, Stack>`: `template <typename... Args> Runtime(const RuntimeConfig&, Device&, const Args&... stack_args)` (one shard per queue, args copied into every stack); `void start()`; `void stop() noexcept`; `void join()`; `Scheduler scheduler(std::uint16_t) const noexcept`; `template <core::ex::sender S> void spawn(std::uint16_t, S&&)`; `Shard<Device, Stack>& shard(std::uint16_t) noexcept`; `const ShardCounters& counters(std::uint16_t) const noexcept`; `std::uint16_t shard_count() const noexcept`. Destructor stops and joins.
+  - `aloe::runtime::Runtime<Device, Stack>`: `template <typename... Args> Runtime(const RuntimeConfig&, Device&, const Args&... stack_args)` (one shard per queue, args copied into every stack); `void start()`; `void stop() noexcept`; `void join()`; `Scheduler scheduler(std::uint16_t) const noexcept`; `template <core::ex::sender S> void spawn(std::uint16_t, S&&)`; `Shard<Device, Stack>& shard(std::uint16_t) noexcept`; `const ShardCounters& counters(std::uint16_t) const noexcept`; `std::uint16_t shard_count() const noexcept`. Destructor stops and joins. A thread that cannot be created is a `RuntimeError` like every other `start` failure; `spawn` after `join` asserts in debug builds.
 
 - [ ] **Step 1: Failing tests**
 
@@ -4872,6 +4902,7 @@ Expected: a compile error naming the type this task introduces.
 
 #include <aloe/core>
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -4905,13 +4936,14 @@ namespace aloe::runtime {
 
     struct ShardThread {
         std::optional<unsigned> cpu = std::nullopt;  ///< Pin the shard thread here; none means unpinned.
-        std::string name;                            ///< Thread name; empty means `aloe-shard-N`.
+        std::string name{};                          ///< Thread name; empty means `aloe-shard-N`.
     };
 
+    /// Every member has a default, so a designated initialiser may name only what it changes.
     struct RuntimeConfig {
-        ShardConfig shard;
-        std::vector<ShardThread> threads;   ///< One per queue, or empty for unpinned defaults.
-        std::function<void()> thread_hook;  ///< Runs first on every shard thread; `ethdev::register_thread` for DPDK.
+        ShardConfig shard{};
+        std::vector<ShardThread> threads{};   ///< One per queue, or empty for unpinned defaults.
+        std::function<void()> thread_hook{};  ///< Runs first on every shard thread; `ethdev::register_thread` for DPDK.
     };
 
     /**
@@ -4971,7 +5003,7 @@ namespace aloe::runtime {
             for (std::uint16_t index = 0; index < shards_.size(); ++index) {
                 std::promise<void> promise;
                 ready.push_back(promise.get_future());
-                threads_.emplace_back([this, index, promise = std::move(promise)]() mutable {
+                auto body = [this, index, promise = std::move(promise)]() mutable {
                     try {
                         prepare_thread(index);
                         promise.set_value();
@@ -4984,7 +5016,15 @@ namespace aloe::runtime {
                     shards_[index]->context().logger().info<"shard {} drained after {} ticks: {} frames in, {} out, {} tasks ran, {} failed">(
                         index, counters.ticks, counters.frames_received, counters.frames_transmitted,
                         counters.tasks_completed + counters.tasks_stopped, counters.tasks_failed);
-                });
+                };
+                try {
+                    threads_.emplace_back(std::move(body));
+                } catch (const std::system_error& error) {
+                    // Spec, "Error handling": a thread that fails to start is a RuntimeError, like every other start failure.
+                    stop();
+                    join();
+                    throw RuntimeError{"shard " + std::to_string(index) + ": thread could not be created: " + error.what()};
+                }
             }
             std::exception_ptr first_failure;
             for (std::future<void>& future : ready) {
@@ -5001,9 +5041,11 @@ namespace aloe::runtime {
                 join();
                 try {
                     std::rethrow_exception(first_failure);
-                } catch (const RuntimeError&) {
+                } catch (const RuntimeError& error) {
+                    log().error<"a shard thread failed to start: {}">(error.what());
                     throw;
                 } catch (const std::exception& exception) {
+                    log().error<"a shard thread failed to start: {}">(exception.what());
                     throw RuntimeError{std::string{"a shard thread failed to start: "} + exception.what()};
                 }
             }
@@ -5014,8 +5056,9 @@ namespace aloe::runtime {
             if (stopped_.exchange(true)) {
                 return;
             }
-            for (std::unique_ptr<StopWork>& stop : stops_) {
-                stop->context->inbox().push(*stop);
+            log().info<"stop requested for {} shards">(shards_.size());
+            for (std::unique_ptr<StopWork>& pending : stops_) {  // not `stop`: GCC's -Wshadow sees the member function
+                pending->context->inbox().push(*pending);
             }
         }
 
@@ -5025,6 +5068,7 @@ namespace aloe::runtime {
                     thread.join();
                 }
             }
+            joined_ = !threads_.empty();
         }
 
         [[nodiscard]] Scheduler scheduler(const std::uint16_t index) const noexcept {
@@ -5034,6 +5078,7 @@ namespace aloe::runtime {
         /// Any thread. Posts the sender to shard `index`, which spawns it into its scope.
         template <core::ex::sender Sender>
         void spawn(const std::uint16_t index, Sender&& sender) {
+            assert(!joined_ && "spawn after join: nothing reads the inbox any more and the work would leak");
             using Plain = std::remove_cvref_t<Sender>;
             auto* work  = new SpawnWork<Plain>{shards_[index]->context(), Plain{std::forward<Sender>(sender)}};
             shards_[index]->context().inbox().push(*work);
@@ -5105,12 +5150,18 @@ namespace aloe::runtime {
                 index, name, options.cpu ? static_cast<int>(*options.cpu) : -1);
         }
 
+        /// The runtime's cold-path logger: the first shard's, which is the module's.
+        [[nodiscard]] core::Logger log() const noexcept {
+            return shards_.front()->context().logger();
+        }
+
         RuntimeConfig config_;
         std::vector<std::unique_ptr<ShardType>> shards_;
         std::vector<std::unique_ptr<StopWork>> stops_;
         std::vector<std::jthread> threads_;
         std::atomic<bool> stopped_{false};
         bool started_ = false;
+        bool joined_  = false;
     };
 
 }  // namespace aloe::runtime
@@ -5160,7 +5211,7 @@ git commit -m "feat(runtime): the runtime that launches one shard per queue and 
 
 ### Task 12: Cross-shard and steering tests under ThreadSanitizer
 
-Spec: "Testing: Threads". Done-when 1 and 2 (fabric half). Review Focus 5.
+Spec: "Testing: Threads". Done-when 1 and 2 (fabric half). Threading contract rule 4.
 
 **Files:**
 - Create: `tests/unit_tests/component/runtime/test_cross_shard.cpp`, `tests/unit_tests/component/runtime/test_steering.cpp`
@@ -5172,27 +5223,37 @@ Spec: "Testing: Threads". Done-when 1 and 2 (fabric half). Review Focus 5.
 
 - [ ] **Step 1: The cross-shard test**
 
+A shard task never awaits another shard's scheduler (spec, threading contract rule 4), so the hop is an operation state whose receiver starts the next hop from the shard it landed on. That is the shape the runtime itself uses for `Runtime::spawn` and `Runtime::stop`, exercised thousands of times from both sides.
+
 `tests/unit_tests/component/runtime/test_cross_shard.cpp`:
 
 ```cpp
 #include <aloe/fabric>
 #include <aloe/runtime>
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <thread>
+#include <utility>
 
 #include <echo_stack.hpp>
 #include <gtest/gtest.h>
+#include <logging_environment.hpp>
 
 namespace {
 
     using namespace std::chrono_literals;
 
-    constexpr int rounds = 5000;
+    constexpr int rounds    = 5000;
     constexpr aloe::device::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
     constexpr auto patience = 20s;
+
+    // One logging environment per test binary; this file owns it for the Runtime.Threads target.
+    const auto* const logging = ::testing::AddGlobalTestEnvironment(new aloe::testing::LoggingEnvironment{});
 
     [[nodiscard]] bool eventually(const std::function<bool()>& condition) {
         const auto deadline = std::chrono::steady_clock::now() + patience;
@@ -5205,50 +5266,120 @@ namespace {
         return condition();
     }
 
-    /// Hops to `other` and back `rounds` times, counting every hop that landed on the wrong shard.
-    aloe::runtime::task<void> ping_pong(aloe::runtime::Scheduler home,
-                                        aloe::runtime::Scheduler other,
-                                        std::atomic<int>* wrong,
-                                        std::atomic<int>* done) {
-        for (int round = 0; round < rounds; ++round) {
-            co_await other.schedule();
-            if (aloe::runtime::ShardContext::current() != &other.context()) {
-                ++*wrong;
-            }
-            co_await home.schedule();
-            if (aloe::runtime::ShardContext::current() != &home.context()) {
-                ++*wrong;
-            }
+    /**
+     * Hops between two shards through their inboxes: `other.schedule()` from wherever it is, then
+     * `home.schedule()` from the other shard, `rounds` times. An operation state, not a task: the
+     * receiver starts the next hop on the shard it landed on, and two slots alternate so a hop never
+     * destroys the operation that is completing it. Counts every landing on the wrong shard.
+     */
+    class Hopper {
+    public:
+        Hopper(const aloe::runtime::Scheduler home,
+               const aloe::runtime::Scheduler other,
+               std::atomic<int>* wrong,
+               std::atomic<int>* done) noexcept
+            : home_{home}
+            , other_{other}
+            , wrong_{wrong}
+            , done_{done} {
         }
-        done->store(1);
-    }
+
+        Hopper(const Hopper&)            = delete;
+        Hopper& operator=(const Hopper&) = delete;
+
+        /// Any thread. Starts the first hop, towards `other`.
+        void start() noexcept {
+            hop();
+        }
+
+    private:
+        struct Receiver {
+            using receiver_concept = aloe::core::ex::receiver_t;
+            Hopper* self;
+
+            void set_value() noexcept {
+                self->landed();
+            }
+
+            void set_stopped() noexcept {
+                self->done_->store(-1);
+            }
+        };
+
+        using HopSender = decltype(std::declval<const aloe::runtime::Scheduler&>().schedule());
+
+        /// Builds the operation in place: operation states are immovable.
+        struct Slot {
+            Slot(const aloe::runtime::Scheduler target, Receiver receiver) noexcept
+                : operation{aloe::core::ex::connect(target.schedule(), receiver)} {
+            }
+
+            aloe::core::ex::connect_result_t<HopSender, Receiver> operation;
+        };
+
+        /// Even hops go to `other`, odd hops come home.
+        [[nodiscard]] aloe::runtime::Scheduler target() const noexcept {
+            return hops_ % 2 == 0 ? other_ : home_;
+        }
+
+        void hop() noexcept {
+            const auto slot = static_cast<std::size_t>(hops_ % 2);
+            slots_[slot].emplace(target(), Receiver{this});
+            aloe::core::ex::start(slots_[slot]->operation);
+        }
+
+        /// On the shard the hop targeted. The push into the next inbox orders every write here before the next landing.
+        void landed() noexcept {
+            if (aloe::runtime::ShardContext::current() != &target().context()) {
+                ++*wrong_;
+            }
+            ++hops_;
+            if (hops_ == 2 * rounds) {
+                done_->store(1);
+                return;
+            }
+            hop();
+        }
+
+        aloe::runtime::Scheduler home_;
+        aloe::runtime::Scheduler other_;
+        std::atomic<int>* wrong_;
+        std::atomic<int>* done_;
+        int hops_ = 0;
+        std::array<std::optional<Slot>, 2> slots_;
+    };
 
 }  // namespace
 
-// Two shards hand two tasks back and forth through their inboxes thousands of times. Under tsan this
-// is the proof that the inbox and the scheduler's cross-shard path are race-free.
-TEST(CrossShard, TasksHopBetweenTwoShardsThroughTheirInboxes) {
+// Two hoppers cross between two shards through their inboxes thousands of times, one started from each
+// side. Under tsan this is the proof that the inbox and the scheduler's cross-shard path are race-free.
+// The hoppers are declared before the runtime so that stop and join run before they are destroyed, on
+// the failure path too; that is why the checks are EXPECTs and not ASSERTs.
+TEST(CrossShard, HopsBetweenTwoShardsThroughTheirInboxes) {
     aloe::fabric::Fabric fabric;
     auto& port = fabric.add_port({.mac = server, .queues = 2, .pool_size = 16});
-    aloe::runtime::Runtime<aloe::fabric::Port, aloe::testing::EchoStack<aloe::fabric::Port>> runtime{
-        {.shard = {.idle = aloe::runtime::IdlePolicy::Yield, .yield_after = 10}, .threads = {}, .thread_hook = {}}, port};
-    runtime.start();
-
     std::atomic<int> wrong{0};
     std::atomic<int> done_a{0};
     std::atomic<int> done_b{0};
-    runtime.spawn(0, ping_pong(runtime.scheduler(0), runtime.scheduler(1), &wrong, &done_a));
-    runtime.spawn(1, ping_pong(runtime.scheduler(1), runtime.scheduler(0), &wrong, &done_b));
-    ASSERT_TRUE(eventually([&] { return done_a.load() == 1 && done_b.load() == 1; }));
+    std::optional<Hopper> a;
+    std::optional<Hopper> b;
+
+    aloe::runtime::Runtime<aloe::fabric::Port, aloe::testing::EchoStack<aloe::fabric::Port>> runtime{
+        {.shard = {.idle = aloe::runtime::IdlePolicy::Yield, .yield_after = 10}, .threads = {}, .thread_hook = {}}, port};
+    runtime.start();
+    a.emplace(runtime.scheduler(0), runtime.scheduler(1), &wrong, &done_a);
+    b.emplace(runtime.scheduler(1), runtime.scheduler(0), &wrong, &done_b);
+    a->start();
+    b->start();
+    EXPECT_TRUE(eventually([&] { return done_a.load() == 1 && done_b.load() == 1; }));
     runtime.stop();
     runtime.join();
 
     EXPECT_EQ(wrong.load(), 0);
     for (const std::uint16_t shard : {std::uint16_t{0}, std::uint16_t{1}}) {
-        // Through each inbox: the spawn, the stop, the home task's returns and the other task's visits.
-        EXPECT_EQ(runtime.counters(shard).inbox_received, 2 + 2 * rounds) << "shard " << shard;
-        EXPECT_EQ(runtime.counters(shard).work_run, 2 + 2 * rounds) << "shard " << shard;
-        EXPECT_EQ(runtime.counters(shard).tasks_completed, 1) << "shard " << shard;
+        // Through each inbox: the stop, the home hopper's returns and the other hopper's visits.
+        EXPECT_EQ(runtime.counters(shard).inbox_received, 1 + 2 * rounds) << "shard " << shard;
+        EXPECT_EQ(runtime.counters(shard).work_run, 1 + 2 * rounds) << "shard " << shard;
     }
 }
 ```
@@ -5371,7 +5502,7 @@ TEST(Steering, EveryFrameIsAnsweredOnceByTheShardItsHashSelects) {
 }
 ```
 
-Add both files to `Runtime.Threads` and link `Aloe::Component::Fabric`, `${SHARED_TESTING_TARGET}.Device` and `${SHARED_TESTING_TARGET}.Runtime` to that target.
+Add both files to `Runtime.Threads` and link `Aloe::Component::Fabric`, `${SHARED_TESTING_TARGET}.Device`, `${SHARED_TESTING_TARGET}.Runtime` and `${SHARED_TESTING_TARGET}.Log` to that target; `test_cross_shard.cpp` registers the logging environment for the binary.
 
 - [ ] **Step 3: Run under debug, then tsan, then asan**
 
@@ -5428,6 +5559,7 @@ Spec: "Ethdev addition", "Testing: Ethdev". Done-when 2 (ring half).
 #include <echo_stack.hpp>
 #include <frames.hpp>
 #include <gtest/gtest.h>
+#include <logging_environment.hpp>
 #include <rte_lcore.h>
 
 namespace {
@@ -5439,6 +5571,7 @@ namespace {
     constexpr aloe::device::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
 
     const auto* const environment = ::testing::AddGlobalTestEnvironment(new aloe::testing::EalEnvironment{"net_ring0"});
+    const auto* const logging     = ::testing::AddGlobalTestEnvironment(new aloe::testing::LoggingEnvironment{});
 
     using Queue = aloe::runtime::ShardQueue<aloe::ethdev::Port>;
     using Echo  = aloe::testing::EchoStack<aloe::ethdev::Port>;
@@ -5545,6 +5678,7 @@ target_link_libraries(${INTEGRATION_TESTING_TARGET}.Runtime.Ring
         ${SHARED_TESTING_TARGET}.Device
         ${SHARED_TESTING_TARGET}.Ethdev
         ${SHARED_TESTING_TARGET}.Runtime
+        ${SHARED_TESTING_TARGET}.Log
         ${TEST_LIBS}
 )
 ##############################################################################
@@ -5658,6 +5792,7 @@ cmake --preset debug > /dev/null && cmake --build --preset debug --target Aloe.T
 #include <echo_stack.hpp>
 #include <frames.hpp>
 #include <gtest/gtest.h>
+#include <logging_environment.hpp>
 #include <packet_socket.hpp>
 #include <unistd.h>
 
@@ -5675,6 +5810,7 @@ namespace {
 
     const auto* const environment =
         ::testing::AddGlobalTestEnvironment(new aloe::testing::EalEnvironment{"net_tap0,iface=aloe-echo"});
+    const auto* const logging = ::testing::AddGlobalTestEnvironment(new aloe::testing::LoggingEnvironment{});
 
     /// What the echo makes of `frame`: addresses swapped, shard 0 stamped into the last two bytes.
     [[nodiscard]] std::vector<std::byte> echo_of(std::vector<std::byte> frame) {
@@ -5736,6 +5872,7 @@ target_link_libraries(${MANUAL_TESTING_TARGET}.Runtime.Tap
         ${SHARED_TESTING_TARGET}.Device
         ${SHARED_TESTING_TARGET}.Ethdev
         ${SHARED_TESTING_TARGET}.Runtime
+        ${SHARED_TESTING_TARGET}.Log
         ${TEST_LIBS}
 )
 ##############################################################################
@@ -6072,6 +6209,10 @@ Three rules make the data path lock-free; debug builds assert them.
 2. A stop token handed to an operation on a shard is requested on that shard. The scope's stop source
    satisfies this because `Runtime::stop` arrives through the inbox.
 3. Operations complete on the shard that owns them, so the receiver runs there too.
+4. A shard task is affine to its shard. The task awaits every sender directly, with no reschedule, so it
+   awaits only its own shard's senders and child tasks; another shard's `schedule()` is for operation
+   states and `Runtime::spawn`. The scope asserts in debug builds that a task completes on the thread
+   that spawned it.
 
 ## Design notes
 
@@ -6091,7 +6232,8 @@ arms and re-arms them on every segment, which is why arm and cancel are constant
 **The task environment.** stdexec's P3552 task takes its scheduler type from its environment. With the
 default environment the scheduler is type-erased and every await may reschedule through it. `ShardEnvironment`
 names the concrete `Scheduler`, whose senders say they complete where they start, so the task awaits them
-directly. A test pins this: a task awaiting a timer costs one wheel entry and no run-queue push.
+directly. The switch applies to every awaited sender, which is why threading contract rule 4 exists. A test
+pins the saving: a task awaiting a timer costs one wheel entry and no run-queue push.
 
 **Logging behind an alias.** Shards log only on cold paths, through [`core`](core.md)'s quill alias: a shard
 starting and draining, a task failing, a hook or pin failing. Nothing logs inside a tick.
@@ -6155,12 +6297,13 @@ verified on the fabric under ThreadSanitizer.
 Re-align the table's columns with the wider namespace cell; `check-format.sh` does not check Markdown, so align by hand.
 
 `AGENTS.md`:
+- "Build and test", the done-when bullet: "A change is done when `debug`, `gcc-debug`, `asan` and `tsan` all build and pass, and the format check passes." Add after it: "PR CI builds the `ci` preset only, so the sanitizer and GCC runs are local."
 - First paragraph: "The repository holds the build skeleton, the device layer ... and the DPDK backend (`ethdev`), and the shard runtime (`runtime`)."
 - Layout table: in the `component/<module>/` row add `runtime` (shards, scheduler, timers, scope, task, runtime; no DPDK).
 - Rules, "Execution facilities": add "and `aloe::core::TaskEnvironment` for a task bound to a concrete scheduler".
 - Rules, new bullet after "Execution facilities": "**Logging.** Only `common/core/log/log.hpp` may name `quill::`. Everything else takes a `core::Logger` from `core::logger(name)` and writes `log.info<"text {}">(value)`. Nothing logs on a hot path."
 - "Dependencies": vcpkg.json now lists quill; no change to the rule's text.
-- "Traps already found": add the entries from "Read This First" that execution confirmed, at least these two: "`stdexec::get_completion_behavior` is deprecated and fails under `-Werror`; alias the `exec::` spelling in core" and "A type with a `std::atomic` member is immovable; `Work` is one, so containers of operation states use `std::unique_ptr` or `std::deque`." Add any new trap the tasks hit.
+- "Traps already found": add the entries from "Read This First" that execution confirmed, at least these two: "`stdexec::get_completion_behavior` is deprecated and fails under `-Werror`; alias the `exec::` spelling in core" and "A type with a `std::atomic` member is immovable; `Work` is one, so containers of operation states use `std::unique_ptr` or `std::deque`." Also the two clang-tidy traps from "Read This First" (`readability-make-member-function-const`, `readability-convert-member-functions-to-static`) and the task trap: "A shard task awaits every sender directly, with no `affine` wrap; it awaits only its own shard's senders and child tasks." Add any new trap the tasks hit.
 
 - [ ] **Step 5: Commit**
 
@@ -6184,7 +6327,7 @@ done
 ./scripts/check-format.sh
 ```
 
-Expected: four green runs and `formatted correctly`. Record the test counts per label in the PR.
+Expected: four green runs and `formatted correctly`. Record the test counts per label in the PR. PR CI runs the `ci` preset only, so these four runs are the sanitizer and GCC evidence; say so in the PR.
 
 - [ ] **Step 2: The grep gates**
 
@@ -6201,7 +6344,7 @@ Expected: the first prints nothing; the second prints only `common/core/log/log.
 
 | Done when | Evidence |
 |---|---|
-| 1. Tasks and timers run on shards; cross-shard submission passes under tsan | `Aloe.Tests.Unit.Runtime` and `Aloe.Tests.Unit.Runtime.Threads` green under `tsan` |
+| 1. Tasks and timers run on shards; cross-shard submission passes under tsan | `Aloe.Tests.Unit.Runtime` and `Aloe.Tests.Unit.Runtime.Threads` green under `tsan`, locally: CI does not run `tsan` |
 | 2. Echo on several shards on both backends; steering checked on the fabric; ring per queue in CI; real card by hand | `Steering.*` and `RuntimeRing.*` green; `Aloe.Examples.EthernetEcho` built, run on a card or a tap if one was at hand, with the outcome in the PR |
 | 3. A task awaiting a timer: one wheel entry, no run-queue push | `ShardTaskTest.ATaskAwaitingATimerCostsOneWheelEntryAndNoRunQueuePush` green |
 | 4. No root, no hugepages, no card; four presets and the format check | Step 1 |

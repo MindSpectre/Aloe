@@ -1,7 +1,9 @@
 # Shard runtime
 
 Status: approved by the author on 2026-10-02 ("write the plan"), amended the same day
-with the spot-check findings listed under "Findings from the spot checks". The plan is
+with the spot-check findings listed under "Findings from the spot checks", and again after
+the plan review of the same day (finding 8, threading contract rule 4, the notes under
+"Open questions"). The plan is
 `docs/superpowers/plans/2026-10-02-shard-runtime.md`. Spec 2 of the four that lead to
 minimal TCP, and the last piece of roadmap phase 0. Tracks GitHub issue #4
 `[RUNTIME]`. The device layer (spec 1, PRs #2 and #3) is merged on `main` and is what
@@ -30,7 +32,9 @@ transmit go out there, and here is the scheduler", and nothing device-specific.
    measured by the shard counters in a test. This is the proof that the concrete
    scheduler keeps stdexec's task from rescheduling.
 4. Tests still need no root, no hugepages and no network card, and `debug`,
-   `gcc-debug`, `asan` and `tsan` pass, with the format check.
+   `gcc-debug`, `asan` and `tsan` pass, with the format check. PR CI builds the `ci`
+   preset alone, Release with no examples, so the sanitizer runs, the GCC build and
+   the example are local gates until CI gains a `tsan` job.
 5. `docs/architecture/runtime.md` exists, the overview and roadmap are updated, and
    the README and AGENTS.md list the module.
 
@@ -146,7 +150,9 @@ library linking `quill::quill`, folded into the combined core library.
 throws `EthdevError` on failure. Passed as the runtime's thread hook, it gives each
 shard thread an lcore id so mempool per-lcore caches work. Threads are not
 unregistered at exit; shards live as long as the process, and DPDK keeps the slot.
-This is the only new DPDK call.
+A test process that builds several runtimes spends one of `RTE_MAX_LCORE` slots per
+shard thread; `rte_thread_unregister` at the end of `run()` is the one-line fix if a
+suite ever runs short. This is the only new DPDK call.
 
 ## The shard context
 
@@ -266,6 +272,13 @@ Written once here, repeated in `runtime.md`, asserted in debug builds:
    inbox. The timer sender's stop callback asserts `ShardContext::current()` in
    debug builds.
 3. Operations complete on the shard that owns them, so the receiver runs there too.
+4. A shard task is affine to its shard. With the concrete scheduler the task awaits
+   every sender directly, with no `affine` wrap, so a sender that completes elsewhere
+   would resume the task there. A task therefore awaits only its own shard's senders
+   and child tasks. Another shard's `schedule()` is for operation states, such as the
+   cross-shard test's hop node, and for `Runtime::spawn`; a task never awaits it. The
+   scope asserts in debug builds that a task completes on the thread that spawned it,
+   which also catches a stop reaching a task that strayed.
 
 ## Scheduler and senders
 
@@ -310,7 +323,9 @@ The scheduler type is the concrete `Scheduler`, so the task holds one pointer, a
 slot stays default in this spec; phase 1 routes it to the connection arena. A child
 task awaited by a parent inherits scheduler and stop token through the environment,
 as P3552 specifies. A task parked on a shard timer when the scope stops sees the
-timer complete stopped and unwinds; its exception, if any, reaches the scope.
+timer complete stopped and unwinds; its exception, if any, reaches the scope. The task
+awaits every sender directly, so it awaits only what completes on its shard: threading
+contract rule 4.
 
 `core::task<T>` with the default environment remains for tests and code outside a
 shard, as today.
@@ -328,7 +343,8 @@ packets, `ShardConfig::transmit_ring` deep. `transmit` appends; when the ring is
 it flushes to the device first and retries once; if the device still refuses it
 returns `false` and the caller keeps the packet. That `false` is the backpressure
 signal TCP treats as loss. `flush()` hands the ring's front to `Device::transmit` and
-drops the accepted prefix. Nothing blocks, throws or allocates.
+drops the accepted prefix; a partial accept ends the flush, see "Open questions".
+Nothing blocks, throws or allocates.
 
 ### Stack contract
 
@@ -389,7 +405,9 @@ struct ShardConfig {
 };
 ```
 
-`Shard(const ShardConfig&, Device&, std::uint16_t queue, Args&&... stack_args)`.
+`Shard(const ShardConfig&, Device&, std::uint16_t queue, TimePoint start, Args&&... stack_args)`.
+`start` is where the wheel's tick zero begins: the runtime passes one clock read to every
+shard, tests pass any stamp.
 
 ## The runtime
 
@@ -434,7 +452,9 @@ drain visible, and the drained log line is what a reader looks for.
 
 `scheduler(i)` returns shard `i`'s `Scheduler`, usable from any thread: `schedule()`
 goes through the inbox. `spawn(i, Sender&&)` posts a `Work` carrying the sender to
-shard `i`, where it is spawned into the scope; two allocations on a cold path.
+shard `i`, where it is spawned into the scope; two allocations on a cold path. After
+`join()` nothing reads an inbox, so `spawn` on a joined runtime is a programming error
+that debug builds assert.
 `shard(i)` and `counters(i)` are for the shard's own thread or for after `join()`.
 
 ## Counters
@@ -465,7 +485,10 @@ Through `core::logger("aloe.runtime")`, cold paths only: a shard thread starting
 with index, CPU and name; stop requested; drained, with the counters; a failed task,
 with its exception text; a hook or pin failure. Nothing inside `step`. Tests register
 a shared gtest environment, `aloe::testing::LoggingEnvironment` in `tests/shared/`,
-that constructs `core::Logging` at `Warning` so the suite stays quiet.
+that constructs `core::Logging` at `Warning` so the suite stays quiet. Every test
+binary that builds a context or a runtime registers it, the ring and tap tests next to
+their `EalEnvironment`; without it the lines queue in quill's frontend and are never
+written.
 
 ## Error handling
 
@@ -510,7 +533,7 @@ No device, one thread unless stated.
 | File                     | Pins                                                                                                                                                                                                                                            |
 |--------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `test_inbox_threads.cpp` | P producer threads push N nodes each while the consumer pops; every node exactly once; per-producer order holds.                                                                                                                                |
-| `test_cross_shard.cpp`   | A task on shard A schedules onto B and back, thousands of rounds; the count matches and every hop ran on the right thread.                                                                                                                      |
+| `test_cross_shard.cpp`   | A hop node on shard A schedules onto B and back, thousands of rounds, through both inboxes; the count matches and every hop ran on the right thread. No task migrates, see threading contract rule 4.                                                                                                                      |
 | `test_steering.cpp`      | An N-queue fabric port with RSS behind the runtime and client ports sending flows whose tuples `queue_for` maps to each shard. The echo stamps its shard index; every reply came from the predicted shard and every frame arrived exactly once. |
 
 ### Ethdev, `tests/integration_tests/runtime/`
@@ -625,6 +648,14 @@ GCC 16. The implementation plan carries the details; what changed the spec:
    removes a header cycle between the scope and the scheduler and is where phase 1's
    allocator query will go.
 7. **The echo filters by destination address**, so the loopback tests terminate.
+8. **The `affine` bypass is global.** Once the scheduler's `schedule()` sender says it
+   completes where it starts, stdexec's task passes every awaited sender to
+   `as_awaitable` directly, not only the shard's own (`__task.hpp`, `await_transform`).
+   A task that awaited another shard's `schedule()` would move there and stay; stopped
+   while away, it would complete on the wrong thread and race the home scope. Found in
+   the plan review of the same day; it became threading contract rule 4, the owner
+   assertion in `TaskScope`, and a cross-shard test that hops with an operation state
+   instead of a task.
 
 Claims 5 to 7 of "Claims the prototype must prove", `rte_thread_register` on a shard
 thread, the ring echo and the sanitizer runs, are left to the plan's Tasks 13, 12 and 16.
@@ -638,7 +669,7 @@ thread, the ring echo and the sanitizer runs, are left to the plan's Tasks 13, 1
 | The wheel's `advance` loops over empty slots after a long stall.                                                    | Accepted for phase 0; a bitmap of occupied slots is a later optimisation and the API does not change.                                     |
 | Unbounded inbox: a flood from other shards grows the run queue.                                                     | Producers are our own shards and the main thread; no external input reaches the inbox. Noted for the TCP spec.                            |
 | Busy-polling shards in CI starve the runner.                                                                        | Tests use `IdlePolicy::Yield` and few shards.                                                                                             |
-| quill's backend thread ends up on a shard's core.                                                                   | `Logging` takes the backend's CPU affinity; the example pins it.                                                                          |
+| quill's backend thread ends up on a shard's core.                                                                   | `Logging` takes the backend's CPU affinity. The example leaves it unpinned; a deployment pins it off the shard cores.                                                                          |
 
 ## Out of scope
 
@@ -659,6 +690,13 @@ Left to the plan or to later work; none blocks this spec.
   `counting_scope` does through the environment, so phase 1's arena needs no API
   change. Leaning yes if it is cheap in the prototype.
 - The default `transmit_ring` depth, 512, is a guess; the TCP spec may revisit it.
+- Whether `ShardQueue::flush` should keep calling the device while it accepts anything.
+  Today a partial accept ends the flush, and ethdev takes at most `Port::max_burst`
+  per call, so a ring holding more than 64 drains over several ticks and a mid-tick
+  `transmit` on a full ring can refuse while the device had room. Harmless for the
+  echo; the TCP spec decides together with the ring depth.
+- Whether `IsStack` should require `on_receive` to be `noexcept`. `step` is, so a
+  throwing stack terminates the process either way.
 
 ## Work order
 
