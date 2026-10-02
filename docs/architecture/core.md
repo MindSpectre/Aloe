@@ -1,8 +1,8 @@
 # Core Module
 
 The core module (`common/core/`) is Aloe's foundation: the library version, and the one header that names
-the execution facilities every asynchronous part of the stack is written in. It depends on stdexec and on
-nothing else in Aloe. Everything is reached through the umbrella `#include <aloe/core>`
+the execution facilities every asynchronous part of the stack is written in. It depends on stdexec and quill, and on
+[`utils`](utils.md) for `FixedString`. Everything is reached through the umbrella `#include <aloe/core>`
 (`export/aloe/core`), and targets link `Aloe::Common::Core`.
 
 ## Key types
@@ -17,6 +17,12 @@ nothing else in Aloe. Everything is reached through the umbrella `#include <aloe
 - **`aloe::core::completion_behavior`, `aloe::core::get_completion_behavior_t<Tag>`** -- how a sender says where
   it completes. A scheduler whose `schedule()` sender answers `asynchronous_affine` lets tasks await
   without rescheduling.
+- **`aloe::core::Logging`, `aloe::core::LoggingConfig`** -- the process's logging backend: construct one, once,
+  with the level, an optional file instead of the console, and an optional CPU to pin the backend thread to.
+- **`aloe::core::Logger`, `aloe::core::logger(name)`** -- a named logger. `log.info<"shard {} starting">(index)`:
+  the format string is a template parameter, so there are no macros and each call site owns its metadata.
+  Formatting happens on the backend thread.
+- **`aloe::core::LogLevel`** -- `Trace` to `Critical`, and `None`.
 - **`aloe::core::version_major`, `version_minor`, `version_patch`, `version_string`** -- the library version as
   `constexpr` values, generated from the version in the root `CMakeLists.txt`, so the two cannot drift.
 
@@ -54,3 +60,9 @@ differs between stdexec and the paper, the environment's member name, is confine
 
 The version header is a CMake template (`version/version.hpp.in`) instead of hand-written constants. The
 version therefore has one source, the `project()` call, and a release cannot ship with a stale number.
+
+Logging is quill behind the same kind of alias as stdexec: `common/core/log/log.hpp` is the only file that
+names `quill::`. The wrapper is macro-free, which the "public headers define no macros" rule demands, and keeps
+quill's shape: a lock-free per-thread queue on the calling side, one backend thread that formats and writes.
+That backend thread must not land on a shard's core, which is what `LoggingConfig::backend_cpu` is for. Nothing
+in the stack logs on a hot path; the convention is enforced by review, not by the type system.

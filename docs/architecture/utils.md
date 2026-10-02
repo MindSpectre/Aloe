@@ -1,8 +1,9 @@
 # Utils Module
 
 The utils module (`common/utils/`) holds small header-only helpers with no dependencies: discarding values
-on purpose, choosing a fallback, and two guards that pin what a member function is. Everything is reached
-through the umbrella `#include <aloe/utils>` (`export/aloe/utils`), and targets link `Aloe::Common::Utils`.
+on purpose, choosing a fallback, a string literal as a template parameter, and two guards that pin what a
+member function is. Everything is reached through the umbrella `#include <aloe/utils>`
+(`export/aloe/utils`), and targets link `Aloe::Common::Utils`.
 It is separate from [`core`](core.md) so that a header which needs a guard does not pull stdexec in with it.
 
 ## Key types
@@ -14,6 +15,8 @@ It is separate from [`core`](core.md) so that a header which needs a guard does 
 - **`aloe::utils::value_or(value, fallback)`** -- GCC's `value ?: fallback` as a function: `value` when it
   converts to true, else `fallback`, with `value` evaluated once. Two lvalues of one type yield that lvalue,
   so nothing is copied; any other mix yields a value of the common type.
+- **`aloe::utils::FixedString<N>`** -- a string literal as a template parameter: `template <FixedString Text>`.
+  Structural, so equal texts are one specialisation. Core's logger takes its format strings this way.
 - **`aloe::utils::force_non_const(this)`** -- does not compile inside a const member function. A const
   member may still write through a pointer member, so the compiler never objects when such a function is
   declared const by mistake; this does.

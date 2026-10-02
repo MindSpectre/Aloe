@@ -12,6 +12,19 @@ target_link_libraries(${UNIT_TESTING_TARGET}.Core.Execution
 ##############################################################################
 
 ##############################################################################
+# Test Core: logging through the quill alias, into a file sink
+##############################################################################
+add_unit_test(${UNIT_TESTING_TARGET}.Core.Log
+        core/test_log.cpp
+)
+target_link_libraries(${UNIT_TESTING_TARGET}.Core.Log
+        PRIVATE
+        Aloe::Common::Core
+        ${TEST_LIBS}
+)
+##############################################################################
+
+##############################################################################
 # Test Core: version, and the umbrella header seen from two translation units
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Core.Version

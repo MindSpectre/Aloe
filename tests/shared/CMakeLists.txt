@@ -42,3 +42,18 @@ target_link_libraries(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
         Aloe::Component::Ethdev
 )
 ##############################################################################
+
+##############################################################################
+# Logging as a gtest environment
+##############################################################################
+add_library(${SHARED_TESTING_TARGET}.Log INTERFACE
+        log/logging_environment.hpp
+)
+target_include_directories(${SHARED_TESTING_TARGET}.Log INTERFACE
+        log/
+)
+target_link_libraries(${SHARED_TESTING_TARGET}.Log INTERFACE
+        Aloe::Common::Core
+        ${TEST_LIBS}
+)
+##############################################################################
