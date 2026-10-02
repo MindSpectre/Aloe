@@ -14,7 +14,7 @@
 #include <bytes.hpp>
 #include <protocol.hpp>
 
-namespace aloe {
+namespace aloe::device {
 
     /// Which fields of an IPv4 packet the hash covers.
     struct RssHashTypes {
@@ -171,4 +171,4 @@ namespace aloe {
         return rss;
     }
 
-}  // namespace aloe
+}  // namespace aloe::device

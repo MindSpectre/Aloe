@@ -18,9 +18,9 @@ TEST(FabricPacket, AllocatesEmptyPacketsWithFullHeadroom) {
     ASSERT_TRUE(packet.has_value());
     EXPECT_FALSE(packet->empty());
     EXPECT_EQ(packet->size(), 0);
-    EXPECT_EQ(packet->headroom(), aloe::packet_headroom);
+    EXPECT_EQ(packet->headroom(), aloe::device::packet_headroom);
     EXPECT_EQ(packet->tailroom(), capacity);
-    EXPECT_EQ(packet->capacity(), aloe::packet_headroom + capacity);
+    EXPECT_EQ(packet->capacity(), aloe::device::packet_headroom + capacity);
     EXPECT_TRUE(packet->data().empty());
     EXPECT_EQ(pool.available(), 1);
 }
@@ -37,18 +37,18 @@ TEST(FabricPacket, GrowsIntoRoomAndRefusesPastIt) {
     ASSERT_TRUE(header.has_value());
     EXPECT_EQ(header->size(), 14);
     EXPECT_EQ(packet->size(), 114);
-    EXPECT_EQ(packet->headroom(), aloe::packet_headroom - 14);
+    EXPECT_EQ(packet->headroom(), aloe::device::packet_headroom - 14);
     EXPECT_EQ(packet->tailroom(), capacity - 100);
     EXPECT_EQ(header->data(), packet->data().data()) << "the header is the front of the data";
 
-    EXPECT_FALSE(packet->prepend(aloe::packet_headroom).has_value());
+    EXPECT_FALSE(packet->prepend(aloe::device::packet_headroom).has_value());
     EXPECT_FALSE(packet->append(capacity).has_value());
     EXPECT_EQ(packet->size(), 114) << "a refused growth changes nothing";
 
     packet->trim_front(14);
     packet->trim_back(100);
     EXPECT_EQ(packet->size(), 0);
-    EXPECT_EQ(packet->headroom(), aloe::packet_headroom);
+    EXPECT_EQ(packet->headroom(), aloe::device::packet_headroom);
 }
 
 TEST(FabricPacket, KeepsBytesWhereTheyWereWritten) {
@@ -89,7 +89,7 @@ TEST(FabricPacket, MovingLeavesTheSourceEmpty) {
     auto packet = pool.allocate();
     ASSERT_TRUE(packet.has_value());
     ASSERT_TRUE(packet->append(3).has_value());
-    packet->set_tx(aloe::TxMetadata{.l2_length = 14});
+    packet->set_tx(aloe::device::TxMetadata{.l2_length = 14});
 
     aloe::fabric::Packet moved{std::move(*packet)};
     EXPECT_TRUE(packet->empty());  // NOLINT(bugprone-use-after-move): the moved-from state is the point
@@ -108,7 +108,7 @@ TEST(FabricPacket, EmptyPacketsHaveNoRoom) {
     EXPECT_EQ(packet.tailroom(), 0);
     EXPECT_FALSE(packet.prepend(1).has_value());
     EXPECT_FALSE(packet.append(1).has_value());
-    EXPECT_EQ(packet.rx(), aloe::RxMetadata{});
+    EXPECT_EQ(packet.rx(), aloe::device::RxMetadata{});
 }
 
 TEST(FabricPacket, EveryBlockIsHandedOutOnce) {

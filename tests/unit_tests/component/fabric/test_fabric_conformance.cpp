@@ -14,7 +14,7 @@ namespace aloe::testing {
 
             static fabric::PortConfig single_queue_port() {
                 return {
-                    .mac = MacAddress{0x02, 0, 0, 0, 0, 0x01},
+                    .mac = device::MacAddress{0x02, 0, 0, 0, 0, 0x01},
                       .queues = 1, .pool_size = 64
                 };
             }

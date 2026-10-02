@@ -3,13 +3,13 @@
 #include <exec/task.hpp>
 #include <stdexec/execution.hpp>
 
-namespace aloe {
+namespace aloe::core {
 
     /**
      * @brief The single point where Aloe names its execution facilities.
      *
-     * Aloe code spells senders, receivers and schedulers as `aloe::ex::...` and
-     * coroutine tasks as `aloe::task<T>`, never as `stdexec::` or `exec::`
+     * Aloe code spells senders, receivers and schedulers as `aloe::core::ex::...` and
+     * coroutine tasks as `aloe::core::task<T>`, never as `stdexec::` or `exec::`
      * directly. The facilities come from stdexec today. Once the standard
      * library ships std::execution, only this header changes.
      */
@@ -19,4 +19,4 @@ namespace aloe {
     template <typename T>
     using task = ::exec::task<T>;
 
-}  // namespace aloe
+}  // namespace aloe::core

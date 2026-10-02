@@ -59,7 +59,7 @@ seam the runtime provides:
   empty is graceful shutdown.
 - **A task type bound to the shard scheduler,** with the connection's memory arena reachable from inside it.
 
-Status: the `aloe::ex` alias and `aloe::task` exist in [`core`](core.md). The rest is design and arrives in
+Status: the `aloe::core::ex` alias and `aloe::core::task` exist in [`core`](core.md). The rest is design and arrives in
 phase 0 and phase 1.
 
 ## Layers

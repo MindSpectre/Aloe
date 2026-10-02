@@ -55,8 +55,8 @@ basenames are unique across modules: `packet.hpp` is the concept,
 
 ## Rules
 
-- **Execution facilities.** Write `aloe::ex::` for senders, receivers and
-  schedulers, and `aloe::task<T>` for coroutine tasks. Only
+- **Execution facilities.** Write `aloe::core::ex::` for senders, receivers and
+  schedulers, and `aloe::core::task<T>` for coroutine tasks. Only
   `common/core/execution/execution.hpp` may name `stdexec::` or `exec::`.
 - **DPDK.** Link the target `Aloe::Dpdk` and nothing else. Linking DPDK's
   pkg-config data directly builds a program that starts with no drivers.
@@ -69,9 +69,11 @@ basenames are unique across modules: `packet.hpp` is the concept,
   `detail` namespace.
 - **Style.** `codestyle.md` covers what `.clang-format` does not: naming,
   namespaces, parameters, attributes, error handling, include order.
-- **Namespaces.** Vocabulary every layer uses lives in `aloe`; a backend or a
-  helper collection gets a namespace named after its module (`aloe::fabric`,
-  `aloe::ethdev`, `aloe::utils`). There is no `aloe::core`.
+- **Namespaces.** Every module gets a namespace named after it: `aloe::core`,
+  `aloe::utils`, `aloe::device`, `aloe::fabric`, `aloe::ethdev`. Nothing is
+  declared directly in `aloe`. Another module's names are qualified with its
+  namespace (`device::MacAddress` inside `aloe::fabric`), never pulled in with
+  `using namespace`. Test helpers live in `aloe::testing`.
 - **stdexec stays out of hot-path headers.** Only the runtime and the public
   surface include `<aloe/core>`; a device or protocol header that needs a
   helper takes it from `<aloe/utils>`.
@@ -116,3 +118,15 @@ Public documentation follows one pattern; keep it current in the same change as 
 
 Conventional commit subjects with the module as scope: `feat(core): ...`,
 `build(dpdk): ...`, `fix(build): ...`, `docs: ...`, `ci: ...`.
+
+## Pull requests
+
+- Titles start with bracketed tags, then a short summary:
+  `[DEVICE][FABRIC] Steer by RSS on multi-queue ports`.
+  - Work on specific modules gets one tag per module, upper case, as many as
+    the change touches: `[CORE]`, `[DEVICE]`, `[ETHDEV]`.
+  - Work about the code base in general gets a general tag: `[REFACTORING]`
+    for cross-cutting code changes, `[INFRASTRUCTURE]` for build, CI, hooks and
+    tooling, `[DOCS]` for documentation only.
+- Descriptions are short: what changed and why in a few lines, then how it was
+  verified. Leave out what the diff already shows.

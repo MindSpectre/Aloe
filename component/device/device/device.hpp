@@ -10,7 +10,7 @@
 #include <packet.hpp>
 #include <rss.hpp>
 
-namespace aloe {
+namespace aloe::device {
 
     /**
      * @brief What a device can do, fixed after construction.
@@ -84,4 +84,4 @@ namespace aloe {
     /// Ethernet header length, the `14` in `mtu() + 14`.
     inline constexpr std::size_t ethernet_header_size = 14;
 
-}  // namespace aloe
+}  // namespace aloe::device

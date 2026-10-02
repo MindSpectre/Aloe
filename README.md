@@ -17,9 +17,9 @@ the design and the [roadmap](docs/roadmap.md) for the phases.
 
 | Namespace      | Directory           | Description                                                                                                     | Docs                                                       |
 |----------------|---------------------|-----------------------------------------------------------------------------------------------------------------|------------------------------------------------------------|
-| `aloe`         | `common/core/`      | Library version, and the one header that names the execution facilities.                                        | [docs/architecture/core.md](docs/architecture/core.md)     |
+| `aloe::core`   | `common/core/`      | Library version, and the one header that names the execution facilities.                                        | [docs/architecture/core.md](docs/architecture/core.md)     |
 | `aloe::utils`  | `common/utils/`     | Small header-only helpers with no dependencies: discarding values, a fallback, and the const and static guards. | [docs/architecture/utils.md](docs/architecture/utils.md)   |
-| `aloe`         | `component/device/` | The Packet and Device concepts, addresses, checksums and receive-side scaling.                                  | [docs/architecture/device.md](docs/architecture/device.md) |
+| `aloe::device` | `component/device/` | The Packet and Device concepts, addresses, checksums and receive-side scaling.                                  | [docs/architecture/device.md](docs/architecture/device.md) |
 | `aloe::fabric` | `component/fabric/` | The in-memory device backend: a fixture for tests, simulation and demos.                                        | [docs/architecture/device.md](docs/architecture/device.md) |
 | `aloe::ethdev` | `component/ethdev/` | The DPDK device backend.                                                                                        | [docs/architecture/device.md](docs/architecture/device.md) |
 
@@ -42,9 +42,10 @@ Trimmed from `examples/hello/hello.cpp`:
 #include <rte_version.h>
 
 int main() {
-    const auto result = aloe::ex::sync_wait(aloe::ex::just(41) | aloe::ex::then([](int value) { return value + 1; }));
+    const auto result =
+        aloe::core::ex::sync_wait(aloe::core::ex::just(41) | aloe::core::ex::then([](int value) { return value + 1; }));
 
-    std::println("Aloe {}", aloe::version_string);
+    std::println("Aloe {}", aloe::core::version_string);
     std::println("{}", rte_version());
     std::println("sender result {}", std::get<0>(*result));
 }

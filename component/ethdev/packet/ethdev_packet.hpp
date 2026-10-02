@@ -117,8 +117,8 @@ namespace aloe::ethdev {
             }
         }
 
-        [[nodiscard]] RxMetadata rx() const noexcept {
-            RxMetadata rx;
+        [[nodiscard]] device::RxMetadata rx() const noexcept {
+            device::RxMetadata rx;
             if (mbuf_ == nullptr) {
                 return rx;
             }
@@ -133,8 +133,8 @@ namespace aloe::ethdev {
             return rx;
         }
 
-        [[nodiscard]] TxMetadata tx() const noexcept {
-            TxMetadata tx;
+        [[nodiscard]] device::TxMetadata tx() const noexcept {
+            device::TxMetadata tx;
             if (mbuf_ == nullptr) {
                 return tx;
             }
@@ -143,14 +143,14 @@ namespace aloe::ethdev {
             tx.l3_length              = static_cast<std::uint8_t>(mbuf_->l3_len);
             tx.fill_ipv4_checksum     = (flags & RTE_MBUF_F_TX_IP_CKSUM) != 0;
             if (const std::uint64_t l4 = flags & RTE_MBUF_F_TX_L4_MASK; l4 == RTE_MBUF_F_TX_TCP_CKSUM) {
-                tx.fill_l4_checksum = L4Checksum::Tcp;
+                tx.fill_l4_checksum = device::L4Checksum::Tcp;
             } else if (l4 == RTE_MBUF_F_TX_UDP_CKSUM) {
-                tx.fill_l4_checksum = L4Checksum::Udp;
+                tx.fill_l4_checksum = device::L4Checksum::Udp;
             }
             return tx;
         }
 
-        void set_tx(const TxMetadata& tx) noexcept {
+        void set_tx(const device::TxMetadata& tx) noexcept {
             utils::force_non_const(this);  // writes the mbuf, which a const member could still do
             if (mbuf_ == nullptr) {
                 return;
@@ -163,9 +163,9 @@ namespace aloe::ethdev {
             if (tx.fill_ipv4_checksum) {
                 flags |= RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
             }
-            if (tx.fill_l4_checksum == L4Checksum::Tcp) {
+            if (tx.fill_l4_checksum == device::L4Checksum::Tcp) {
                 flags |= RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_TCP_CKSUM;
-            } else if (tx.fill_l4_checksum == L4Checksum::Udp) {
+            } else if (tx.fill_l4_checksum == device::L4Checksum::Udp) {
                 flags |= RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_UDP_CKSUM;
             }
             mbuf_->ol_flags = flags;
@@ -182,15 +182,15 @@ namespace aloe::ethdev {
         }
 
     private:
-        [[nodiscard]] static constexpr ChecksumVerdict
+        [[nodiscard]] static constexpr device::ChecksumVerdict
         verdict(const std::uint64_t bits, const std::uint64_t good, const std::uint64_t bad) noexcept {
             if (bits == good) {
-                return ChecksumVerdict::Good;
+                return device::ChecksumVerdict::Good;
             }
             if (bits == bad) {
-                return ChecksumVerdict::Bad;
+                return device::ChecksumVerdict::Bad;
             }
-            return ChecksumVerdict::Unknown;
+            return device::ChecksumVerdict::Unknown;
         }
 
         void reset() noexcept {

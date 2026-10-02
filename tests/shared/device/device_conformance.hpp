@@ -32,9 +32,9 @@ namespace aloe::testing {
     protected:
         using Device = std::remove_cvref_t<decltype(std::declval<Fixture&>().device())>;
         using Packet = typename Device::Packet;
-        static_assert(IsDevice<Device>);
+        static_assert(device::IsDevice<Device>);
 
-        static constexpr MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
+        static constexpr device::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
         static constexpr std::size_t burst_size = 32;
 
         Fixture fixture_;
@@ -101,10 +101,10 @@ namespace aloe::testing {
         EXPECT_FALSE(packet->empty());
         EXPECT_EQ(packet->size(), 0);
         EXPECT_TRUE(packet->data().empty());
-        EXPECT_EQ(packet->headroom(), packet_headroom);
-        EXPECT_GE(packet->tailroom(), static_cast<std::size_t>(this->device().mtu()) + ethernet_header_size);
-        EXPECT_EQ(packet->rx(), RxMetadata{});
-        EXPECT_EQ(packet->tx(), TxMetadata{});
+        EXPECT_EQ(packet->headroom(), device::packet_headroom);
+        EXPECT_GE(packet->tailroom(), static_cast<std::size_t>(this->device().mtu()) + device::ethernet_header_size);
+        EXPECT_EQ(packet->rx(), device::RxMetadata{});
+        EXPECT_EQ(packet->tx(), device::TxMetadata{});
     }
 
     TYPED_TEST_P(DeviceConformance, PacketsGrowAndShrinkWithinTheirRoom) {
@@ -119,11 +119,11 @@ namespace aloe::testing {
         ASSERT_TRUE(header.has_value());
         EXPECT_EQ(header->size(), 14);
         EXPECT_EQ(packet->size(), 114);
-        EXPECT_EQ(packet->headroom(), packet_headroom - 14);
+        EXPECT_EQ(packet->headroom(), device::packet_headroom - 14);
         EXPECT_EQ(packet->tailroom(), tailroom - 100);
         EXPECT_EQ(header->data(), packet->data().data()) << "the header is the front of the data";
 
-        EXPECT_FALSE(packet->prepend(packet_headroom).has_value()) << "past the headroom";
+        EXPECT_FALSE(packet->prepend(device::packet_headroom).has_value()) << "past the headroom";
         EXPECT_FALSE(packet->append(tailroom).has_value()) << "past the tailroom";
         EXPECT_EQ(packet->size(), 114) << "a refused growth changes nothing";
 
@@ -131,7 +131,7 @@ namespace aloe::testing {
         EXPECT_EQ(packet->data()[0], std::byte{0xaa}) << "the new bytes are the packet's own";
         packet->trim_front(14);
         EXPECT_EQ(packet->size(), 100);
-        EXPECT_EQ(packet->headroom(), packet_headroom);
+        EXPECT_EQ(packet->headroom(), device::packet_headroom);
         EXPECT_EQ(packet->data().data(), payload->data());
         packet->trim_back(100);
         EXPECT_EQ(packet->size(), 0);
@@ -148,15 +148,15 @@ namespace aloe::testing {
         ASSERT_EQ(received.size(), 1);
         EXPECT_EQ(bytes_of(received[0]), frame);
         EXPECT_FALSE(received[0].rx().rss_hash.has_value());
-        EXPECT_EQ(received[0].rx().l3, ChecksumVerdict::Unknown);
-        EXPECT_EQ(received[0].rx().l4, ChecksumVerdict::Unknown);
-        EXPECT_EQ(received[0].headroom(), packet_headroom) << "a received frame keeps its headroom";
-        EXPECT_EQ(received[0].tx(), TxMetadata{}) << "a received frame asks for no transmit offloads";
+        EXPECT_EQ(received[0].rx().l3, device::ChecksumVerdict::Unknown);
+        EXPECT_EQ(received[0].rx().l4, device::ChecksumVerdict::Unknown);
+        EXPECT_EQ(received[0].headroom(), device::packet_headroom) << "a received frame keeps its headroom";
+        EXPECT_EQ(received[0].tx(), device::TxMetadata{}) << "a received frame asks for no transmit offloads";
     }
 
     TYPED_TEST_P(DeviceConformance, AMaximumSizeFrameComesBack) {
         const auto frame = this->frame(this->device().mtu(), 3);
-        EXPECT_EQ(frame.size(), static_cast<std::size_t>(this->device().mtu()) + ethernet_header_size);
+        EXPECT_EQ(frame.size(), static_cast<std::size_t>(this->device().mtu()) + device::ethernet_header_size);
         std::array<typename TestFixture::Packet, 1> burst{this->packet_with(frame)};
         ASSERT_EQ(this->device().transmit(0, burst), 1);
         auto received = this->receive_up_to(1);
@@ -173,13 +173,13 @@ namespace aloe::testing {
     }
 
     TYPED_TEST_P(DeviceConformance, ARuntIsRefusedAndCountedByTheTransmitter) {
-        const QueueCounters before = this->device().counters(0);
-        const std::vector<std::byte> runt(ethernet_header_size - 1);
+        const device::QueueCounters before = this->device().counters(0);
+        const std::vector<std::byte> runt(device::ethernet_header_size - 1);
         std::array<typename TestFixture::Packet, 1> burst{this->packet_with(runt)};
         ASSERT_EQ(this->device().transmit(0, burst), 1) << "a refused frame counts as accepted";
         EXPECT_TRUE(burst[0].empty());
         EXPECT_TRUE(this->receive_up_to(1, 20).empty());
-        const QueueCounters after = this->device().counters(0);
+        const device::QueueCounters after = this->device().counters(0);
         EXPECT_EQ(after.oversized, before.oversized + 1);
         EXPECT_EQ(after.transmitted, before.transmitted);
     }
@@ -212,7 +212,7 @@ namespace aloe::testing {
             EXPECT_EQ(burst[index].empty(), index < accepted) << "slot " << index;
             if (index >= accepted) {
                 EXPECT_EQ(bytes_of(burst[index]), frames[index]) << "slot " << index;
-                EXPECT_EQ(burst[index].tx(), TxMetadata{}) << "slot " << index;
+                EXPECT_EQ(burst[index].tx(), device::TxMetadata{}) << "slot " << index;
             }
         }
         auto received = this->receive_up_to(accepted);
@@ -223,7 +223,7 @@ namespace aloe::testing {
     }
 
     TYPED_TEST_P(DeviceConformance, EmptySlotsInABurstAreSkipped) {
-        const QueueCounters before = this->device().counters(0);
+        const device::QueueCounters before = this->device().counters(0);
         const std::vector<std::vector<std::byte>> frames{this->frame(20, 1), this->frame(20, 2)};
         std::array<typename TestFixture::Packet, 3> burst{
             this->packet_with(frames[0]), typename TestFixture::Packet{}, this->packet_with(frames[1])};
@@ -237,12 +237,12 @@ namespace aloe::testing {
     }
 
     TYPED_TEST_P(DeviceConformance, CountersCount) {
-        const QueueCounters before = this->device().counters(0);
+        const device::QueueCounters before = this->device().counters(0);
         std::array<typename TestFixture::Packet, 2> burst{this->packet_with(this->frame(20, 1)),
                                                           this->packet_with(this->frame(20, 2))};
         ASSERT_EQ(this->device().transmit(0, burst), 2);
         ASSERT_EQ(this->receive_up_to(2).size(), 2);
-        const QueueCounters after = this->device().counters(0);
+        const device::QueueCounters after = this->device().counters(0);
         EXPECT_EQ(after.transmitted, before.transmitted + 2);
         EXPECT_EQ(after.received, before.received + 2);
         EXPECT_EQ(after.dropped, before.dropped);

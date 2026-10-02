@@ -26,32 +26,32 @@ namespace {
 }  // namespace
 
 TEST(Checksum, ComputesTheTextbookIpv4HeaderChecksum) {
-    static_assert(aloe::internet_checksum(ipv4_header_without_checksum) == 0xb861);
-    EXPECT_EQ(aloe::ipv4_header_checksum(ipv4_header_without_checksum), 0xb861);
-    EXPECT_EQ(aloe::ipv4_header_checksum(ipv4_header), 0xb861) << "the field's own value is skipped";
+    static_assert(aloe::device::internet_checksum(ipv4_header_without_checksum) == 0xb861);
+    EXPECT_EQ(aloe::device::ipv4_header_checksum(ipv4_header_without_checksum), 0xb861);
+    EXPECT_EQ(aloe::device::ipv4_header_checksum(ipv4_header), 0xb861) << "the field's own value is skipped";
 }
 
 TEST(Checksum, VerifiesAHeaderWithItsChecksumInPlaceAsZero) {
-    EXPECT_EQ(aloe::internet_checksum(ipv4_header), 0);
+    EXPECT_EQ(aloe::device::internet_checksum(ipv4_header), 0);
     auto corrupted = ipv4_header;
     corrupted[16]  = std::byte{0xc1};
-    EXPECT_NE(aloe::internet_checksum(corrupted), 0);
+    EXPECT_NE(aloe::device::internet_checksum(corrupted), 0);
 }
 
 TEST(Checksum, CountsAnOddTrailingByteAsTheHighByteOfAWord) {
     constexpr std::array<std::byte, 3> odd = {std::byte{0x12}, std::byte{0x34}, std::byte{0x56}};
-    EXPECT_EQ(aloe::checksum_add(0, odd), 0x1234U + 0x5600U);
+    EXPECT_EQ(aloe::device::checksum_add(0, odd), 0x1234U + 0x5600U);
 }
 
 TEST(Checksum, FoldsCarriesRepeatedly) {
-    EXPECT_EQ(aloe::checksum_fold(0x1ffffU), 0x0001);
-    EXPECT_EQ(aloe::checksum_fold(0xffffU), 0xffff);
-    EXPECT_EQ(aloe::checksum_finish(0), 0xffff);
+    EXPECT_EQ(aloe::device::checksum_fold(0x1ffffU), 0x0001);
+    EXPECT_EQ(aloe::device::checksum_fold(0xffffU), 0xffff);
+    EXPECT_EQ(aloe::device::checksum_finish(0), 0xffff);
 }
 
 TEST(Checksum, CompletesAnL4ChecksumFromThePseudoHeaderSumLikeACard) {
-    constexpr aloe::Ipv4Address source{192, 168, 0, 1};
-    constexpr aloe::Ipv4Address destination{192, 168, 0, 199};
+    constexpr aloe::device::Ipv4Address source{192, 168, 0, 1};
+    constexpr aloe::device::Ipv4Address destination{192, 168, 0, 199};
     // A UDP datagram: source port 1234, destination port 5678, length 12, checksum 0, payload "data".
     std::array<std::byte, 12> segment = {std::byte{0x04},
                                          std::byte{0xd2},
@@ -66,16 +66,19 @@ TEST(Checksum, CompletesAnL4ChecksumFromThePseudoHeaderSumLikeACard) {
                                          std::byte{'t'},
                                          std::byte{'a'}};
 
-    const std::uint16_t full = aloe::ipv4_l4_checksum(source, destination, aloe::Ipv4Protocol::Udp, segment);
+    const std::uint16_t full =
+        aloe::device::ipv4_l4_checksum(source, destination, aloe::device::Ipv4Protocol::Udp, segment);
     EXPECT_NE(full, 0);
 
     // The caller seeds the field with the pseudo-header sum; the device sums the segment as it is.
-    aloe::store_be16(std::span<std::byte>{segment}.subspan(6, 2),
-                     aloe::ipv4_pseudo_header_sum(source, destination, aloe::Ipv4Protocol::Udp, 12));
-    EXPECT_EQ(aloe::internet_checksum(segment), full);
+    aloe::device::store_be16(
+        std::span<std::byte>{segment}.subspan(6, 2),
+        aloe::device::ipv4_pseudo_header_sum(source, destination, aloe::device::Ipv4Protocol::Udp, 12));
+    EXPECT_EQ(aloe::device::internet_checksum(segment), full);
 
     // With the full checksum in place, verification over pseudo-header and segment yields zero.
-    aloe::store_be16(std::span<std::byte>{segment}.subspan(6, 2), full);
-    const std::uint32_t pseudo = aloe::ipv4_pseudo_header_sum(source, destination, aloe::Ipv4Protocol::Udp, 12);
-    EXPECT_EQ(aloe::checksum_finish(aloe::checksum_add(pseudo, segment)), 0);
+    aloe::device::store_be16(std::span<std::byte>{segment}.subspan(6, 2), full);
+    const std::uint32_t pseudo =
+        aloe::device::ipv4_pseudo_header_sum(source, destination, aloe::device::Ipv4Protocol::Udp, 12);
+    EXPECT_EQ(aloe::device::checksum_finish(aloe::device::checksum_add(pseudo, segment)), 0);
 }
