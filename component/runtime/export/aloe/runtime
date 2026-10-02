@@ -1,0 +1,10 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe runtime module: shards, their scheduler, timers,
+ * scope and task, and the runtime that launches them. Consumers link
+ * Aloe::Component::Runtime and write `#include <aloe/runtime>`.
+ */
+
+#include <run_queue.hpp>
+#include <work.hpp>
