@@ -120,6 +120,8 @@ namespace aloe::runtime {
         template <typename Receiver>
         friend struct JoinOperation;
 
+        /// Debug builds: the caller is on the thread of the first spawn (threading contract rule 4).
+        void assert_owner() const noexcept;
         void finished(detail::Outcome outcome) noexcept;
         void failed(std::exception_ptr error) noexcept;
         void one_less() noexcept;
@@ -150,12 +152,14 @@ namespace aloe::runtime {
 
             /// Frees the state first, then tells the scope: the scope may complete a join from there.
             void complete(const Outcome outcome) noexcept {
+                scope->assert_owner();
                 TaskScope* owner = scope;
                 delete this;
                 owner->finished(outcome);
             }
 
             void fail(std::exception_ptr error) noexcept {
+                scope->assert_owner();
                 TaskScope* owner = scope;
                 delete this;
                 owner->failed(std::move(error));

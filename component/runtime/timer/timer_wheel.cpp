@@ -1,3 +1,4 @@
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -61,6 +62,7 @@ namespace aloe::runtime {
     }
 
     TimerWheel::~TimerWheel() {
+        assert(armed_ == 0 && "a TimerWheel is destroyed with timers still armed; cancel them first");
         retire(due_);
         for (auto& level : slots_) {
             for (Timer& slot : level) {
@@ -86,6 +88,7 @@ namespace aloe::runtime {
     }
 
     void TimerWheel::arm(Timer& timer, const TimePoint deadline) noexcept {
+        assert(timer.fire != nullptr && "a Timer needs a fire function before it is armed");
         if (timer.armed()) {
             unlink(timer);
         } else {

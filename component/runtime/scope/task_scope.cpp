@@ -1,3 +1,4 @@
+#include <aloe/utils>
 #include <cassert>
 #include <cstdint>
 #include <exception>
@@ -23,7 +24,15 @@ namespace aloe::runtime {
         stop_source_.request_stop();
     }
 
+    void TaskScope::assert_owner() const noexcept {
+        utils::force_non_static(this);  // the assert below is all there is, and NDEBUG removes it
+        assert(
+            owner_ == std::this_thread::get_id() &&
+            "a task completed off its shard: a shard task awaits only its own shard's senders (threading contract 4)");
+    }
+
     void TaskScope::finished(const detail::Outcome outcome) noexcept {
+        assert_owner();
         if (outcome == detail::Outcome::Value) {
             ++counters_->tasks_completed;
         } else {
@@ -33,6 +42,7 @@ namespace aloe::runtime {
     }
 
     void TaskScope::failed(std::exception_ptr error) noexcept {
+        assert_owner();
         ++counters_->tasks_failed;
         std::string what = "an error that is not an exception";
         if (error) {
@@ -49,9 +59,6 @@ namespace aloe::runtime {
     }
 
     void TaskScope::one_less() noexcept {
-        assert(
-            owner_ == std::this_thread::get_id() &&
-            "a task completed off its shard: a shard task awaits only its own shard's senders (threading contract 4)");
         --live_;
         if (live_ == 0 && joiner_ != nullptr) {
             detail::JoinBase* join = std::exchange(joiner_, nullptr);
