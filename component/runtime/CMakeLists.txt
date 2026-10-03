@@ -70,6 +70,20 @@ target_link_libraries(${RUNTIME}.Context PUBLIC
 ##############################################################################
 
 ##############################################################################
+# The scheduler and its senders
+##############################################################################
+add_library(${RUNTIME}.Scheduler INTERFACE
+        scheduler/scheduler.hpp
+)
+target_include_directories(${RUNTIME}.Scheduler INTERFACE
+        scheduler/
+)
+target_link_libraries(${RUNTIME}.Scheduler INTERFACE
+        ${RUNTIME}.Context
+)
+##############################################################################
+
+##############################################################################
 # Runtime exported library
 ##############################################################################
 add_combined_library(${RUNTIME}
@@ -83,6 +97,7 @@ add_combined_library(${RUNTIME}
         ${RUNTIME}.Counters
         ${RUNTIME}.Scope
         ${RUNTIME}.Context
+        ${RUNTIME}.Scheduler
 )
 
 add_library(Aloe::Component::Runtime ALIAS ${RUNTIME})

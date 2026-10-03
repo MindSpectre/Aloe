@@ -9,6 +9,7 @@
 #include <counters.hpp>
 #include <inbox.hpp>
 #include <run_queue.hpp>
+#include <scheduler.hpp>
 #include <shard_context.hpp>
 #include <task_scope.hpp>
 #include <timer_wheel.hpp>
