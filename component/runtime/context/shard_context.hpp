@@ -63,7 +63,13 @@ namespace aloe::runtime {
         /// One step. Returns whether anything ran or fired.
         bool run_once(TimePoint now) noexcept;
 
-        /// Shard thread: sets the stop flag and stops the scope. Idempotent.
+        /**
+         * Shard thread: sets the stop flag and stops the scope. Idempotent.
+         *
+         * The runtime delivers it through the inbox, so it runs inside `run_once`'s `Current`. A test
+         * that calls it directly on a context holding a parked timer sender must hold a
+         * `ShardContext::Current`, because the timer senders' stop callback asserts the current context.
+         */
         void request_stop() noexcept;
 
         [[nodiscard]] bool stop_requested() const noexcept {

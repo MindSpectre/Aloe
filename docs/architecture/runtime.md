@@ -60,6 +60,8 @@ for the device concept. It never names DPDK.
 - **`aloe::runtime::Runtime<Device, Stack>`** -- one shard per device queue, each on its own thread with an
   optional CPU to pin to and a hook that runs first (`ethdev::register_thread` for DPDK). `start`, `stop`
   from any thread, `join`; `scheduler(i)` and `spawn(i, sender)` from any thread; `counters(i)` after `join`.
+  Post work between `start` and `stop`: once a shard has drained nothing reads its inbox, and work posted then
+  never runs. A `start` that throws leaves the runtime stopped and unusable; destroy it.
 
 ## Usage
 

@@ -14,6 +14,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <tuple>
 #include <type_traits>
@@ -55,7 +56,8 @@ namespace aloe::runtime {
      * every inbox, from any thread, idempotent; shards then drain and their threads end. `join`
      * waits. The destructor does both. `scheduler(i)` works from any thread, `spawn(i, sender)` hops
      * to shard i and spawns there. `shard(i)` and `counters(i)` are for the shard's own thread or
-     * for after `join`.
+     * for after `join`. A `start()` that throws leaves the runtime stopped; it cannot be started
+     * again, destroy it.
      */
     template <device::IsDevice Device, typename Stack>
         requires IsStack<Stack, Device>
@@ -186,7 +188,14 @@ namespace aloe::runtime {
             return Scheduler{shards_[index]->context()};
         }
 
-        /// Any thread. Posts the sender to shard `index`, which spawns it into its scope.
+        /**
+         * Any thread. Posts the sender to shard `index`, which spawns it into its scope.
+         *
+         * Post work between `start()` and `stop()`. Once a shard has drained nothing reads its inbox,
+         * so a sender posted then never runs and its node leaks. Only `spawn` after `join` is asserted:
+         * an assert on the stop flag would race a legitimate concurrent `stop()`, so the rest is
+         * documented here, not asserted.
+         */
         template <core::ex::sender Sender>
         void spawn(const std::uint16_t index, Sender&& sender) {
             utils::force_non_const(this);
