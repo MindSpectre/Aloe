@@ -4,7 +4,7 @@
 
 #include <work.hpp>
 
-namespace aloe::runtime {
+namespace aloe::loop {
 
     /**
      * @brief Multi-producer, single-consumer intrusive queue of Work: a shard's inbox.
@@ -71,4 +71,4 @@ namespace aloe::runtime {
         Work* head_ = &stub_;
     };
 
-}  // namespace aloe::runtime
+}  // namespace aloe::loop

@@ -82,7 +82,7 @@ namespace aloe::runtime {
     public:
         class JoinSender;
 
-        TaskScope(core::Logger logger, std::uint16_t index, ShardCounters& counters) noexcept;
+        TaskScope(core::Logger logger, std::uint16_t index, loop::ShardCounters& counters) noexcept;
         TaskScope(const TaskScope&)            = delete;
         TaskScope& operator=(const TaskScope&) = delete;
         TaskScope(TaskScope&&)                 = delete;
@@ -129,7 +129,7 @@ namespace aloe::runtime {
 
         core::Logger logger_;
         std::uint16_t index_;
-        ShardCounters* counters_;
+        loop::ShardCounters* counters_;
         core::ex::inplace_stop_source stop_source_;
         std::size_t live_         = 0;
         detail::JoinBase* joiner_ = nullptr;

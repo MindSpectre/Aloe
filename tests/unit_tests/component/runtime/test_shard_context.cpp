@@ -11,7 +11,7 @@ namespace {
 
     constexpr TimePoint start{};
 
-    struct Recorder : aloe::runtime::Work {
+    struct Recorder : aloe::loop::Work {
         Recorder(std::vector<int>& record, const int id)
             : Work{&Recorder::execute},
               record_{&record},
@@ -19,11 +19,11 @@ namespace {
         }
 
         /// On run, push a second node onto the current context's run queue.
-        void then_push(aloe::runtime::Work& other) noexcept {
+        void then_push(aloe::loop::Work& other) noexcept {
             follow_up_ = &other;
         }
 
-        static void execute(aloe::runtime::Work& work) noexcept {
+        static void execute(aloe::loop::Work& work) noexcept {
             auto& self = static_cast<Recorder&>(work);
             self.record_->push_back(self.id_);
             if (self.follow_up_ != nullptr) {
@@ -35,17 +35,17 @@ namespace {
     private:
         std::vector<int>* record_;
         int id_;
-        aloe::runtime::Work* follow_up_ = nullptr;
+        aloe::loop::Work* follow_up_ = nullptr;
     };
 
-    struct RecordingTimer : aloe::runtime::Timer {
+    struct RecordingTimer : aloe::loop::Timer {
         RecordingTimer(std::vector<int>& record, const int id)
             : Timer{&RecordingTimer::execute},
               record_{&record},
               id_{id} {
         }
 
-        static void execute(aloe::runtime::Timer& timer) noexcept {
+        static void execute(aloe::loop::Timer& timer) noexcept {
             auto& self = static_cast<RecordingTimer&>(timer);
             self.record_->push_back(self.id_);
         }

@@ -115,7 +115,7 @@ namespace aloe::runtime {
                         return;
                     }
                     shards_[index]->run();
-                    const ShardCounters& counters = shards_[index]->context().counters();
+                    const loop::ShardCounters& counters = shards_[index]->context().counters();
                     shards_[index]
                         ->context()
                         .logger()
@@ -210,7 +210,7 @@ namespace aloe::runtime {
             return *shards_[index];
         }
 
-        [[nodiscard]] const ShardCounters& counters(const std::uint16_t index) const noexcept {
+        [[nodiscard]] const loop::ShardCounters& counters(const std::uint16_t index) const noexcept {
             return shards_[index]->context().counters();
         }
 
@@ -219,13 +219,13 @@ namespace aloe::runtime {
         }
 
     private:
-        struct StopWork : Work {
+        struct StopWork : loop::Work {
             explicit StopWork(ShardContext& owner) noexcept
-                : Work{&StopWork::execute},
+                : loop::Work{&StopWork::execute},
                   context{&owner} {
             }
 
-            static void execute(Work& work) noexcept {
+            static void execute(loop::Work& work) noexcept {
                 static_cast<StopWork&>(work).context->request_stop();
             }
 
@@ -233,14 +233,14 @@ namespace aloe::runtime {
         };
 
         template <typename Sender>
-        struct SpawnWork : Work {
+        struct SpawnWork : loop::Work {
             SpawnWork(ShardContext& owner, Sender s)
-                : Work{&SpawnWork::execute},
+                : loop::Work{&SpawnWork::execute},
                   context{&owner},
                   sender{std::move(s)} {
             }
 
-            static void execute(Work& work) noexcept {
+            static void execute(loop::Work& work) noexcept {
                 auto* self = static_cast<SpawnWork*>(&work);
                 Scheduler{*self->context}.spawn(std::move(self->sender));
                 delete self;

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <aloe/ethdev>
+#include <aloe/loop>
 #include <aloe/runtime>
 #include <array>
 #include <atomic>
@@ -28,7 +29,7 @@ namespace {
     const auto* const environment = ::testing::AddGlobalTestEnvironment(new aloe::testing::EalEnvironment{"net_ring0"});
     const auto* const logging     = ::testing::AddGlobalTestEnvironment(new aloe::testing::LoggingEnvironment{});
 
-    using Queue = aloe::runtime::ShardQueue<aloe::ethdev::Port>;
+    using Queue = aloe::loop::ShardQueue<aloe::ethdev::Port>;
     using Echo  = aloe::testing::EchoStack<aloe::ethdev::Port>;
 
     [[nodiscard]] bool eventually(const std::function<bool()>& condition) {

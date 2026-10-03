@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace aloe::runtime {
+namespace aloe::loop {
 
     /**
      * @brief An intrusive timer node: a deadline and what to call when it is reached.
@@ -105,4 +105,4 @@ namespace aloe::runtime {
         std::array<std::array<Timer, slots_per_level>, levels> slots_;
     };
 
-}  // namespace aloe::runtime
+}  // namespace aloe::loop

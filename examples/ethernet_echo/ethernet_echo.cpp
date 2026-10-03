@@ -11,6 +11,7 @@
 #include <aloe/core>
 #include <aloe/device>
 #include <aloe/ethdev>
+#include <aloe/loop>
 #include <aloe/runtime>
 #include <charconv>
 #include <csignal>
@@ -35,8 +36,7 @@ namespace {
     public:
         using Packet = aloe::ethdev::Packet;
 
-        EchoStack(aloe::runtime::ShardContext& /*context*/,
-                  aloe::runtime::ShardQueue<aloe::ethdev::Port>& queue) noexcept
+        EchoStack(aloe::runtime::ShardContext& /*context*/, aloe::loop::ShardQueue<aloe::ethdev::Port>& queue) noexcept
             : queue_{&queue} {
         }
 
@@ -64,7 +64,7 @@ namespace {
             return aloe::device::MacAddress{destination} == queue_->mac();
         }
 
-        aloe::runtime::ShardQueue<aloe::ethdev::Port>* queue_;
+        aloe::loop::ShardQueue<aloe::ethdev::Port>* queue_;
         std::uint64_t refused_ = 0;
     };
 

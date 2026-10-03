@@ -1,20 +1,17 @@
 #pragma once
 
 /**
- * Public umbrella for the Aloe runtime module: shards, their scheduler, timers,
- * scope and task, and the runtime that launches them. Consumers link
- * Aloe::Component::Runtime and write `#include <aloe/runtime>`.
+ * Public umbrella for the Aloe runtime module: the loop written for you. Shards and the runtime
+ * that launches one per queue, the shard context, the scheduler with its senders, the counting
+ * scope and the shard task. Built on the loop module, whose umbrella this includes.
+ * Consumers link Aloe::Component::Runtime and write `#include <aloe/runtime>`.
  */
 
-#include <counters.hpp>
-#include <inbox.hpp>
-#include <run_queue.hpp>
+#include <aloe/loop>
+
 #include <runtime.hpp>
 #include <scheduler.hpp>
 #include <shard.hpp>
 #include <shard_context.hpp>
-#include <shard_queue.hpp>
 #include <shard_task.hpp>
 #include <task_scope.hpp>
-#include <timer_wheel.hpp>
-#include <work.hpp>

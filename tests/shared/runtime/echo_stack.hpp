@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <aloe/device>
+#include <aloe/loop>
 #include <aloe/runtime>
 #include <cstddef>
 #include <cstdint>
@@ -24,7 +25,7 @@ namespace aloe::testing {
     public:
         using Packet = typename Device::Packet;
 
-        EchoStack(runtime::ShardContext& context, runtime::ShardQueue<Device>& queue) noexcept
+        EchoStack(runtime::ShardContext& context, loop::ShardQueue<Device>& queue) noexcept
             : context_{&context},
               queue_{&queue} {
         }
@@ -66,7 +67,7 @@ namespace aloe::testing {
         }
 
         runtime::ShardContext* context_;
-        runtime::ShardQueue<Device>* queue_;
+        loop::ShardQueue<Device>* queue_;
         std::uint64_t echoed_  = 0;
         std::uint64_t dropped_ = 0;
         std::uint64_t refused_ = 0;

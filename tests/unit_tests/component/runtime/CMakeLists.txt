@@ -1,16 +1,13 @@
 ##############################################################################
-# Test Runtime: the context's primitives, the scheduler, the shard and the runtime on the fabric
+# Test Runtime: the context, the scheduler, the shard and the runtime on the fabric
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Runtime
-        test_inbox.cpp
-        test_run_queue.cpp
         test_runtime.cpp
         test_scheduler.cpp
         test_shard.cpp
         test_shard_context.cpp
         test_shard_task.cpp
         test_task_scope.cpp
-        test_timer_wheel.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Runtime
         PRIVATE
@@ -29,7 +26,6 @@ target_link_libraries(${UNIT_TESTING_TARGET}.Runtime
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Runtime.Threads
         test_cross_shard.cpp
-        test_inbox_threads.cpp
         test_steering.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Runtime.Threads

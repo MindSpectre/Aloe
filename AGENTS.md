@@ -2,13 +2,14 @@
 
 Guidance for coding agents, and for people, working in this repository.
 
-Aloe is a C++26 userspace TCP/IP stack on DPDK for Linux, with senders and
-receivers (stdexec) as its asynchronous model. The repository holds the build
-skeleton and the device layer: the packet and device concepts, an in-memory
-backend (`fabric`) for tests and the DPDK backend (`ethdev`), and the shard
-runtime (`runtime`). The stack is
-built in phases: shard runtime, minimal TCP, full TCP, TLS, HTTP/1.1 with
-WebSocket.
+Aloe is a C++26 userspace TCP/IP stack on DPDK for Linux. It is two products:
+bricks, plain calls a program writes its own loop over, and a runtime built only
+from the bricks that writes the loop for you and offers senders and receivers
+(stdexec) for the code that waits. The repository holds the build skeleton, the
+device layer (the packet and device concepts, an in-memory backend `fabric` for
+tests and the DPDK backend `ethdev`), the loop bricks (`loop`) and the shard
+runtime (`runtime`). The stack is built in phases: shard runtime, minimal TCP,
+full TCP, TLS, HTTP/1.1 with WebSocket.
 
 ## Build and test
 
@@ -38,7 +39,7 @@ ctest --preset debug -L unit     # or: integration, functional
 | Path                                                                       | Contents                                                                                                                                                                                                   |
 |----------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `common/<module>/`                                                         | Foundation modules. `core` holds the version and the execution alias; `utils` holds small header-only helpers with no dependencies.                                                                        |
-| `component/<module>/`                                                      | Stack modules: `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK), `runtime` (shards, scheduler, timers, scope, task, runtime; no DPDK). |
+| `component/<module>/`                                                      | Stack modules: `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime; built on `loop`, no DPDK). |
 | `<module>/export/aloe/<module>`                                            | Umbrella header, no extension. Consumers write `#include <aloe/<module>>`.                                                                                                                                 |
 | `tests/unit_tests/`, `tests/integration_tests/`, `tests/functional_tests/` | One CTest label each.                                                                                                                                                                                      |
 | `tests/manual_tests/`                                                      | Label `manual`: tests that need privileges or hardware. Every test preset excludes the label; run the binary by hand.                                                                                      |
@@ -76,13 +77,20 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - **Style.** `codestyle.md` covers what `.clang-format` does not: naming,
   namespaces, parameters, attributes, error handling, include order.
 - **Namespaces.** Every module gets a namespace named after it: `aloe::core`,
-  `aloe::utils`, `aloe::device`, `aloe::fabric`, `aloe::ethdev`. Nothing is
+  `aloe::utils`, `aloe::device`, `aloe::fabric`, `aloe::ethdev`, `aloe::loop`,
+  `aloe::runtime`. Nothing is
   declared directly in `aloe`. Another module's names are qualified with its
   namespace (`device::MacAddress` inside `aloe::fabric`), never pulled in with
   `using namespace`. Test helpers live in `aloe::testing`.
 - **stdexec stays out of hot-path headers.** Only the runtime and the public
-  surface include `<aloe/core>`; a device or protocol header that needs a
-  helper takes it from `<aloe/utils>`.
+  surface include `<aloe/core>`; a device or protocol header takes helpers from
+  `<aloe/utils>` and the loop's bricks from `<aloe/loop>`, which does not link
+  `core`, so a protocol module that links `Aloe::Component::Loop` and not
+  `Aloe::Common::Core` cannot include stdexec by accident.
+- **Bricks before runtime.** A capability lands in `loop` or a protocol module
+  first, as a plain call or an event the caller drains, and the runtime wraps it
+  in a sender afterwards. The runtime never has a capability the bricks lack,
+  and the docs and examples lead with the bricks.
 - **Error handling.** `std::expected` on hot paths, exceptions on setup and
   cold paths.
 

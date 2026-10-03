@@ -15,7 +15,7 @@
 #include <rss.hpp>
 
 
-namespace aloe::runtime {
+namespace aloe::loop {
 
     /**
      * @brief One queue of a device as the stack sees it: allocate, transmit, and the device's facts.
@@ -144,4 +144,4 @@ namespace aloe::runtime {
         std::size_t size_ = 0;
     };
 
-}  // namespace aloe::runtime
+}  // namespace aloe::loop

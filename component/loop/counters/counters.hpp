@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace aloe::runtime {
+namespace aloe::loop {
 
     /// Per-shard counters, all monotonic. Read on the shard's thread, or after the shard has stopped.
     struct ShardCounters {
@@ -22,4 +22,4 @@ namespace aloe::runtime {
         friend constexpr bool operator==(const ShardCounters&, const ShardCounters&) noexcept = default;
     };
 
-}  // namespace aloe::runtime
+}  // namespace aloe::loop

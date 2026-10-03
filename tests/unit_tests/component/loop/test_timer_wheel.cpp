@@ -1,5 +1,5 @@
 #include <algorithm>
-#include <aloe/runtime>
+#include <aloe/loop>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -12,7 +12,7 @@
 namespace {
 
     using namespace std::chrono_literals;
-    using TimePoint = aloe::runtime::Timer::TimePoint;
+    using TimePoint = aloe::loop::Timer::TimePoint;
 
     constexpr TimePoint start{};
     constexpr auto resolution = 1ms;
@@ -27,7 +27,7 @@ namespace {
     };
 
     /// Records itself when fired; can re-arm itself or cancel another timer from inside `fire`.
-    struct Probe : aloe::runtime::Timer {
+    struct Probe : aloe::loop::Timer {
         Probe(std::vector<Fired>& record, const TimePoint* now, const int id)
             : Timer{&Probe::execute},
               record_{&record},
@@ -35,22 +35,22 @@ namespace {
               id_{id} {
         }
 
-        void rearm_once_from_fire(aloe::runtime::TimerWheel& wheel, const TimePoint when) noexcept {
+        void rearm_once_from_fire(aloe::loop::TimerWheel& wheel, const TimePoint when) noexcept {
             rearm_wheel_    = &wheel;
             rearm_deadline_ = when;
         }
 
-        void cancel_from_fire(aloe::runtime::TimerWheel& wheel, Probe& victim) noexcept {
+        void cancel_from_fire(aloe::loop::TimerWheel& wheel, Probe& victim) noexcept {
             cancel_wheel_  = &wheel;
             cancel_victim_ = &victim;
         }
 
-        static void execute(aloe::runtime::Timer& timer) noexcept {
+        static void execute(aloe::loop::Timer& timer) noexcept {
             auto& self = static_cast<Probe&>(timer);
             self.record_->push_back({self.id_, *self.now_});
             if (self.rearm_wheel_ != nullptr) {
-                aloe::runtime::TimerWheel* wheel = self.rearm_wheel_;
-                self.rearm_wheel_                = nullptr;
+                aloe::loop::TimerWheel* wheel = self.rearm_wheel_;
+                self.rearm_wheel_             = nullptr;
                 wheel->arm(self, self.rearm_deadline_);
             }
             if (self.cancel_wheel_ != nullptr) {
@@ -63,17 +63,17 @@ namespace {
         std::vector<Fired>* record_;
         const TimePoint* now_;
         int id_;
-        aloe::runtime::TimerWheel* rearm_wheel_ = nullptr;
+        aloe::loop::TimerWheel* rearm_wheel_ = nullptr;
         TimePoint rearm_deadline_{};
-        aloe::runtime::TimerWheel* cancel_wheel_ = nullptr;
-        Probe* cancel_victim_                    = nullptr;
+        aloe::loop::TimerWheel* cancel_wheel_ = nullptr;
+        Probe* cancel_victim_                 = nullptr;
     };
 
     class TimerWheelTest : public testing::Test {
     protected:
         std::vector<Fired> record_;
         TimePoint now_ = start;
-        aloe::runtime::TimerWheel wheel_{resolution, start};
+        aloe::loop::TimerWheel wheel_{resolution, start};
 
         std::size_t advance(const TimePoint now) {
             now_ = now;

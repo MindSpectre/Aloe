@@ -5,7 +5,7 @@
 
 #include <work.hpp>
 
-namespace aloe::runtime {
+namespace aloe::loop {
 
     /**
      * @brief Same-shard FIFO of Work. One thread, no synchronisation.
@@ -54,4 +54,4 @@ namespace aloe::runtime {
         Work* tail_ = nullptr;
     };
 
-}  // namespace aloe::runtime
+}  // namespace aloe::loop

@@ -1,11 +1,11 @@
-#include <aloe/runtime>
+#include <aloe/loop>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 namespace {
 
-    struct Numbered : aloe::runtime::Work {
+    struct Numbered : aloe::loop::Work {
         explicit Numbered(const int id)
             : id_{id} {
         }
@@ -18,9 +18,9 @@ namespace {
         int id_;
     };
 
-    std::vector<int> drain(aloe::runtime::Inbox& inbox) {
+    std::vector<int> drain(aloe::loop::Inbox& inbox) {
         std::vector<int> ids;
-        for (aloe::runtime::Work* work = inbox.pop(); work != nullptr; work = inbox.pop()) {
+        for (aloe::loop::Work* work = inbox.pop(); work != nullptr; work = inbox.pop()) {
             ids.push_back(static_cast<Numbered&>(*work).id());
         }
         return ids;
@@ -29,7 +29,7 @@ namespace {
 }  // namespace
 
 TEST(Inbox, PopsInPushOrderAndReportsEmpty) {
-    aloe::runtime::Inbox inbox;
+    aloe::loop::Inbox inbox;
     EXPECT_TRUE(inbox.empty());
     EXPECT_EQ(inbox.pop(), nullptr);
 
@@ -47,7 +47,7 @@ TEST(Inbox, PopsInPushOrderAndReportsEmpty) {
 }
 
 TEST(Inbox, InterleavedPushAndPopKeepsOrder) {
-    aloe::runtime::Inbox inbox;
+    aloe::loop::Inbox inbox;
     Numbered a{1};
     Numbered b{2};
     Numbered c{3};

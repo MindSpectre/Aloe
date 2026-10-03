@@ -22,7 +22,7 @@ namespace aloe::runtime {
      *
      * Owns the run queue, the inbox, the timer wheel, the task scope, the tick stamp and the
      * counters. One thread owns a context for its whole life; every member function except
-     * `Inbox::push` runs on that thread. A thread-local pointer, `current()`, names the context the
+     * `loop::Inbox::push` runs on that thread. A thread-local pointer, `current()`, names the context the
      * calling thread is running, which is how the scheduler tells same-shard from cross-shard.
      *
      * `run_once(now)` is its one verb: record the stamp, move the inbox's contents onto the run
@@ -94,15 +94,15 @@ namespace aloe::runtime {
             return logger_;
         }
 
-        [[nodiscard]] RunQueue& ready() noexcept {
+        [[nodiscard]] loop::RunQueue& ready() noexcept {
             return ready_;
         }
 
-        [[nodiscard]] Inbox& inbox() noexcept {
+        [[nodiscard]] loop::Inbox& inbox() noexcept {
             return inbox_;
         }
 
-        [[nodiscard]] TimerWheel& timers() noexcept {
+        [[nodiscard]] loop::TimerWheel& timers() noexcept {
             return timers_;
         }
 
@@ -110,22 +110,22 @@ namespace aloe::runtime {
             return scope_;
         }
 
-        [[nodiscard]] ShardCounters& counters() noexcept {
+        [[nodiscard]] loop::ShardCounters& counters() noexcept {
             return counters_;
         }
 
-        [[nodiscard]] const ShardCounters& counters() const noexcept {
+        [[nodiscard]] const loop::ShardCounters& counters() const noexcept {
             return counters_;
         }
 
     private:
         std::uint16_t index_;
         core::Logger logger_;
-        ShardCounters counters_;
+        loop::ShardCounters counters_;
         TimePoint now_;
-        RunQueue ready_;
-        Inbox inbox_;
-        TimerWheel timers_;
+        loop::RunQueue ready_;
+        loop::Inbox inbox_;
+        loop::TimerWheel timers_;
         TaskScope scope_;
         bool stopping_ = false;
     };

@@ -2,7 +2,7 @@
 
 #include <atomic>
 
-namespace aloe::runtime {
+namespace aloe::loop {
 
     /**
      * @brief The intrusive node every unit of ready work is.
@@ -32,4 +32,4 @@ namespace aloe::runtime {
         Function run = nullptr;
     };
 
-}  // namespace aloe::runtime
+}  // namespace aloe::loop

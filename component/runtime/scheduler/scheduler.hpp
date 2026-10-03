@@ -30,14 +30,14 @@ namespace aloe::runtime {
             }
         };
 
-        /// The operation state of `schedule()`: a Work node the shard runs.
+        /// The operation state of `schedule()`: a loop::Work node the shard runs.
         template <typename Receiver>
-        struct ScheduleOperation : Work {
+        struct ScheduleOperation : loop::Work {
             ShardContext* context;
             Receiver receiver;
 
             ScheduleOperation(ShardContext* owner, Receiver r) noexcept
-                : Work{&ScheduleOperation::execute},
+                : loop::Work{&ScheduleOperation::execute},
                   context{owner},
                   receiver{std::move(r)} {
             }
@@ -50,7 +50,7 @@ namespace aloe::runtime {
                 }
             }
 
-            static void execute(Work& work) noexcept {
+            static void execute(loop::Work& work) noexcept {
                 auto& self = static_cast<ScheduleOperation&>(work);
                 if (core::ex::get_stop_token(core::ex::get_env(self.receiver)).stop_requested()) {
                     core::ex::set_stopped(std::move(self.receiver));
@@ -78,13 +78,13 @@ namespace aloe::runtime {
         };
 
         /**
-         * The operation state of `schedule_after` and `schedule_at`: a Timer in the wheel, and a Work
+         * The operation state of `schedule_after` and `schedule_at`: a loop::Timer in the wheel, and a loop::Work
          * node for the hop through the inbox when started off the shard. Started on the shard it arms
          * at once, `after` relative to the tick stamp. A stop request, which by contract arrives on
          * the shard thread, cancels the timer and completes stopped.
          */
         template <typename Receiver>
-        struct TimerOperation : Work, Timer {
+        struct TimerOperation : loop::Work, loop::Timer {
             using StopToken = core::ex::stop_token_of_t<core::ex::env_of_t<Receiver>>;
 
             struct OnStop {
@@ -107,8 +107,8 @@ namespace aloe::runtime {
                            Receiver r,
                            const std::chrono::nanoseconds delay,
                            const std::optional<ShardContext::TimePoint> target) noexcept
-                : Work{&TimerOperation::arrive},
-                  Timer{&TimerOperation::fired},
+                : loop::Work{&TimerOperation::arrive},
+                  loop::Timer{&TimerOperation::fired},
                   context{owner},
                   receiver{std::move(r)},
                   after{delay},
@@ -119,11 +119,11 @@ namespace aloe::runtime {
                 if (ShardContext::current() == context) {
                     arm();
                 } else {
-                    context->inbox().push(static_cast<Work&>(*this));
+                    context->inbox().push(static_cast<loop::Work&>(*this));
                 }
             }
 
-            static void arrive(Work& work) noexcept {
+            static void arrive(loop::Work& work) noexcept {
                 static_cast<TimerOperation&>(work).arm();
             }
 
@@ -134,13 +134,13 @@ namespace aloe::runtime {
                     return;
                 }
                 const ShardContext::TimePoint when = at.has_value() ? *at : context->now() + after;
-                context->timers().arm(static_cast<Timer&>(*this), when);
+                context->timers().arm(static_cast<loop::Timer&>(*this), when);
                 callback.emplace(token, OnStop{this});
             }
 
             void cancel() noexcept {
                 assert(ShardContext::current() == context && "a shard's operation is stopped on its own thread");
-                auto& timer = static_cast<Timer&>(*this);
+                auto& timer = static_cast<loop::Timer&>(*this);
                 if (!timer.armed()) {
                     return;
                 }
@@ -149,7 +149,7 @@ namespace aloe::runtime {
                 core::ex::set_stopped(std::move(receiver));
             }
 
-            static void fired(Timer& timer) noexcept {
+            static void fired(loop::Timer& timer) noexcept {
                 auto& self = static_cast<TimerOperation&>(timer);
                 self.callback.reset();
                 core::ex::set_value(std::move(self.receiver));

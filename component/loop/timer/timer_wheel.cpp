@@ -5,7 +5,7 @@
 
 #include <timer_wheel.hpp>
 
-namespace aloe::runtime {
+namespace aloe::loop {
 
     namespace {
 
@@ -196,4 +196,4 @@ namespace aloe::runtime {
         return fired;
     }
 
-}  // namespace aloe::runtime
+}  // namespace aloe::loop

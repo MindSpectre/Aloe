@@ -10,7 +10,7 @@
 
 namespace aloe::runtime {
 
-    TaskScope::TaskScope(const core::Logger logger, const std::uint16_t index, ShardCounters& counters) noexcept
+    TaskScope::TaskScope(const core::Logger logger, const std::uint16_t index, loop::ShardCounters& counters) noexcept
         : logger_{logger},
           index_{index},
           counters_{&counters} {

@@ -1,42 +1,6 @@
 set(RUNTIME ${COMPONENT}.Runtime)
 
 ##############################################################################
-# Work: the intrusive node, the same-shard run queue and the cross-thread inbox
-##############################################################################
-add_library(${RUNTIME}.Work INTERFACE
-        work/work.hpp
-        work/run_queue.hpp
-        work/inbox.hpp
-)
-target_include_directories(${RUNTIME}.Work INTERFACE
-        work/
-)
-##############################################################################
-
-##############################################################################
-# Timers: the intrusive node and the hierarchical wheel
-##############################################################################
-add_library(${RUNTIME}.Timer STATIC
-        timer/timer_wheel.hpp
-        timer/timer_wheel.cpp
-)
-target_include_directories(${RUNTIME}.Timer PUBLIC
-        timer/
-)
-##############################################################################
-
-##############################################################################
-# Counters
-##############################################################################
-add_library(${RUNTIME}.Counters INTERFACE
-        counters/counters.hpp
-)
-target_include_directories(${RUNTIME}.Counters INTERFACE
-        counters/
-)
-##############################################################################
-
-##############################################################################
 # The per-shard counting scope
 ##############################################################################
 add_library(${RUNTIME}.Scope STATIC
@@ -47,7 +11,7 @@ target_include_directories(${RUNTIME}.Scope PUBLIC
         scope/
 )
 target_link_libraries(${RUNTIME}.Scope PUBLIC
-        ${RUNTIME}.Counters
+        Aloe::Component::Loop
         Aloe::Common::Core
 )
 ##############################################################################
@@ -63,9 +27,8 @@ target_include_directories(${RUNTIME}.Context PUBLIC
         context/
 )
 target_link_libraries(${RUNTIME}.Context PUBLIC
-        ${RUNTIME}.Work
-        ${RUNTIME}.Timer
         ${RUNTIME}.Scope
+        Aloe::Component::Loop
 )
 ##############################################################################
 
@@ -101,7 +64,6 @@ target_link_libraries(${RUNTIME}.Task INTERFACE
 # The shard: one device queue, the stack, and the tick
 ##############################################################################
 add_library(${RUNTIME}.Shard INTERFACE
-        shard/shard_queue.hpp
         shard/shard.hpp
 )
 target_include_directories(${RUNTIME}.Shard INTERFACE
@@ -109,8 +71,8 @@ target_include_directories(${RUNTIME}.Shard INTERFACE
 )
 target_link_libraries(${RUNTIME}.Shard INTERFACE
         ${RUNTIME}.Scheduler
+        Aloe::Component::Loop
         Aloe::Component::Device
-        Aloe::Common::Utils
         Threads::Threads
 )
 ##############################################################################
@@ -126,6 +88,7 @@ target_include_directories(${RUNTIME}.Runtime INTERFACE
 )
 target_link_libraries(${RUNTIME}.Runtime INTERFACE
         ${RUNTIME}.Shard
+        Aloe::Common::Utils
         Threads::Threads
 )
 ##############################################################################
@@ -139,15 +102,13 @@ add_combined_library(${RUNTIME}
         SOURCES
         export/aloe/runtime
         LIBRARIES
-        ${RUNTIME}.Work
-        ${RUNTIME}.Timer
-        ${RUNTIME}.Counters
         ${RUNTIME}.Scope
         ${RUNTIME}.Context
         ${RUNTIME}.Scheduler
         ${RUNTIME}.Task
         ${RUNTIME}.Shard
         ${RUNTIME}.Runtime
+        Aloe::Component::Loop
 )
 
 add_library(Aloe::Component::Runtime ALIAS ${RUNTIME})

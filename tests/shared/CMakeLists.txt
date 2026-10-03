@@ -71,6 +71,7 @@ target_include_directories(${SHARED_TESTING_TARGET}.Runtime INTERFACE
 )
 target_link_libraries(${SHARED_TESTING_TARGET}.Runtime INTERFACE
         Aloe::Component::Runtime
+        Aloe::Component::Loop
         Aloe::Component::Device
 )
 ##############################################################################

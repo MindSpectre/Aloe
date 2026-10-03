@@ -34,7 +34,7 @@ namespace aloe::runtime {
     /**
      * @brief The layer above a shard.
      *
-     * Constructed by the shard from `ShardContext&`, `ShardQueue<Device>&` and the caller's arguments.
+     * Constructed by the shard from `ShardContext&`, `loop::ShardQueue<Device>&` and the caller's arguments.
      * `on_receive` is called on the shard thread, inside a tick, with a non-empty burst, and must
      * not throw; the stack moves out the packets it keeps and the shard frees the rest. Timers,
      * tasks and scheduling go through the context.
@@ -61,7 +61,7 @@ namespace aloe::runtime {
         using TimePoint = ShardContext::TimePoint;
 
         template <typename... Args>
-            requires std::constructible_from<Stack, ShardContext&, ShardQueue<Device>&, Args...>
+            requires std::constructible_from<Stack, ShardContext&, loop::ShardQueue<Device>&, Args...>
         Shard(
             const ShardConfig& config, Device& owner, const std::uint16_t index, const TimePoint start, Args&&... args)
             : config_{
@@ -129,7 +129,7 @@ namespace aloe::runtime {
             return Scheduler{context_};
         }
 
-        [[nodiscard]] ShardQueue<Device>& queue() noexcept {
+        [[nodiscard]] loop::ShardQueue<Device>& queue() noexcept {
             return queue_;
         }
 
@@ -144,7 +144,7 @@ namespace aloe::runtime {
     private:
         ShardConfig config_;
         ShardContext context_;
-        ShardQueue<Device> queue_;
+        loop::ShardQueue<Device> queue_;
         Stack stack_;  ///< Declared after the two it holds, so it is destroyed first.
         std::vector<Packet> burst_;
     };

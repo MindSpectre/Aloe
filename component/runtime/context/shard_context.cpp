@@ -35,14 +35,14 @@ namespace aloe::runtime {
         const Current current{*this};
         now_      = now;
         bool busy = false;
-        for (Work* work = inbox_.pop(); work != nullptr; work = inbox_.pop()) {
+        for (loop::Work* work = inbox_.pop(); work != nullptr; work = inbox_.pop()) {
             ready_.push(*work);
             ++counters_.inbox_received;
             busy = true;
         }
         const std::size_t fired  = timers_.advance(now);
         counters_.timers_fired  += fired;
-        const std::size_t ran    = RunQueue::run_chain(ready_.take());
+        const std::size_t ran    = loop::RunQueue::run_chain(ready_.take());
         counters_.work_run      += ran;
         return busy || fired > 0 || ran > 0;
     }
