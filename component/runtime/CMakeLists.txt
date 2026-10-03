@@ -116,6 +116,21 @@ target_link_libraries(${RUNTIME}.Shard INTERFACE
 ##############################################################################
 
 ##############################################################################
+# The runtime: N shards on N threads
+##############################################################################
+add_library(${RUNTIME}.Runtime INTERFACE
+        runtime/runtime.hpp
+)
+target_include_directories(${RUNTIME}.Runtime INTERFACE
+        runtime/
+)
+target_link_libraries(${RUNTIME}.Runtime INTERFACE
+        ${RUNTIME}.Shard
+        Threads::Threads
+)
+##############################################################################
+
+##############################################################################
 # Runtime exported library
 ##############################################################################
 add_combined_library(${RUNTIME}
@@ -132,6 +147,7 @@ add_combined_library(${RUNTIME}
         ${RUNTIME}.Scheduler
         ${RUNTIME}.Task
         ${RUNTIME}.Shard
+        ${RUNTIME}.Runtime
 )
 
 add_library(Aloe::Component::Runtime ALIAS ${RUNTIME})
