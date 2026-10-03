@@ -616,6 +616,27 @@ Each becomes a test or a finding that amends this spec.
 6. The echo over `net_ring` with four queues sees every frame on its own queue.
 7. The thread tests pass under `tsan` and the whole suite under `asan`.
 
+Outcome, recorded on 2026-10-03 when the plan was executed:
+
+1. Proven. `ShardTaskTest.ATaskAwaitingATimerCostsOneWheelEntryAndNoRunQueuePush`
+   passes with `work_run == 0` on clang 22 and GCC 16; the child task inherits the
+   scheduler and a stoppable token.
+2. Proven. The four pre-existing tests in `test_execution.cpp` pass unchanged after the
+   re-alias.
+3. Proven. The shard senders answer `core::get_completion_behavior_t<Tag>` with
+   `core::completion_behavior::asynchronous_affine` through a `static constexpr query`
+   member; the runtime never names `exec::`.
+4. Proven. `log.hpp` compiles on both compilers with the format string as a
+   `FixedString` template parameter and one `static constexpr quill::MacroMetadata` per
+   instantiation; `Logger`'s members are `const`, since it is a non-owning handle.
+5. Proven. `rte_thread_register` succeeded on every shard thread after an EAL started
+   with `-l 0`; the four shards reported four distinct lcore ids, and the echo ran with
+   real mbufs allocated on those threads.
+6. Proven. `RuntimeRing.EachShardEchoesOnItsOwnQueueWithARegisteredThread`: each shard
+   received exactly its own frame and its own answer, two frames in and two out.
+7. Proven. `debug`, `gcc-debug`, `asan` and `tsan` each pass the whole suite, 32 tests,
+   and the thread targets are clean under ThreadSanitizer across repeated runs.
+
 ## Findings from the spot checks
 
 On 2026-10-02, after the design session, two throwaway probes checked the uncertain
