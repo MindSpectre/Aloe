@@ -5,6 +5,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Runtime
         test_inbox.cpp
         test_run_queue.cpp
         test_scheduler.cpp
+        test_shard.cpp
         test_shard_context.cpp
         test_shard_task.cpp
         test_task_scope.cpp
@@ -13,6 +14,9 @@ add_unit_test(${UNIT_TESTING_TARGET}.Runtime
 target_link_libraries(${UNIT_TESTING_TARGET}.Runtime
         PRIVATE
         Aloe::Component::Runtime
+        Aloe::Component::Fabric
+        ${SHARED_TESTING_TARGET}.Device
+        ${SHARED_TESTING_TARGET}.Runtime
         ${SHARED_TESTING_TARGET}.Log
         Threads::Threads
         ${TEST_LIBS}

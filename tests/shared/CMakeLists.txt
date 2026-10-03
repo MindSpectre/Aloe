@@ -57,3 +57,18 @@ target_link_libraries(${SHARED_TESTING_TARGET}.Log INTERFACE
         ${TEST_LIBS}
 )
 ##############################################################################
+
+##############################################################################
+# The Ethernet echo stack the runtime tests and examples run
+##############################################################################
+add_library(${SHARED_TESTING_TARGET}.Runtime INTERFACE
+        runtime/echo_stack.hpp
+)
+target_include_directories(${SHARED_TESTING_TARGET}.Runtime INTERFACE
+        runtime/
+)
+target_link_libraries(${SHARED_TESTING_TARGET}.Runtime INTERFACE
+        Aloe::Component::Runtime
+        Aloe::Component::Device
+)
+##############################################################################

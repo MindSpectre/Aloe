@@ -98,6 +98,24 @@ target_link_libraries(${RUNTIME}.Task INTERFACE
 ##############################################################################
 
 ##############################################################################
+# The shard: one device queue, the stack, and the tick
+##############################################################################
+add_library(${RUNTIME}.Shard INTERFACE
+        shard/shard_queue.hpp
+        shard/shard.hpp
+)
+target_include_directories(${RUNTIME}.Shard INTERFACE
+        shard/
+)
+target_link_libraries(${RUNTIME}.Shard INTERFACE
+        ${RUNTIME}.Scheduler
+        Aloe::Component::Device
+        Aloe::Common::Utils
+        Threads::Threads
+)
+##############################################################################
+
+##############################################################################
 # Runtime exported library
 ##############################################################################
 add_combined_library(${RUNTIME}
@@ -113,6 +131,7 @@ add_combined_library(${RUNTIME}
         ${RUNTIME}.Context
         ${RUNTIME}.Scheduler
         ${RUNTIME}.Task
+        ${RUNTIME}.Shard
 )
 
 add_library(Aloe::Component::Runtime ALIAS ${RUNTIME})
