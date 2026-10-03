@@ -1,38 +1,34 @@
 # Runtime Module
 
-The runtime module (`component/runtime/`) is the shards: the unit everything above the device layer
-runs in. A shard owns one queue of a device, a run queue, a cross-shard inbox, a timer wheel, a counting
-scope and its counters, and runs a loop that polls the queue, fires due timers and runs ready work, all
-on one thread. The module also holds the scheduler that gives senders a home on a shard, the shard-bound
-coroutine task, and the runtime that launches one shard per device queue. Everything is reached through
-the umbrella `#include <aloe/runtime>` (`export/aloe/runtime`), and targets link `Aloe::Component::Runtime`.
-It depends on [`core`](core.md) for the execution facilities and logging, and on [`device`](device.md)
-for the device concept. It never names DPDK.
+The runtime module (`component/runtime/`) is the loop written for you: Aloe's second product, built only
+from the [`loop`](loop.md) bricks. A shard owns one queue of a device and a context with the run queue, the
+inbox, the timer wheel and a counting scope, and runs the tick that polls the queue, hands the burst to the
+stack, fires due timers and runs ready work, all on one thread. The module also holds the scheduler that
+gives senders a home on a shard, the shard-bound coroutine task, and the runtime that launches one shard per
+device queue on its own pinned thread. Everything is reached through the umbrella `#include <aloe/runtime>`
+(`export/aloe/runtime`), which includes `<aloe/loop>`, and targets link `Aloe::Component::Runtime`. It
+depends on [`core`](core.md) for the execution facilities and logging, on [`loop`](loop.md) for the bricks
+and on [`device`](device.md) for the device concept. It never names DPDK.
+
+Nothing here is required to use Aloe. A program that wants the loop under its own control writes it over
+the bricks, as the [loop page](loop.md) shows, and keeps every line of protocol code. The runtime adds
+threads, the drain protocol and senders for the code that waits, and pays for them per awaited event, never
+per packet.
 
 ## Key types
 
-### The context and its primitives
+### The context
 
 - **`aloe::runtime::ShardContext`** -- everything of a shard that does not touch the device: the run queue,
-  the inbox, the timer wheel, the task scope, the tick stamp and the counters. `run_once(now)` is its one
-  verb: move the inbox onto the run queue, advance the wheel to `now`, run the work that was queued when
-  the step began. `request_stop()` sets the stop flag and stops the scope; `drained()` is the loop's exit
-  condition: stop requested, scope empty, both queues empty. `ShardContext::current()` names the context
-  the calling thread is running.
-- **`aloe::runtime::Work`** -- the intrusive node every unit of ready work is: a next pointer and a function.
-  Operation states derive from it. **`RunQueue`** is the same-shard FIFO of them, with no synchronisation.
-  **`Inbox`** is the multi-producer, single-consumer queue other threads push into: one atomic exchange per
-  push, one load per pop, no allocation.
-- **`aloe::runtime::Timer`, `TimerWheel`** -- an intrusive timer node and the hierarchical wheel it lives
-  in: four levels of 256 slots, arm and cancel in constant time, swept by `advance(now)`. Deadlines are
-  rounded up to the resolution, one millisecond by default, so a timer never fires early and is at most
-  one resolution plus one tick late.
+  the inbox, the timer wheel and the counters from [`loop`](loop.md), the task scope, and the tick stamp.
+  `run_once(now)` is its one verb: move the inbox onto the run queue, advance the wheel to `now`, run the
+  work that was queued when the step began. `request_stop()` sets the stop flag and stops the scope;
+  `drained()` is the loop's exit condition: stop requested, scope empty, both queues empty.
+  `ShardContext::current()` names the context the calling thread is running.
 - **`aloe::runtime::TaskScope`** -- the per-shard counting scope, shaped like the standard's
   `counting_scope`: `spawn`, `request_stop`, `join`, with no atomics because one thread uses it. One task
   per connection will run in it. A spawned task's exception is logged and counted; it does not take the
   shard down.
-- **`aloe::runtime::ShardCounters`** -- ticks, frames, work, timers and tasks, all monotonic, read on the
-  shard's thread or after it has stopped.
 
 ### Scheduler and task
 
@@ -48,12 +44,9 @@ for the device concept. It never names DPDK.
 
 ### Shard and runtime
 
-- **`aloe::runtime::ShardQueue<Device>`** -- one device queue as the stack sees it: `allocate()`,
-  `transmit(packet)`, the device's facts. `transmit` appends to a bounded ring flushed at the end of every
-  tick; when the ring is full and the device refuses, it returns false and the caller keeps the packet.
-- **`aloe::runtime::IsStack`** -- what sits above a shard: a type constructed from the context and the queue
-  with one function, `on_receive(span<Packet>)`, called on the shard thread with each burst. It moves out
-  what it keeps; the shard frees the rest.
+- **`aloe::runtime::IsStack`** -- what sits above a shard: a type constructed from the context and a
+  `loop::ShardQueue<Device>` with one function, `on_receive(span<Packet>)`, called on the shard thread with
+  each burst. It moves out what it keeps; the shard frees the rest.
 - **`aloe::runtime::Shard<Device, Stack>`** -- a context, a queue and the stack, with the tick: `step(now)`
   receives a burst, hands it to the stack, runs `run_once`, flushes the ring. `run()` ticks until drained.
   `ShardConfig` sets the wheel resolution, burst and ring sizes, and the idle policy, `Spin` or `Yield`.
@@ -72,7 +65,7 @@ class EchoStack {
 public:
     using Packet = aloe::ethdev::Packet;
 
-    EchoStack(aloe::runtime::ShardContext& context, aloe::runtime::ShardQueue<aloe::ethdev::Port>& queue) noexcept
+    EchoStack(aloe::runtime::ShardContext& context, aloe::loop::ShardQueue<aloe::ethdev::Port>& queue) noexcept
         : queue_{&queue} {}
 
     void on_receive(std::span<Packet> burst) noexcept {
@@ -84,7 +77,7 @@ public:
     }
 
 private:
-    aloe::runtime::ShardQueue<aloe::ethdev::Port>* queue_;
+    aloe::loop::ShardQueue<aloe::ethdev::Port>* queue_;
 };
 
 aloe::ethdev::Port port{{.name = "net_tap0", .queues = 4}};
@@ -123,10 +116,16 @@ Four rules make the data path lock-free; debug builds assert them.
 
 ## Design notes
 
+**Built on the bricks, never beside them.** Every primitive the runtime drives is a `loop` type a
+hand-written loop drives the same way, and the step is that loop with the stack call and `run_once` in it.
+A capability lands in the bricks first, as a plain call or an event a caller drains, and the runtime wraps
+it in a sender afterwards; the runtime never has a capability the bricks lack.
+
 **A direct call, not a receive sender.** The layer above gets frames by one call from the loop, run to
 completion, and transmits by one call into the queue. A receive sender completing with a burst would put an
 operation state and stdexec on the per-frame path. Senders begin one layer up, at the connection, where a
-parked operation is worth an operation state.
+parked operation is worth an operation state, and in phase 1 they park in wait slots the runtime keeps and
+wake from the event list the TCP brick reports.
 
 **A device-free context.** The scheduler points at a `ShardContext`, not at a `Shard<Device, Stack>`, so the
 scheduler, the timer senders and the task are one concrete type for every backend, and tasks never carry a
