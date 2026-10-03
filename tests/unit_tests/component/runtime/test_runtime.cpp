@@ -9,6 +9,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -69,12 +70,13 @@ namespace {
 }  // namespace
 
 TEST_F(RuntimeTest, OneShardPerQueueRunsSpawnedWorkOnTheRightShardThenStopsAndJoins) {
+    // Declared before the runtime, so a failed ASSERT stops and joins the shards before the flags die.
+    std::array<std::atomic<int>, queues> done{};
+    std::array<std::atomic<int>, queues> ran_on{};
     EchoRuntime runtime{config_, server_};
     EXPECT_EQ(runtime.shard_count(), queues);
     runtime.start();
 
-    std::array<std::atomic<int>, queues> done{};
-    std::array<std::atomic<int>, queues> ran_on{};
     for (std::uint16_t index = 0; index < queues; ++index) {
         ran_on[index].store(-1);
         runtime.spawn(index, mark(&done[index], &ran_on[index]));
@@ -116,6 +118,26 @@ TEST_F(RuntimeTest, AFailingHookOrAnImpossibleCpuThrowsFromStartAndLeavesNothing
     }
 }
 
+// The hook fails on one thread only, so start must stop and join the shards that already entered run().
+TEST_F(RuntimeTest, AHookThatFailsOnOneThreadStopsTheShardsAlreadyRunning) {
+    std::atomic<int> hook_calls{0};
+    config_.thread_hook = [&hook_calls] {
+        if (++hook_calls == 2) {
+            throw std::runtime_error{"second hook fails"};
+        }
+    };
+    EchoRuntime runtime{config_, server_};
+    EXPECT_THROW(runtime.start(), aloe::runtime::RuntimeError);
+
+    // start() stopped and joined every thread before it threw, so the counters are safe to read here.
+    EXPECT_EQ(hook_calls.load(), queues);
+    std::uint64_t ticks = 0;
+    for (std::uint16_t index = 0; index < queues; ++index) {
+        ticks += runtime.counters(index).ticks;
+    }
+    EXPECT_GT(ticks, 0U) << "the shards whose hook passed ran before the stop reached them";
+}
+
 TEST_F(RuntimeTest, ConstructionRejectsAThreadListThatDoesNotMatchTheQueues) {
     config_.threads.assign(queues - 1, aloe::runtime::ShardThread{});
     EXPECT_THROW((EchoRuntime{config_, server_}), aloe::runtime::RuntimeError);
@@ -129,9 +151,10 @@ TEST_F(RuntimeTest, StartTwiceThrows) {
 
 // Stop with tasks parked on timers returns promptly, every task stopped.
 TEST_F(RuntimeTest, StopUnwindsParkedTasksOnEveryShardAndJoinReturnsPromptly) {
+    // Declared before the runtime, so a failed ASSERT stops and joins the shards before the flags die.
+    std::array<std::atomic<int>, queues> parked{};
     EchoRuntime runtime{config_, server_};
     runtime.start();
-    std::array<std::atomic<int>, queues> parked{};
     for (std::uint16_t index = 0; index < queues; ++index) {
         runtime.spawn(index, park(runtime.scheduler(index), &parked[index]));
     }

@@ -72,6 +72,9 @@ namespace {
 // Done-when 2, ring half: each shard's transmit loops back onto its own queue, with real mbufs, on a
 // thread the hook registered with DPDK, and nothing crosses between queues.
 TEST(RuntimeRing, EachShardEchoesOnItsOwnQueueWithARegisteredThread) {
+    // Declared before the runtime, so a failed ASSERT stops and joins the shards before the slots die.
+    std::array<std::atomic<unsigned>, queues> lcores{};
+    std::array<std::atomic<int>, queues> outcomes{};
     aloe::ethdev::Port port{
         {.name = aloe::testing::probe_vdev("net_ring"), .queues = queues, .pool_size = 512}
     };
@@ -83,8 +86,6 @@ TEST(RuntimeRing, EachShardEchoesOnItsOwnQueueWithARegisteredThread) {
     };
     runtime.start();
 
-    std::array<std::atomic<unsigned>, queues> lcores{};
-    std::array<std::atomic<int>, queues> outcomes{};
     for (std::uint16_t index = 0; index < queues; ++index) {
         runtime.spawn(index,
                       inject(&runtime.shard(index).queue(),
