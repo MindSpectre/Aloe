@@ -5,17 +5,14 @@ these phases build towards is in [docs/architecture/overview.md](architecture/ov
 
 ## 0. Runtime core
 
-The repository skeleton is done: toolchain, dependencies through vcpkg, the `Aloe::Dpdk` target, the
-[`core`](architecture/core.md) module, smoke tests and CI. The [device layer](architecture/device.md) is
-done: the packet and device concepts, the in-memory fabric and the DPDK backend, with one conformance
-suite that runs against both without root or hugepages.
-
-Still to come: the shard runtime, meaning core launch, run loop, scheduler, run queue, cross-shard inbox,
-timer wheel and timer sender, counting scope, task type, stop and deadline plumbing, counters and logging.
-The runtime verifies steering and thread concurrency as a whole, on the fabric under ThreadSanitizer.
-
-Done when tasks and timers run on shards, work can be submitted across shards, and an Ethernet echo runs
-on several shards on both backends with every frame landing on the shard the hash selects.
+Done. The repository skeleton: toolchain, dependencies through vcpkg, the `Aloe::Dpdk` target, the
+[`core`](architecture/core.md) module, smoke tests and CI. The [device layer](architecture/device.md): the
+packet and device concepts, the in-memory fabric and the DPDK backend, with one conformance suite that runs
+against both without root or hugepages. The [shard runtime](architecture/runtime.md): core launch, run loop,
+scheduler, run queue, cross-shard inbox, timer wheel and timer sender, counting scope, task type, stop
+plumbing, counters and logging. Tasks and timers run on shards, work is submitted across shards, and an
+Ethernet echo runs on several shards on both backends with every frame landing on the shard the hash selects,
+verified on the fabric under ThreadSanitizer.
 
 ## 1. Minimal TCP
 

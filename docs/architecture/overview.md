@@ -5,8 +5,8 @@ Boost.Beast, with the whole path from Ethernet frame to WebSocket message runnin
 senders and receivers as its asynchronous model. Three goals rank every trade-off, in this order: **low
 latency**, **high throughput**, and **long-lived connections**.
 
-This page describes the design the stack is built towards. Today the repository holds the build skeleton and
-the [`core`](core.md) module; the rest arrives phase by phase, as the [roadmap](../roadmap.md) lays out. Each
+This page describes the design the stack is built towards. Today the repository holds the build skeleton, the
+[`core`](core.md) and [`utils`](utils.md) modules, the [device layer](device.md) and the [shard runtime](runtime.md); the rest arrives phase by phase, as the [roadmap](../roadmap.md) lays out. Each
 section says what exists and what is still design.
 
 ## Shards
@@ -29,7 +29,8 @@ A two-core shard, one core per direction, is a possible later option. TCP is wri
 transmit half, each the only writer of its own state and linked by an explicit event interface, so the
 option stays open without a rewrite.
 
-Status: design. Arrives in phase 0.
+Status: exists, see [runtime](runtime.md). One shard per device queue, one thread each, with the run loop,
+the inbox and the timer wheel as described. A connection owning shard arrives with TCP in phase 1.
 
 ## Senders and receivers
 
@@ -59,8 +60,9 @@ seam the runtime provides:
   empty is graceful shutdown.
 - **A task type bound to the shard scheduler,** with the connection's memory arena reachable from inside it.
 
-Status: the `aloe::core::ex` alias and `aloe::core::task` exist in [`core`](core.md). The rest is design and arrives in
-phase 0 and phase 1.
+Status: the scheduler, the timer senders, the counting scope, the stop plumbing and the shard-bound task
+exist in [runtime](runtime.md), on the C++26 task type from P3552. The connection leaf senders, readiness
+on receive, the two send completions and deadline stamps arrive with TCP in phase 1.
 
 ## Layers
 
@@ -69,6 +71,11 @@ then TLS over TCP, then WebSocket over TLS over TCP. Every layer sees the one be
 concept, expressed as senders. That concept is defined in phase 1 and reused by every later layer, which is
 why phase 1 gets the most design care although its code is the simplest.
 
+A layer sits on a shard through one contract: it is constructed from the shard's context and its device
+queue, and the shard calls its `on_receive` with every burst, on the shard's thread, run to completion.
+Transmit is a call into the queue. Nothing about this contract names the asynchronous model, which is how
+stdexec stays out of the protocol headers.
+
 The device layer has two backends: DPDK's ethdev for real network cards and for tap devices, and an
 in-memory fabric for deterministic tests. Scripted loss, reordering and delay join the fabric in phase 2.
 
@@ -76,8 +83,8 @@ Network cards vary, so offloads such as checksums and segmentation are queried f
 and every offload has a software fallback. Steering is a pure function of what the card reports, so the
 runtime can predict which queue any flow lands on.
 
-Status: the device layer exists, see [device](device.md). IPv4 and TCP arrive in phases 1 and 2, TLS in
-phase 3, HTTP/1.1 and WebSocket in phase 4.
+Status: the device layer and the shard runtime exist, see [device](device.md) and [runtime](runtime.md). IPv4 and
+TCP arrive in phases 1 and 2, TLS in phase 3, HTTP/1.1 and WebSocket in phase 4.
 
 ## Build decisions
 

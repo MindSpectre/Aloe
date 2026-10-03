@@ -40,7 +40,7 @@ dependencies and stops, leaving the configure to you.
 
 ## vcpkg setup
 
-Dependencies (DPDK, stdexec, GoogleTest, and Google Benchmark for the benchmark targets)
+Dependencies (DPDK, stdexec, quill, GoogleTest, and Google Benchmark for the benchmark targets)
 are declared in `vcpkg.json` and resolved through a vcpkg checkout that lives inside the
 source tree. `vcpkg/` is gitignored - every clone provisions its own copy, there is no
 submodule.
