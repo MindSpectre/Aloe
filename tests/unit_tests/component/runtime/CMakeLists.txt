@@ -28,11 +28,17 @@ target_link_libraries(${UNIT_TESTING_TARGET}.Runtime
 # Test Runtime: cross-thread paths, for the tsan preset
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Runtime.Threads
+        test_cross_shard.cpp
         test_inbox_threads.cpp
+        test_steering.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Runtime.Threads
         PRIVATE
         Aloe::Component::Runtime
+        Aloe::Component::Fabric
+        ${SHARED_TESTING_TARGET}.Device
+        ${SHARED_TESTING_TARGET}.Runtime
+        ${SHARED_TESTING_TARGET}.Log
         Threads::Threads
         ${TEST_LIBS}
 )
