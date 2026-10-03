@@ -4,6 +4,7 @@
 add_unit_test(${UNIT_TESTING_TARGET}.Runtime
         test_inbox.cpp
         test_run_queue.cpp
+        test_shard_context.cpp
         test_task_scope.cpp
         test_timer_wheel.cpp
 )

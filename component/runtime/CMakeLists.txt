@@ -53,6 +53,23 @@ target_link_libraries(${RUNTIME}.Scope PUBLIC
 ##############################################################################
 
 ##############################################################################
+# The shard context: queues, timers, scope and counters, with run_once
+##############################################################################
+add_library(${RUNTIME}.Context STATIC
+        context/shard_context.hpp
+        context/shard_context.cpp
+)
+target_include_directories(${RUNTIME}.Context PUBLIC
+        context/
+)
+target_link_libraries(${RUNTIME}.Context PUBLIC
+        ${RUNTIME}.Work
+        ${RUNTIME}.Timer
+        ${RUNTIME}.Scope
+)
+##############################################################################
+
+##############################################################################
 # Runtime exported library
 ##############################################################################
 add_combined_library(${RUNTIME}
@@ -65,6 +82,7 @@ add_combined_library(${RUNTIME}
         ${RUNTIME}.Timer
         ${RUNTIME}.Counters
         ${RUNTIME}.Scope
+        ${RUNTIME}.Context
 )
 
 add_library(Aloe::Component::Runtime ALIAS ${RUNTIME})

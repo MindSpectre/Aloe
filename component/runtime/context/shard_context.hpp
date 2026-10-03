@@ -1,0 +1,127 @@
+#pragma once
+
+#include <aloe/core>
+#include <chrono>
+#include <cstdint>
+
+#include <counters.hpp>
+#include <inbox.hpp>
+#include <run_queue.hpp>
+#include <task_scope.hpp>
+#include <timer_wheel.hpp>
+
+namespace aloe::runtime {
+
+    struct ShardContextConfig {
+        std::uint16_t index                       = 0;  ///< The shard's, and its queue's, index.
+        std::chrono::nanoseconds timer_resolution = std::chrono::milliseconds{1};
+    };
+
+    /**
+     * @brief Everything of a shard that does not touch the device.
+     *
+     * Owns the run queue, the inbox, the timer wheel, the task scope, the tick stamp and the
+     * counters. One thread owns a context for its whole life; every member function except
+     * `Inbox::push` runs on that thread. A thread-local pointer, `current()`, names the context the
+     * calling thread is running, which is how the scheduler tells same-shard from cross-shard.
+     *
+     * `run_once(now)` is its one verb: record the stamp, move the inbox's contents onto the run
+     * queue, advance the wheel, run the work that was queued when the step began. Work queued
+     * while the chain runs waits for the next step. Stop is a flag plus the scope's stop request;
+     * `drained()` is the loop's exit condition.
+     */
+    class ShardContext {
+    public:
+        using Clock     = std::chrono::steady_clock;
+        using TimePoint = Clock::time_point;
+
+        /// `start` is where the wheel's tick zero begins; the shard passes the clock, tests pass any stamp.
+        ShardContext(const ShardContextConfig& config, TimePoint start);
+        ShardContext(const ShardContext&)            = delete;
+        ShardContext& operator=(const ShardContext&) = delete;
+        ShardContext(ShardContext&&)                 = delete;
+        ShardContext& operator=(ShardContext&&)      = delete;
+        ~ShardContext()                              = default;
+
+        /// The context the calling thread is running, or null.
+        [[nodiscard]] static ShardContext* current() noexcept;
+
+        /// Makes a context current on this thread for the object's lifetime; restores the previous one after.
+        class Current {
+        public:
+            explicit Current(ShardContext& context) noexcept;
+            Current(const Current&)            = delete;
+            Current& operator=(const Current&) = delete;
+            Current(Current&&)                 = delete;
+            Current& operator=(Current&&)      = delete;
+            ~Current();
+
+        private:
+            ShardContext* previous_;
+        };
+
+        /// One step. Returns whether anything ran or fired.
+        bool run_once(TimePoint now) noexcept;
+
+        /// Shard thread: sets the stop flag and stops the scope. Idempotent.
+        void request_stop() noexcept;
+
+        [[nodiscard]] bool stop_requested() const noexcept {
+            return stopping_;
+        }
+
+        /// Stop requested, scope empty, both queues empty. Armed timers do not count.
+        [[nodiscard]] bool drained() const noexcept {
+            return stopping_ && scope_.empty() && ready_.empty() && inbox_.empty();
+        }
+
+        /// The stamp of the current or last step, never a clock read.
+        [[nodiscard]] TimePoint now() const noexcept {
+            return now_;
+        }
+
+        [[nodiscard]] std::uint16_t index() const noexcept {
+            return index_;
+        }
+
+        [[nodiscard]] core::Logger logger() const noexcept {
+            return logger_;
+        }
+
+        [[nodiscard]] RunQueue& ready() noexcept {
+            return ready_;
+        }
+
+        [[nodiscard]] Inbox& inbox() noexcept {
+            return inbox_;
+        }
+
+        [[nodiscard]] TimerWheel& timers() noexcept {
+            return timers_;
+        }
+
+        [[nodiscard]] TaskScope& scope() noexcept {
+            return scope_;
+        }
+
+        [[nodiscard]] ShardCounters& counters() noexcept {
+            return counters_;
+        }
+
+        [[nodiscard]] const ShardCounters& counters() const noexcept {
+            return counters_;
+        }
+
+    private:
+        std::uint16_t index_;
+        core::Logger logger_;
+        ShardCounters counters_;
+        TimePoint now_;
+        RunQueue ready_;
+        Inbox inbox_;
+        TimerWheel timers_;
+        TaskScope scope_;
+        bool stopping_ = false;
+    };
+
+}  // namespace aloe::runtime
