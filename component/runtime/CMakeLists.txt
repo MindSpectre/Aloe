@@ -14,6 +14,18 @@ target_include_directories(${RUNTIME}.Work INTERFACE
 ##############################################################################
 
 ##############################################################################
+# Timers: the intrusive node and the hierarchical wheel
+##############################################################################
+add_library(${RUNTIME}.Timer STATIC
+        timer/timer_wheel.hpp
+        timer/timer_wheel.cpp
+)
+target_include_directories(${RUNTIME}.Timer PUBLIC
+        timer/
+)
+##############################################################################
+
+##############################################################################
 # Runtime exported library
 ##############################################################################
 add_combined_library(${RUNTIME}
@@ -23,6 +35,7 @@ add_combined_library(${RUNTIME}
         export/aloe/runtime
         LIBRARIES
         ${RUNTIME}.Work
+        ${RUNTIME}.Timer
 )
 
 add_library(Aloe::Component::Runtime ALIAS ${RUNTIME})
