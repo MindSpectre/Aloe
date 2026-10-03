@@ -6,7 +6,9 @@
  * Aloe::Component::Runtime and write `#include <aloe/runtime>`.
  */
 
+#include <counters.hpp>
 #include <inbox.hpp>
 #include <run_queue.hpp>
+#include <task_scope.hpp>
 #include <timer_wheel.hpp>
 #include <work.hpp>

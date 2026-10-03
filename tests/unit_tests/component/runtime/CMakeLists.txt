@@ -4,11 +4,13 @@
 add_unit_test(${UNIT_TESTING_TARGET}.Runtime
         test_inbox.cpp
         test_run_queue.cpp
+        test_task_scope.cpp
         test_timer_wheel.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Runtime
         PRIVATE
         Aloe::Component::Runtime
+        ${SHARED_TESTING_TARGET}.Log
         ${TEST_LIBS}
 )
 ##############################################################################
