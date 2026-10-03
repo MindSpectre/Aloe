@@ -33,6 +33,7 @@ target_link_libraries(${SHARED_TESTING_TARGET}.Device INTERFACE
 ##############################################################################
 add_library(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
         dpdk/eal_environment.hpp
+        dpdk/packet_socket.hpp
 )
 target_include_directories(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
         dpdk/
@@ -40,6 +41,7 @@ target_include_directories(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
 target_link_libraries(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
         ${SHARED_TESTING_TARGET}.Dpdk
         Aloe::Component::Ethdev
+        Aloe::Component::Device
 )
 ##############################################################################
 
