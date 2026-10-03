@@ -84,6 +84,20 @@ target_link_libraries(${RUNTIME}.Scheduler INTERFACE
 ##############################################################################
 
 ##############################################################################
+# The shard task
+##############################################################################
+add_library(${RUNTIME}.Task INTERFACE
+        task/shard_task.hpp
+)
+target_include_directories(${RUNTIME}.Task INTERFACE
+        task/
+)
+target_link_libraries(${RUNTIME}.Task INTERFACE
+        ${RUNTIME}.Scheduler
+)
+##############################################################################
+
+##############################################################################
 # Runtime exported library
 ##############################################################################
 add_combined_library(${RUNTIME}
@@ -98,6 +112,7 @@ add_combined_library(${RUNTIME}
         ${RUNTIME}.Scope
         ${RUNTIME}.Context
         ${RUNTIME}.Scheduler
+        ${RUNTIME}.Task
 )
 
 add_library(Aloe::Component::Runtime ALIAS ${RUNTIME})

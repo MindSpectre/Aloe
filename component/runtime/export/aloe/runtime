@@ -11,6 +11,7 @@
 #include <run_queue.hpp>
 #include <scheduler.hpp>
 #include <shard_context.hpp>
+#include <shard_task.hpp>
 #include <task_scope.hpp>
 #include <timer_wheel.hpp>
 #include <work.hpp>

@@ -6,6 +6,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Runtime
         test_run_queue.cpp
         test_scheduler.cpp
         test_shard_context.cpp
+        test_shard_task.cpp
         test_task_scope.cpp
         test_timer_wheel.cpp
 )
