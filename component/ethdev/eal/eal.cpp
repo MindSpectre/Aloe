@@ -8,6 +8,7 @@
 #include <eal.hpp>
 #include <rte_eal.h>
 #include <rte_errno.h>
+#include <rte_lcore.h>
 
 namespace aloe::ethdev {
 
@@ -22,6 +23,12 @@ namespace aloe::ethdev {
 
     std::string detail::describe(std::string_view what, int error) {
         return std::format("{}: {}", what, rte_strerror(error < 0 ? -error : error));
+    }
+
+    void register_thread() {
+        if (rte_thread_register() < 0) {
+            throw EthdevError{detail::describe("rte_thread_register", rte_errno)};
+        }
     }
 
     Eal::Eal(std::span<const std::string> arguments) {

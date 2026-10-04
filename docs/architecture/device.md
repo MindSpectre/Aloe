@@ -53,6 +53,8 @@ them on top of it.
   scaling under Aloe's key when the driver has that. A physical card, `net_tap`, `net_ring` and
   `net_null` are all just ports. A port claims its device through DPDK's ownership API, so a second
   `Port` on the same name fails without disturbing the first.
+- **`aloe::ethdev::register_thread()`** -- gives the calling thread a DPDK lcore id so per-lcore mempool
+  caches work. The runtime's thread hook for DPDK ports.
 
 ## Usage
 

@@ -31,6 +31,15 @@ namespace aloe::ethdev {
         ~Eal();
     };
 
+    /**
+     * @brief Registers the calling thread with DPDK, so it gets an lcore id and mempool caches work.
+     *
+     * The runtime's thread hook for DPDK ports: `RuntimeConfig::thread_hook = aloe::ethdev::register_thread`.
+     * Throws EthdevError when DPDK has no lcore slot left. Threads are not unregistered: shards live
+     * as long as the process.
+     */
+    void register_thread();
+
     namespace detail {
 
         /// `what` followed by DPDK's text for `error`, an `rte_errno` value or a negated return code.

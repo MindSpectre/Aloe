@@ -23,6 +23,17 @@ target_include_directories(${UTILS}.Guards INTERFACE
 ##############################################################################
 
 ##############################################################################
+# FixedString: a string literal as a template parameter
+##############################################################################
+add_library(${UTILS}.FixedString INTERFACE
+        fixed_string/fixed_string.hpp
+)
+target_include_directories(${UTILS}.FixedString INTERFACE
+        fixed_string/
+)
+##############################################################################
+
+##############################################################################
 # Utils exported library
 ##############################################################################
 add_combined_library(${UTILS}
@@ -33,6 +44,7 @@ add_combined_library(${UTILS}
         LIBRARIES
         ${UTILS}.Values
         ${UTILS}.Guards
+        ${UTILS}.FixedString
 )
 
 add_library(Aloe::Common::Utils ALIAS ${UTILS})

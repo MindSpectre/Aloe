@@ -6,5 +6,6 @@
  * `#include <aloe/utils>`.
  */
 
+#include <fixed_string.hpp>
 #include <guards.hpp>
 #include <values.hpp>

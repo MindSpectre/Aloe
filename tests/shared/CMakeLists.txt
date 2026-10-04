@@ -33,6 +33,7 @@ target_link_libraries(${SHARED_TESTING_TARGET}.Device INTERFACE
 ##############################################################################
 add_library(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
         dpdk/eal_environment.hpp
+        dpdk/packet_socket.hpp
 )
 target_include_directories(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
         dpdk/
@@ -40,5 +41,37 @@ target_include_directories(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
 target_link_libraries(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
         ${SHARED_TESTING_TARGET}.Dpdk
         Aloe::Component::Ethdev
+        Aloe::Component::Device
+)
+##############################################################################
+
+##############################################################################
+# Logging as a gtest environment
+##############################################################################
+add_library(${SHARED_TESTING_TARGET}.Log INTERFACE
+        log/logging_environment.hpp
+)
+target_include_directories(${SHARED_TESTING_TARGET}.Log INTERFACE
+        log/
+)
+target_link_libraries(${SHARED_TESTING_TARGET}.Log INTERFACE
+        Aloe::Common::Core
+        ${TEST_LIBS}
+)
+##############################################################################
+
+##############################################################################
+# The Ethernet echo stack the runtime tests and examples run
+##############################################################################
+add_library(${SHARED_TESTING_TARGET}.Runtime INTERFACE
+        runtime/echo_stack.hpp
+)
+target_include_directories(${SHARED_TESTING_TARGET}.Runtime INTERFACE
+        runtime/
+)
+target_link_libraries(${SHARED_TESTING_TARGET}.Runtime INTERFACE
+        Aloe::Component::Runtime
+        Aloe::Component::Loop
+        Aloe::Component::Device
 )
 ##############################################################################

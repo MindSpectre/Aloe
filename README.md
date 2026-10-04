@@ -1,27 +1,33 @@
 # Aloe
 
-Aloe is a C++26 userspace TCP/IP stack on DPDK for Linux. It aims to give
-application code a stream API in the spirit of Boost.Beast, with the whole path
-from Ethernet frame to WebSocket message running in userspace, and with
-senders and receivers as its asynchronous model.
+Aloe is a C++26 userspace TCP/IP stack on DPDK for Linux, built for programs
+whose latency is measured from a tick to a send. It is a library of bricks you
+write your own loop over, each a plain call that returns before anything waits,
+with the whole path from Ethernet frame to WebSocket message running in
+userspace. On top of the bricks sits a runtime that writes the loop for you and
+offers senders and receivers, and later a stream API in the spirit of
+Boost.Beast, for the code that waits.
 
-The repository contains the build skeleton and the device layer: the
-toolchain, the dependency setup, and the packet and device abstraction with an
-in-memory backend for tests and a DPDK backend. The stack itself is built in
-phases: the shard runtime, a minimal TCP, full
-TCP with retransmission and congestion control, TLS, and finally HTTP/1.1 with
-WebSocket. See the [architecture overview](docs/architecture/overview.md) for
-the design and the [roadmap](docs/roadmap.md) for the phases.
+The repository contains the build skeleton, the device layer, the loop bricks
+and the shard runtime: the toolchain, the dependency setup, the packet and
+device abstraction with an in-memory backend for tests and a DPDK backend, the
+queue, wheel and work node a loop is built from, and the runtime that drives
+them on one thread per queue. The stack itself is built in phases: a minimal
+TCP, full TCP with retransmission and congestion control, TLS, and finally
+HTTP/1.1 with WebSocket. See the [architecture overview](docs/architecture/overview.md)
+for the design and the [roadmap](docs/roadmap.md) for the phases.
 
 ## Modules
 
-| Namespace      | Directory           | Description                                                                                                     | Docs                                                       |
-|----------------|---------------------|-----------------------------------------------------------------------------------------------------------------|------------------------------------------------------------|
-| `aloe::core`   | `common/core/`      | Library version, and the one header that names the execution facilities.                                        | [docs/architecture/core.md](docs/architecture/core.md)     |
-| `aloe::utils`  | `common/utils/`     | Small header-only helpers with no dependencies: discarding values, a fallback, and the const and static guards. | [docs/architecture/utils.md](docs/architecture/utils.md)   |
-| `aloe::device` | `component/device/` | The Packet and Device concepts, addresses, checksums and receive-side scaling.                                  | [docs/architecture/device.md](docs/architecture/device.md) |
-| `aloe::fabric` | `component/fabric/` | The in-memory device backend: a fixture for tests, simulation and demos.                                        | [docs/architecture/device.md](docs/architecture/device.md) |
-| `aloe::ethdev` | `component/ethdev/` | The DPDK device backend.                                                                                        | [docs/architecture/device.md](docs/architecture/device.md) |
+| Namespace       | Directory            | Description                                                                                                     | Docs                                                         |
+|-----------------|----------------------|-----------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------|
+| `aloe::core`    | `common/core/`       | Library version, and the one header that names the execution facilities.                                        | [docs/architecture/core.md](docs/architecture/core.md)       |
+| `aloe::utils`   | `common/utils/`      | Small header-only helpers with no dependencies: discarding values, a fallback, and the const and static guards. | [docs/architecture/utils.md](docs/architecture/utils.md)     |
+| `aloe::device`  | `component/device/`  | The Packet and Device concepts, addresses, checksums and receive-side scaling.                                  | [docs/architecture/device.md](docs/architecture/device.md)   |
+| `aloe::fabric`  | `component/fabric/`  | The in-memory device backend: a fixture for tests, simulation and demos.                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
+| `aloe::ethdev`  | `component/ethdev/`  | The DPDK device backend.                                                                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
+| `aloe::loop`    | `component/loop/`    | The bricks a loop is built from: a device queue with its transmit ring, the timer wheel, the work node with the run queue and the inbox, and the counters. | [docs/architecture/loop.md](docs/architecture/loop.md)       |
+| `aloe::runtime` | `component/runtime/` | The loop written for you: shards on pinned threads, the scheduler, timer senders, scope and task, and the runtime that launches one shard per queue. | [docs/architecture/runtime.md](docs/architecture/runtime.md) |
 
 Each module ships an umbrella header. Consumers link the module's target and
 include it by name:

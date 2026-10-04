@@ -30,6 +30,22 @@ target_link_libraries(${CORE}.Execution INTERFACE
 ##############################################################################
 
 ##############################################################################
+# Logging: the one place that names quill
+##############################################################################
+add_library(${CORE}.Log INTERFACE
+        log/log.hpp
+)
+target_include_directories(${CORE}.Log INTERFACE
+        log/
+)
+target_link_libraries(${CORE}.Log INTERFACE
+        quill::quill
+        Aloe::Common::Utils
+        Threads::Threads
+)
+##############################################################################
+
+##############################################################################
 # Core exported library
 ##############################################################################
 add_combined_library(${CORE}
@@ -40,6 +56,7 @@ add_combined_library(${CORE}
         LIBRARIES
         ${CORE}.Version
         ${CORE}.Execution
+        ${CORE}.Log
 )
 
 add_library(Aloe::Common::Core ALIAS ${CORE})
