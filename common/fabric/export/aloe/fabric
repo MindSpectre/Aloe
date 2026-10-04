@@ -1,0 +1,9 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe fabric module: the in-memory device backend.
+ * Consumers link Aloe::Common::Fabric and write `#include <aloe/fabric>`.
+ */
+
+#include <fabric.hpp>
+#include <fabric_packet.hpp>

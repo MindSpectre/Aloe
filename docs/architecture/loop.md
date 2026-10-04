@@ -1,10 +1,10 @@
 # Loop Module
 
-The loop module (`component/loop/`) is the bricks a shard loop is built from: one device queue with a
+The loop module (`common/loop/`) is the bricks a shard loop is built from: one device queue with a
 bounded transmit ring, the timer wheel, the work node with its two queues, and the counters. It is the first
 of Aloe's two products, the one a program writes its own loop over, and the [runtime](runtime.md) is written
 over it too. Everything is reached through the umbrella `#include <aloe/loop>` (`export/aloe/loop`), and
-targets link `Aloe::Component::Loop`. It depends on [`device`](device.md) for the device concept and on
+targets link `Aloe::Common::Loop`. It depends on [`device`](device.md) for the device concept and on
 [`utils`](utils.md). It does not depend on [`core`](core.md): no header here names the asynchronous model,
 and a protocol module that links this target and not `core` cannot include stdexec by accident.
 

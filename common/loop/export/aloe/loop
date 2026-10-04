@@ -1,0 +1,15 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe loop module: the bricks a shard loop is built from. The device
+ * queue with its transmit ring, the timer wheel, the work node with the run queue and the
+ * cross-thread inbox, and the counters. No header here names the asynchronous model.
+ * Consumers link Aloe::Common::Loop and write `#include <aloe/loop>`.
+ */
+
+#include <counters.hpp>
+#include <inbox.hpp>
+#include <run_queue.hpp>
+#include <shard_queue.hpp>
+#include <timer_wheel.hpp>
+#include <work.hpp>

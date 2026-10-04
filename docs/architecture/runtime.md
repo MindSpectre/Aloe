@@ -1,12 +1,12 @@
 # Runtime Module
 
-The runtime module (`component/runtime/`) is the loop written for you: Aloe's second product, built only
+The runtime module (`common/runtime/`) is the loop written for you: Aloe's second product, built only
 from the [`loop`](loop.md) bricks. A shard owns one queue of a device and a context with the run queue, the
 inbox, the timer wheel and a counting scope, and runs the tick that polls the queue, hands the burst to the
 stack, fires due timers and runs ready work, all on one thread. The module also holds the scheduler that
 gives senders a home on a shard, the shard-bound coroutine task, and the runtime that launches one shard per
 device queue on its own pinned thread. Everything is reached through the umbrella `#include <aloe/runtime>`
-(`export/aloe/runtime`), which includes `<aloe/loop>`, and targets link `Aloe::Component::Runtime`. It
+(`export/aloe/runtime`), which includes `<aloe/loop>`, and targets link `Aloe::Common::Runtime`. It
 depends on [`core`](core.md) for the execution facilities and logging, on [`loop`](loop.md) for the bricks
 and on [`device`](device.md) for the device concept. It never names DPDK.
 

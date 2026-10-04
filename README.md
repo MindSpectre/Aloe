@@ -23,11 +23,11 @@ for the design and the [roadmap](docs/roadmap.md) for the phases.
 |-----------------|----------------------|-----------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------|
 | `aloe::core`    | `common/core/`       | Library version, and the one header that names the execution facilities.                                        | [docs/architecture/core.md](docs/architecture/core.md)       |
 | `aloe::utils`   | `common/utils/`      | Small header-only helpers with no dependencies: discarding values, a fallback, and the const and static guards. | [docs/architecture/utils.md](docs/architecture/utils.md)     |
-| `aloe::device`  | `component/device/`  | The Packet and Device concepts, addresses, checksums and receive-side scaling.                                  | [docs/architecture/device.md](docs/architecture/device.md)   |
-| `aloe::fabric`  | `component/fabric/`  | The in-memory device backend: a fixture for tests, simulation and demos.                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
-| `aloe::ethdev`  | `component/ethdev/`  | The DPDK device backend.                                                                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
-| `aloe::loop`    | `component/loop/`    | The bricks a loop is built from: a device queue with its transmit ring, the timer wheel, the work node with the run queue and the inbox, and the counters. | [docs/architecture/loop.md](docs/architecture/loop.md)       |
-| `aloe::runtime` | `component/runtime/` | The loop written for you: shards on pinned threads, the scheduler, timer senders, scope and task, and the runtime that launches one shard per queue. | [docs/architecture/runtime.md](docs/architecture/runtime.md) |
+| `aloe::device`  | `common/device/`     | The Packet and Device concepts, addresses, checksums and receive-side scaling.                                  | [docs/architecture/device.md](docs/architecture/device.md)   |
+| `aloe::fabric`  | `common/fabric/`     | The in-memory device backend: a fixture for tests, simulation and demos.                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
+| `aloe::ethdev`  | `common/ethdev/`     | The DPDK device backend.                                                                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
+| `aloe::loop`    | `common/loop/`       | The bricks a loop is built from: a device queue with its transmit ring, the timer wheel, the work node with the run queue and the inbox, and the counters. | [docs/architecture/loop.md](docs/architecture/loop.md)       |
+| `aloe::runtime` | `common/runtime/`    | The loop written for you: shards on pinned threads, the scheduler, timer senders, scope and task, and the runtime that launches one shard per queue. | [docs/architecture/runtime.md](docs/architecture/runtime.md) |
 
 Each module ships an umbrella header. Consumers link the module's target and
 include it by name:
