@@ -130,7 +130,7 @@ sudo ./build/debug/tests/manual_tests/ethdev/Aloe.Tests.Manual.Ethdev.Tap
 ## Formatting and the pre-commit hook
 
 `.clang-format` decides how C++ is laid out. `./scripts/check-format.sh` checks every
-`.cpp` and `.hpp` under `common/`, `component/`, `tests/`, `examples/` and `benchmarks/`
+`.cpp` and `.hpp` under `common/`, `tests/`, `examples/` and `benchmarks/`
 against it and fails if any of them differs, and `clang-format -i <files>` fixes them.
 `clang-format` comes with the toolchain that `scripts/install-linux.sh` installs.
 
@@ -177,5 +177,5 @@ cmake --build build/debug --target docs
 
 The generated site lands at `build/docs/html/index.html`; open it in a browser. The
 `Doxyfile` (`docs/doxygen/Doxyfile`) indexes `README.md`, `docs/roadmap.md`, `docs/architecture`,
-`docs/guides`, `common`, and `component`, and uses the vendored doxygen-awesome-css theme, so the
+`docs/guides`, and `common`, and uses the vendored doxygen-awesome-css theme, so the
 architecture pages and guides appear alongside the generated API reference.

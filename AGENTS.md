@@ -38,8 +38,8 @@ ctest --preset debug -L unit     # or: integration, functional
 
 | Path                                                                       | Contents                                                                                                                                                                                                   |
 |----------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `common/<module>/`                                                         | Foundation modules. `core` holds the version and the execution alias; `utils` holds small header-only helpers with no dependencies.                                                                        |
-| `component/<module>/`                                                      | Stack modules: `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime; built on `loop`, no DPDK). |
+| `common/<module>/`                                                         | Stack and foundation modules. `core` holds the version and the execution alias; `utils` holds small header-only helpers with no dependencies; `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime; built on `loop`, no DPDK). |
+| `component/<module>/`                                                      | Protocol modules (HTTP/1.1, HTTP/2, HTTP/3, WebSocket, ...), each an independent unit built on `common`. None exist yet; the directory appears with the first. |
 | `<module>/export/aloe/<module>`                                            | Umbrella header, no extension. Consumers write `#include <aloe/<module>>`.                                                                                                                                 |
 | `tests/unit_tests/`, `tests/integration_tests/`, `tests/functional_tests/` | One CTest label each.                                                                                                                                                                                      |
 | `tests/manual_tests/`                                                      | Label `manual`: tests that need privileges or hardware. Every test preset excludes the label; run the binary by hand.                                                                                      |
@@ -85,7 +85,7 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - **stdexec stays out of hot-path headers.** Only the runtime and the public
   surface include `<aloe/core>`; a device or protocol header takes helpers from
   `<aloe/utils>` and the loop's bricks from `<aloe/loop>`, which does not link
-  `core`, so a protocol module that links `Aloe::Component::Loop` and not
+  `core`, so a protocol module that links `Aloe::Common::Loop` and not
   `Aloe::Common::Core` cannot include stdexec by accident.
 - **Bricks before runtime.** A capability lands in `loop` or a protocol module
   first, as a plain call or an event the caller drains, and the runtime wraps it

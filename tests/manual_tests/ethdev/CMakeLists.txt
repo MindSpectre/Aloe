@@ -6,7 +6,7 @@ add_manual_test(${MANUAL_TESTING_TARGET}.Ethdev.Tap
 )
 target_link_libraries(${MANUAL_TESTING_TARGET}.Ethdev.Tap
         PRIVATE
-        Aloe::Component::Ethdev
+        Aloe::Common::Ethdev
         ${SHARED_TESTING_TARGET}.Device
         ${SHARED_TESTING_TARGET}.Ethdev
         ${TEST_LIBS}

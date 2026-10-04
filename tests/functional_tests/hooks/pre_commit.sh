@@ -89,13 +89,13 @@ setup_repository
 case $scenario in
     rejects_unformatted_staged_files)
         write_file common/core/bad.cpp "$unformatted"
-        write_file component/tcp/bad.hpp "$unformatted"
-        git add common/core/bad.cpp component/tcp/bad.hpp
+        write_file common/tcp/bad.hpp "$unformatted"
+        git add common/core/bad.cpp common/tcp/bad.hpp
         try_commit
         expect_rejected
         expect_output_contains "common/core/bad.cpp"
-        expect_output_contains "component/tcp/bad.hpp"
-        expect_output_contains "clang-format -i common/core/bad.cpp component/tcp/bad.hpp"
+        expect_output_contains "common/tcp/bad.hpp"
+        expect_output_contains "clang-format -i common/core/bad.cpp common/tcp/bad.hpp"
         ;;
     accepts_formatted_staged_files)
         write_file common/core/good.cpp "$formatted"

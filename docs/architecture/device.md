@@ -2,13 +2,13 @@
 
 The device layer is the bottom of the stack: it moves Ethernet frames between the protocols above
 and whatever carries them, and it reports what that carrier can do. It is three modules under
-`component/`, so nothing above it links DPDK unless it chooses the DPDK backend.
+`common/`, so nothing above it links DPDK unless it chooses the DPDK backend.
 
 | Module   | Include                  | Target                    | Holds                                                                                                        |
 |----------|--------------------------|---------------------------|--------------------------------------------------------------------------------------------------------------|
-| `device` | `#include <aloe/device>` | `Aloe::Component::Device` | The `IsPacket` and `IsDevice` concepts, addresses, checksums and receive-side scaling. Header-only, no DPDK. |
-| `fabric` | `#include <aloe/fabric>` | `Aloe::Component::Fabric` | The in-memory backend: a broadcast domain of ports, the fixture for tests, simulation and demos. No DPDK.    |
-| `ethdev` | `#include <aloe/ethdev>` | `Aloe::Component::Ethdev` | The DPDK backend: one port of any driver. The only module that links `Aloe::Dpdk`.                           |
+| `device` | `#include <aloe/device>` | `Aloe::Common::Device` | The `IsPacket` and `IsDevice` concepts, addresses, checksums and receive-side scaling. Header-only, no DPDK. |
+| `fabric` | `#include <aloe/fabric>` | `Aloe::Common::Fabric` | The in-memory backend: a broadcast domain of ports, the fixture for tests, simulation and demos. No DPDK.    |
+| `ethdev` | `#include <aloe/ethdev>` | `Aloe::Common::Ethdev` | The DPDK backend: one port of any driver. The only module that links `Aloe::Dpdk`.                           |
 
 The layer exists because network cards differ in what they can do. It hides everything about the
 card; the shard runtime receives packets and a capability report, and nothing else that is

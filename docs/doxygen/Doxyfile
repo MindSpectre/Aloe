@@ -7,8 +7,7 @@ INPUT                  = README.md \
                          docs/roadmap.md \
                          docs/architecture \
                          docs/guides \
-                         common \
-                         component
+                         common
 RECURSIVE              = YES
 FILE_PATTERNS          = *.hpp *.md
 USE_MDFILE_AS_MAINPAGE = README.md

@@ -543,7 +543,7 @@ std::visit([&result]<typename E>(E&& err) { ... }, value_);
 
 ## Module Layout
 
-Each top-level module under `common/` (and each component under `component/`) ships an **umbrella header** at
+Each top-level module under `common/` ships an **umbrella header** at
 `<module>/export/aloe/<module>` — a file with no extension containing only `#pragma once` and `#include` directives
 for every public header of the module:
 
@@ -625,10 +625,10 @@ Order (separated by blank lines):
 #include "local_helper.hpp"
 ```
 
-Use angle brackets for library/component headers, quotes for same-directory:
+Use angle brackets for library headers, quotes for same-directory:
 
 ```cpp
-#include <strings.hpp>   // Component header
+#include <strings.hpp>   // Library header
 #include "local_impl.hpp"      // Same directory
 ```
 

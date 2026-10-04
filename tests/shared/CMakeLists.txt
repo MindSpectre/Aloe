@@ -23,7 +23,7 @@ target_include_directories(${SHARED_TESTING_TARGET}.Device INTERFACE
         device/
 )
 target_link_libraries(${SHARED_TESTING_TARGET}.Device INTERFACE
-        Aloe::Component::Device
+        Aloe::Common::Device
         ${TEST_LIBS}
 )
 ##############################################################################
@@ -40,8 +40,8 @@ target_include_directories(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
 )
 target_link_libraries(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
         ${SHARED_TESTING_TARGET}.Dpdk
-        Aloe::Component::Ethdev
-        Aloe::Component::Device
+        Aloe::Common::Ethdev
+        Aloe::Common::Device
 )
 ##############################################################################
 
@@ -70,8 +70,8 @@ target_include_directories(${SHARED_TESTING_TARGET}.Runtime INTERFACE
         runtime/
 )
 target_link_libraries(${SHARED_TESTING_TARGET}.Runtime INTERFACE
-        Aloe::Component::Runtime
-        Aloe::Component::Loop
-        Aloe::Component::Device
+        Aloe::Common::Runtime
+        Aloe::Common::Loop
+        Aloe::Common::Device
 )
 ##############################################################################
