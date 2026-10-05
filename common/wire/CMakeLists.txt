@@ -33,6 +33,7 @@ target_link_libraries(${WIRE}.Ethernet INTERFACE
 ##############################################################################
 add_library(${WIRE}.Ipv4 INTERFACE
         ipv4/ipv4_address.hpp
+        ipv4/ipv4_subnet.hpp
         ipv4/ipv4_protocol.hpp
         ipv4/ipv4_header.hpp
         ipv4/ipv4_checksum.hpp

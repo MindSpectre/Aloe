@@ -1,6 +1,9 @@
 #include <aloe/wire>
+#include <array>
+#include <cstddef>
 #include <format>
 #include <optional>
+#include <span>
 
 #include <gtest/gtest.h>
 
@@ -54,28 +57,10 @@ TEST(MacAddress, OrdersByBytes) {
     EXPECT_NE(lower, mac);
 }
 
-TEST(Ipv4Address, ConvertsBetweenOctetsAndHostOrderValue) {
-    constexpr aloe::wire::Ipv4Address address{192, 168, 0, 1};
-    static_assert(address.to_uint32() == 0xC0A80001U);
-    static_assert(aloe::wire::Ipv4Address::from_uint32(0xC0A80001U) == address);
-    EXPECT_EQ(address.bytes()[0], std::byte{192});
-    EXPECT_EQ(address.bytes()[3], std::byte{1});
-}
-
-TEST(Ipv4Address, ParsesAndFormatsDottedDecimal) {
-    const auto parsed = aloe::wire::Ipv4Address::parse("10.0.255.7");
-    ASSERT_TRUE(parsed.has_value());
-    EXPECT_EQ(*parsed, (aloe::wire::Ipv4Address{10, 0, 255, 7}));
-    EXPECT_EQ(parsed->to_string(), "10.0.255.7");
-    EXPECT_EQ(std::format("{}", *parsed), "10.0.255.7");
-}
-
-TEST(Ipv4Address, RejectsMalformedText) {
-    EXPECT_FALSE(aloe::wire::Ipv4Address::parse("").has_value());
-    EXPECT_FALSE(aloe::wire::Ipv4Address::parse("10.0.0").has_value());
-    EXPECT_FALSE(aloe::wire::Ipv4Address::parse("10.0.0.0.1").has_value());
-    EXPECT_FALSE(aloe::wire::Ipv4Address::parse("10.0.0.256").has_value());
-    EXPECT_FALSE(aloe::wire::Ipv4Address::parse("10..0.1").has_value());
-    EXPECT_FALSE(aloe::wire::Ipv4Address::parse("10.0.0.1.").has_value());
-    EXPECT_FALSE(aloe::wire::Ipv4Address::parse("a.b.c.d").has_value());
+TEST(MacAddress, LoadsAndStoresTheWireBytes) {
+    std::array<std::byte, 8> frame{};
+    mac.store(std::span{frame}.subspan(1));
+    EXPECT_EQ(frame[1], std::byte{0x02});
+    EXPECT_EQ(frame[6], std::byte{0x01});
+    EXPECT_EQ(aloe::wire::MacAddress::load(std::span{frame}.subspan(1)), mac);
 }

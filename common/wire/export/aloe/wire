@@ -15,4 +15,5 @@
 #include <ipv4_checksum.hpp>
 #include <ipv4_header.hpp>
 #include <ipv4_protocol.hpp>
+#include <ipv4_subnet.hpp>
 #include <mac_address.hpp>

@@ -24,6 +24,7 @@
 #include <ipv4_checksum.hpp>
 #include <ipv4_header.hpp>
 #include <ipv4_protocol.hpp>
+#include <ipv4_subnet.hpp>
 #include <mac_address.hpp>
 #include <packet.hpp>
 #include <shard_queue.hpp>
@@ -107,7 +108,6 @@ namespace aloe::net {
         using Packet = typename Device::Packet;
 
         static constexpr std::size_t headers_size = wire::ethernet_header_size + wire::ipv4_header_size;
-        static constexpr wire::Ipv4Address limited_broadcast{255, 255, 255, 255};
 
         /// Validates and throws std::invalid_argument; transmits nothing.
         Ipv4(loop::ShardQueue<Device>& owner, const Ipv4Config& config)
@@ -115,7 +115,7 @@ namespace aloe::net {
                   &owner
         },
               config_{validated(config)},
-              mask_{mask_of(config.prefix)},
+              subnet_{config.address, config.prefix},
               arp_{ArpCacheConfig{.capacity         = config.arp_capacity,
                                   .reachable        = config.arp_reachable,
                                   .expire           = config.arp_expire,
@@ -185,11 +185,11 @@ namespace aloe::net {
             wire::MacAddress next_mac{};
             if (is_broadcast(request.destination)) {
                 next_mac = wire::MacAddress::broadcast();
-            } else if (is_multicast(request.destination)) {
-                next_mac = wire::multicast_mac(request.destination);
+            } else if (request.destination.is_multicast()) {
+                next_mac = request.destination.multicast_mac();
             } else {
                 wire::Ipv4Address next_hop = request.destination;
-                if (!on_subnet(next_hop)) {
+                if (!subnet_.contains(next_hop)) {
                     if (!config_.gateway.has_value()) {
                         ++counters_.send_no_route;
                         return std::unexpected{SendError::NoRoute};
@@ -287,15 +287,11 @@ namespace aloe::net {
         static constexpr std::uint16_t identification_stride =
             4096;  ///< Per queue index, so shards do not collide early.
 
-        [[nodiscard]] static constexpr std::uint32_t mask_of(const std::uint8_t prefix) noexcept {
-            return prefix == 0 ? 0U : ~std::uint32_t{0} << (32U - prefix);
-        }
-
         [[nodiscard]] static const Ipv4Config& validated(const Ipv4Config& config) {
-            if (config.address == wire::Ipv4Address{}) {
+            if (config.address.is_unspecified()) {
                 throw std::invalid_argument{"Ipv4Config::address must not be zero"};
             }
-            if (config.prefix > 32) {
+            if (config.prefix > wire::Ipv4Subnet::max_prefix) {
                 throw std::invalid_argument{"Ipv4Config::prefix must be at most 32"};
             }
             if (config.ttl == 0) {
@@ -305,33 +301,21 @@ namespace aloe::net {
                 throw std::invalid_argument{"Ipv4Config::burst_capacity must be positive"};
             }
             if (config.gateway.has_value() &&
-                ((config.gateway->to_uint32() ^ config.address.to_uint32()) & mask_of(config.prefix)) != 0) {
+                !wire::Ipv4Subnet{config.address, config.prefix}.contains(*config.gateway)) {
                 throw std::invalid_argument{"Ipv4Config::gateway must be on the subnet"};
             }
             return config;  // the ARP capacity and durations are ArpCache's to check
         }
 
-        [[nodiscard]] bool on_subnet(const wire::Ipv4Address address) const noexcept {
-            return ((address.to_uint32() ^ config_.address.to_uint32()) & mask_) == 0;
-        }
-
-        [[nodiscard]] wire::Ipv4Address subnet_broadcast() const noexcept {
-            return wire::Ipv4Address::from_uint32(config_.address.to_uint32() | ~mask_);
-        }
-
         /// The limited broadcast, or the subnet broadcast where the subnet has one.
         [[nodiscard]] bool is_broadcast(const wire::Ipv4Address address) const noexcept {
-            return address == limited_broadcast || (config_.prefix <= 30 && address == subnet_broadcast());
-        }
-
-        [[nodiscard]] static bool is_multicast(const wire::Ipv4Address address) noexcept {
-            return (std::to_integer<unsigned>(address.bytes()[0]) & 0xf0U) == 0xe0U;
+            return address.is_limited_broadcast() || (subnet_.has_broadcast() && address == subnet_.broadcast());
         }
 
         /// False for a sender that cannot be a host: zero, multicast, the limited broadcast, or a group MAC.
         [[nodiscard]] static bool plausible_sender(const wire::ArpPacket& arp) noexcept {
-            return arp.sender_ip != wire::Ipv4Address{} && !is_multicast(arp.sender_ip) &&
-                   arp.sender_ip != limited_broadcast && !arp.sender_mac.is_multicast();
+            return !arp.sender_ip.is_unspecified() && !arp.sender_ip.is_multicast() &&
+                   !arp.sender_ip.is_limited_broadcast() && !arp.sender_mac.is_multicast();
         }
 
         [[nodiscard]] bool for_me(const wire::Ipv4Address destination) const noexcept {
@@ -429,8 +413,8 @@ namespace aloe::net {
                 ++counters_.dropped_bad_checksum;
                 return;
             }
-            if (is_multicast(header->source) || header->source == limited_broadcast ||
-                std::to_integer<unsigned>(header->source.bytes()[0]) == 127U) {
+            if (header->source.is_multicast() || header->source.is_limited_broadcast() ||
+                header->source.is_loopback()) {
                 ++counters_.dropped_martian;
                 return;
             }
@@ -620,7 +604,7 @@ namespace aloe::net {
 
         loop::ShardQueue<Device>* queue_;
         Ipv4Config config_;
-        std::uint32_t mask_;
+        wire::Ipv4Subnet subnet_;
         ArpCache arp_;
         std::uint16_t identification_;
         std::vector<Datagram<Packet>> tcp_;

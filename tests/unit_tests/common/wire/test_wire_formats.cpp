@@ -33,7 +33,7 @@ namespace {
 
 }  // namespace
 
-TEST(NetWire, EthernetRoundTripsAndRefusesAShortFrame) {
+TEST(WireFormats, EthernetRoundTripsAndRefusesAShortFrame) {
     std::array<std::byte, 14> bytes{};
     const aloe::wire::EthernetHeader header{
         .destination = beta, .source = alpha, .ethertype = std::to_underlying(aloe::wire::EtherType::Arp)};
@@ -44,7 +44,7 @@ TEST(NetWire, EthernetRoundTripsAndRefusesAShortFrame) {
     EXPECT_FALSE(aloe::wire::parse_ethernet(std::span{bytes}.first(13)).has_value());
 }
 
-TEST(NetWire, ArpRoundTripsAndIgnoresPadding) {
+TEST(WireFormats, ArpRoundTripsAndIgnoresPadding) {
     std::array<std::byte, 46> bytes{};  // as a minimum-size frame carries it: 28 bytes and padding
     const aloe::wire::ArpPacket request{.operation  = aloe::wire::ArpOperation::Request,
                                         .sender_mac = alpha,
@@ -57,7 +57,7 @@ TEST(NetWire, ArpRoundTripsAndIgnoresPadding) {
     EXPECT_FALSE(aloe::wire::parse_arp(std::span{bytes}.first(27)).has_value());
 }
 
-TEST(NetWire, ArpRefusesWhatIsNotEthernetOverIpv4) {
+TEST(WireFormats, ArpRefusesWhatIsNotEthernetOverIpv4) {
     std::array<std::byte, 28> bytes{};
     aloe::wire::write_arp(bytes,
                           {.operation  = aloe::wire::ArpOperation::Reply,
@@ -89,7 +89,7 @@ TEST(NetWire, ArpRefusesWhatIsNotEthernetOverIpv4) {
     EXPECT_FALSE(aloe::wire::parse_arp(rarp).has_value()) << "only request and reply";
 }
 
-TEST(NetWire, Ipv4RoundTripsWithDontFragmentSet) {
+TEST(WireFormats, Ipv4RoundTripsWithDontFragmentSet) {
     const auto payload = ipv4_payload<48>(udp_header);
     EXPECT_EQ(payload[0], std::byte{0x45});
     EXPECT_EQ(aloe::wire::load_be16(std::span{payload}.subspan(6, 2)), 0x4000) << "DF, no offset";
@@ -100,7 +100,7 @@ TEST(NetWire, Ipv4RoundTripsWithDontFragmentSet) {
     EXPECT_FALSE(parsed->is_fragment());
 }
 
-TEST(NetWire, Ipv4FragmentFlagsRoundTrip) {
+TEST(WireFormats, Ipv4FragmentFlagsRoundTrip) {
     aloe::wire::Ipv4Header fragment = udp_header;
     fragment.dont_fragment          = false;
     fragment.more_fragments         = true;
@@ -117,7 +117,7 @@ TEST(NetWire, Ipv4FragmentFlagsRoundTrip) {
     EXPECT_TRUE(aloe::wire::parse_ipv4(ipv4_payload<48>(last))->is_fragment()) << "an offset alone makes a fragment";
 }
 
-TEST(NetWire, Ipv4RefusesWhatItCannotTrust) {
+TEST(WireFormats, Ipv4RefusesWhatItCannotTrust) {
     const auto good = ipv4_payload<48>(udp_header);
     ASSERT_TRUE(aloe::wire::parse_ipv4(good).has_value());
 
@@ -140,7 +140,7 @@ TEST(NetWire, Ipv4RefusesWhatItCannotTrust) {
     EXPECT_FALSE(aloe::wire::parse_ipv4(std::span{good}.first(19)).has_value()) << "short payload";
 }
 
-TEST(NetWire, Ipv4AcceptsOptionsAndPadding) {
+TEST(WireFormats, Ipv4AcceptsOptionsAndPadding) {
     std::array<std::byte, 60> payload{};  // 24-byte header, 48 bytes total, 12 bytes of padding
     aloe::wire::write_ipv4(payload, udp_header);
     payload[0]        = std::byte{0x46};
@@ -150,7 +150,7 @@ TEST(NetWire, Ipv4AcceptsOptionsAndPadding) {
     EXPECT_EQ(parsed->total_length, 48) << "padding past the total length is ignored";
 }
 
-TEST(NetWire, IcmpRoundTripsAndRefusesAShortMessage) {
+TEST(WireFormats, IcmpRoundTripsAndRefusesAShortMessage) {
     std::array<std::byte, 8> bytes{};
     const aloe::wire::IcmpHeader header{
         .type = aloe::wire::IcmpType::EchoRequest, .code = 0, .checksum = 0xf7ff, .rest = 0x12340001};
@@ -160,11 +160,15 @@ TEST(NetWire, IcmpRoundTripsAndRefusesAShortMessage) {
     EXPECT_FALSE(aloe::wire::parse_icmp(std::span{bytes}.first(7)).has_value());
 }
 
-TEST(NetWire, MulticastMacTakesTheLowTwentyThreeBits) {
+TEST(WireFormats, MulticastMacTakesTheLowTwentyThreeBits) {
+    using aloe::wire::Ipv4Address;
     using aloe::wire::MacAddress;
-    EXPECT_EQ(aloe::wire::multicast_mac({224, 0, 0, 1}), MacAddress(0x01, 0x00, 0x5e, 0x00, 0x00, 0x01));
-    EXPECT_EQ(aloe::wire::multicast_mac({239, 255, 1, 2}), MacAddress(0x01, 0x00, 0x5e, 0x7f, 0x01, 0x02))
+    constexpr Ipv4Address all_hosts{224, 0, 0, 1};
+    constexpr Ipv4Address high_bit{239, 255, 1, 2};
+    EXPECT_EQ(all_hosts.multicast_mac(), MacAddress(0x01, 0x00, 0x5e, 0x00, 0x00, 0x01));
+    EXPECT_EQ(high_bit.multicast_mac(), MacAddress(0x01, 0x00, 0x5e, 0x7f, 0x01, 0x02))
         << "the high bit of the second octet is dropped";
-    EXPECT_EQ(aloe::wire::multicast_mac({224, 128, 1, 2}), aloe::wire::multicast_mac({224, 0, 1, 2}))
-        << "32 groups share one MAC";
+    constexpr Ipv4Address upper{224, 128, 1, 2};
+    constexpr Ipv4Address lower{224, 0, 1, 2};
+    EXPECT_EQ(upper.multicast_mac(), lower.multicast_mac()) << "32 groups share one MAC";
 }

@@ -102,6 +102,40 @@ namespace aloe::wire {
                    (std::to_integer<std::uint32_t>(bytes_[2]) << 8U) | std::to_integer<std::uint32_t>(bytes_[3]);
         }
 
+        /// 255.255.255.255: every host on the link, never routed.
+        [[nodiscard]] static constexpr Ipv4Address limited_broadcast() noexcept {
+            return {255, 255, 255, 255};
+        }
+
+        /// 0.0.0.0: no address yet, as a source; never a destination.
+        [[nodiscard]] constexpr bool is_unspecified() const noexcept {
+            return *this == Ipv4Address{};
+        }
+
+        [[nodiscard]] constexpr bool is_limited_broadcast() const noexcept {
+            return *this == limited_broadcast();
+        }
+
+        /// 224.0.0.0/4, the group addresses.
+        [[nodiscard]] constexpr bool is_multicast() const noexcept {
+            return (std::to_integer<unsigned>(bytes_[0]) & 0xf0U) == 0xe0U;
+        }
+
+        /// 127.0.0.0/8, which never leaves a host.
+        [[nodiscard]] constexpr bool is_loopback() const noexcept {
+            return std::to_integer<unsigned>(bytes_[0]) == 127U;
+        }
+
+        /// RFC 1112: `01:00:5e`, then the low 23 bits of the group address.
+        [[nodiscard]] constexpr MacAddress multicast_mac() const noexcept {
+            return {0x01,
+                    0x00,
+                    0x5e,
+                    static_cast<std::uint8_t>(std::to_integer<unsigned>(bytes_[1]) & 0x7fU),
+                    std::to_integer<std::uint8_t>(bytes_[2]),
+                    std::to_integer<std::uint8_t>(bytes_[3])};
+        }
+
         [[nodiscard]] std::string to_string() const {
             return std::format("{}.{}.{}.{}",
                                std::to_integer<unsigned>(bytes_[0]),
@@ -121,17 +155,6 @@ namespace aloe::wire {
     private:
         Bytes bytes_{};
     };
-
-    /// RFC 1112: `01:00:5e`, then the low 23 bits of the group address.
-    [[nodiscard]] constexpr MacAddress multicast_mac(const Ipv4Address group) noexcept {
-        const Ipv4Address::Bytes& bytes = group.bytes();
-        return {0x01,
-                0x00,
-                0x5e,
-                static_cast<std::uint8_t>(std::to_integer<unsigned>(bytes[1]) & 0x7fU),
-                std::to_integer<std::uint8_t>(bytes[2]),
-                std::to_integer<std::uint8_t>(bytes[3])};
-    }
 
 }  // namespace aloe::wire
 

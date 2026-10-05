@@ -12,15 +12,18 @@ and write its formats.
 |-------------|-------------------------|------------------------------------------------------------------------------------------|
 | `bytes/`, `checksum/` | `Aloe.Common.Wire.Bytes` | Big-endian loads and stores; the Internet checksum (RFC 1071).                 |
 | `ethernet/` | `Aloe.Common.Wire.Ethernet` | `MacAddress`; `EthernetHeader`, `EtherType`, `ethernet_header_size`.                 |
-| `ipv4/`     | `Aloe.Common.Wire.Ipv4` | `Ipv4Address` and its multicast MAC; `Ipv4Protocol`; `Ipv4Header`; the header checksum and the pseudo-header sum. |
+| `ipv4/`     | `Aloe.Common.Wire.Ipv4` | `Ipv4Address` and its multicast MAC; `Ipv4Subnet`; `Ipv4Protocol`; `Ipv4Header`; the header checksum and the pseudo-header sum. |
 | `arp/`      | `Aloe.Common.Wire.Arp`  | `ArpPacket`, `ArpOperation`, for Ethernet over IPv4.                                     |
 | `icmp/`     | `Aloe.Common.Wire.Icmp` | `IcmpHeader`, `IcmpType`.                                                                |
 
 ## Key types
 
 - **`aloe::wire::MacAddress`**, **`aloe::wire::Ipv4Address`** -- value types stored in transmission order,
-  with parsing, formatting, and `load`/`store` over the bytes of a frame. `multicast_mac(group)` maps an
-  IPv4 group address to its Ethernet group address (RFC 1112).
+  with parsing, formatting, and `load`/`store` over the bytes of a frame. An IPv4 address knows its special
+  ranges (`is_unspecified`, `is_limited_broadcast`, `is_multicast`, `is_loopback`), and a group address maps
+  to its Ethernet group address with `multicast_mac()` (RFC 1112).
+- **`aloe::wire::Ipv4Subnet`** -- an address with its prefix: `mask()`, `contains()`, `network()`,
+  `broadcast()`, and `has_broadcast()`, false for /31 and /32.
 - **`aloe::wire::Ipv4Protocol`** -- the IPv4 protocol number as a type: `Icmp`, `Tcp`, `Udp` named, any other
   byte still representable.
 - **The headers** -- `EthernetHeader`, `ArpPacket`, `Ipv4Header`, `IcmpHeader`, each with a `parse_*`
