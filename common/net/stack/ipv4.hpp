@@ -276,7 +276,7 @@ namespace aloe::net {
                 return;
             }
             if (ethernet->ethertype == std::to_underlying(EtherType::Ipv4)) {
-                receive_ipv4(packet);
+                receive_ipv4(packet, *ethernet);
                 return;
             }
             ++counters_.dropped_ethertype;
@@ -321,7 +321,7 @@ namespace aloe::net {
             learn_from_wire(arp->sender_ip, arp->sender_mac, now);
         }
 
-        void receive_ipv4(Packet& packet) noexcept {
+        void receive_ipv4(Packet& packet, const EthernetHeader& ethernet) noexcept {
             const std::span<std::byte> frame       = packet.data();
             const std::span<std::byte> payload     = frame.subspan(ethernet_header_size);
             const std::optional<Ipv4Header> header = parse_ipv4(payload);
@@ -354,6 +354,9 @@ namespace aloe::net {
                 case device::Ipv4Protocol::Udp:
                     deliver(udp_, packet, *header, rx);
                     ++counters_.delivered_udp;
+                    return;
+                case device::Ipv4Protocol::Icmp:
+                    receive_icmp(packet, ethernet, *header);
                     return;
                 default:
                     ++counters_.dropped_protocol;
@@ -416,6 +419,100 @@ namespace aloe::net {
             } else {
                 ++counters_.transmit_refused;
             }
+        }
+
+        static constexpr std::size_t tcp_checksum_offset = 16;
+        static constexpr std::size_t udp_checksum_offset = 6;
+
+        [[nodiscard]] static constexpr std::size_t checksum_offset(const device::L4Checksum l4) noexcept {
+            return l4 == device::L4Checksum::Tcp ? tcp_checksum_offset : udp_checksum_offset;
+        }
+
+        /**
+         * @brief Completes the checksums of a frame whose headers the brick wrote, and says what the device must
+         * finish.
+         *
+         * `frame` is Ethernet, the 20-byte IPv4 header with a zero checksum field, and the segment
+         * `header.total_length` accounts for. When `l4` is not `None`, the segment's checksum field is zero and gets
+         * the pseudo-header sum for the device to finish, or the full checksum in software, with UDP's zero written as
+         * 0xffff. The IPv4 checksum is left for the device or written in software the same way.
+         */
+        [[nodiscard]] device::TxMetadata
+        finish_checksums(std::span<std::byte> frame, const Ipv4Header& header, const device::L4Checksum l4) noexcept {
+            device::TxMetadata tx{.l2_length          = static_cast<std::uint8_t>(ethernet_header_size),
+                                  .l3_length          = static_cast<std::uint8_t>(ipv4_header_size),
+                                  .fill_ipv4_checksum = false,
+                                  .fill_l4_checksum   = device::L4Checksum::None};
+            const std::span<std::byte> ip      = frame.subspan(ethernet_header_size, ipv4_header_size);
+            const std::span<std::byte> segment = frame.subspan(headers_size, header.total_length - ipv4_header_size);
+            if (l4 != device::L4Checksum::None) {
+                const std::span<std::byte> field = segment.subspan(checksum_offset(l4), 2);
+                assert(device::load_be16(field) == 0 && "the caller leaves the L4 checksum field zero");
+                if (queue_->capabilities().tx_l4_checksum) {
+                    device::store_be16(field,
+                                       device::ipv4_pseudo_header_sum(header.source,
+                                                                      header.destination,
+                                                                      header.protocol,
+                                                                      static_cast<std::uint16_t>(segment.size())));
+                    tx.fill_l4_checksum = l4;
+                } else {
+                    std::uint16_t sum =
+                        device::ipv4_l4_checksum(header.source, header.destination, header.protocol, segment);
+                    if (l4 == device::L4Checksum::Udp && sum == 0) {
+                        sum = 0xffff;  // zero means "no checksum" in UDP
+                    }
+                    device::store_be16(field, sum);
+                }
+            }
+            if (queue_->capabilities().tx_ipv4_checksum) {
+                tx.fill_ipv4_checksum = true;  // the field is already zero
+            } else {
+                device::store_be16(ip.subspan(device::ipv4_checksum_offset, 2), device::ipv4_header_checksum(ip));
+            }
+            return tx;
+        }
+
+        /// An echo request to our unicast address becomes the reply, in the same packet, back to the frame's source
+        /// MAC.
+        void receive_icmp(Packet& packet, const EthernetHeader& ethernet, const Ipv4Header& header) noexcept {
+            const std::span<std::byte> frame = packet.data();
+            const std::size_t message_length = header.total_length - header.header_length;
+            const std::span<std::byte> message =
+                frame.subspan(ethernet_header_size + header.header_length, message_length);
+            const std::optional<IcmpHeader> icmp = parse_icmp(message);
+            if (!icmp) {
+                ++counters_.dropped_bad_header;
+                return;
+            }
+            if (device::internet_checksum(message) != 0) {  // no card offloads ICMP: always software
+                ++counters_.dropped_bad_checksum;
+                return;
+            }
+            if (icmp->type != IcmpType::EchoRequest || icmp->code != 0 || header.destination != config_.address) {
+                ++counters_.dropped_icmp;  // other types, and echoes to a broadcast address, as the kernel does
+                return;
+            }
+            // Aloe never sends options: drop them from the front. The message already sits after them and stays put.
+            packet.trim_front(header.header_length - ipv4_header_size);
+            const std::span<std::byte> reply = packet.data();
+            const Ipv4Header reply_header{.total_length = static_cast<std::uint16_t>(ipv4_header_size + message_length),
+                                          .identification = next_identification(),
+                                          .ttl            = config_.ttl,
+                                          .protocol       = device::Ipv4Protocol::Icmp,
+                                          .source         = config_.address,
+                                          .destination    = header.source};
+            write_ethernet(reply.first(ethernet_header_size),
+                           {.destination = ethernet.source,  // the last hop is the next hop back, router or not
+                            .source      = queue_->mac(),
+                            .ethertype   = std::to_underlying(EtherType::Ipv4)});
+            write_ipv4(reply.subspan(ethernet_header_size, ipv4_header_size), reply_header);
+            const std::span<std::byte> reply_message = reply.subspan(headers_size, message_length);
+            reply_message[0]                         = std::byte{std::to_underlying(IcmpType::EchoReply)};
+            device::store_be16(reply_message.subspan(icmp_checksum_offset, 2), 0);
+            device::store_be16(reply_message.subspan(icmp_checksum_offset, 2),
+                               device::internet_checksum(reply_message));
+            packet.set_tx(finish_checksums(reply, reply_header, device::L4Checksum::None));
+            transmit_built(std::move(packet), counters_.echo_replies_sent);
         }
 
         loop::ShardQueue<Device>* queue_;
