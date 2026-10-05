@@ -105,8 +105,9 @@ shards never echo each other. ARP frames carry no IP header, so a card puts them
 queue 0 on both backends; the loop that owns that queue forwards resolutions to the other shards, which
 arrives with connection placement in phase 1. A request from another host for a third party refreshes
 an entry we already hold and never creates one, so a router's gratuitous ARP after a failover takes effect
-at once; a sender that cannot be a host (a zero, multicast or broadcast address, or a group MAC) is answered
-when it asks for our address and never learned.
+at once; a sender that cannot be a host (a zero, multicast or broadcast address) is answered when it asks for
+our address and never learned, which keeps RFC 5227 probes working. A request from a group MAC is dropped as
+martian instead, since the reply would go to a group.
 
 **Aging without a timer.** The cache keeps the stamp of each entry's last confirmation and compares it
 with the stamp the caller passes. Fresh entries are used as they are; stale ones are still used while one
@@ -132,8 +133,14 @@ the offload, so both paths run in CI.
 
 **Every slot empty.** `process` moves a packet into a list, transmits it as a reply, or releases it, so a
 hand-written loop resets nothing and the runtime's leftover sweep finds nothing. Datagrams whose source is a
-multicast, limited-broadcast or loopback address are dropped and counted as martian, as the kernel does at
-IP input; TCP never sees them.
+multicast, limited-broadcast or loopback address, or our own address, are dropped and counted as martian, as
+the kernel does at IP input; TCP never sees them. Broadcasts reach UDP, and never TCP: RFC 1122 makes TCP
+unicast only, so a TCP segment to the limited or subnet broadcast is dropped and counted here rather than
+left to every transport to check.
+
+**A config that cannot be a host is refused.** The address must be a unicast host on its subnet: not zero,
+multicast, loopback or 255.255.255.255, and not the subnet's network or broadcast address when the prefix is
+30 or less (a /31 or /32 has neither). The gateway must be another such host on the same subnet.
 
 **Deferred.** Forwarding resolutions between shards and flow rules come with TCP's placement; multicast
 reception with UDP; ICMP errors with phase 2. Fragments are dropped and counted, never reassembled. IPv4

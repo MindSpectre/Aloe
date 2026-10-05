@@ -115,8 +115,12 @@ TEST_F(NetRing, AnEchoRequestIsAnsweredOnRealMbufs) {
 }
 
 TEST_F(NetRing, ASentSegmentComesBackThroughTheRingIntoTheUdpList) {
-    ip_.learn(stack_ip, port_.mac(), now_);  // a send to ourselves: the ring brings it back addressed to us
-    auto packet = ip_.allocate();
+    // A second brick on the same queue plays the peer: our own address as a source would be martian.
+    Ipv4 peer{
+        queue_, {.address = peer_ip, .prefix = 24}
+    };
+    peer.learn(stack_ip, port_.mac(), now_);
+    auto packet = peer.allocate();
     ASSERT_TRUE(packet.has_value());
     const auto payload = aloe::testing::pattern(16);
     const auto room    = packet->append(8 + payload.size());
@@ -127,25 +131,25 @@ TEST_F(NetRing, ASentSegmentComesBackThroughTheRingIntoTheUdpList) {
     aloe::wire::store_be16(room->subspan(6, 2), 0);
     std::ranges::copy(payload, room->begin() + 8);
 
-    ASSERT_TRUE(ip_.send(std::move(*packet),
-                         {.destination = stack_ip,
-                          .protocol    = aloe::wire::Ipv4Protocol::Udp,
-                          .checksum    = aloe::device::L4Checksum::Udp},
-                         now_)
+    ASSERT_TRUE(peer.send(std::move(*packet),
+                          {.destination = stack_ip,
+                           .protocol    = aloe::wire::Ipv4Protocol::Udp,
+                           .checksum    = aloe::device::L4Checksum::Udp},
+                          now_)
                     .has_value());
     std::ignore = queue_.flush();
     tick();
 
     ASSERT_EQ(ip_.received(aloe::wire::Ipv4Protocol::Udp).size(), 1);
     auto& received = ip_.received(aloe::wire::Ipv4Protocol::Udp)[0];
-    EXPECT_EQ(received.source, stack_ip);
+    EXPECT_EQ(received.source, peer_ip);
     EXPECT_EQ(received.destination, stack_ip);
     EXPECT_EQ(received.l4_length, 8 + 16);
     const auto header = aloe::wire::parse_ipv4(received.packet.data().subspan(aloe::wire::ethernet_header_size));
     ASSERT_TRUE(header.has_value());
     EXPECT_EQ(aloe::testing::l4_checksum_residue(*header, received.l4()), 0) << "the software UDP checksum";
     EXPECT_EQ(std::vector<std::byte>(received.l4().begin() + 8, received.l4().end()), payload);
-    EXPECT_EQ(ip_.counters().datagrams_sent, 1);
+    EXPECT_EQ(peer.counters().datagrams_sent, 1);
     EXPECT_EQ(ip_.counters().delivered_udp, 1);
     EXPECT_EQ(ip_.counters().dropped_bad_checksum, 0) << "the receive path verified the software header checksum";
 }

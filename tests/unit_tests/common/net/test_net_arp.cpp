@@ -79,6 +79,18 @@ TEST_P(NetArp, AProbeWithAZeroSenderIsAnsweredAndTeachesNothing) {
     EXPECT_EQ(ip_.counters().arp_replies_sent, 1);
 }
 
+TEST_P(NetArp, ARequestFromAGroupMacIsNeitherAnsweredNorLearned) {
+    constexpr aloe::wire::MacAddress group{0x01, 0x00, 0x5e, 0x00, 0x00, 0x01};
+    local(aloe::testing::arp_frame(aloe::testing::arp_request(group, harness_ip, stack_ip), broadcast));
+    local(aloe::testing::arp_frame(aloe::testing::arp_request(group, aloe::wire::Ipv4Address{}, stack_ip), broadcast));
+
+    EXPECT_TRUE(harness_received().empty()) << "a reply would go to a group";
+    EXPECT_TRUE(ip_.resolved().empty());
+    EXPECT_EQ(ip_.counters().dropped_martian, 2) << "probe or not, no host sends from a group MAC";
+    EXPECT_EQ(ip_.counters().arp_replies_sent, 0);
+    EXPECT_TRUE(burst_empty());
+}
+
 TEST_P(NetArp, ARequestForAnotherHostRefreshesAnEntryWeHold) {
     ip_.learn(harness_ip, stranger_mac, now_);  // a stale MAC
     inject(aloe::testing::arp_frame(aloe::testing::arp_request(harness_mac, harness_ip, {10, 0, 0, 9}), broadcast));

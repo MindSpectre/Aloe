@@ -139,6 +139,23 @@ TEST_P(NetReceive, BroadcastDatagramsAreForUs) {
     EXPECT_EQ(ip_.counters().dropped_not_for_us, 0);
 }
 
+TEST_P(NetReceive, TcpToABroadcastAddressIsDropped) {
+    aloe::testing::Ipv4Spec subnet = datagram(Ipv4Protocol::Tcp);
+    subnet.destination_mac         = aloe::wire::MacAddress::broadcast();
+    subnet.destination             = {10, 0, 0, 255};
+    inject(aloe::testing::ipv4_frame(subnet, aloe::testing::pattern(20)));
+
+    aloe::testing::Ipv4Spec limited = subnet;
+    limited.destination             = aloe::wire::Ipv4Address::limited_broadcast();
+    inject(aloe::testing::ipv4_frame(limited, aloe::testing::pattern(20)));
+
+    EXPECT_EQ(ip_.counters().dropped_tcp_broadcast, 2) << "RFC 1122: TCP is unicast only";
+    EXPECT_TRUE(ip_.received(Ipv4Protocol::Tcp).empty());
+    EXPECT_EQ(ip_.counters().delivered_tcp, 0);
+    EXPECT_EQ(ip_.counters().datagrams_received, 0);
+    EXPECT_TRUE(burst_empty());
+}
+
 TEST_P(NetReceive, WhatIsNotForUsIsDroppedAndCounted) {
     aloe::testing::Ipv4Spec other_address = datagram(Ipv4Protocol::Udp);
     other_address.destination             = {10, 0, 0, 9};
@@ -196,13 +213,14 @@ TEST_P(NetReceive, AMartianSourceIsDropped) {
     for (const aloe::wire::Ipv4Address source : {
              aloe::wire::Ipv4Address{224, 0,   0,   5  },
              aloe::wire::Ipv4Address{255, 255, 255, 255},
-             aloe::wire::Ipv4Address{127, 0,   0,   1  }
+             aloe::wire::Ipv4Address{127, 0,   0,   1  },
+             stack_ip
     }) {
         aloe::testing::Ipv4Spec spec = datagram(Ipv4Protocol::Udp);
         spec.source                  = source;
         inject(aloe::testing::ipv4_frame(spec, aloe::testing::pattern(8)));
     }
-    EXPECT_EQ(ip_.counters().dropped_martian, 3);
+    EXPECT_EQ(ip_.counters().dropped_martian, 4) << "our own address too, as the kernel drops it";
     EXPECT_TRUE(ip_.received(Ipv4Protocol::Udp).empty());
     EXPECT_EQ(ip_.counters().datagrams_received, 0);
 }
@@ -219,6 +237,31 @@ TEST_P(NetReceive, TheBrickReportsItsConfigurationAndTheDevicesMtu) {
     EXPECT_EQ(ip_.gateway(), aloe::testing::gateway_ip);
     EXPECT_EQ(ip_.mtu(), 1500);
     EXPECT_EQ(ip_.max_l4_size(), 1480);
+}
+
+TEST_P(NetReceive, AnAddressThatIsNotAUnicastHostThrows) {
+    const auto config = [](const aloe::wire::Ipv4Address address, const std::uint8_t prefix) {
+        return aloe::net::Ipv4Config{.address = address, .prefix = prefix};
+    };
+    EXPECT_THROW((Ipv4{queue_, config({224, 0, 0, 1}, 24)}), std::invalid_argument) << "multicast";
+    EXPECT_THROW((Ipv4{queue_, config({127, 0, 0, 1}, 8)}), std::invalid_argument) << "loopback";
+    EXPECT_THROW((Ipv4{queue_, config(aloe::wire::Ipv4Address::limited_broadcast(), 24)}), std::invalid_argument)
+        << "limited broadcast";
+    EXPECT_THROW((Ipv4{queue_, config({10, 0, 0, 0}, 24)}), std::invalid_argument) << "the subnet's network";
+    EXPECT_THROW((Ipv4{queue_, config({10, 0, 0, 255}, 24)}), std::invalid_argument) << "the subnet's broadcast";
+    EXPECT_THROW((Ipv4{queue_, config({10, 0, 0, 3}, 30)}), std::invalid_argument) << "a /30 still has a broadcast";
+
+    EXPECT_NO_THROW((Ipv4{queue_, config({10, 0, 0, 0}, 31)})) << "RFC 3021: both addresses of a /31 are hosts";
+    EXPECT_NO_THROW((Ipv4{queue_, config({10, 0, 0, 255}, 32)}));
+}
+
+TEST_P(NetReceive, AGatewayThatIsNotAUnicastNeighbourThrows) {
+    const auto config = [](const aloe::wire::Ipv4Address gateway) {
+        return aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24, .gateway = gateway};
+    };
+    EXPECT_THROW((Ipv4{queue_, config(stack_ip)}), std::invalid_argument) << "ourselves";
+    EXPECT_THROW((Ipv4{queue_, config({10, 0, 0, 0})}), std::invalid_argument) << "the network";
+    EXPECT_THROW((Ipv4{queue_, config({10, 0, 0, 255})}), std::invalid_argument) << "the broadcast";
 }
 
 TEST_P(NetReceive, ABadConfigThrows) {

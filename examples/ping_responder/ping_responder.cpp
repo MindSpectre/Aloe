@@ -143,6 +143,7 @@ int main(int argc, char** argv) {
                  c.dropped_ethertype,
                  c.dropped_bad_checksum,
                  c.dropped_short + c.dropped_arp_malformed + c.dropped_arp_conflict + c.dropped_arp_unsolicited +
-                     c.dropped_bad_header + c.dropped_fragment + c.dropped_protocol + c.dropped_icmp);
+                     c.dropped_bad_header + c.dropped_fragment + c.dropped_protocol + c.dropped_icmp +
+                     c.dropped_martian + c.dropped_tcp_broadcast);
     return EXIT_SUCCESS;
 }

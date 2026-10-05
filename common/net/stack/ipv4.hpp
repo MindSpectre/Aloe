@@ -81,12 +81,13 @@ namespace aloe::net {
         std::uint64_t dropped_fragment        = 0;
         std::uint64_t dropped_protocol        = 0;
         std::uint64_t dropped_icmp            = 0;
-        std::uint64_t dropped_martian =
-            0;  ///< A source address no host may send from: multicast, limited broadcast, loopback.
-        std::uint64_t send_no_route   = 0;
-        std::uint64_t send_unresolved = 0;
-        std::uint64_t send_oversized  = 0;
-        std::uint64_t send_refused    = 0;
+        std::uint64_t dropped_martian = 0;  ///< A source no host sends from: a multicast, broadcast, loopback or our
+                                            ///< own IPv4 address, or an ARP request from a group MAC.
+        std::uint64_t dropped_tcp_broadcast = 0;  ///< TCP to a broadcast address: RFC 1122 makes TCP unicast only.
+        std::uint64_t send_no_route         = 0;
+        std::uint64_t send_unresolved       = 0;
+        std::uint64_t send_oversized        = 0;
+        std::uint64_t send_refused          = 0;
 
         friend constexpr bool operator==(const Ipv4Counters&, const Ipv4Counters&) noexcept = default;
     };
@@ -287,12 +288,23 @@ namespace aloe::net {
         static constexpr std::uint16_t identification_stride =
             4096;  ///< Per queue index, so shards do not collide early.
 
+        /// An address a host may own on `subnet`: not zero, multicast, loopback or a broadcast, and not the subnet's
+        /// network address where it has one.
+        [[nodiscard]] static bool unicast_host(const wire::Ipv4Address address,
+                                               const wire::Ipv4Subnet& subnet) noexcept {
+            const bool reserved =
+                subnet.has_broadcast() && (address == subnet.network() || address == subnet.broadcast());
+            return !address.is_unspecified() && !address.is_multicast() && !address.is_loopback() &&
+                   !address.is_limited_broadcast() && !reserved;
+        }
+
         [[nodiscard]] static const Ipv4Config& validated(const Ipv4Config& config) {
-            if (config.address.is_unspecified()) {
-                throw std::invalid_argument{"Ipv4Config::address must not be zero"};
-            }
             if (config.prefix > wire::Ipv4Subnet::max_prefix) {
                 throw std::invalid_argument{"Ipv4Config::prefix must be at most 32"};
+            }
+            const wire::Ipv4Subnet subnet{config.address, config.prefix};
+            if (!unicast_host(config.address, subnet)) {
+                throw std::invalid_argument{"Ipv4Config::address must be a unicast host address on its subnet"};
             }
             if (config.ttl == 0) {
                 throw std::invalid_argument{"Ipv4Config::ttl must be positive"};
@@ -300,9 +312,13 @@ namespace aloe::net {
             if (config.burst_capacity == 0) {
                 throw std::invalid_argument{"Ipv4Config::burst_capacity must be positive"};
             }
-            if (config.gateway.has_value() &&
-                !wire::Ipv4Subnet{config.address, config.prefix}.contains(*config.gateway)) {
-                throw std::invalid_argument{"Ipv4Config::gateway must be on the subnet"};
+            if (config.gateway.has_value()) {
+                if (!subnet.contains(*config.gateway)) {
+                    throw std::invalid_argument{"Ipv4Config::gateway must be on the subnet"};
+                }
+                if (!unicast_host(*config.gateway, subnet) || *config.gateway == config.address) {
+                    throw std::invalid_argument{"Ipv4Config::gateway must be another unicast host"};
+                }
             }
             return config;  // the ARP capacity and durations are ArpCache's to check
         }
@@ -361,6 +377,10 @@ namespace aloe::net {
             }
             if (arp->operation == wire::ArpOperation::Request) {
                 ++counters_.arp_requests_received;
+                if (arp->sender_mac.is_multicast()) {
+                    ++counters_.dropped_martian;  // the reply would go to a group, probe or not
+                    return;
+                }
                 const bool plausible = plausible_sender(*arp);
                 if (arp->target_ip != config_.address) {
                     // Someone else's business; `process` releases it. RFC 826's merge rule: an entry we hold is
@@ -414,7 +434,7 @@ namespace aloe::net {
                 return;
             }
             if (header->source.is_multicast() || header->source.is_limited_broadcast() ||
-                header->source.is_loopback()) {
+                header->source.is_loopback() || header->source == config_.address) {
                 ++counters_.dropped_martian;
                 return;
             }
@@ -424,6 +444,10 @@ namespace aloe::net {
             }
             if (header->is_fragment()) {
                 ++counters_.dropped_fragment;
+                return;
+            }
+            if (header->protocol == wire::Ipv4Protocol::Tcp && header->destination != config_.address) {
+                ++counters_.dropped_tcp_broadcast;  // RFC 1122 4.2.3.10: TCP never answers a broadcast
                 return;
             }
             ++counters_.datagrams_received;
