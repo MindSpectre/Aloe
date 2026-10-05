@@ -63,6 +63,32 @@ TEST_P(NetArp, ARequestForAnotherHostTeachesNothing) {
     EXPECT_FALSE(ip_.resolve(harness_ip, now_).has_value()) << "the sender was not learned";
 }
 
+TEST_P(NetArp, AProbeWithAZeroSenderIsAnsweredAndTeachesNothing) {
+    inject(aloe::testing::arp_frame(aloe::testing::arp_request(harness_mac, aloe::device::Ipv4Address{}, stack_ip),
+                                    broadcast));
+
+    const auto frames = harness_received();
+    ASSERT_EQ(frames.size(), 1);
+    const auto reply = aloe::testing::parse_frame(frames[0]);
+    ASSERT_TRUE(reply.arp.has_value());
+    EXPECT_EQ(reply.arp->operation, aloe::net::ArpOperation::Reply);
+    EXPECT_EQ(reply.arp->target_ip, aloe::device::Ipv4Address{});
+    EXPECT_TRUE(ip_.resolved().empty());
+    EXPECT_EQ(ip_.counters().resolutions, 0);
+    EXPECT_EQ(ip_.counters().arp_replies_sent, 1);
+}
+
+TEST_P(NetArp, ARequestForAnotherHostRefreshesAnEntryWeHold) {
+    ip_.learn(harness_ip, stranger_mac, now_);  // a stale MAC
+    inject(aloe::testing::arp_frame(aloe::testing::arp_request(harness_mac, harness_ip, {10, 0, 0, 9}), broadcast));
+
+    EXPECT_TRUE(harness_received().empty());
+    ASSERT_EQ(ip_.resolved().size(), 1);
+    EXPECT_EQ(ip_.resolved()[0], (aloe::net::ArpResolution{.address = harness_ip, .mac = harness_mac}));
+    EXPECT_EQ(ip_.resolve(harness_ip, now_), harness_mac);
+    EXPECT_TRUE(harness_received().empty()) << "no request for what is known";
+}
+
 TEST_P(NetArp, ResolveSendsOneBroadcastRequestPerInterval) {
     EXPECT_FALSE(ip_.resolve(harness_ip, now_).has_value());
     auto frames = harness_received();

@@ -191,6 +191,21 @@ TEST_P(NetReceive, AFragmentIsDropped) {
     EXPECT_TRUE(ip_.received(Ipv4Protocol::Udp).empty());
 }
 
+TEST_P(NetReceive, AMartianSourceIsDropped) {
+    for (const aloe::device::Ipv4Address source : {
+             aloe::device::Ipv4Address{224, 0,   0,   5  },
+             aloe::device::Ipv4Address{255, 255, 255, 255},
+             aloe::device::Ipv4Address{127, 0,   0,   1  }
+    }) {
+        aloe::testing::Ipv4Spec spec = datagram(Ipv4Protocol::Udp);
+        spec.source                  = source;
+        inject(aloe::testing::ipv4_frame(spec, aloe::testing::pattern(8)));
+    }
+    EXPECT_EQ(ip_.counters().dropped_martian, 3);
+    EXPECT_TRUE(ip_.received(Ipv4Protocol::Udp).empty());
+    EXPECT_EQ(ip_.counters().datagrams_received, 0);
+}
+
 TEST_P(NetReceive, AnUnknownProtocolIsDropped) {
     inject(aloe::testing::ipv4_frame(datagram(Ipv4Protocol{47}), aloe::testing::pattern(8)));  // GRE
     EXPECT_EQ(ip_.counters().dropped_protocol, 1);

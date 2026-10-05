@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -29,6 +30,7 @@ namespace aloe::net {
 
         /// The segment: after the IPv4 header, `l4_length` bytes, padding excluded.
         [[nodiscard]] std::span<std::byte> l4() noexcept {
+            assert(!packet.empty() && "l4() on a datagram whose packet was moved out");
             return packet.data().subspan(static_cast<std::size_t>(l3_offset) + l3_length, l4_length);
         }
     };

@@ -78,10 +78,12 @@ namespace aloe::net {
         std::uint64_t dropped_fragment        = 0;
         std::uint64_t dropped_protocol        = 0;
         std::uint64_t dropped_icmp            = 0;
-        std::uint64_t send_no_route           = 0;
-        std::uint64_t send_unresolved         = 0;
-        std::uint64_t send_oversized          = 0;
-        std::uint64_t send_refused            = 0;
+        std::uint64_t dropped_martian =
+            0;  ///< A source address no host may send from: multicast, limited broadcast, loopback.
+        std::uint64_t send_no_route   = 0;
+        std::uint64_t send_unresolved = 0;
+        std::uint64_t send_oversized  = 0;
+        std::uint64_t send_refused    = 0;
 
         friend constexpr bool operator==(const Ipv4Counters&, const Ipv4Counters&) noexcept = default;
     };
@@ -170,12 +172,15 @@ namespace aloe::net {
          * @brief Routes, resolves, prepends both headers, fills the checksums and queues the frame.
          *
          * `packet` holds the L4 segment and at least `headers_size` of headroom; `allocate()` gives one. With a
-         * checksum requested, the segment's checksum field is zero. The packet is moved only on success; on any
-         * error it is handed back exactly as built, so a retry prepends again.
+         * checksum requested, the segment holds the field: at least 8 bytes for UDP, 18 for TCP. The field is zero. The
+         * packet is moved only on success; on any error it is handed back exactly as built, so a retry prepends again.
          */
         [[nodiscard]] std::expected<void, SendError>
         send(Packet&& packet, const SendRequest& request, const TimePoint now) noexcept {
             assert(packet.headroom() >= headers_size && "no room for the headers: use allocate()");
+            assert((request.checksum == device::L4Checksum::None ||
+                    packet.size() >= checksum_offset(request.checksum) + 2) &&
+                   "a segment shorter than its checksum field");
             device::MacAddress next_mac{};
             if (is_broadcast(request.destination)) {
                 next_mac = device::MacAddress::broadcast();
@@ -320,6 +325,12 @@ namespace aloe::net {
             return (std::to_integer<unsigned>(address.bytes()[0]) & 0xf0U) == 0xe0U;
         }
 
+        /// False for a sender that cannot be a host: zero, multicast, the limited broadcast, or a group MAC.
+        [[nodiscard]] static bool plausible_sender(const ArpPacket& arp) noexcept {
+            return arp.sender_ip != device::Ipv4Address{} && !is_multicast(arp.sender_ip) &&
+                   arp.sender_ip != limited_broadcast && !arp.sender_mac.is_multicast();
+        }
+
         [[nodiscard]] bool for_me(const device::Ipv4Address destination) const noexcept {
             return destination == config_.address || is_broadcast(destination);
         }
@@ -363,10 +374,18 @@ namespace aloe::net {
             }
             if (arp->operation == ArpOperation::Request) {
                 ++counters_.arp_requests_received;
+                const bool plausible = plausible_sender(*arp);
                 if (arp->target_ip != config_.address) {
-                    return;  // someone else's business; `process` releases it
+                    // Someone else's business; `process` releases it. RFC 826's merge rule: an entry we hold is
+                    // refreshed, a new one is never created from a request not meant for us.
+                    if (plausible && arp_.contains(arp->sender_ip)) {
+                        learn_from_wire(arp->sender_ip, arp->sender_mac, now);
+                    }
+                    return;
                 }
-                learn_from_wire(arp->sender_ip, arp->sender_mac, now);
+                if (plausible) {  // a probe (RFC 5227) is still answered, but teaches nothing
+                    learn_from_wire(arp->sender_ip, arp->sender_mac, now);
+                }
                 write_ethernet(frame.first(ethernet_header_size),
                                {.destination = arp->sender_mac,
                                 .source      = queue_->mac(),
@@ -386,7 +405,9 @@ namespace aloe::net {
                 ++counters_.dropped_arp_unsolicited;  // never asked: nothing on the segment fills the cache
                 return;
             }
-            learn_from_wire(arp->sender_ip, arp->sender_mac, now);
+            if (plausible_sender(*arp)) {
+                learn_from_wire(arp->sender_ip, arp->sender_mac, now);
+            }
         }
 
         void receive_ipv4(Packet& packet, const EthernetHeader& ethernet) noexcept {
@@ -403,6 +424,11 @@ namespace aloe::net {
                                            device::internet_checksum(payload.first(header->header_length)) != 0);
             if (bad_checksum) {
                 ++counters_.dropped_bad_checksum;
+                return;
+            }
+            if (is_multicast(header->source) || header->source == limited_broadcast ||
+                std::to_integer<unsigned>(header->source.bytes()[0]) == 127U) {
+                ++counters_.dropped_martian;
                 return;
             }
             if (!for_me(header->destination)) {

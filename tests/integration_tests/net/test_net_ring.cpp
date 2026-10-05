@@ -90,14 +90,19 @@ TEST_F(NetRing, AnArpRequestIsAnsweredOnRealMbufs) {
 TEST_F(NetRing, AnEchoRequestIsAnsweredOnRealMbufs) {
     ASSERT_FALSE(port_.capabilities().tx_ipv4_checksum) << "the ring has no offloads: software checksums";
     const auto payload = aloe::testing::pattern(56);
-    inject(aloe::testing::icmp_echo_frame(
-        {.destination_mac = port_.mac(), .source_mac = peer_mac, .source = peer_ip, .destination = stack_ip}, payload));
+    inject(aloe::testing::with_ipv4_options(
+        aloe::testing::icmp_echo_frame(
+            {.destination_mac = port_.mac(), .source_mac = peer_mac, .source = peer_ip, .destination = stack_ip},
+            payload),
+        3));  // options make `trim_front` run with a non-zero count on a real mbuf
     tick();
     const auto frames = on_the_wire();
     ASSERT_EQ(frames.size(), 1);
     const auto reply = aloe::testing::parse_frame(frames[0]);
     EXPECT_EQ(reply.ethernet.destination, peer_mac);
+    EXPECT_EQ(reply.ethernet.source, port_.mac());
     ASSERT_TRUE(reply.ipv4.has_value());
+    EXPECT_EQ(reply.ipv4->header_length, 20);
     EXPECT_EQ(reply.ipv4->destination, peer_ip);
     EXPECT_EQ(reply.ipv4->total_length, 20 + 8 + 56);
     EXPECT_EQ(aloe::device::internet_checksum(reply.ipv4_header), 0);
