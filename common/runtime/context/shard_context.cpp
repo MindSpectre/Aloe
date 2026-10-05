@@ -10,9 +10,9 @@ namespace aloe::runtime {
 
     }  // namespace
 
-    ShardContext::ShardContext(const ShardContextConfig& config, const TimePoint start)
+    ShardContext::ShardContext(const ShardContextConfig& config, const core::TimePoint start)
         : index_{config.index},
-          logger_{core::logger("aloe.runtime")},
+          logger_{log::logger("aloe.runtime")},
           now_{start},
           timers_{config.timer_resolution, start},
           scope_{logger_, config.index, counters_} {
@@ -31,7 +31,7 @@ namespace aloe::runtime {
         current_context = previous_;
     }
 
-    bool ShardContext::run_once(const TimePoint now) noexcept {
+    bool ShardContext::run_once(const core::TimePoint now) noexcept {
         const Current current{*this};
         now_      = now;
         bool busy = false;

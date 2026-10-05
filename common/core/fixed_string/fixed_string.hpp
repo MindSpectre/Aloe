@@ -4,7 +4,7 @@
 #include <cstddef>
 #include <string_view>
 
-namespace aloe::utils {
+namespace aloe::core {
 
     /**
      * @brief A string literal usable as a template parameter.
@@ -39,4 +39,4 @@ namespace aloe::utils {
         }
     };
 
-}  // namespace aloe::utils
+}  // namespace aloe::core

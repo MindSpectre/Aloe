@@ -1,5 +1,5 @@
 #include <algorithm>
-#include <aloe/utils>
+#include <aloe/core>
 #include <array>
 #include <bit>
 #include <cassert>
@@ -278,7 +278,7 @@ namespace aloe::ethdev {
 
     std::optional<Packet> Port::allocate(const std::uint16_t queue) noexcept {
         assert(queue < queues_);
-        utils::force_non_const(this);  // takes an mbuf from the pool, which a const member could still do
+        core::force_non_const(this);  // takes an mbuf from the pool, which a const member could still do
         rte_mbuf* mbuf = rte_pktmbuf_alloc(pools_[queue]);
         if (mbuf == nullptr) {
             return std::nullopt;

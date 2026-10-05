@@ -1,5 +1,6 @@
 #pragma once
 
+#include <aloe/core>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -11,12 +12,10 @@
 namespace aloe::net {
 
     struct ArpCacheConfig {
-        std::size_t capacity = 256;  ///< Slots; a power of two of at least `ArpCache::probe_window`.
-        std::chrono::nanoseconds reachable =
-            std::chrono::seconds{60};  ///< A confirmed MAC is used without a refresh this long.
-        std::chrono::nanoseconds expire = std::chrono::seconds{120};  ///< After this, the address is unresolved again.
-        std::chrono::nanoseconds request_interval =
-            std::chrono::seconds{1};  ///< At most one request per entry per interval.
+        std::size_t capacity     = 256;  ///< Slots; a power of two of at least `ArpCache::probe_window`.
+        core::Duration reachable = std::chrono::seconds{60};   ///< A confirmed MAC is used without a refresh this long.
+        core::Duration expire    = std::chrono::seconds{120};  ///< After this, the address is unresolved again.
+        core::Duration request_interval = std::chrono::seconds{1};  ///< At most one request per entry per interval.
     };
 
     /**
@@ -37,8 +36,6 @@ namespace aloe::net {
     // table decides whether abseil enters the project: reserved capacity, inserts capped at it.
     class ArpCache {
     public:
-        using TimePoint = std::chrono::steady_clock::time_point;
-
         static constexpr std::size_t probe_window = 8;
 
         struct Lookup {
@@ -58,9 +55,9 @@ namespace aloe::net {
         ~ArpCache()                          = default;
 
         /// Inserts an incomplete entry for an absent address.
-        [[nodiscard]] Lookup lookup(device::Ipv4Address address, TimePoint now) noexcept;
+        [[nodiscard]] Lookup lookup(device::Ipv4Address address, core::TimePoint now) noexcept;
         /// Sets the entry reachable at `now`, inserting it if absent.
-        void learn(device::Ipv4Address address, device::MacAddress mac, TimePoint now) noexcept;
+        void learn(device::Ipv4Address address, device::MacAddress mac, core::TimePoint now) noexcept;
         /// Any entry for the address, incomplete or expired included.
         [[nodiscard]] bool contains(device::Ipv4Address address) const noexcept;
 
@@ -83,18 +80,18 @@ namespace aloe::net {
             device::Ipv4Address address{};
             device::MacAddress mac{};
             State state = State::Free;
-            TimePoint
+            core::TimePoint
                 confirmed{};  ///< Meaningful when reachable; the epoch otherwise, so incomplete entries are the oldest.
-            std::optional<TimePoint> requested = std::nullopt;  ///< The last request; none yet when absent.
+            std::optional<core::TimePoint> requested = std::nullopt;  ///< The last request; none yet when absent.
         };
 
         [[nodiscard]] std::size_t home(device::Ipv4Address address) const noexcept;
         [[nodiscard]] const Entry* find(device::Ipv4Address address) const noexcept;
         [[nodiscard]] Entry* find(device::Ipv4Address address) noexcept;
-        [[nodiscard]] Entry& insert(device::Ipv4Address address, TimePoint now) noexcept;
-        [[nodiscard]] bool expired(const Entry& entry, TimePoint now) const noexcept;
+        [[nodiscard]] Entry& insert(device::Ipv4Address address, core::TimePoint now) noexcept;
+        [[nodiscard]] bool expired(const Entry& entry, core::TimePoint now) const noexcept;
         /// True, and records the stamp, when the entry's last request is absent or at least an interval old.
-        [[nodiscard]] bool request_due(Entry& entry, TimePoint now) const noexcept;
+        [[nodiscard]] bool request_due(Entry& entry, core::TimePoint now) const noexcept;
 
         ArpCacheConfig config_;
         std::vector<Entry> slots_;

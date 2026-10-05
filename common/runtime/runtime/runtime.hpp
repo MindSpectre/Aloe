@@ -1,7 +1,8 @@
 #pragma once
 
 #include <aloe/core>
-#include <aloe/utils>
+#include <aloe/execution>
+#include <aloe/log>
 #include <atomic>
 #include <cassert>
 #include <cstddef>
@@ -76,7 +77,7 @@ namespace aloe::runtime {
             if (!config.threads.empty() && config.threads.size() != queues) {
                 throw RuntimeError{"one ShardThread per queue, or none"};
             }
-            const ShardContext::TimePoint start = ShardContext::Clock::now();
+            const core::TimePoint start = core::Clock::now();
             shards_.reserve(queues);
             stops_.reserve(queues);
             for (std::uint16_t queue = 0; queue < queues; ++queue) {
@@ -196,9 +197,9 @@ namespace aloe::runtime {
          * an assert on the stop flag would race a legitimate concurrent `stop()`, so the rest is
          * documented here, not asserted.
          */
-        template <core::ex::sender Sender>
+        template <execution::ex::sender Sender>
         void spawn(const std::uint16_t index, Sender&& sender) {
-            utils::force_non_const(this);
+            core::force_non_const(this);
             assert(!joined_ && "spawn after join: nothing reads the inbox any more and the work would leak");
             using Plain = std::remove_cvref_t<Sender>;
             auto* work  = new SpawnWork<Plain>{shards_[index]->context(), Plain{std::forward<Sender>(sender)}};
@@ -206,7 +207,7 @@ namespace aloe::runtime {
         }
 
         [[nodiscard]] ShardType& shard(const std::uint16_t index) noexcept {
-            utils::force_non_const(this);
+            core::force_non_const(this);
             return *shards_[index];
         }
 
@@ -275,7 +276,7 @@ namespace aloe::runtime {
         }
 
         /// The runtime's cold-path logger: the first shard's, which is the module's.
-        [[nodiscard]] core::Logger log() const noexcept {
+        [[nodiscard]] log::Logger log() const noexcept {
             return shards_.front()->context().logger();
         }
 

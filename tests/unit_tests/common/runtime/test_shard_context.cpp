@@ -7,7 +7,7 @@
 namespace {
 
     using namespace std::chrono_literals;
-    using TimePoint = aloe::runtime::ShardContext::TimePoint;
+    using TimePoint = aloe::core::TimePoint;
 
     constexpr TimePoint start{};
 

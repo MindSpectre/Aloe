@@ -1,6 +1,6 @@
 #include <algorithm>
+#include <aloe/core>
 #include <aloe/net>
-#include <aloe/utils>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -60,12 +60,12 @@ namespace {
         }
 
         [[nodiscard]] std::optional<Packet> allocate(const std::uint16_t queue) noexcept {
-            aloe::utils::force_non_const(this);
+            aloe::core::force_non_const(this);
             return inner_->allocate(queue);
         }
 
         [[nodiscard]] std::size_t receive(const std::uint16_t queue, std::span<Packet> out) noexcept {
-            aloe::utils::force_non_const(this);
+            aloe::core::force_non_const(this);
             return inner_->receive(queue, out);
         }
 

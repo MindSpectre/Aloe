@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <type_traits>
 
-namespace aloe::utils {
+namespace aloe::core {
 
     /**
      * @brief Pins a member function as mutating: `force_non_const(this)` does not compile inside a
@@ -27,4 +27,4 @@ namespace aloe::utils {
         static_assert(!std::is_same_v<T, std::nullptr_t>, "pass this, not nullptr");
     }
 
-}  // namespace aloe::utils
+}  // namespace aloe::core

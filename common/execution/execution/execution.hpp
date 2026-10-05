@@ -3,13 +3,13 @@
 #include <exec/completion_behavior.hpp>
 #include <stdexec/execution.hpp>
 
-namespace aloe::core {
+namespace aloe::execution {
 
     /**
      * @brief The single point where Aloe names its execution facilities.
      *
-     * Aloe code spells senders, receivers and schedulers as `aloe::core::ex::...` and
-     * coroutine tasks as `aloe::core::task<T>`, never as `stdexec::` or `exec::` directly.
+     * Aloe code spells senders, receivers and schedulers as `aloe::execution::ex::...` and
+     * coroutine tasks as `aloe::execution::task<T>`, never as `stdexec::` or `exec::` directly.
      * The facilities come from stdexec today. Once the standard library ships
      * std::execution, only this header changes.
      */
@@ -50,4 +50,4 @@ namespace aloe::core {
     template <typename Tag>
     using get_completion_behavior_t = ::exec::get_completion_behavior_t<Tag>;
 
-}  // namespace aloe::core
+}  // namespace aloe::execution

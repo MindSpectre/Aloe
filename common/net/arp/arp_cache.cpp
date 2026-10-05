@@ -16,8 +16,7 @@ namespace aloe::net {
             if (config.capacity < ArpCache::probe_window || !std::has_single_bit(config.capacity)) {
                 throw std::invalid_argument{"ArpCacheConfig::capacity must be a power of two of at least 8"};
             }
-            if (config.reachable <= std::chrono::nanoseconds::zero() ||
-                config.request_interval <= std::chrono::nanoseconds::zero()) {
+            if (config.reachable <= core::Duration::zero() || config.request_interval <= core::Duration::zero()) {
                 throw std::invalid_argument{"ArpCacheConfig durations must be positive"};
             }
             if (config.reachable >= config.expire) {
@@ -64,7 +63,7 @@ namespace aloe::net {
         return const_cast<Entry*>(std::as_const(*this).find(address));  // one search, two constnesses
     }
 
-    bool ArpCache::expired(const Entry& entry, const TimePoint now) const noexcept {
+    bool ArpCache::expired(const Entry& entry, const core::TimePoint now) const noexcept {
         switch (entry.state) {
             case State::Free:
                 return true;
@@ -76,7 +75,7 @@ namespace aloe::net {
         std::unreachable();
     }
 
-    ArpCache::Entry& ArpCache::insert(const device::Ipv4Address address, const TimePoint now) noexcept {
+    ArpCache::Entry& ArpCache::insert(const device::Ipv4Address address, const core::TimePoint now) noexcept {
         const std::size_t mask  = slots_.size() - 1;
         const std::size_t start = home(address);
         Entry* first_expired    = nullptr;
@@ -102,7 +101,7 @@ namespace aloe::net {
         return victim;
     }
 
-    bool ArpCache::request_due(Entry& entry, const TimePoint now) const noexcept {
+    bool ArpCache::request_due(Entry& entry, const core::TimePoint now) const noexcept {
         if (entry.requested.has_value() && now - *entry.requested < config_.request_interval) {
             return false;
         }
@@ -110,7 +109,7 @@ namespace aloe::net {
         return true;
     }
 
-    ArpCache::Lookup ArpCache::lookup(const device::Ipv4Address address, const TimePoint now) noexcept {
+    ArpCache::Lookup ArpCache::lookup(const device::Ipv4Address address, const core::TimePoint now) noexcept {
         Entry* entry = find(address);
         if (entry == nullptr) {
             entry = &insert(address, now);
@@ -128,8 +127,9 @@ namespace aloe::net {
         return {.mac = std::nullopt, .send_request = request_due(*entry, now)};
     }
 
-    void
-    ArpCache::learn(const device::Ipv4Address address, const device::MacAddress mac, const TimePoint now) noexcept {
+    void ArpCache::learn(const device::Ipv4Address address,
+                         const device::MacAddress mac,
+                         const core::TimePoint now) noexcept {
         Entry* entry = find(address);
         if (entry == nullptr) {
             entry = &insert(address, now);

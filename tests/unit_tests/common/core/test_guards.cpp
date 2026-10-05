@@ -1,4 +1,4 @@
-#include <aloe/utils>
+#include <aloe/core>
 #include <cstddef>
 #include <type_traits>
 #include <utility>
@@ -16,13 +16,13 @@ namespace {
         }
 
         void set(const int value) noexcept {
-            aloe::utils::force_non_const(this);
-            aloe::utils::force_non_static(this);
+            aloe::core::force_non_const(this);
+            aloe::core::force_non_static(this);
             *target_ = value;
         }
 
         [[nodiscard]] int get() const noexcept {
-            aloe::utils::force_non_static(this);
+            aloe::core::force_non_static(this);
             return *target_;
         }
 
@@ -31,9 +31,9 @@ namespace {
     };
 
     // The guards accept exactly what `this` is in the members they are written for.
-    static_assert(noexcept(aloe::utils::force_non_const(std::declval<Handle*>())));
-    static_assert(noexcept(aloe::utils::force_non_static(std::declval<const Handle*>())));
-    static_assert(std::is_void_v<decltype(aloe::utils::force_non_const(std::declval<Handle*>()))>);
+    static_assert(noexcept(aloe::core::force_non_const(std::declval<Handle*>())));
+    static_assert(noexcept(aloe::core::force_non_static(std::declval<const Handle*>())));
+    static_assert(std::is_void_v<decltype(aloe::core::force_non_const(std::declval<Handle*>()))>);
 
 }  // namespace
 

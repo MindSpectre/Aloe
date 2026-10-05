@@ -1,6 +1,6 @@
 #pragma once
 
-#include <aloe/core>
+#include <aloe/execution>
 
 #include <scheduler.hpp>
 
@@ -13,10 +13,10 @@ namespace aloe::runtime {
      * Because the scheduler type is concrete and its senders complete on the shard, a task with
      * this environment holds one pointer and never reschedules around a shard sender.
      */
-    using ShardEnvironment = core::TaskEnvironment<Scheduler, core::ex::inplace_stop_source>;
+    using ShardEnvironment = execution::TaskEnvironment<Scheduler, execution::ex::inplace_stop_source>;
 
     /// A coroutine task bound to a shard. Start it with `Scheduler::spawn`, or await it from another shard task.
     template <typename T>
-    using task = core::task<T, ShardEnvironment>;
+    using task = execution::task<T, ShardEnvironment>;
 
 }  // namespace aloe::runtime

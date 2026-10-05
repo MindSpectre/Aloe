@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace aloe::utils {
+namespace aloe::core {
 
     /**
      * @brief Discards values on purpose, where the discarding happens.
@@ -29,4 +29,4 @@ namespace aloe::utils {
         return value ? std::forward<T>(value) : std::forward<U>(fallback);
     }
 
-}  // namespace aloe::utils
+}  // namespace aloe::core

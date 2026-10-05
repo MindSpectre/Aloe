@@ -7,7 +7,8 @@ stack, fires due timers and runs ready work, all on one thread. The module also 
 gives senders a home on a shard, the shard-bound coroutine task, and the runtime that launches one shard per
 device queue on its own pinned thread. Everything is reached through the umbrella `#include <aloe/runtime>`
 (`export/aloe/runtime`), which includes `<aloe/loop>`, and targets link `Aloe::Common::Runtime`. It
-depends on [`core`](core.md) for the execution facilities and logging, on [`loop`](loop.md) for the bricks
+depends on [`execution`](execution.md) for the execution facilities, on [`log`](log.md) for logging, on
+[`core`](core.md) for the clock, on [`loop`](loop.md) for the bricks
 and on [`device`](device.md) for the device concept. It never names DPDK.
 
 Nothing here is required to use Aloe. A program that wants the loop under its own control writes it over
@@ -37,7 +38,7 @@ per packet.
   `now()`. Same-shard `schedule()` pushes onto the run queue; from another thread it goes through the inbox.
   `spawn(sender)` starts work in the shard's scope. Not default-constructible, so a task started without a
   shard fails to compile.
-- **`aloe::runtime::task<T>`** -- the C++26 coroutine task bound to a shard: `core::task<T, ShardEnvironment>`,
+- **`aloe::runtime::task<T>`** -- the C++26 coroutine task bound to a shard: `execution::task<T, ShardEnvironment>`,
   where the environment names `Scheduler` as the scheduler type. Awaiting a shard sender costs nothing beyond
   the sender itself: no reschedule, no allocation. A child task awaited by a parent inherits scheduler and
   stop token.
@@ -141,5 +142,5 @@ names the concrete `Scheduler`, whose senders say they complete where they start
 directly. The switch applies to every awaited sender, which is why threading contract rule 4 exists. A test
 pins the saving: a task awaiting a timer costs one wheel entry and no run-queue push.
 
-**Logging behind an alias.** Shards log only on cold paths, through [`core`](core.md)'s quill alias: a shard
+**Logging behind an alias.** Shards log only on cold paths, through [`log`](log.md)'s quill alias: a shard
 starting and draining, a task failing, a hook or pin failing. Nothing logs inside a tick.

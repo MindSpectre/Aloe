@@ -47,7 +47,7 @@ namespace aloe::testing {
     protected:
         using Packet    = fabric::Packet;
         using Ipv4      = net::Ipv4<fabric::Port>;
-        using TimePoint = Ipv4::TimePoint;
+        using TimePoint = aloe::core::TimePoint;
 
         static constexpr std::size_t ring_capacity = 16;
 

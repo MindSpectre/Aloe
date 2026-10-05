@@ -6,7 +6,8 @@ transports. It answers ARP and ping, sorts incoming IPv4 datagrams into one list
 layer above to drain, and sends a transport's segment by routing it, finding the next hop's MAC, writing
 both headers and handing the frame to the queue. Everything is reached through the umbrella
 `#include <aloe/net>` (`export/aloe/net`), and targets link `Aloe::Common::Net`. It depends on
-[`loop`](loop.md), [`device`](device.md) and [`utils`](utils.md), and not on [`core`](core.md): no header
+[`loop`](loop.md), [`device`](device.md) and [`core`](core.md), and not on [`execution`](execution.md) or
+[`log`](log.md): no header
 here names the asynchronous model, logs, or reads a clock.
 
 ## Key types

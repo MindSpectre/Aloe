@@ -8,9 +8,9 @@
 // Frames addressed to the port's MAC come back with the addresses swapped.
 
 #include <algorithm>
-#include <aloe/core>
 #include <aloe/device>
 #include <aloe/ethdev>
+#include <aloe/log>
 #include <aloe/loop>
 #include <aloe/runtime>
 #include <charconv>
@@ -123,7 +123,7 @@ int main(int argc, char** argv) {
     }
     const sigset_t signals = block_termination_signals();
 
-    aloe::core::Logging logging{{.level = aloe::core::LogLevel::Info}};
+    aloe::log::Logging logging{{.level = aloe::log::LogLevel::Info}};
     aloe::ethdev::Eal eal{arguments->eal};
     aloe::ethdev::Port port{
         {.name = arguments->port, .queues = arguments->queues}

@@ -15,7 +15,7 @@
 #include <quill/sinks/ConsoleSink.h>
 #include <quill/sinks/FileSink.h>
 
-namespace aloe::core {
+namespace aloe::log {
 
     /// Severity, lowest first. `None` on a logger silences it.
     enum class LogLevel : std::uint8_t { Trace, Debug, Info, Warning, Error, Critical, None };
@@ -75,7 +75,7 @@ namespace aloe::core {
             : logger_{logger} {
         }
 
-        template <LogLevel Level, utils::FixedString Format, typename... Args>
+        template <LogLevel Level, core::FixedString Format, typename... Args>
         void log(Args&&... args) const {
             static constexpr quill::MacroMetadata metadata{
                 "", "", Format.data(), nullptr, detail::to_quill(Level), quill::MacroMetadata::Event::Log};
@@ -84,32 +84,32 @@ namespace aloe::core {
             }
         }
 
-        template <utils::FixedString Format, typename... Args>
+        template <core::FixedString Format, typename... Args>
         void trace(Args&&... args) const {
             log<LogLevel::Trace, Format>(std::forward<Args>(args)...);
         }
 
-        template <utils::FixedString Format, typename... Args>
+        template <core::FixedString Format, typename... Args>
         void debug(Args&&... args) const {
             log<LogLevel::Debug, Format>(std::forward<Args>(args)...);
         }
 
-        template <utils::FixedString Format, typename... Args>
+        template <core::FixedString Format, typename... Args>
         void info(Args&&... args) const {
             log<LogLevel::Info, Format>(std::forward<Args>(args)...);
         }
 
-        template <utils::FixedString Format, typename... Args>
+        template <core::FixedString Format, typename... Args>
         void warning(Args&&... args) const {
             log<LogLevel::Warning, Format>(std::forward<Args>(args)...);
         }
 
-        template <utils::FixedString Format, typename... Args>
+        template <core::FixedString Format, typename... Args>
         void error(Args&&... args) const {
             log<LogLevel::Error, Format>(std::forward<Args>(args)...);
         }
 
-        template <utils::FixedString Format, typename... Args>
+        template <core::FixedString Format, typename... Args>
         void critical(Args&&... args) const {
             log<LogLevel::Critical, Format>(std::forward<Args>(args)...);
         }
@@ -191,4 +191,4 @@ namespace aloe::core {
         return result;
     }
 
-}  // namespace aloe::core
+}  // namespace aloe::log

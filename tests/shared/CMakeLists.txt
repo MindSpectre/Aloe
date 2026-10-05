@@ -55,7 +55,7 @@ target_include_directories(${SHARED_TESTING_TARGET}.Log INTERFACE
         log/
 )
 target_link_libraries(${SHARED_TESTING_TARGET}.Log INTERFACE
-        Aloe::Common::Core
+        Aloe::Common::Log
         ${TEST_LIBS}
 )
 ##############################################################################

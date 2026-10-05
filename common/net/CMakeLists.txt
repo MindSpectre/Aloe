@@ -29,6 +29,7 @@ target_include_directories(${NET}.Arp PUBLIC
 )
 target_link_libraries(${NET}.Arp PUBLIC
         Aloe::Common::Device
+        Aloe::Common::Core
 )
 ##############################################################################
 
@@ -47,7 +48,7 @@ target_link_libraries(${NET}.Stack INTERFACE
         ${NET}.Arp
         Aloe::Common::Loop
         Aloe::Common::Device
-        Aloe::Common::Utils
+        Aloe::Common::Core
 )
 ##############################################################################
 

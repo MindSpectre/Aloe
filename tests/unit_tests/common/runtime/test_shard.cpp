@@ -18,7 +18,7 @@
 namespace {
 
     using namespace std::chrono_literals;
-    using TimePoint = aloe::runtime::ShardContext::TimePoint;
+    using TimePoint = aloe::core::TimePoint;
 
     constexpr TimePoint start{};
     constexpr aloe::device::MacAddress server{0x02, 0, 0, 0, 0, 0x01};

@@ -1,4 +1,5 @@
-#include <aloe/utils>
+#include <aloe/core>
+#include <aloe/log>
 #include <cassert>
 #include <cstdint>
 #include <exception>
@@ -10,7 +11,7 @@
 
 namespace aloe::runtime {
 
-    TaskScope::TaskScope(const core::Logger logger, const std::uint16_t index, loop::ShardCounters& counters) noexcept
+    TaskScope::TaskScope(const log::Logger logger, const std::uint16_t index, loop::ShardCounters& counters) noexcept
         : logger_{logger},
           index_{index},
           counters_{&counters} {
@@ -25,7 +26,7 @@ namespace aloe::runtime {
     }
 
     void TaskScope::assert_owner() const noexcept {
-        utils::force_non_static(this);  // the assert below is all there is, and NDEBUG removes it
+        core::force_non_static(this);  // the assert below is all there is, and NDEBUG removes it
         assert(
             owner_ == std::this_thread::get_id() &&
             "a task completed off its shard: a shard task awaits only its own shard's senders (threading contract 4)");

@@ -1,0 +1,9 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe log module: named loggers over quill, the one
+ * place that names quill. Consumers link Aloe::Common::Log and write
+ * `#include <aloe/log>`.
+ */
+
+#include <log.hpp>

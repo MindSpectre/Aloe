@@ -1,5 +1,6 @@
 #pragma once
 
+#include <aloe/core>
 #include <array>
 #include <cassert>
 #include <chrono>
@@ -16,8 +17,7 @@ namespace aloe::loop {
      * unarmed, so it may re-arm the timer or cancel others.
      */
     struct Timer {
-        using Function  = void (*)(Timer&) noexcept;
-        using TimePoint = std::chrono::steady_clock::time_point;
+        using Function = void (*)(Timer&) noexcept;
 
         Timer() noexcept = default;
 
@@ -40,7 +40,7 @@ namespace aloe::loop {
 
         Timer* next = nullptr;
         Timer* prev = nullptr;
-        TimePoint deadline{};
+        core::TimePoint deadline{};
         Function fire = nullptr;
     };
 
@@ -57,15 +57,11 @@ namespace aloe::loop {
      */
     class TimerWheel {
     public:
-        using Clock     = std::chrono::steady_clock;
-        using TimePoint = Clock::time_point;
-        using Duration  = Clock::duration;
-
         static constexpr std::size_t levels          = 4;
         static constexpr std::size_t slots_per_level = 256;
 
         /// Tick zero begins at `start`. Throws std::invalid_argument when `resolution` is not positive.
-        TimerWheel(Duration resolution, TimePoint start);
+        TimerWheel(core::Duration resolution, core::TimePoint start);
         TimerWheel(const TimerWheel&)            = delete;
         TimerWheel& operator=(const TimerWheel&) = delete;
         TimerWheel(TimerWheel&&)                 = delete;
@@ -74,31 +70,31 @@ namespace aloe::loop {
         ~TimerWheel();
 
         /// Arms, or re-arms with a new deadline.
-        void arm(Timer& timer, TimePoint deadline) noexcept;
+        void arm(Timer& timer, core::TimePoint deadline) noexcept;
         /// A no-op on a timer that is not armed.
         void cancel(Timer& timer) noexcept;
         /// Fires everything due at `now` and returns how many fired. An earlier stamp than the last one fires only the
         /// due list.
-        [[nodiscard]] std::size_t advance(TimePoint now) noexcept;
+        [[nodiscard]] std::size_t advance(core::TimePoint now) noexcept;
 
         [[nodiscard]] std::size_t pending() const noexcept {
             return armed_;
         }
 
-        [[nodiscard]] Duration resolution() const noexcept {
+        [[nodiscard]] core::Duration resolution() const noexcept {
             return resolution_;
         }
 
     private:
-        [[nodiscard]] std::uint64_t tick_of(TimePoint time) const noexcept;
-        [[nodiscard]] std::uint64_t deadline_tick(TimePoint deadline) const noexcept;
+        [[nodiscard]] std::uint64_t tick_of(core::TimePoint time) const noexcept;
+        [[nodiscard]] std::uint64_t deadline_tick(core::TimePoint deadline) const noexcept;
         void place(Timer& timer, std::uint64_t tick, bool cascading) noexcept;
         void cascade(std::size_t level, std::size_t slot) noexcept;
         std::size_t fire_list(Timer& head) noexcept;
 
-        Duration resolution_;
-        TimePoint start_;
-        TimePoint now_;
+        core::Duration resolution_;
+        core::TimePoint start_;
+        core::TimePoint now_;
         std::uint64_t current_tick_ = 0;  ///< The last tick processed.
         std::size_t armed_          = 0;
         Timer due_;  ///< Deadlines already reached, fired first on the next advance.

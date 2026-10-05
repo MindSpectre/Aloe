@@ -5,32 +5,6 @@ add_subdirectory(runtime)
 add_subdirectory(net)
 
 ##############################################################################
-# Test Core: execution facilities
-##############################################################################
-add_unit_test(${UNIT_TESTING_TARGET}.Core.Execution
-        core/test_execution.cpp
-)
-target_link_libraries(${UNIT_TESTING_TARGET}.Core.Execution
-        PRIVATE
-        Aloe::Common::Core
-        ${TEST_LIBS}
-)
-##############################################################################
-
-##############################################################################
-# Test Core: logging through the quill alias, into a file sink
-##############################################################################
-add_unit_test(${UNIT_TESTING_TARGET}.Core.Log
-        core/test_log.cpp
-)
-target_link_libraries(${UNIT_TESTING_TARGET}.Core.Log
-        PRIVATE
-        Aloe::Common::Core
-        ${TEST_LIBS}
-)
-##############################################################################
-
-##############################################################################
 # Test Core: version, and the umbrella header seen from two translation units
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Core.Version
@@ -49,15 +23,41 @@ target_link_libraries(${UNIT_TESTING_TARGET}.Core.Version
 ##############################################################################
 
 ##############################################################################
-# Test Utils: discarding and choosing values, and the const and static guards
+# Test Core: discarding and choosing values, and the const and static guards
 ##############################################################################
-add_unit_test(${UNIT_TESTING_TARGET}.Utils
-        utils/test_guards.cpp
-        utils/test_values.cpp
+add_unit_test(${UNIT_TESTING_TARGET}.Core.Helpers
+        core/test_guards.cpp
+        core/test_values.cpp
 )
-target_link_libraries(${UNIT_TESTING_TARGET}.Utils
+target_link_libraries(${UNIT_TESTING_TARGET}.Core.Helpers
         PRIVATE
-        Aloe::Common::Utils
+        Aloe::Common::Core
+        ${TEST_LIBS}
+)
+##############################################################################
+
+##############################################################################
+# Test Execution: the facilities alias
+##############################################################################
+add_unit_test(${UNIT_TESTING_TARGET}.Execution
+        execution/test_execution.cpp
+)
+target_link_libraries(${UNIT_TESTING_TARGET}.Execution
+        PRIVATE
+        Aloe::Common::Execution
+        ${TEST_LIBS}
+)
+##############################################################################
+
+##############################################################################
+# Test Log: logging through the quill alias, into a file sink
+##############################################################################
+add_unit_test(${UNIT_TESTING_TARGET}.Log
+        log/test_log.cpp
+)
+target_link_libraries(${UNIT_TESTING_TARGET}.Log
+        PRIVATE
+        Aloe::Common::Log
         ${TEST_LIBS}
 )
 ##############################################################################

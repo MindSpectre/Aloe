@@ -39,7 +39,7 @@ namespace {
         Ipv4 ip_{
             queue_, {.address = stack_ip, .prefix = 24}
         };
-        Ipv4::TimePoint now_{};
+        aloe::core::TimePoint now_{};
         std::vector<Packet> burst_ = std::vector<Packet>(64);
 
         /// Puts `frame` on the wire as a peer would; the ring hands it back on the next receive.

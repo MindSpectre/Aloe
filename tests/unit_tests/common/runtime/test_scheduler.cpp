@@ -10,7 +10,7 @@
 namespace {
 
     using namespace std::chrono_literals;
-    using TimePoint = aloe::runtime::ShardContext::TimePoint;
+    using TimePoint = aloe::core::TimePoint;
 
     constexpr TimePoint start{};
 
@@ -22,18 +22,19 @@ namespace {
 
     /// Records how and where it completed; its environment carries the stop token the test controls.
     struct RecordingReceiver {
-        using receiver_concept = aloe::core::ex::receiver_t;
+        using receiver_concept = aloe::execution::ex::receiver_t;
 
         struct Env {
-            aloe::core::ex::inplace_stop_token token;
+            aloe::execution::ex::inplace_stop_token token;
 
-            [[nodiscard]] aloe::core::ex::inplace_stop_token query(aloe::core::ex::get_stop_token_t) const noexcept {
+            [[nodiscard]] aloe::execution::ex::inplace_stop_token
+            query(aloe::execution::ex::get_stop_token_t) const noexcept {
                 return token;
             }
         };
 
         Outcome* outcome;
-        aloe::core::ex::inplace_stop_token token;
+        aloe::execution::ex::inplace_stop_token token;
 
         void set_value() const noexcept {
             outcome->value  = true;
@@ -54,7 +55,7 @@ namespace {
     protected:
         aloe::runtime::ShardContext context_{{.index = 0}, start};
         aloe::runtime::Scheduler scheduler_{context_};
-        aloe::core::ex::inplace_stop_source stop_;
+        aloe::execution::ex::inplace_stop_source stop_;
         Outcome outcome_;
 
         [[nodiscard]] RecordingReceiver receiver() noexcept {
@@ -64,12 +65,12 @@ namespace {
 
     /// A sender that records whether its receiver's environment answers get_scheduler with the expected scheduler.
     struct SeesScheduler {
-        using sender_concept        = aloe::core::ex::sender_t;
-        using completion_signatures = aloe::core::ex::completion_signatures<aloe::core::ex::set_value_t()>;
+        using sender_concept        = aloe::execution::ex::sender_t;
+        using completion_signatures = aloe::execution::ex::completion_signatures<aloe::execution::ex::set_value_t()>;
         bool* matched;
         aloe::runtime::Scheduler expected;
 
-        template <aloe::core::ex::receiver Receiver>
+        template <aloe::execution::ex::receiver Receiver>
         struct Operation {
             Receiver receiver;
             bool* matched;
@@ -82,18 +83,18 @@ namespace {
             }
 
             void start() & noexcept {
-                *matched = aloe::core::ex::get_scheduler(aloe::core::ex::get_env(receiver)) == expected;
-                aloe::core::ex::set_value(std::move(receiver));
+                *matched = aloe::execution::ex::get_scheduler(aloe::execution::ex::get_env(receiver)) == expected;
+                aloe::execution::ex::set_value(std::move(receiver));
             }
         };
 
-        template <aloe::core::ex::receiver Receiver>
+        template <aloe::execution::ex::receiver Receiver>
         [[nodiscard]] auto connect(Receiver receiver) const -> Operation<Receiver> {
             return Operation<Receiver>{std::move(receiver), matched, expected};
         }
     };
 
-    static_assert(aloe::core::ex::scheduler<aloe::runtime::Scheduler>);
+    static_assert(aloe::execution::ex::scheduler<aloe::runtime::Scheduler>);
     static_assert(!std::default_initializable<aloe::runtime::Scheduler>);
 
 }  // namespace
@@ -107,8 +108,8 @@ TEST_F(SchedulerTest, EqualityFollowsTheContext) {
 
 TEST_F(SchedulerTest, SameShardScheduleUsesTheRunQueueAndNeverTheInbox) {
     const aloe::runtime::ShardContext::Current current{context_};
-    auto operation = aloe::core::ex::connect(scheduler_.schedule(), receiver());
-    aloe::core::ex::start(operation);
+    auto operation = aloe::execution::ex::connect(scheduler_.schedule(), receiver());
+    aloe::execution::ex::start(operation);
     EXPECT_FALSE(context_.ready().empty());
     EXPECT_TRUE(context_.inbox().empty());
 
@@ -119,9 +120,9 @@ TEST_F(SchedulerTest, SameShardScheduleUsesTheRunQueueAndNeverTheInbox) {
 }
 
 TEST_F(SchedulerTest, CrossThreadScheduleGoesThroughTheInboxAndCompletesOnTheShard) {
-    auto operation = aloe::core::ex::connect(scheduler_.schedule(), receiver());
+    auto operation = aloe::execution::ex::connect(scheduler_.schedule(), receiver());
     {
-        std::jthread elsewhere{[&] { aloe::core::ex::start(operation); }};
+        std::jthread elsewhere{[&] { aloe::execution::ex::start(operation); }};
     }
     EXPECT_FALSE(context_.inbox().empty());
     EXPECT_TRUE(context_.ready().empty());
@@ -135,8 +136,8 @@ TEST_F(SchedulerTest, CrossThreadScheduleGoesThroughTheInboxAndCompletesOnTheSha
 // A stop requested after start, before the shard gets to the work, completes it stopped.
 TEST_F(SchedulerTest, StopRequestedBeforeTheWorkRunsCompletesStopped) {
     const aloe::runtime::ShardContext::Current current{context_};
-    auto operation = aloe::core::ex::connect(scheduler_.schedule(), receiver());
-    aloe::core::ex::start(operation);
+    auto operation = aloe::execution::ex::connect(scheduler_.schedule(), receiver());
+    aloe::execution::ex::start(operation);
     stop_.request_stop();
 
     EXPECT_TRUE(context_.run_once(start));
@@ -146,8 +147,8 @@ TEST_F(SchedulerTest, StopRequestedBeforeTheWorkRunsCompletesStopped) {
 
 TEST_F(SchedulerTest, ScheduleAfterFiresOnTheFirstStepThatReachesItWithNoPush) {
     const aloe::runtime::ShardContext::Current current{context_};
-    auto operation = aloe::core::ex::connect(scheduler_.schedule_after(5ms), receiver());
-    aloe::core::ex::start(operation);
+    auto operation = aloe::execution::ex::connect(scheduler_.schedule_after(5ms), receiver());
+    aloe::execution::ex::start(operation);
     EXPECT_EQ(context_.timers().pending(), 1);
     EXPECT_TRUE(context_.ready().empty());
 
@@ -164,8 +165,8 @@ TEST_F(SchedulerTest, ScheduleAtIsAbsoluteAndNowIsTheStamp) {
     std::ignore = context_.run_once(start + 7ms);
     EXPECT_EQ(scheduler_.now(), start + 7ms);
 
-    auto operation = aloe::core::ex::connect(scheduler_.schedule_at(start + 20ms), receiver());
-    aloe::core::ex::start(operation);
+    auto operation = aloe::execution::ex::connect(scheduler_.schedule_at(start + 20ms), receiver());
+    aloe::execution::ex::start(operation);
     EXPECT_FALSE(context_.run_once(start + 19ms));
     EXPECT_TRUE(context_.run_once(start + 20ms));
     EXPECT_TRUE(outcome_.value);
@@ -174,8 +175,8 @@ TEST_F(SchedulerTest, ScheduleAtIsAbsoluteAndNowIsTheStamp) {
 // A stop request cancels an armed timer on the shard thread and completes stopped.
 TEST_F(SchedulerTest, AStopRequestCancelsAnArmedTimer) {
     const aloe::runtime::ShardContext::Current current{context_};
-    auto operation = aloe::core::ex::connect(scheduler_.schedule_after(10ms), receiver());
-    aloe::core::ex::start(operation);
+    auto operation = aloe::execution::ex::connect(scheduler_.schedule_after(10ms), receiver());
+    aloe::execution::ex::start(operation);
     EXPECT_EQ(context_.timers().pending(), 1);
 
     stop_.request_stop();
@@ -186,9 +187,9 @@ TEST_F(SchedulerTest, AStopRequestCancelsAnArmedTimer) {
 }
 
 TEST_F(SchedulerTest, ATimerStartedOffTheShardHopsThroughTheInboxThenArms) {
-    auto operation = aloe::core::ex::connect(scheduler_.schedule_after(5ms), receiver());
+    auto operation = aloe::execution::ex::connect(scheduler_.schedule_after(5ms), receiver());
     {
-        std::jthread elsewhere{[&] { aloe::core::ex::start(operation); }};
+        std::jthread elsewhere{[&] { aloe::execution::ex::start(operation); }};
     }
     EXPECT_FALSE(context_.inbox().empty());
     EXPECT_EQ(context_.timers().pending(), 0);

@@ -1,11 +1,13 @@
 #pragma once
 
 /**
- * Public umbrella for the Aloe core module. Aggregates every public header of
- * the module; consumers link Aloe::Common::Core and write
- * `#include <aloe/core>`.
+ * Public umbrella for the Aloe core module: the version, the clock aliases and
+ * small header-only helpers, with no dependencies, so every module can link it.
+ * Consumers link Aloe::Common::Core and write `#include <aloe/core>`.
  */
 
-#include <execution.hpp>
-#include <log.hpp>
+#include <clock.hpp>
+#include <fixed_string.hpp>
+#include <guards.hpp>
+#include <values.hpp>
 #include <version.hpp>

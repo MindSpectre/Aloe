@@ -21,8 +21,9 @@ for the design and the [roadmap](docs/roadmap.md) for the phases.
 
 | Namespace       | Directory            | Description                                                                                                     | Docs                                                         |
 |-----------------|----------------------|-----------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------|
-| `aloe::core`    | `common/core/`       | Library version, and the one header that names the execution facilities.                                        | [docs/architecture/core.md](docs/architecture/core.md)       |
-| `aloe::utils`   | `common/utils/`      | Small header-only helpers with no dependencies: discarding values, a fallback, and the const and static guards. | [docs/architecture/utils.md](docs/architecture/utils.md)     |
+| `aloe::core`    | `common/core/`       | The small things every module links, with no dependencies: the version, the clock aliases, discarding values, a fallback, and the const and static guards. | [docs/architecture/core.md](docs/architecture/core.md)       |
+| `aloe::execution` | `common/execution/` | The one header that names the execution facilities (stdexec), linked on demand.                              | [docs/architecture/execution.md](docs/architecture/execution.md) |
+| `aloe::log`     | `common/log/`        | Named loggers over quill, linked on demand.                                                                     | [docs/architecture/log.md](docs/architecture/log.md)         |
 | `aloe::device`  | `common/device/`     | The Packet and Device concepts, addresses, checksums and receive-side scaling.                                  | [docs/architecture/device.md](docs/architecture/device.md)   |
 | `aloe::fabric`  | `common/fabric/`     | The in-memory device backend: a fixture for tests, simulation and demos.                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
 | `aloe::ethdev`  | `common/ethdev/`     | The DPDK device backend.                                                                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
@@ -43,14 +44,15 @@ Trimmed from `examples/hello/hello.cpp`:
 
 ```cpp
 #include <aloe/core>
+#include <aloe/execution>
 #include <print>
 #include <tuple>
 
 #include <rte_version.h>
 
 int main() {
-    const auto result =
-        aloe::core::ex::sync_wait(aloe::core::ex::just(41) | aloe::core::ex::then([](int value) { return value + 1; }));
+    const auto result = aloe::execution::ex::sync_wait(aloe::execution::ex::just(41) |
+                                                       aloe::execution::ex::then([](int value) { return value + 1; }));
 
     std::println("Aloe {}", aloe::core::version_string);
     std::println("{}", rte_version());

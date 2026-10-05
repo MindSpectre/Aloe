@@ -1,4 +1,4 @@
-#include <aloe/core>
+#include <aloe/log>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -24,10 +24,10 @@ namespace {
 TEST(Log, LinesReachTheSinkWithLevelLoggerNameAndArguments) {
     const auto path = unique_log_path();
     {
-        aloe::core::Logging logging{
-            {.level = aloe::core::LogLevel::Debug, .file = path}
+        aloe::log::Logging logging{
+            {.level = aloe::log::LogLevel::Debug, .file = path}
         };
-        auto log = aloe::core::logger("aloe.test");
+        auto log = aloe::log::logger("aloe.test");
         log.info<"shard {} starting on cpu {}">(3, 7U);
         log.trace<"filtered out at Debug">();
         log.flush();

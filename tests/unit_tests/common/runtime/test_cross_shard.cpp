@@ -64,7 +64,7 @@ namespace {
 
     private:
         struct Receiver {
-            using receiver_concept = aloe::core::ex::receiver_t;
+            using receiver_concept = aloe::execution::ex::receiver_t;
             Hopper* self;
 
             void set_value() const noexcept {
@@ -81,10 +81,10 @@ namespace {
         /// Builds the operation in place: operation states are immovable.
         struct Slot {
             Slot(const aloe::runtime::Scheduler target, Receiver receiver) noexcept
-                : operation{aloe::core::ex::connect(target.schedule(), receiver)} {
+                : operation{aloe::execution::ex::connect(target.schedule(), receiver)} {
             }
 
-            aloe::core::ex::connect_result_t<HopSender, Receiver> operation;
+            aloe::execution::ex::connect_result_t<HopSender, Receiver> operation;
         };
 
         /// Even hops go to `other`, odd hops come home.
@@ -95,7 +95,7 @@ namespace {
         void hop() noexcept {
             const auto slot = static_cast<std::size_t>(hops_ % 2);
             slots_[slot].emplace(target(), Receiver{this});
-            aloe::core::ex::start(slots_[slot]->operation);
+            aloe::execution::ex::start(slots_[slot]->operation);
         }
 
         /// On the shard the hop targeted. The push into the next inbox orders every write here before the next landing.

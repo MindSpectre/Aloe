@@ -1,6 +1,6 @@
 #pragma once
 
-#include <aloe/utils>
+#include <aloe/core>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -35,9 +35,9 @@ namespace aloe::net {
         std::uint8_t ttl                           = 64;
         std::size_t burst_capacity                 = 64;   ///< The most packets one `process` takes; ethdev's burst.
         std::size_t arp_capacity                   = 256;  ///< A power of two of at least 8.
-        std::chrono::nanoseconds arp_reachable     = std::chrono::seconds{60};
-        std::chrono::nanoseconds arp_expire        = std::chrono::seconds{120};
-        std::chrono::nanoseconds arp_request_interval = std::chrono::seconds{1};
+        core::Duration arp_reachable               = std::chrono::seconds{60};
+        core::Duration arp_expire                  = std::chrono::seconds{120};
+        core::Duration arp_request_interval        = std::chrono::seconds{1};
     };
 
     struct SendRequest {
@@ -102,8 +102,7 @@ namespace aloe::net {
     template <device::IsDevice Device>
     class Ipv4 {
     public:
-        using Packet    = typename Device::Packet;
-        using TimePoint = std::chrono::steady_clock::time_point;  ///< The loop's clock; a stamp the caller passes.
+        using Packet = typename Device::Packet;
 
         static constexpr std::size_t headers_size = ethernet_header_size + ipv4_header_size;
         static constexpr device::Ipv4Address limited_broadcast{255, 255, 255, 255};
@@ -135,7 +134,7 @@ namespace aloe::net {
          * @brief Consumes `burst`: ARP and echo answered, junk dropped and counted, datagrams for the
          * transports parsed into their lists. Clears the three lists first. Every slot is empty afterwards.
          */
-        void process(std::span<Packet> burst, const TimePoint now) noexcept {
+        void process(std::span<Packet> burst, const core::TimePoint now) noexcept {
             assert(burst.size() <= config_.burst_capacity && "a burst larger than Ipv4Config::burst_capacity");
             tcp_.clear();
             udp_.clear();
@@ -164,7 +163,7 @@ namespace aloe::net {
 
         /// A packet with nothing in it and room for both headers in front: append the segment, then `send`.
         [[nodiscard]] std::optional<Packet> allocate() noexcept {
-            utils::force_non_const(this);  // the brick's mutable view of the queue, though only the pointee is written
+            core::force_non_const(this);  // the brick's mutable view of the queue, though only the pointee is written
             return queue_->allocate();
         }
 
@@ -176,7 +175,7 @@ namespace aloe::net {
          * packet is moved only on success; on any error it is handed back exactly as built, so a retry prepends again.
          */
         [[nodiscard]] std::expected<void, SendError>
-        send(Packet&& packet, const SendRequest& request, const TimePoint now) noexcept {
+        send(Packet&& packet, const SendRequest& request, const core::TimePoint now) noexcept {
             assert(packet.headroom() >= headers_size && "no room for the headers: use allocate()");
             assert((request.checksum == device::L4Checksum::None ||
                     packet.size() >= checksum_offset(request.checksum) + 2) &&
@@ -242,7 +241,7 @@ namespace aloe::net {
         /// The next hop's MAC from the cache, or nothing with a request on its way: how a program pre-resolves its
         /// router.
         [[nodiscard]] std::optional<device::MacAddress> resolve(const device::Ipv4Address next_hop,
-                                                                const TimePoint now) noexcept {
+                                                                const core::TimePoint now) noexcept {
             const ArpCache::Lookup found = arp_.lookup(next_hop, now);
             if (found.send_request) {
                 request_arp(next_hop, found.mac);
@@ -251,7 +250,8 @@ namespace aloe::net {
         }
 
         /// A static entry, or a resolution another shard learned. Appends nothing to `resolved()`.
-        void learn(const device::Ipv4Address address, const device::MacAddress mac, const TimePoint now) noexcept {
+        void
+        learn(const device::Ipv4Address address, const device::MacAddress mac, const core::TimePoint now) noexcept {
             arp_.learn(address, mac, now);
         }
 
@@ -339,7 +339,7 @@ namespace aloe::net {
             return identification_++;
         }
 
-        void receive(Packet& packet, const TimePoint now) noexcept {
+        void receive(Packet& packet, const core::TimePoint now) noexcept {
             const std::span<std::byte> frame             = packet.data();
             const std::optional<EthernetHeader> ethernet = parse_ethernet(frame);
             if (!ethernet) {
@@ -361,7 +361,7 @@ namespace aloe::net {
             ++counters_.dropped_ethertype;
         }
 
-        void receive_arp(Packet& packet, const TimePoint now) noexcept {
+        void receive_arp(Packet& packet, const core::TimePoint now) noexcept {
             const std::span<std::byte> frame   = packet.data();
             const std::optional<ArpPacket> arp = parse_arp(frame.subspan(ethernet_header_size));
             if (!arp) {
@@ -473,8 +473,9 @@ namespace aloe::net {
                                  .l4_checksum = rx.l4});
         }
 
-        void
-        learn_from_wire(const device::Ipv4Address address, const device::MacAddress mac, const TimePoint now) noexcept {
+        void learn_from_wire(const device::Ipv4Address address,
+                             const device::MacAddress mac,
+                             const core::TimePoint now) noexcept {
             arp_.learn(address, mac, now);
             resolved_.push_back(ArpResolution{.address = address, .mac = mac});
             ++counters_.resolutions;

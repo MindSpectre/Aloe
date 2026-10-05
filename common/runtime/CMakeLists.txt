@@ -13,6 +13,8 @@ target_include_directories(${RUNTIME}.Scope PUBLIC
 target_link_libraries(${RUNTIME}.Scope PUBLIC
         Aloe::Common::Loop
         Aloe::Common::Core
+        Aloe::Common::Execution
+        Aloe::Common::Log
 )
 ##############################################################################
 
@@ -88,7 +90,7 @@ target_include_directories(${RUNTIME}.Runtime INTERFACE
 )
 target_link_libraries(${RUNTIME}.Runtime INTERFACE
         ${RUNTIME}.Shard
-        Aloe::Common::Utils
+        Aloe::Common::Core
         Threads::Threads
 )
 ##############################################################################

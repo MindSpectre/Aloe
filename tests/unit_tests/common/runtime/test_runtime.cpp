@@ -45,7 +45,7 @@ namespace {
     }
 
     aloe::runtime::task<void> mark(std::atomic<int>* slot, std::atomic<int>* ran_on) {
-        const auto scheduler = co_await aloe::core::ex::read_env(aloe::core::ex::get_scheduler);
+        const auto scheduler = co_await aloe::execution::ex::read_env(aloe::execution::ex::get_scheduler);
         ran_on->store(scheduler.context().index());
         slot->store(1);
     }

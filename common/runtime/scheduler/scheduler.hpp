@@ -1,6 +1,6 @@
 #pragma once
 
-#include <aloe/core>
+#include <aloe/execution>
 #include <cassert>
 #include <chrono>
 #include <optional>
@@ -22,11 +22,11 @@ namespace aloe::runtime {
             ShardContext* context;
 
             template <typename Tag>
-            [[nodiscard]] Scheduler query(core::ex::get_completion_scheduler_t<Tag>) const noexcept;
+            [[nodiscard]] Scheduler query(execution::ex::get_completion_scheduler_t<Tag>) const noexcept;
 
             template <typename Tag>
-            [[nodiscard]] static constexpr auto query(core::get_completion_behavior_t<Tag>) noexcept {
-                return core::completion_behavior::asynchronous_affine;
+            [[nodiscard]] static constexpr auto query(execution::get_completion_behavior_t<Tag>) noexcept {
+                return execution::completion_behavior::asynchronous_affine;
             }
         };
 
@@ -52,22 +52,22 @@ namespace aloe::runtime {
 
             static void execute(loop::Work& work) noexcept {
                 auto& self = static_cast<ScheduleOperation&>(work);
-                if (core::ex::get_stop_token(core::ex::get_env(self.receiver)).stop_requested()) {
-                    core::ex::set_stopped(std::move(self.receiver));
+                if (execution::ex::get_stop_token(execution::ex::get_env(self.receiver)).stop_requested()) {
+                    execution::ex::set_stopped(std::move(self.receiver));
                 } else {
-                    core::ex::set_value(std::move(self.receiver));
+                    execution::ex::set_value(std::move(self.receiver));
                 }
             }
         };
 
         struct ScheduleSender {
-            using sender_concept = core::ex::sender_t;
+            using sender_concept = execution::ex::sender_t;
             using completion_signatures =
-                core::ex::completion_signatures<core::ex::set_value_t(), core::ex::set_stopped_t()>;
+                execution::ex::completion_signatures<execution::ex::set_value_t(), execution::ex::set_stopped_t()>;
 
             ShardContext* context;
 
-            template <core::ex::receiver Receiver>
+            template <execution::ex::receiver Receiver>
             [[nodiscard]] auto connect(Receiver receiver) const noexcept -> ScheduleOperation<Receiver> {
                 return ScheduleOperation<Receiver>{context, std::move(receiver)};
             }
@@ -85,7 +85,7 @@ namespace aloe::runtime {
          */
         template <typename Receiver>
         struct TimerOperation : loop::Work, loop::Timer {
-            using StopToken = core::ex::stop_token_of_t<core::ex::env_of_t<Receiver>>;
+            using StopToken = execution::ex::stop_token_of_t<execution::ex::env_of_t<Receiver>>;
 
             struct OnStop {
                 TimerOperation* self;
@@ -95,18 +95,18 @@ namespace aloe::runtime {
                 }
             };
 
-            using Callback = core::ex::stop_callback_for_t<StopToken, OnStop>;
+            using Callback = execution::ex::stop_callback_for_t<StopToken, OnStop>;
 
             ShardContext* context;
             Receiver receiver;
-            std::chrono::nanoseconds after;
-            std::optional<ShardContext::TimePoint> at;
+            core::Duration after;
+            std::optional<core::TimePoint> at;
             std::optional<Callback> callback;
 
             TimerOperation(ShardContext* owner,
                            Receiver r,
-                           const std::chrono::nanoseconds delay,
-                           const std::optional<ShardContext::TimePoint> target) noexcept
+                           const core::Duration delay,
+                           const std::optional<core::TimePoint> target) noexcept
                 : loop::Work{&TimerOperation::arrive},
                   loop::Timer{&TimerOperation::fired},
                   context{owner},
@@ -128,12 +128,12 @@ namespace aloe::runtime {
             }
 
             void arm() noexcept {
-                const StopToken token = core::ex::get_stop_token(core::ex::get_env(receiver));
+                const StopToken token = execution::ex::get_stop_token(execution::ex::get_env(receiver));
                 if (token.stop_requested()) {
-                    core::ex::set_stopped(std::move(receiver));
+                    execution::ex::set_stopped(std::move(receiver));
                     return;
                 }
-                const ShardContext::TimePoint when = at.has_value() ? *at : context->now() + after;
+                const core::TimePoint when = at.has_value() ? *at : context->now() + after;
                 context->timers().arm(static_cast<loop::Timer&>(*this), when);
                 callback.emplace(token, OnStop{this});
             }
@@ -146,26 +146,26 @@ namespace aloe::runtime {
                 }
                 context->timers().cancel(timer);
                 callback.reset();
-                core::ex::set_stopped(std::move(receiver));
+                execution::ex::set_stopped(std::move(receiver));
             }
 
             static void fired(loop::Timer& timer) noexcept {
                 auto& self = static_cast<TimerOperation&>(timer);
                 self.callback.reset();
-                core::ex::set_value(std::move(self.receiver));
+                execution::ex::set_value(std::move(self.receiver));
             }
         };
 
         struct TimerSender {
-            using sender_concept = core::ex::sender_t;
+            using sender_concept = execution::ex::sender_t;
             using completion_signatures =
-                core::ex::completion_signatures<core::ex::set_value_t(), core::ex::set_stopped_t()>;
+                execution::ex::completion_signatures<execution::ex::set_value_t(), execution::ex::set_stopped_t()>;
 
             ShardContext* context;
-            std::chrono::nanoseconds after;
-            std::optional<ShardContext::TimePoint> at;
+            core::Duration after;
+            std::optional<core::TimePoint> at;
 
-            template <core::ex::receiver Receiver>
+            template <execution::ex::receiver Receiver>
             [[nodiscard]] auto connect(Receiver receiver) const noexcept -> TimerOperation<Receiver> {
                 return TimerOperation<Receiver>{context, std::move(receiver), after, at};
             }
@@ -191,8 +191,8 @@ namespace aloe::runtime {
      */
     class Scheduler {
     public:
-        using scheduler_concept = core::ex::scheduler_t;
-        using TimePoint         = ShardContext::TimePoint;
+        using scheduler_concept = execution::ex::scheduler_t;
+        using TimePoint         = core::TimePoint;
 
         explicit Scheduler(ShardContext& context) noexcept
             : context_{&context} {
@@ -203,29 +203,29 @@ namespace aloe::runtime {
         }
 
         /// Relative to the tick stamp at the moment the operation arms on the shard.
-        [[nodiscard]] detail::TimerSender schedule_after(const std::chrono::nanoseconds delay) const noexcept {
+        [[nodiscard]] detail::TimerSender schedule_after(const core::Duration delay) const noexcept {
             return detail::TimerSender{context_, delay, std::nullopt};
         }
 
-        [[nodiscard]] detail::TimerSender schedule_at(const TimePoint deadline) const noexcept {
-            return detail::TimerSender{context_, std::chrono::nanoseconds::zero(), deadline};
+        [[nodiscard]] detail::TimerSender schedule_at(const core::TimePoint deadline) const noexcept {
+            return detail::TimerSender{context_, core::Duration::zero(), deadline};
         }
 
         /// The tick stamp, never a clock read.
-        [[nodiscard]] TimePoint now() const noexcept {
+        [[nodiscard]] core::TimePoint now() const noexcept {
             return context_->now();
         }
 
         /// Spawns into the shard's scope with this scheduler in the environment. Shard thread only.
-        template <core::ex::sender Sender>
+        template <execution::ex::sender Sender>
         void spawn(Sender&& sender) const;
 
         [[nodiscard]] ShardContext& context() const noexcept {
             return *context_;
         }
 
-        [[nodiscard]] static constexpr auto query(core::ex::get_forward_progress_guarantee_t) noexcept {
-            return core::ex::forward_progress_guarantee::parallel;
+        [[nodiscard]] static constexpr auto query(execution::ex::get_forward_progress_guarantee_t) noexcept {
+            return execution::ex::forward_progress_guarantee::parallel;
         }
 
         friend bool operator==(const Scheduler&, const Scheduler&) noexcept = default;
@@ -239,23 +239,23 @@ namespace aloe::runtime {
         struct SchedulerEnv {
             Scheduler scheduler;
 
-            [[nodiscard]] Scheduler query(core::ex::get_scheduler_t) const noexcept {
+            [[nodiscard]] Scheduler query(execution::ex::get_scheduler_t) const noexcept {
                 return scheduler;
             }
 
-            [[nodiscard]] Scheduler query(core::ex::get_start_scheduler_t) const noexcept {
+            [[nodiscard]] Scheduler query(execution::ex::get_start_scheduler_t) const noexcept {
                 return scheduler;
             }
         };
 
         template <typename Tag>
-        Scheduler ShardSenderAttributes::query(core::ex::get_completion_scheduler_t<Tag>) const noexcept {
+        Scheduler ShardSenderAttributes::query(execution::ex::get_completion_scheduler_t<Tag>) const noexcept {
             return Scheduler{*context};
         }
 
     }  // namespace detail
 
-    template <core::ex::sender Sender>
+    template <execution::ex::sender Sender>
     void Scheduler::spawn(Sender&& sender) const {
         assert(ShardContext::current() == context_ && "spawn on the shard's own thread; hop with schedule() first");
         context_->scope().spawn(std::forward<Sender>(sender), detail::SchedulerEnv{*this});

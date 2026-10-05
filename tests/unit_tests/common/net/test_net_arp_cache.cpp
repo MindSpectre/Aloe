@@ -11,7 +11,7 @@
 namespace {
 
     using namespace std::chrono_literals;
-    using TimePoint = aloe::net::ArpCache::TimePoint;
+    using TimePoint = aloe::core::TimePoint;
     using Lookup    = aloe::net::ArpCache::Lookup;
 
     constexpr TimePoint start{};

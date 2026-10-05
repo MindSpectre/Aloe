@@ -108,7 +108,6 @@ add_combined_library(${DEVICE}
         ${DEVICE}.Steering
         ${DEVICE}.Packet
         ${DEVICE}.Device
-        Aloe::Common::Core
 )
 
 add_library(Aloe::Common::Device ALIAS ${DEVICE})

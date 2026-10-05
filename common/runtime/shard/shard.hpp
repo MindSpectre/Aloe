@@ -24,11 +24,11 @@ namespace aloe::runtime {
     };
 
     struct ShardConfig {
-        std::chrono::nanoseconds timer_resolution = std::chrono::milliseconds{1};
-        std::size_t receive_burst = 64;  ///< Packets one receive call may bring; ethdev moves at most 64.
-        std::size_t transmit_ring = 512;
-        IdlePolicy idle           = IdlePolicy::Spin;
-        std::uint32_t yield_after = 1000;
+        core::Duration timer_resolution = std::chrono::milliseconds{1};
+        std::size_t receive_burst       = 64;  ///< Packets one receive call may bring; ethdev moves at most 64.
+        std::size_t transmit_ring       = 512;
+        IdlePolicy idle                 = IdlePolicy::Spin;
+        std::uint32_t yield_after       = 1000;
     };
 
     /**
@@ -56,14 +56,15 @@ namespace aloe::runtime {
         requires IsStack<Stack, Device>
     class Shard {
     public:
-        using Packet    = typename Device::Packet;
-        using Clock     = ShardContext::Clock;
-        using TimePoint = ShardContext::TimePoint;
+        using Packet = typename Device::Packet;
 
         template <typename... Args>
             requires std::constructible_from<Stack, ShardContext&, loop::ShardQueue<Device>&, Args...>
-        Shard(
-            const ShardConfig& config, Device& owner, const std::uint16_t index, const TimePoint start, Args&&... args)
+        Shard(const ShardConfig& config,
+              Device& owner,
+              const std::uint16_t index,
+              const core::TimePoint start,
+              Args&&... args)
             : config_{
                   config
         },
@@ -79,7 +80,7 @@ namespace aloe::runtime {
         ~Shard()                       = default;
 
         /// One tick. Returns whether anything was received, run, fired or sent.
-        bool step(const TimePoint now) noexcept {
+        bool step(const core::TimePoint now) noexcept {
             const ShardContext::Current current{context_};
             bool busy                  = false;
             const std::size_t received = queue_.receive(burst_);
@@ -107,7 +108,7 @@ namespace aloe::runtime {
         void run() noexcept {
             std::uint32_t idle = 0;
             while (!context_.drained()) {
-                if (step(Clock::now())) {
+                if (step(core::Clock::now())) {
                     idle = 0;
                 } else if (config_.idle == IdlePolicy::Yield && ++idle >= config_.yield_after) {
                     std::this_thread::yield();
