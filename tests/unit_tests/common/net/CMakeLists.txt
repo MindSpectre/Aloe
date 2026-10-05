@@ -7,6 +7,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Net
         test_net_receive.cpp
         test_net_arp.cpp
         test_net_icmp.cpp
+        test_net_send.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Net
         PRIVATE

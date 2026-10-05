@@ -166,6 +166,74 @@ namespace aloe::net {
             return queue_->allocate();
         }
 
+        /**
+         * @brief Routes, resolves, prepends both headers, fills the checksums and queues the frame.
+         *
+         * `packet` holds the L4 segment and at least `headers_size` of headroom; `allocate()` gives one. With a
+         * checksum requested, the segment's checksum field is zero. The packet is moved only on success; on any
+         * error it is handed back exactly as built, so a retry prepends again.
+         */
+        [[nodiscard]] std::expected<void, SendError>
+        send(Packet&& packet, const SendRequest& request, const TimePoint now) noexcept {
+            assert(packet.headroom() >= headers_size && "no room for the headers: use allocate()");
+            device::MacAddress next_mac{};
+            if (is_broadcast(request.destination)) {
+                next_mac = device::MacAddress::broadcast();
+            } else if (is_multicast(request.destination)) {
+                next_mac = multicast_mac(request.destination);
+            } else {
+                device::Ipv4Address next_hop = request.destination;
+                if (!on_subnet(next_hop)) {
+                    if (!config_.gateway.has_value()) {
+                        ++counters_.send_no_route;
+                        return std::unexpected{SendError::NoRoute};
+                    }
+                    next_hop = *config_.gateway;
+                }
+                const std::optional<device::MacAddress> mac = resolve(next_hop, now);
+                if (!mac) {
+                    ++counters_.send_unresolved;
+                    return std::unexpected{SendError::Unresolved};
+                }
+                next_mac = *mac;
+            }
+            const std::size_t segment_size = packet.size();
+            if (segment_size > max_l4_size()) {
+                ++counters_.send_oversized;
+                return std::unexpected{SendError::Oversized};
+            }
+            if (!packet.prepend(headers_size)) {
+                ++counters_.send_oversized;  // no headroom: not a packet from allocate()
+                return std::unexpected{SendError::Oversized};
+            }
+            const std::span<std::byte> frame = packet.data();
+            const Ipv4Header header{.total_length   = static_cast<std::uint16_t>(ipv4_header_size + segment_size),
+                                    .identification = next_identification(),
+                                    .ttl            = config_.ttl,
+                                    .protocol       = request.protocol,
+                                    .source         = config_.address,
+                                    .destination    = request.destination};
+            write_ethernet(
+                frame.first(ethernet_header_size),
+                {.destination = next_mac, .source = queue_->mac(), .ethertype = std::to_underlying(EtherType::Ipv4)});
+            write_ipv4(frame.subspan(ethernet_header_size, ipv4_header_size), header);
+            packet.set_tx(finish_checksums(frame, header, request.checksum));
+            if (queue_->transmit(std::move(packet))) {
+                ++counters_.datagrams_sent;
+                return {};
+            }
+            // ShardQueue::transmit moves only on success, so the packet is still ours: hand it back as built.
+            // NOLINTBEGIN(bugprone-use-after-move)
+            if (request.checksum != device::L4Checksum::None) {
+                device::store_be16(frame.subspan(headers_size + checksum_offset(request.checksum), 2), 0);
+            }
+            packet.trim_front(headers_size);
+            packet.set_tx(device::TxMetadata{});
+            // NOLINTEND(bugprone-use-after-move)
+            ++counters_.send_refused;
+            return std::unexpected{SendError::Refused};
+        }
+
         /// The next hop's MAC from the cache, or nothing with a request on its way: how a program pre-resolves its
         /// router.
         [[nodiscard]] std::optional<device::MacAddress> resolve(const device::Ipv4Address next_hop,
