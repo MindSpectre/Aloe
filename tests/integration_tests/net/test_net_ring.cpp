@@ -145,7 +145,7 @@ TEST_F(NetRing, ASentSegmentComesBackThroughTheRingIntoTheUdpList) {
     EXPECT_EQ(received.source, peer_ip);
     EXPECT_EQ(received.destination, stack_ip);
     EXPECT_EQ(received.l4_length, 8 + 16);
-    const auto header = aloe::wire::parse_ipv4(received.packet.data().subspan(aloe::wire::ethernet_header_size));
+    const auto header = aloe::wire::Ipv4Header::parse(received.packet.data().subspan(aloe::wire::EthernetHeader::size));
     ASSERT_TRUE(header.has_value());
     EXPECT_EQ(aloe::testing::l4_checksum_residue(*header, received.l4()), 0) << "the software UDP checksum";
     EXPECT_EQ(std::vector<std::byte>(received.l4().begin() + 8, received.l4().end()), payload);

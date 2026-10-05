@@ -34,7 +34,7 @@ namespace aloe::testing {
         void on_receive(std::span<Packet> burst) noexcept {
             for (Packet& packet : burst) {
                 const std::span<std::byte> data = packet.data();
-                if (data.size() < wire::ethernet_header_size + 2 || !addressed_to_me(data)) {
+                if (data.size() < wire::EthernetHeader::size + 2 || !addressed_to_me(data)) {
                     ++dropped_;
                     continue;
                 }

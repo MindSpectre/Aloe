@@ -165,7 +165,7 @@ TEST(EthdevRing, TheTransmitterRefusesRuntsAndOversizedFramesInOrder) {
                                                     aloe::testing::peer,
                                                     aloe::testing::ethertype_experimental,
                                                     aloe::testing::pattern(static_cast<std::size_t>(port.mtu()) + 1));
-    const std::vector<std::byte> runt(aloe::wire::ethernet_header_size - 1);
+    const std::vector<std::byte> runt(aloe::wire::EthernetHeader::size - 1);
     std::array<aloe::ethdev::Packet, 4> burst;
     for (std::size_t index = 0; const auto& frame : {first, runt, huge, last}) {
         auto packet = port.allocate(0);
@@ -204,7 +204,7 @@ TEST(EthdevRing, ARefusedFrameBehindAPartialSendStaysWithTheCaller) {
         ++queued;
     }
 
-    const std::vector<std::byte> runt(aloe::wire::ethernet_header_size - 1);
+    const std::vector<std::byte> runt(aloe::wire::EthernetHeader::size - 1);
     std::array<aloe::ethdev::Packet, 4> burst{packet_of(frame), packet_of(frame), packet_of(runt), packet_of(frame)};
     EXPECT_EQ(port.transmit(0, burst), 1) << "only the first frame fit";
     EXPECT_TRUE(burst[0].empty());

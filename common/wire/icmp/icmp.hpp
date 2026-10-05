@@ -18,36 +18,37 @@ namespace aloe::wire {
     };
 
     struct IcmpHeader {
+        static constexpr std::size_t size            = 8;
+        static constexpr std::size_t checksum_offset = 2;
+
         IcmpType type          = IcmpType::EchoReply;
         std::uint8_t code      = 0;
         std::uint16_t checksum = 0;
         std::uint32_t rest     = 0;  ///< Identifier and sequence number for an echo.
 
+        /// The header at the front of `message`, or nothing for a message under 8 bytes.
+        [[nodiscard]] static constexpr std::optional<IcmpHeader>
+        parse(const std::span<const std::byte> message) noexcept {
+            if (message.size() < size) {
+                return std::nullopt;
+            }
+            return IcmpHeader{.type     = IcmpType{std::to_integer<std::uint8_t>(message[0])},
+                              .code     = std::to_integer<std::uint8_t>(message[1]),
+                              .checksum = load_be16(message.subspan(checksum_offset, 2)),
+                              .rest     = load_be32(message.subspan(4, 4))};
+        }
+
+        /// Writes the header into the first 8 bytes of `out`. The checksum covers the whole message and is the
+        /// caller's to compute.
+        constexpr void write(const std::span<std::byte> out) const noexcept {
+            assert(out.size() >= size);
+            out[0] = std::byte{std::to_underlying(type)};
+            out[1] = std::byte{code};
+            store_be16(out.subspan(checksum_offset, 2), checksum);
+            store_be32(out.subspan(4, 4), rest);
+        }
+
         friend constexpr bool operator==(const IcmpHeader&, const IcmpHeader&) noexcept = default;
     };
-
-    inline constexpr std::size_t icmp_header_size     = 8;
-    inline constexpr std::size_t icmp_checksum_offset = 2;
-
-    /// The header at the front of `message`, or nothing for a message under 8 bytes.
-    [[nodiscard]] constexpr std::optional<IcmpHeader> parse_icmp(const std::span<const std::byte> message) noexcept {
-        if (message.size() < icmp_header_size) {
-            return std::nullopt;
-        }
-        return IcmpHeader{.type     = IcmpType{std::to_integer<std::uint8_t>(message[0])},
-                          .code     = std::to_integer<std::uint8_t>(message[1]),
-                          .checksum = load_be16(message.subspan(icmp_checksum_offset, 2)),
-                          .rest     = load_be32(message.subspan(4, 4))};
-    }
-
-    /// Writes `header` into the first 8 bytes of `out`. The checksum covers the whole message and is the caller's to
-    /// compute.
-    constexpr void write_icmp(std::span<std::byte> out, const IcmpHeader& header) noexcept {
-        assert(out.size() >= icmp_header_size);
-        out[0] = std::byte{std::to_underlying(header.type)};
-        out[1] = std::byte{header.code};
-        store_be16(out.subspan(icmp_checksum_offset, 2), header.checksum);
-        store_be32(out.subspan(4, 4), header.rest);
-    }
 
 }  // namespace aloe::wire

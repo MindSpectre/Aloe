@@ -44,7 +44,7 @@ namespace {
         void on_receive(std::span<Packet> burst) noexcept {
             for (Packet& packet : burst) {
                 const std::span<std::byte> data = packet.data();
-                if (data.size() < aloe::wire::ethernet_header_size || !addressed_to_me(data)) {
+                if (data.size() < aloe::wire::EthernetHeader::size || !addressed_to_me(data)) {
                     continue;  // the shard frees what we leave
                 }
                 std::swap_ranges(data.begin(), data.begin() + 6, data.begin() + 6);

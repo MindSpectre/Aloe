@@ -123,13 +123,13 @@ namespace {
     /// An echo request as `ping` sends it: 8-byte header, 56 bytes of payload, our identifier, sequence 1.
     [[nodiscard]] std::array<std::byte, 64> echo_request(const std::span<const std::byte> payload) {
         std::array<std::byte, 64> message{};
-        aloe::wire::write_icmp(message,
-                               {.type     = aloe::wire::IcmpType::EchoRequest,
-                                .code     = 0,
-                                .checksum = 0,
-                                .rest     = (static_cast<std::uint32_t>(identifier) << 16U) | 1U});
-        std::ranges::copy(payload, message.begin() + static_cast<std::ptrdiff_t>(aloe::wire::icmp_header_size));
-        aloe::wire::store_be16(std::span<std::byte>{message}.subspan(aloe::wire::icmp_checksum_offset, 2),
+        aloe::wire::IcmpHeader{.type     = aloe::wire::IcmpType::EchoRequest,
+                               .code     = 0,
+                               .checksum = 0,
+                               .rest     = (static_cast<std::uint32_t>(identifier) << 16U) | 1U}
+            .write(message);
+        std::ranges::copy(payload, message.begin() + static_cast<std::ptrdiff_t>(aloe::wire::IcmpHeader::size));
+        aloe::wire::store_be16(std::span<std::byte>{message}.subspan(aloe::wire::IcmpHeader::checksum_offset, 2),
                                aloe::wire::internet_checksum(message));
         return message;
     }
@@ -174,13 +174,13 @@ TEST(NetTap, TheKernelPingsTheBrick) {
             break;
         }
         const std::span<const std::byte> datagram{buffer.data(), static_cast<std::size_t>(got)};
-        const auto ip = aloe::wire::parse_ipv4(datagram);
+        const auto ip = aloe::wire::Ipv4Header::parse(datagram);
         if (!ip || ip->source != stack_ip || ip->protocol != aloe::wire::Ipv4Protocol::Icmp) {
             continue;
         }
         const std::span<const std::byte> reply =
             datagram.subspan(ip->header_length, ip->total_length - ip->header_length);
-        const auto icmp = aloe::wire::parse_icmp(reply);
+        const auto icmp = aloe::wire::IcmpHeader::parse(reply);
         if (!icmp || icmp->type != aloe::wire::IcmpType::EchoReply || (icmp->rest >> 16U) != identifier) {
             continue;
         }

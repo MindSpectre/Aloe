@@ -108,7 +108,7 @@ namespace aloe::net {
     public:
         using Packet = typename Device::Packet;
 
-        static constexpr std::size_t headers_size = wire::ethernet_header_size + wire::ipv4_header_size;
+        static constexpr std::size_t headers_size = wire::EthernetHeader::size + wire::Ipv4Header::size;
 
         /// Validates and throws std::invalid_argument; transmits nothing.
         Ipv4(loop::ShardQueue<Device>& owner, const Ipv4Config& config)
@@ -215,17 +215,17 @@ namespace aloe::net {
             }
             const std::span<std::byte> frame = packet.data();
             const wire::Ipv4Header header{.total_length =
-                                              static_cast<std::uint16_t>(wire::ipv4_header_size + segment_size),
+                                              static_cast<std::uint16_t>(wire::Ipv4Header::size + segment_size),
                                           .identification = next_identification(),
                                           .ttl            = config_.ttl,
                                           .protocol       = request.protocol,
                                           .source         = config_.address,
                                           .destination    = request.destination};
-            wire::write_ethernet(frame.first(wire::ethernet_header_size),
-                                 {.destination = next_mac,
-                                  .source      = queue_->mac(),
-                                  .ethertype   = std::to_underlying(wire::EtherType::Ipv4)});
-            wire::write_ipv4(frame.subspan(wire::ethernet_header_size, wire::ipv4_header_size), header);
+            wire::EthernetHeader{.destination = next_mac,
+                                 .source      = queue_->mac(),
+                                 .ethertype   = std::to_underlying(wire::EtherType::Ipv4)}
+                .write(frame.first(wire::EthernetHeader::size));
+            header.write(frame.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size));
             packet.set_tx(finish_checksums(frame, header, request.checksum));
             if (queue_->transmit(std::move(packet))) {
                 ++counters_.datagrams_sent;
@@ -277,7 +277,7 @@ namespace aloe::net {
 
         /// What one `send` may carry: the MTU less the IPv4 header. TCP's MSS starts here.
         [[nodiscard]] std::uint16_t max_l4_size() const noexcept {
-            return static_cast<std::uint16_t>(queue_->mtu() - wire::ipv4_header_size);
+            return static_cast<std::uint16_t>(queue_->mtu() - wire::Ipv4Header::size);
         }
 
         [[nodiscard]] const Ipv4Counters& counters() const noexcept {
@@ -344,7 +344,7 @@ namespace aloe::net {
 
         void receive(Packet& packet, const core::TimePoint now) noexcept {
             const std::span<std::byte> frame                   = packet.data();
-            const std::optional<wire::EthernetHeader> ethernet = wire::parse_ethernet(frame);
+            const std::optional<wire::EthernetHeader> ethernet = wire::EthernetHeader::parse(frame);
             if (!ethernet) {
                 ++counters_.dropped_short;
                 return;
@@ -365,8 +365,9 @@ namespace aloe::net {
         }
 
         void receive_arp(Packet& packet, const core::TimePoint now) noexcept {
-            const std::span<std::byte> frame         = packet.data();
-            const std::optional<wire::ArpPacket> arp = wire::parse_arp(frame.subspan(wire::ethernet_header_size));
+            const std::span<std::byte> frame = packet.data();
+            const std::optional<wire::ArpPacket> arp =
+                wire::ArpPacket::parse(frame.subspan(wire::EthernetHeader::size));
             if (!arp) {
                 ++counters_.dropped_arp_malformed;
                 return;
@@ -393,16 +394,16 @@ namespace aloe::net {
                 if (plausible) {  // a probe (RFC 5227) is still answered, but teaches nothing
                     learn_from_wire(arp->sender_ip, arp->sender_mac, now);
                 }
-                wire::write_ethernet(frame.first(wire::ethernet_header_size),
-                                     {.destination = arp->sender_mac,
-                                      .source      = queue_->mac(),
-                                      .ethertype   = std::to_underlying(wire::EtherType::Arp)});
-                wire::write_arp(frame.subspan(wire::ethernet_header_size),
-                                {.operation  = wire::ArpOperation::Reply,
-                                 .sender_mac = queue_->mac(),
-                                 .sender_ip  = config_.address,
-                                 .target_mac = arp->sender_mac,
-                                 .target_ip  = arp->sender_ip});
+                wire::EthernetHeader{.destination = arp->sender_mac,
+                                     .source      = queue_->mac(),
+                                     .ethertype   = std::to_underlying(wire::EtherType::Arp)}
+                    .write(frame.first(wire::EthernetHeader::size));
+                wire::ArpPacket{.operation  = wire::ArpOperation::Reply,
+                                .sender_mac = queue_->mac(),
+                                .sender_ip  = config_.address,
+                                .target_mac = arp->sender_mac,
+                                .target_ip  = arp->sender_ip}
+                    .write(frame.subspan(wire::EthernetHeader::size));
                 packet.set_tx(device::TxMetadata{});
                 transmit_built(std::move(packet), counters_.arp_replies_sent);
                 return;
@@ -419,8 +420,8 @@ namespace aloe::net {
 
         void receive_ipv4(Packet& packet, const wire::EthernetHeader& ethernet) noexcept {
             const std::span<std::byte> frame             = packet.data();
-            const std::span<std::byte> payload           = frame.subspan(wire::ethernet_header_size);
-            const std::optional<wire::Ipv4Header> header = wire::parse_ipv4(payload);
+            const std::span<std::byte> payload           = frame.subspan(wire::EthernetHeader::size);
+            const std::optional<wire::Ipv4Header> header = wire::Ipv4Header::parse(payload);
             if (!header) {
                 ++counters_.dropped_bad_header;
                 return;
@@ -478,7 +479,7 @@ namespace aloe::net {
                                  .source      = header.source,
                                  .destination = header.destination,
                                  .protocol    = header.protocol,
-                                 .l3_offset   = static_cast<std::uint8_t>(wire::ethernet_header_size),
+                                 .l3_offset   = static_cast<std::uint8_t>(wire::EthernetHeader::size),
                                  .l3_length   = header.header_length,
                                  .l4_length   = static_cast<std::uint16_t>(header.total_length - header.header_length),
                                  .l4_checksum = rx.l4});
@@ -500,21 +501,21 @@ namespace aloe::net {
                 return;
             }
             const std::optional<std::span<std::byte>> room =
-                packet->append(wire::ethernet_header_size + wire::arp_packet_size);
+                packet->append(wire::EthernetHeader::size + wire::ArpPacket::size);
             if (!room) {
                 ++counters_.transmit_refused;
                 return;
             }
-            wire::write_ethernet(room->first(wire::ethernet_header_size),
-                                 {.destination = known.value_or(wire::MacAddress::broadcast()),
-                                  .source      = queue_->mac(),
-                                  .ethertype   = std::to_underlying(wire::EtherType::Arp)});
-            wire::write_arp(room->subspan(wire::ethernet_header_size),
-                            {.operation  = wire::ArpOperation::Request,
-                             .sender_mac = queue_->mac(),
-                             .sender_ip  = config_.address,
-                             .target_mac = {},
-                             .target_ip  = target});
+            wire::EthernetHeader{.destination = known.value_or(wire::MacAddress::broadcast()),
+                                 .source      = queue_->mac(),
+                                 .ethertype   = std::to_underlying(wire::EtherType::Arp)}
+                .write(room->first(wire::EthernetHeader::size));
+            wire::ArpPacket{.operation  = wire::ArpOperation::Request,
+                            .sender_mac = queue_->mac(),
+                            .sender_ip  = config_.address,
+                            .target_mac = {},
+                            .target_ip  = target}
+                .write(room->subspan(wire::EthernetHeader::size));
             packet->set_tx(device::TxMetadata{});
             transmit_built(std::move(*packet), counters_.arp_requests_sent);
         }
@@ -547,13 +548,13 @@ namespace aloe::net {
         [[nodiscard]] device::TxMetadata finish_checksums(std::span<std::byte> frame,
                                                           const wire::Ipv4Header& header,
                                                           const device::L4Checksum l4) noexcept {
-            device::TxMetadata tx{.l2_length          = static_cast<std::uint8_t>(wire::ethernet_header_size),
-                                  .l3_length          = static_cast<std::uint8_t>(wire::ipv4_header_size),
+            device::TxMetadata tx{.l2_length          = static_cast<std::uint8_t>(wire::EthernetHeader::size),
+                                  .l3_length          = static_cast<std::uint8_t>(wire::Ipv4Header::size),
                                   .fill_ipv4_checksum = false,
                                   .fill_l4_checksum   = device::L4Checksum::None};
-            const std::span<std::byte> ip = frame.subspan(wire::ethernet_header_size, wire::ipv4_header_size);
+            const std::span<std::byte> ip = frame.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size);
             const std::span<std::byte> segment =
-                frame.subspan(headers_size, header.total_length - wire::ipv4_header_size);
+                frame.subspan(headers_size, header.total_length - wire::Ipv4Header::size);
             if (l4 != device::L4Checksum::None) {
                 const std::span<std::byte> field = segment.subspan(checksum_offset(l4), 2);
                 assert(wire::load_be16(field) == 0 && "the caller leaves the L4 checksum field zero");
@@ -588,8 +589,8 @@ namespace aloe::net {
             const std::span<std::byte> frame = packet.data();
             const std::size_t message_length = header.total_length - header.header_length;
             const std::span<std::byte> message =
-                frame.subspan(wire::ethernet_header_size + header.header_length, message_length);
-            const std::optional<wire::IcmpHeader> icmp = wire::parse_icmp(message);
+                frame.subspan(wire::EthernetHeader::size + header.header_length, message_length);
+            const std::optional<wire::IcmpHeader> icmp = wire::IcmpHeader::parse(message);
             if (!icmp) {
                 ++counters_.dropped_bad_header;
                 return;
@@ -603,24 +604,24 @@ namespace aloe::net {
                 return;
             }
             // Aloe never sends options: drop them from the front. The message already sits after them and stays put.
-            packet.trim_front(header.header_length - wire::ipv4_header_size);
+            packet.trim_front(header.header_length - wire::Ipv4Header::size);
             const std::span<std::byte> reply = packet.data();
             const wire::Ipv4Header reply_header{.total_length =
-                                                    static_cast<std::uint16_t>(wire::ipv4_header_size + message_length),
+                                                    static_cast<std::uint16_t>(wire::Ipv4Header::size + message_length),
                                                 .identification = next_identification(),
                                                 .ttl            = config_.ttl,
                                                 .protocol       = wire::Ipv4Protocol::Icmp,
                                                 .source         = config_.address,
                                                 .destination    = header.source};
-            wire::write_ethernet(reply.first(wire::ethernet_header_size),
-                                 {.destination = ethernet.source,  // the last hop is the next hop back, router or not
-                                  .source      = queue_->mac(),
-                                  .ethertype   = std::to_underlying(wire::EtherType::Ipv4)});
-            wire::write_ipv4(reply.subspan(wire::ethernet_header_size, wire::ipv4_header_size), reply_header);
+            wire::EthernetHeader{.destination = ethernet.source,  // the last hop is the next hop back, router or not
+                                 .source      = queue_->mac(),
+                                 .ethertype   = std::to_underlying(wire::EtherType::Ipv4)}
+                .write(reply.first(wire::EthernetHeader::size));
+            reply_header.write(reply.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size));
             const std::span<std::byte> reply_message = reply.subspan(headers_size, message_length);
             reply_message[0]                         = std::byte{std::to_underlying(wire::IcmpType::EchoReply)};
-            wire::store_be16(reply_message.subspan(wire::icmp_checksum_offset, 2), 0);
-            wire::store_be16(reply_message.subspan(wire::icmp_checksum_offset, 2),
+            wire::store_be16(reply_message.subspan(wire::IcmpHeader::checksum_offset, 2), 0);
+            wire::store_be16(reply_message.subspan(wire::IcmpHeader::checksum_offset, 2),
                              wire::internet_checksum(reply_message));
             packet.set_tx(finish_checksums(reply, reply_header, device::L4Checksum::None));
             transmit_built(std::move(packet), counters_.echo_replies_sent);

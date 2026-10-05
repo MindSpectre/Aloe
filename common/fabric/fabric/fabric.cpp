@@ -29,7 +29,7 @@ namespace aloe::fabric {
 
         [[nodiscard]] device::Capabilities capabilities_of(const PortConfig& config) {
             const bool checksums     = config.offloads == EmulatedOffloads::Checksums;
-            const std::size_t larger = std::min<std::size_t>(config.data_capacity - wire::ethernet_header_size,
+            const std::size_t larger = std::min<std::size_t>(config.data_capacity - wire::EthernetHeader::size,
                                                              std::numeric_limits<std::uint16_t>::max());
             return device::Capabilities{
                 .max_rx_queues  = config.queues,
@@ -117,7 +117,7 @@ namespace aloe::fabric {
         const device::RxMetadata rx = inspect(frame, queue);
         Queue& destination          = *queues_[queue];
         const std::lock_guard lock{destination.mutex};
-        if (frame.size() > static_cast<std::size_t>(config_.mtu) + wire::ethernet_header_size) {
+        if (frame.size() > static_cast<std::size_t>(config_.mtu) + wire::EthernetHeader::size) {
             ++destination.counters.oversized;
             return;
         }
@@ -170,7 +170,7 @@ namespace aloe::fabric {
             return;
         }
         // A card finds the headers by the metadata, not by parsing; a wrong length fails there, so it fails here.
-        assert(tx.l2_length == wire::ethernet_header_size &&
+        assert(tx.l2_length == wire::EthernetHeader::size &&
                "device::TxMetadata::l2_length is not the Ethernet header");
         assert(tx.l3_length == ipv4->header_length && "device::TxMetadata::l3_length is not the IPv4 header length");
         assert((tx.fill_l4_checksum != device::L4Checksum::Tcp || ipv4->protocol == wire::Ipv4Protocol::Tcp) &&
@@ -178,11 +178,11 @@ namespace aloe::fabric {
         assert((tx.fill_l4_checksum != device::L4Checksum::Udp || ipv4->protocol == wire::Ipv4Protocol::Udp) &&
                "a UDP checksum was requested for a segment that is not UDP");
         assert((!tx.fill_ipv4_checksum ||
-                wire::load_be16(frame.subspan(wire::ethernet_header_size + wire::ipv4_checksum_offset, 2)) == 0) &&
+                wire::load_be16(frame.subspan(wire::EthernetHeader::size + wire::ipv4_checksum_offset, 2)) == 0) &&
                "an IPv4 checksum fill needs zero in the field");
         if (tx.fill_ipv4_checksum) {
             const std::uint16_t checksum = wire::ipv4_header_checksum(ipv4->header(frame));
-            wire::store_be16(frame.subspan(wire::ethernet_header_size + wire::ipv4_checksum_offset, 2), checksum);
+            wire::store_be16(frame.subspan(wire::EthernetHeader::size + wire::ipv4_checksum_offset, 2), checksum);
         }
         if (tx.fill_l4_checksum != device::L4Checksum::None) {
             if (const auto offset = ipv4->l4_checksum_offset()) {
@@ -205,8 +205,8 @@ namespace aloe::fabric {
             }
             fill_checksums(packet);
             const std::span<const std::byte> frame = packet.data();
-            if (frame.size() < wire::ethernet_header_size ||
-                frame.size() > static_cast<std::size_t>(config_.mtu) + wire::ethernet_header_size) {
+            if (frame.size() < wire::EthernetHeader::size ||
+                frame.size() > static_cast<std::size_t>(config_.mtu) + wire::EthernetHeader::size) {
                 const std::lock_guard lock{source.mutex};
                 ++source.counters.oversized;
             } else {
@@ -223,7 +223,7 @@ namespace aloe::fabric {
         if (config.queues == 0) {
             throw std::invalid_argument{"a fabric port needs at least one queue"};
         }
-        if (config.data_capacity < static_cast<std::size_t>(config.mtu) + wire::ethernet_header_size) {
+        if (config.data_capacity < static_cast<std::size_t>(config.mtu) + wire::EthernetHeader::size) {
             throw std::invalid_argument{"a fabric port's data capacity must hold a maximum-size frame"};
         }
         for (const auto& port : ports_) {
@@ -236,7 +236,7 @@ namespace aloe::fabric {
     }
 
     void Fabric::deliver(const Port& source, const std::span<const std::byte> frame) {
-        assert(frame.size() >= wire::ethernet_header_size);
+        assert(frame.size() >= wire::EthernetHeader::size);
         const wire::MacAddress destination{
             {frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]},
         };

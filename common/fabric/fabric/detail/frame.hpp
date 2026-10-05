@@ -38,7 +38,7 @@ namespace aloe::fabric::detail {
         std::uint16_t destination_port = 0;
 
         [[nodiscard]] std::span<const std::byte> header(const std::span<const std::byte> frame) const noexcept {
-            return frame.subspan(wire::ethernet_header_size, header_length);
+            return frame.subspan(wire::EthernetHeader::size, header_length);
         }
 
         [[nodiscard]] std::span<const std::byte> l4(const std::span<const std::byte> frame) const noexcept {
@@ -62,13 +62,13 @@ namespace aloe::fabric::detail {
 
     /// Parses the IPv4 header of an Ethernet frame. Nothing for any other frame.
     [[nodiscard]] inline std::optional<Ipv4Frame> parse_ipv4(const std::span<const std::byte> frame) noexcept {
-        if (frame.size() < wire::ethernet_header_size + ipv4_minimum_header) {
+        if (frame.size() < wire::EthernetHeader::size + ipv4_minimum_header) {
             return std::nullopt;
         }
         if (wire::load_be16(frame.subspan(12, 2)) != ethertype_ipv4) {
             return std::nullopt;
         }
-        const std::span<const std::byte> ip = frame.subspan(wire::ethernet_header_size);
+        const std::span<const std::byte> ip = frame.subspan(wire::EthernetHeader::size);
         const auto version_ihl              = std::to_integer<unsigned>(ip[0]);
         if ((version_ihl >> 4U) != 4U) {
             return std::nullopt;
@@ -90,7 +90,7 @@ namespace aloe::fabric::detail {
         result.destination = wire::Ipv4Address{
             {ip[16], ip[17], ip[18], ip[19]}
         };
-        result.l4_offset  = wire::ethernet_header_size + result.header_length;
+        result.l4_offset  = wire::EthernetHeader::size + result.header_length;
         result.l4_length  = std::min(total_length, ip.size()) - result.header_length;
         const bool ported = result.protocol == wire::Ipv4Protocol::Tcp || result.protocol == wire::Ipv4Protocol::Udp;
         if (ported && !result.fragment && result.l4_length >= 4) {

@@ -11,7 +11,7 @@ and write its formats.
 | Directory   | Target                  | Holds                                                                                    |
 |-------------|-------------------------|------------------------------------------------------------------------------------------|
 | `bytes/`, `checksum/` | `Aloe.Common.Wire.Bytes` | Big-endian loads and stores; the Internet checksum (RFC 1071).                 |
-| `ethernet/` | `Aloe.Common.Wire.Ethernet` | `MacAddress`; `EthernetHeader`, `EtherType`, `ethernet_header_size`.                 |
+| `ethernet/` | `Aloe.Common.Wire.Ethernet` | `MacAddress`; `EthernetHeader`, `EtherType`.                                        |
 | `ipv4/`     | `Aloe.Common.Wire.Ipv4` | `Ipv4Address` and its multicast MAC; `Ipv4Subnet`; `Ipv4Protocol`; `Ipv4Header`; the header checksum and the pseudo-header sum. |
 | `arp/`      | `Aloe.Common.Wire.Arp`  | `ArpPacket`, `ArpOperation`, for Ethernet over IPv4.                                     |
 | `icmp/`     | `Aloe.Common.Wire.Icmp` | `IcmpHeader`, `IcmpType`.                                                                |
@@ -26,8 +26,8 @@ and write its formats.
   `broadcast()`, and `has_broadcast()`, false for /31 and /32.
 - **`aloe::wire::Ipv4Protocol`** -- the IPv4 protocol number as a type: `Icmp`, `Tcp`, `Udp` named, any other
   byte still representable.
-- **The headers** -- `EthernetHeader`, `ArpPacket`, `Ipv4Header`, `IcmpHeader`, each with a `parse_*`
-  returning `std::optional` and a `write_*` over byte spans, all `constexpr`.
+- **The headers** -- `EthernetHeader`, `ArpPacket`, `Ipv4Header`, `IcmpHeader`, each with a static
+  `parse(bytes)` returning `std::optional`, a const `write(out)`, and its length as `size`, all `constexpr`.
 - **`aloe::wire::internet_checksum`** and friends -- the Internet checksum; in `ipv4/`, the IPv4 header
   checksum and the pseudo-header sum that transmit checksum offload starts from.
 - **`aloe::wire::load_be16`**, **`store_be16`**, and the 32-bit pair -- network byte order over spans.
@@ -37,14 +37,20 @@ and write its formats.
 ```cpp
 #include <aloe/wire>
 
-std::array<std::byte, aloe::wire::ethernet_header_size> frame{};
-aloe::wire::write_ethernet(frame, {.destination = aloe::wire::MacAddress::broadcast(),
-                                   .source      = aloe::wire::MacAddress{0x02, 0, 0, 0, 0, 1},
-                                   .ethertype   = std::to_underlying(aloe::wire::EtherType::Arp)});
-const auto header = aloe::wire::parse_ethernet(frame);  // the same three fields back
+std::array<std::byte, aloe::wire::EthernetHeader::size> frame{};
+const aloe::wire::EthernetHeader sent{.destination = aloe::wire::MacAddress::broadcast(),
+                                      .source      = aloe::wire::MacAddress{0x02, 0, 0, 0, 0, 1},
+                                      .ethertype   = std::to_underlying(aloe::wire::EtherType::Arp)};
+sent.write(frame);
+const std::optional<aloe::wire::EthernetHeader> received = aloe::wire::EthernetHeader::parse(frame);  // == sent
 ```
 
 ## Design notes
+
+A format is a type that reads and writes itself: `parse` is a static constructor that checks the bytes and
+returns nothing for a frame it cannot accept, so a failed parse never leaves a half-filled object, and the
+result can be a `const` local or checked in a `static_assert`. Headers `parse` and `write`, because parsing
+can fail; addresses `load` and `store`, because copying a fixed number of bytes cannot.
 
 The module is grouped by protocol rather than by kind, so one protocol is one directory: a reader looking
 for "what does Aloe know about IPv4" opens `wire/ipv4/`, and the address, the header and the checksum are

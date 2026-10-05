@@ -45,8 +45,8 @@ namespace aloe::testing {
     /// An ARP frame to `destination_mac` from the packet's sender, padded to the 60-byte minimum as a card pads it.
     [[nodiscard]] inline std::vector<std::byte> arp_frame(const wire::ArpPacket& arp,
                                                           const wire::MacAddress destination_mac) {
-        std::vector<std::byte> payload(60 - wire::ethernet_header_size);
-        wire::write_arp(payload, arp);
+        std::vector<std::byte> payload(60 - wire::EthernetHeader::size);
+        arp.write(payload);
         return ethernet_frame(destination_mac, arp.sender_mac, ethertype_arp, payload);
     }
 
@@ -66,28 +66,28 @@ namespace aloe::testing {
     /// An ICMP echo over IPv4 over Ethernet, with `payload` after the 8-byte ICMP header.
     [[nodiscard]] inline std::vector<std::byte> icmp_echo_frame(const EchoSpec& spec,
                                                                 const std::span<const std::byte> payload) {
-        std::vector<std::byte> ip(wire::ipv4_header_size + wire::icmp_header_size + payload.size());
-        const std::span<std::byte> message = std::span<std::byte>{ip}.subspan(wire::ipv4_header_size);
-        wire::write_icmp(message,
-                         {.type     = spec.type,
-                          .code     = 0,
-                          .checksum = 0,
-                          .rest     = (static_cast<std::uint32_t>(spec.identifier) << 16U) | spec.sequence});
-        std::ranges::copy(payload, message.begin() + static_cast<std::ptrdiff_t>(wire::icmp_header_size));
+        std::vector<std::byte> ip(wire::Ipv4Header::size + wire::IcmpHeader::size + payload.size());
+        const std::span<std::byte> message = std::span<std::byte>{ip}.subspan(wire::Ipv4Header::size);
+        wire::IcmpHeader{.type     = spec.type,
+                         .code     = 0,
+                         .checksum = 0,
+                         .rest     = (static_cast<std::uint32_t>(spec.identifier) << 16U) | spec.sequence}
+            .write(message);
+        std::ranges::copy(payload, message.begin() + static_cast<std::ptrdiff_t>(wire::IcmpHeader::size));
         std::uint16_t checksum = wire::internet_checksum(message);
         if (spec.bad_icmp_checksum) {
             checksum = static_cast<std::uint16_t>(checksum ^ 0x0001U);
         }
-        wire::store_be16(message.subspan(wire::icmp_checksum_offset, 2), checksum);
+        wire::store_be16(message.subspan(wire::IcmpHeader::checksum_offset, 2), checksum);
 
-        const std::span<std::byte> header = std::span<std::byte>{ip}.first(wire::ipv4_header_size);
-        wire::write_ipv4(header,
-                         {.total_length   = static_cast<std::uint16_t>(ip.size()),
-                          .identification = 0x0102,
-                          .ttl            = spec.ttl,
-                          .protocol       = wire::Ipv4Protocol::Icmp,
-                          .source         = spec.source,
-                          .destination    = spec.destination});
+        const std::span<std::byte> header = std::span<std::byte>{ip}.first(wire::Ipv4Header::size);
+        wire::Ipv4Header{.total_length   = static_cast<std::uint16_t>(ip.size()),
+                         .identification = 0x0102,
+                         .ttl            = spec.ttl,
+                         .protocol       = wire::Ipv4Protocol::Icmp,
+                         .source         = spec.source,
+                         .destination    = spec.destination}
+            .write(header);
         if (spec.ipv4_checksum) {
             wire::store_be16(header.subspan(wire::ipv4_checksum_offset, 2), wire::ipv4_header_checksum(header));
         }
@@ -106,21 +106,21 @@ namespace aloe::testing {
 
     [[nodiscard]] inline ParsedFrame parse_frame(const std::span<const std::byte> frame) {
         ParsedFrame parsed;
-        const std::optional<wire::EthernetHeader> ethernet = wire::parse_ethernet(frame);
+        const std::optional<wire::EthernetHeader> ethernet = wire::EthernetHeader::parse(frame);
         EXPECT_TRUE(ethernet.has_value()) << "a frame shorter than an Ethernet header";
         if (!ethernet) {
             return parsed;
         }
         parsed.ethernet                          = *ethernet;
-        const std::span<const std::byte> payload = frame.subspan(wire::ethernet_header_size);
+        const std::span<const std::byte> payload = frame.subspan(wire::EthernetHeader::size);
         if (ethernet->ethertype == ethertype_arp) {
-            parsed.arp = wire::parse_arp(payload);
+            parsed.arp = wire::ArpPacket::parse(payload);
             return parsed;
         }
         if (ethernet->ethertype != ethertype_ipv4) {
             return parsed;
         }
-        parsed.ipv4 = wire::parse_ipv4(payload);
+        parsed.ipv4 = wire::Ipv4Header::parse(payload);
         if (!parsed.ipv4) {
             return parsed;
         }
@@ -129,7 +129,7 @@ namespace aloe::testing {
         const std::span<const std::byte> l4 = payload.subspan(header_length, parsed.ipv4->total_length - header_length);
         parsed.l4.assign(l4.begin(), l4.end());
         if (parsed.ipv4->protocol == wire::Ipv4Protocol::Icmp) {
-            parsed.icmp = wire::parse_icmp(l4);
+            parsed.icmp = wire::IcmpHeader::parse(l4);
         }
         return parsed;
     }

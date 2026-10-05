@@ -33,11 +33,11 @@ namespace aloe::testing {
                                                                const wire::MacAddress& source,
                                                                std::uint16_t ethertype,
                                                                std::span<const std::byte> payload) {
-        std::vector<std::byte> frame(wire::ethernet_header_size + payload.size());
+        std::vector<std::byte> frame(wire::EthernetHeader::size + payload.size());
         std::ranges::copy(destination.bytes(), frame.begin());
         std::ranges::copy(source.bytes(), frame.begin() + 6);
         wire::store_be16(std::span<std::byte>{frame}.subspan(12, 2), ethertype);
-        std::ranges::copy(payload, frame.begin() + static_cast<std::ptrdiff_t>(wire::ethernet_header_size));
+        std::ranges::copy(payload, frame.begin() + static_cast<std::ptrdiff_t>(wire::EthernetHeader::size));
         return frame;
     }
 
@@ -128,10 +128,10 @@ namespace aloe::testing {
      * IPv4 header.
      */
     [[nodiscard]] inline std::vector<std::byte> with_ipv4_options(std::vector<std::byte> frame, std::size_t words) {
-        const auto begin = frame.begin() + static_cast<std::ptrdiff_t>(wire::ethernet_header_size + 20);
+        const auto begin = frame.begin() + static_cast<std::ptrdiff_t>(wire::EthernetHeader::size + 20);
         frame.insert(begin, words * 4, std::byte{0x01});
         const std::span<std::byte> header =
-            std::span<std::byte>{frame}.subspan(wire::ethernet_header_size, 20 + words * 4);
+            std::span<std::byte>{frame}.subspan(wire::EthernetHeader::size, 20 + words * 4);
         header[0] = std::byte{static_cast<std::uint8_t>(0x40 | (5 + words))};
         wire::store_be16(header.subspan(2, 2),
                          static_cast<std::uint16_t>(wire::load_be16(header.subspan(2, 2)) + words * 4));

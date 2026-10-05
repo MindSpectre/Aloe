@@ -103,7 +103,7 @@ namespace aloe::testing {
         EXPECT_EQ(packet->size(), 0);
         EXPECT_TRUE(packet->data().empty());
         EXPECT_EQ(packet->headroom(), device::packet_headroom);
-        EXPECT_GE(packet->tailroom(), static_cast<std::size_t>(this->device().mtu()) + wire::ethernet_header_size);
+        EXPECT_GE(packet->tailroom(), static_cast<std::size_t>(this->device().mtu()) + wire::EthernetHeader::size);
         EXPECT_EQ(packet->rx(), device::RxMetadata{});
         EXPECT_EQ(packet->tx(), device::TxMetadata{});
     }
@@ -157,7 +157,7 @@ namespace aloe::testing {
 
     TYPED_TEST_P(DeviceConformance, AMaximumSizeFrameComesBack) {
         const auto frame = this->frame(this->device().mtu(), 3);
-        EXPECT_EQ(frame.size(), static_cast<std::size_t>(this->device().mtu()) + wire::ethernet_header_size);
+        EXPECT_EQ(frame.size(), static_cast<std::size_t>(this->device().mtu()) + wire::EthernetHeader::size);
         std::array<typename TestFixture::Packet, 1> burst{this->packet_with(frame)};
         ASSERT_EQ(this->device().transmit(0, burst), 1);
         auto received = this->receive_up_to(1);
@@ -175,7 +175,7 @@ namespace aloe::testing {
 
     TYPED_TEST_P(DeviceConformance, ARuntIsRefusedAndCountedByTheTransmitter) {
         const device::QueueCounters before = this->device().counters(0);
-        const std::vector<std::byte> runt(wire::ethernet_header_size - 1);
+        const std::vector<std::byte> runt(wire::EthernetHeader::size - 1);
         std::array<typename TestFixture::Packet, 1> burst{this->packet_with(runt)};
         ASSERT_EQ(this->device().transmit(0, burst), 1) << "a refused frame counts as accepted";
         EXPECT_TRUE(burst[0].empty());
