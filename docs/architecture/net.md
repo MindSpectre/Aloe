@@ -19,7 +19,7 @@ here names the asynchronous model, logs, or reads a clock.
   `send(packet, request, now)` routes it, prepends the headers, fills the checksums and queues it, or
   returns a `SendError` and hands the packet back exactly as it was. `resolve(next_hop, now)` and
   `learn(address, mac, now)` are the two ways into the ARP cache from outside. Nothing here blocks,
-  throws after construction, or allocates anything but packets.
+  throws after construction, or allocates anything but packets after construction.
 - **`aloe::net::Datagram<Packet>`** -- one received datagram for a transport: the whole frame as a packet
   the transport moves out to keep, the two addresses, the protocol, the header offsets, the L4 length from
   the IPv4 total length, and the device's L4 checksum verdict. `l4()` is the segment.
@@ -103,13 +103,18 @@ caller retries, which TCP's SYN and retransmit absorb; `resolved()` reports ever
 wire; `learn` seeds the cache with a static entry or another shard's resolution and reports nothing, so
 shards never echo each other. ARP frames carry no IP header, so a card puts them on its default queue,
 queue 0 on both backends; the loop that owns that queue forwards resolutions to the other shards, which
-arrives with connection placement in phase 1.
+arrives with connection placement in phase 1. A request from another host for a third party refreshes
+an entry we already hold and never creates one, so a router's gratuitous ARP after a failover takes effect
+at once; a sender that cannot be a host (a zero, multicast or broadcast address, or a group MAC) is answered
+when it asks for our address and never learned.
 
 **Aging without a timer.** The cache keeps the stamp of each entry's last confirmation and compares it
 with the stamp the caller passes. Fresh entries are used as they are; stale ones are still used while one
 unicast refresh goes out per interval, so a live flow never stalls on a refresh; expired ones are
 unresolved again. No timer node, no wheel, and the brick's constructor takes the queue and the config and
-nothing else.
+nothing else. The table holds `arp_capacity` entries in windows of eight; a lookup miss or a learn in a
+full window evicts the oldest confirmed entry of that window, so a storm of distinct unresolved destinations
+can displace a live entry for one ARP round trip. The capacity is a power of two of at least eight.
 
 **The echo reply never consults the cache.** It is built in the request's packet and goes back to the
 frame's source MAC: the last hop, which is the right next hop back whether the pinger is on the subnet or
@@ -121,7 +126,9 @@ not. A transport never computes a checksum and never learns the offload conventi
 the offload, so both paths run in CI.
 
 **Every slot empty.** `process` moves a packet into a list, transmits it as a reply, or releases it, so a
-hand-written loop resets nothing and the runtime's leftover sweep finds nothing.
+hand-written loop resets nothing and the runtime's leftover sweep finds nothing. Datagrams whose source is a
+multicast, limited-broadcast or loopback address are dropped and counted as martian, as the kernel does at
+IP input; TCP never sees them.
 
 **Deferred.** Forwarding resolutions between shards and flow rules come with TCP's placement; multicast
 reception with UDP; ICMP errors with phase 2. Fragments are dropped and counted, never reassembled. IPv4

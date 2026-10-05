@@ -265,7 +265,8 @@ take from the previous tick. Then, per packet:
 2. **ARP** goes to the ARP handler below.
 3. **IPv4.** `parse_ipv4` fails: `dropped_bad_header`. Header checksum: the device's `Good` is
    trusted, `Bad` is `dropped_bad_checksum`, `Unknown` means `ipv4_header_checksum` over the header
-   must come out as zero. Destination must be our address, the limited broadcast or the subnet
+   must come out as zero. A source that is multicast, the limited broadcast or loopback is
+   `dropped_martian`. Destination must be our address, the limited broadcast or the subnet
    broadcast (undefined for a prefix above 30), else `dropped_not_for_us`. A fragment:
    `dropped_fragment`. Then by protocol: ICMP to the handler below; TCP and UDP fill a `Datagram`
    in their list and count `delivered_tcp` or `delivered_udp`; anything else is `dropped_protocol`.
@@ -281,12 +282,14 @@ software check, since UDP's zero checksum and TCP's rules differ.
 ### Frames
 
 Only Ethernet over IPv4 with lengths 6 and 4 is parsed; anything else is `dropped_arp_malformed`.
-A frame whose sender IP address is our own is `dropped_arp_conflict`. Then:
+A frame whose sender IP address is our own is `dropped_arp_conflict`. A sender address that cannot be a
+host, zero, multicast or the limited broadcast, or a group MAC, is never learned; a request for our address
+from it is still answered (RFC 5227). Then:
 
 - **A request for our address.** Learn the sender, then build the reply in the same packet:
   Ethernet destination the sender's MAC, source ours; operation `Reply`; sender fields ours,
   target fields the requester's. Transmit. Count `arp_requests_received` and `arp_replies_sent`.
-- **A request for someone else.** Teaches nothing; released and counted as a request received.
+- **A request for someone else.** Refreshes the sender's entry when we already hold one, as the kernel does, so a gateway failover's gratuitous request takes effect at once; never creates an entry; released and counted as a request received.
 - **A reply addressed to us** for an address with an entry in the cache, complete or not: learn
   the sender and count `arp_replies_received`. A reply for an address with no entry is
   `dropped_arp_unsolicited`, as the kernel does, so nothing on the segment can fill the cache.
@@ -414,7 +417,7 @@ both IPv4 checksum paths are tested through `ping` on the fabric and not only th
 |-----------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Receive   | `frames`, `arp_requests_received`, `arp_replies_received`, `datagrams_received`, `delivered_tcp`, `delivered_udp`, `resolutions`                                               |
 | Transmit  | `arp_requests_sent`, `arp_replies_sent`, `echo_replies_sent`, `datagrams_sent`, `transmit_refused` (a frame the brick itself built that the queue refused)                      |
-| Drops     | `dropped_short`, `dropped_not_for_us`, `dropped_ethertype`, `dropped_arp_malformed`, `dropped_arp_conflict`, `dropped_arp_unsolicited`, `dropped_bad_header`, `dropped_bad_checksum`, `dropped_fragment`, `dropped_protocol`, `dropped_icmp` |
+| Drops     | `dropped_short`, `dropped_not_for_us`, `dropped_ethertype`, `dropped_arp_malformed`, `dropped_arp_conflict`, `dropped_arp_unsolicited`, `dropped_bad_header`, `dropped_bad_checksum`, `dropped_fragment`, `dropped_protocol`, `dropped_icmp`, `dropped_martian` |
 | Send      | `send_no_route`, `send_unresolved`, `send_oversized`, `send_refused`                                                                                                           |
 
 ## Error handling

@@ -18,8 +18,9 @@ ThreadSanitizer.
 
 ## 1. Minimal TCP
 
-Ethernet, ARP with cache and gateway resolution, IPv4 without fragmentation, ICMP echo, which exist as the [`net`](architecture/net.md) brick, and UDP with
-multicast group membership, which is what a feed handler consumes. TCP with the handshake in both
+Ethernet, ARP with cache and gateway resolution, IPv4 without fragmentation, ICMP echo, and UDP with
+multicast group membership, which is what a feed handler consumes. The first four exist as the
+[`net`](architecture/net.md) brick. TCP with the handshake in both
 directions, in-order data, FIN and RST, a fixed window and the MSS option, and nothing else, designed as a
 receive half and a transmit half from the start although both run in one loop. A connection table keyed by
 4-tuple with a stable index per connection; placement by flow rules per connection, and by the RSS
