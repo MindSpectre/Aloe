@@ -75,3 +75,22 @@ target_link_libraries(${SHARED_TESTING_TARGET}.Runtime INTERFACE
         Aloe::Common::Device
 )
 ##############################################################################
+
+##############################################################################
+# The net brick over a fabric: ARP and ICMP frame builders, a frame parser, the harness fixture
+##############################################################################
+add_library(${SHARED_TESTING_TARGET}.Net INTERFACE
+        net/net_frames.hpp
+        net/net_fixture.hpp
+)
+target_include_directories(${SHARED_TESTING_TARGET}.Net INTERFACE
+        net/
+)
+target_link_libraries(${SHARED_TESTING_TARGET}.Net INTERFACE
+        Aloe::Common::Net
+        Aloe::Common::Fabric
+        Aloe::Common::Loop
+        ${SHARED_TESTING_TARGET}.Device
+        ${TEST_LIBS}
+)
+##############################################################################

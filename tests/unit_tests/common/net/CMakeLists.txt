@@ -4,10 +4,15 @@
 add_unit_test(${UNIT_TESTING_TARGET}.Net
         test_net_wire.cpp
         test_net_arp_cache.cpp
+        test_net_receive.cpp
+        test_net_arp.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Net
         PRIVATE
         Aloe::Common::Net
+        Aloe::Common::Fabric
+        ${SHARED_TESTING_TARGET}.Device
+        ${SHARED_TESTING_TARGET}.Net
         ${TEST_LIBS}
 )
 ##############################################################################

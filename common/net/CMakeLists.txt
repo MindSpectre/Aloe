@@ -33,6 +33,25 @@ target_link_libraries(${NET}.Arp PUBLIC
 ##############################################################################
 
 ##############################################################################
+# The brick: IPv4 over a shard queue, with ARP and ICMP echo
+##############################################################################
+add_library(${NET}.Stack INTERFACE
+        stack/datagram.hpp
+        stack/ipv4.hpp
+)
+target_include_directories(${NET}.Stack INTERFACE
+        stack/
+)
+target_link_libraries(${NET}.Stack INTERFACE
+        ${NET}.Wire
+        ${NET}.Arp
+        Aloe::Common::Loop
+        Aloe::Common::Device
+        Aloe::Common::Utils
+)
+##############################################################################
+
+##############################################################################
 # Net exported library
 ##############################################################################
 add_combined_library(${NET}
@@ -43,6 +62,7 @@ add_combined_library(${NET}
         LIBRARIES
         ${NET}.Wire
         ${NET}.Arp
+        ${NET}.Stack
 )
 
 add_library(Aloe::Common::Net ALIAS ${NET})
