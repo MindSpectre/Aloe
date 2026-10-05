@@ -120,12 +120,18 @@ device, so they need neither root nor a network card.
 
 Tests under `tests/manual_tests/` carry the label `manual` and need privileges or hardware.
 Every test preset excludes that label, so they never run unasked; run the binary by hand. The
-one there today drives DPDK's tap driver against the kernel and needs `CAP_NET_ADMIN`:
+three there today drive DPDK's tap driver against the kernel and need `CAP_NET_ADMIN`:
 
 ```bash
 cmake --build --preset debug
 sudo ./build/debug/tests/manual_tests/ethdev/Aloe.Tests.Manual.Ethdev.Tap
+sudo ./build/debug/tests/manual_tests/runtime/Aloe.Tests.Manual.Runtime.Tap
+sudo ./build/debug/tests/manual_tests/net/Aloe.Tests.Manual.Net.Tap          # the kernel pings the IP base
 ```
+
+The net test gives the tap's kernel end an address itself and pings through the kernel's own stack, so it
+needs `CAP_NET_RAW` as well. `examples/ping_responder` is the same loop as a program you can `ping` from a
+shell.
 
 ## Formatting and the pre-commit hook
 

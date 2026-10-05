@@ -1,0 +1,16 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe net module: IPv4 with the ARP and ICMP echo that serve it, as the
+ * first protocol brick between a device queue and the transports. The wire formats are functions
+ * over bytes; the brick is `aloe::net::Ipv4<Device>`. No header here names the asynchronous model.
+ * Consumers link Aloe::Common::Net and write `#include <aloe/net>`.
+ */
+
+#include <arp.hpp>
+#include <arp_cache.hpp>
+#include <datagram.hpp>
+#include <ethernet.hpp>
+#include <icmp.hpp>
+#include <ipv4.hpp>
+#include <ipv4_header.hpp>
