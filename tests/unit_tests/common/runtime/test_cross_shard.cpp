@@ -1,5 +1,6 @@
 #include <aloe/fabric>
 #include <aloe/runtime>
+#include <aloe/wire>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -19,7 +20,7 @@ namespace {
     using namespace std::chrono_literals;
 
     constexpr int rounds = 5000;
-    constexpr aloe::device::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
+    constexpr aloe::wire::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
     constexpr auto patience = 20s;
 
     // One logging environment per test binary; this file owns it for the Runtime.Threads target.

@@ -1,4 +1,5 @@
 #include <aloe/fabric>
+#include <aloe/wire>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -13,12 +14,12 @@
 
 namespace {
 
-    constexpr aloe::device::MacAddress alpha{0x02, 0, 0, 0, 0, 0x0a};
-    constexpr aloe::device::MacAddress beta{0x02, 0, 0, 0, 0, 0x0b};
-    constexpr aloe::device::MacAddress gamma{0x02, 0, 0, 0, 0, 0x0c};
-    constexpr aloe::device::MacAddress nobody{0x02, 0, 0, 0, 0, 0xff};
+    constexpr aloe::wire::MacAddress alpha{0x02, 0, 0, 0, 0, 0x0a};
+    constexpr aloe::wire::MacAddress beta{0x02, 0, 0, 0, 0, 0x0b};
+    constexpr aloe::wire::MacAddress gamma{0x02, 0, 0, 0, 0, 0x0c};
+    constexpr aloe::wire::MacAddress nobody{0x02, 0, 0, 0, 0, 0xff};
 
-    aloe::fabric::PortConfig port(const aloe::device::MacAddress& mac) {
+    aloe::fabric::PortConfig port(const aloe::wire::MacAddress& mac) {
         return {.mac = mac, .queues = 1, .pool_size = 16, .queue_depth = 4};
     }
 
@@ -71,11 +72,9 @@ TEST(FabricDelivery, BroadcastAndMulticastReachEveryOtherPort) {
     auto& b = fabric.add_port(port(beta));
     auto& c = fabric.add_port(port(gamma));
 
-    const auto broadcast = aloe::testing::ethernet_frame(aloe::device::MacAddress::broadcast(),
-                                                         alpha,
-                                                         aloe::testing::ethertype_experimental,
-                                                         aloe::testing::pattern(30));
-    constexpr aloe::device::MacAddress group{0x01, 0x00, 0x5e, 0, 0, 1};
+    const auto broadcast = aloe::testing::ethernet_frame(
+        aloe::wire::MacAddress::broadcast(), alpha, aloe::testing::ethertype_experimental, aloe::testing::pattern(30));
+    constexpr aloe::wire::MacAddress group{0x01, 0x00, 0x5e, 0, 0, 1};
     const auto multicast = aloe::testing::ethernet_frame(
         group, alpha, aloe::testing::ethertype_experimental, aloe::testing::pattern(30, 1));
     send(a, broadcast);

@@ -13,6 +13,7 @@
 #include <aloe/log>
 #include <aloe/loop>
 #include <aloe/runtime>
+#include <aloe/wire>
 #include <charconv>
 #include <csignal>
 #include <cstdint>
@@ -43,7 +44,7 @@ namespace {
         void on_receive(std::span<Packet> burst) noexcept {
             for (Packet& packet : burst) {
                 const std::span<std::byte> data = packet.data();
-                if (data.size() < aloe::device::ethernet_header_size || !addressed_to_me(data)) {
+                if (data.size() < aloe::wire::ethernet_header_size || !addressed_to_me(data)) {
                     continue;  // the shard frees what we leave
                 }
                 std::swap_ranges(data.begin(), data.begin() + 6, data.begin() + 6);
@@ -59,9 +60,9 @@ namespace {
 
     private:
         [[nodiscard]] bool addressed_to_me(const std::span<const std::byte> frame) const noexcept {
-            aloe::device::MacAddress::Bytes destination{};
-            std::ranges::copy(frame.first(aloe::device::MacAddress::size), destination.begin());
-            return aloe::device::MacAddress{destination} == queue_->mac();
+            aloe::wire::MacAddress::Bytes destination{};
+            std::ranges::copy(frame.first(aloe::wire::MacAddress::size), destination.begin());
+            return aloe::wire::MacAddress{destination} == queue_->mac();
         }
 
         aloe::loop::ShardQueue<aloe::ethdev::Port>* queue_;

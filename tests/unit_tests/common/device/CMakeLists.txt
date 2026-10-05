@@ -1,10 +1,7 @@
 ##############################################################################
-# Test Device: addresses, checksums, receive-side scaling and the concepts
+# Test Device: receive-side scaling and the concepts
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Device
-        test_address.cpp
-        test_bytes.cpp
-        test_checksum.cpp
         test_concepts.cpp
         test_rss.cpp
 )

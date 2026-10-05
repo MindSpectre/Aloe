@@ -2,6 +2,7 @@
 #include <aloe/ethdev>
 #include <aloe/loop>
 #include <aloe/net>
+#include <aloe/wire>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -23,9 +24,9 @@ namespace {
     using Packet = aloe::ethdev::Packet;
     using Ipv4   = aloe::net::Ipv4<aloe::ethdev::Port>;
 
-    constexpr aloe::device::Ipv4Address stack_ip{10, 0, 0, 2};
-    constexpr aloe::device::Ipv4Address peer_ip{10, 0, 0, 1};
-    constexpr aloe::device::MacAddress peer_mac{0x02, 0, 0, 0, 0xfe, 0xed};
+    constexpr aloe::wire::Ipv4Address stack_ip{10, 0, 0, 2};
+    constexpr aloe::wire::Ipv4Address peer_ip{10, 0, 0, 1};
+    constexpr aloe::wire::MacAddress peer_mac{0x02, 0, 0, 0, 0xfe, 0xed};
 
     const auto* const environment = ::testing::AddGlobalTestEnvironment(new aloe::testing::EalEnvironment{"net_ring0"});
 
@@ -75,7 +76,7 @@ namespace {
 
 TEST_F(NetRing, AnArpRequestIsAnsweredOnRealMbufs) {
     inject(aloe::testing::arp_frame(aloe::testing::arp_request(peer_mac, peer_ip, stack_ip),
-                                    aloe::device::MacAddress::broadcast()));
+                                    aloe::wire::MacAddress::broadcast()));
     tick();
     const auto frames = on_the_wire();
     ASSERT_EQ(frames.size(), 1);
@@ -105,10 +106,10 @@ TEST_F(NetRing, AnEchoRequestIsAnsweredOnRealMbufs) {
     EXPECT_EQ(reply.ipv4->header_length, 20);
     EXPECT_EQ(reply.ipv4->destination, peer_ip);
     EXPECT_EQ(reply.ipv4->total_length, 20 + 8 + 56);
-    EXPECT_EQ(aloe::device::internet_checksum(reply.ipv4_header), 0);
+    EXPECT_EQ(aloe::wire::internet_checksum(reply.ipv4_header), 0);
     ASSERT_TRUE(reply.icmp.has_value());
-    EXPECT_EQ(reply.icmp->type, aloe::net::IcmpType::EchoReply);
-    EXPECT_EQ(aloe::device::internet_checksum(reply.l4), 0);
+    EXPECT_EQ(reply.icmp->type, aloe::wire::IcmpType::EchoReply);
+    EXPECT_EQ(aloe::wire::internet_checksum(reply.l4), 0);
     EXPECT_EQ(std::vector<std::byte>(reply.l4.begin() + 8, reply.l4.end()), payload);
     EXPECT_EQ(ip_.counters().echo_replies_sent, 1);
 }
@@ -120,27 +121,27 @@ TEST_F(NetRing, ASentSegmentComesBackThroughTheRingIntoTheUdpList) {
     const auto payload = aloe::testing::pattern(16);
     const auto room    = packet->append(8 + payload.size());
     ASSERT_TRUE(room.has_value());
-    aloe::device::store_be16(room->subspan(0, 2), 40000);
-    aloe::device::store_be16(room->subspan(2, 2), 80);
-    aloe::device::store_be16(room->subspan(4, 2), static_cast<std::uint16_t>(8 + payload.size()));
-    aloe::device::store_be16(room->subspan(6, 2), 0);
+    aloe::wire::store_be16(room->subspan(0, 2), 40000);
+    aloe::wire::store_be16(room->subspan(2, 2), 80);
+    aloe::wire::store_be16(room->subspan(4, 2), static_cast<std::uint16_t>(8 + payload.size()));
+    aloe::wire::store_be16(room->subspan(6, 2), 0);
     std::ranges::copy(payload, room->begin() + 8);
 
     ASSERT_TRUE(ip_.send(std::move(*packet),
                          {.destination = stack_ip,
-                          .protocol    = aloe::device::Ipv4Protocol::Udp,
+                          .protocol    = aloe::wire::Ipv4Protocol::Udp,
                           .checksum    = aloe::device::L4Checksum::Udp},
                          now_)
                     .has_value());
     std::ignore = queue_.flush();
     tick();
 
-    ASSERT_EQ(ip_.received(aloe::device::Ipv4Protocol::Udp).size(), 1);
-    auto& received = ip_.received(aloe::device::Ipv4Protocol::Udp)[0];
+    ASSERT_EQ(ip_.received(aloe::wire::Ipv4Protocol::Udp).size(), 1);
+    auto& received = ip_.received(aloe::wire::Ipv4Protocol::Udp)[0];
     EXPECT_EQ(received.source, stack_ip);
     EXPECT_EQ(received.destination, stack_ip);
     EXPECT_EQ(received.l4_length, 8 + 16);
-    const auto header = aloe::net::parse_ipv4(received.packet.data().subspan(aloe::device::ethernet_header_size));
+    const auto header = aloe::wire::parse_ipv4(received.packet.data().subspan(aloe::wire::ethernet_header_size));
     ASSERT_TRUE(header.has_value());
     EXPECT_EQ(aloe::testing::l4_checksum_residue(*header, received.l4()), 0) << "the software UDP checksum";
     EXPECT_EQ(std::vector<std::byte>(received.l4().begin() + 8, received.l4().end()), payload);

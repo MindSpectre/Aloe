@@ -2,6 +2,7 @@
 #include <aloe/ethdev>
 #include <aloe/loop>
 #include <aloe/runtime>
+#include <aloe/wire>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -24,7 +25,7 @@ namespace {
 
     constexpr std::uint16_t queues = 4;
     constexpr auto patience        = 20s;
-    constexpr aloe::device::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
+    constexpr aloe::wire::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
 
     const auto* const environment = ::testing::AddGlobalTestEnvironment(new aloe::testing::EalEnvironment{"net_ring0"});
     const auto* const logging     = ::testing::AddGlobalTestEnvironment(new aloe::testing::LoggingEnvironment{});

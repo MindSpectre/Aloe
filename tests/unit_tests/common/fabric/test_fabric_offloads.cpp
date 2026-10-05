@@ -1,4 +1,5 @@
 #include <aloe/fabric>
+#include <aloe/wire>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -11,12 +12,12 @@
 
 namespace {
 
-    constexpr aloe::device::MacAddress client{0x02, 0, 0, 0, 0, 0x01};
-    constexpr aloe::device::MacAddress server{0x02, 0, 0, 0, 0, 0x02};
-    constexpr aloe::device::Ipv4Address client_ip{10, 0, 0, 1};
-    constexpr aloe::device::Ipv4Address server_ip{10, 0, 0, 2};
+    constexpr aloe::wire::MacAddress client{0x02, 0, 0, 0, 0, 0x01};
+    constexpr aloe::wire::MacAddress server{0x02, 0, 0, 0, 0, 0x02};
+    constexpr aloe::wire::Ipv4Address client_ip{10, 0, 0, 1};
+    constexpr aloe::wire::Ipv4Address server_ip{10, 0, 0, 2};
 
-    aloe::testing::Ipv4Spec spec(const aloe::device::Ipv4Protocol protocol, const aloe::testing::Checksums checksums) {
+    aloe::testing::Ipv4Spec spec(const aloe::wire::Ipv4Protocol protocol, const aloe::testing::Checksums checksums) {
         return {.destination_mac  = server,
                 .source_mac       = client,
                 .source           = client_ip,
@@ -65,10 +66,10 @@ TEST_F(FabricOffloads, AChecksumPortReportsAllFourCapabilities) {
 }
 
 TEST_F(FabricOffloads, FillsBothChecksumsFromASeededFrame) {
-    const auto seeded = aloe::testing::ipv4_frame(
-        spec(aloe::device::Ipv4Protocol::Udp, aloe::testing::Checksums::Seeded), aloe::testing::pattern(9));
+    const auto seeded = aloe::testing::ipv4_frame(spec(aloe::wire::Ipv4Protocol::Udp, aloe::testing::Checksums::Seeded),
+                                                  aloe::testing::pattern(9));
     const auto correct = aloe::testing::ipv4_frame(
-        spec(aloe::device::Ipv4Protocol::Udp, aloe::testing::Checksums::Correct), aloe::testing::pattern(9));
+        spec(aloe::wire::Ipv4Protocol::Udp, aloe::testing::Checksums::Correct), aloe::testing::pattern(9));
     ASSERT_NE(seeded, correct);
     aloe::fabric::Packet received = exchange(seeded, fill_both);
     EXPECT_EQ(aloe::testing::bytes_of(received), correct);
@@ -77,10 +78,10 @@ TEST_F(FabricOffloads, FillsBothChecksumsFromASeededFrame) {
 }
 
 TEST_F(FabricOffloads, FillsTcpToo) {
-    const auto seeded = aloe::testing::ipv4_frame(
-        spec(aloe::device::Ipv4Protocol::Tcp, aloe::testing::Checksums::Seeded), aloe::testing::pattern(9));
+    const auto seeded = aloe::testing::ipv4_frame(spec(aloe::wire::Ipv4Protocol::Tcp, aloe::testing::Checksums::Seeded),
+                                                  aloe::testing::pattern(9));
     const auto correct = aloe::testing::ipv4_frame(
-        spec(aloe::device::Ipv4Protocol::Tcp, aloe::testing::Checksums::Correct), aloe::testing::pattern(9));
+        spec(aloe::wire::Ipv4Protocol::Tcp, aloe::testing::Checksums::Correct), aloe::testing::pattern(9));
     aloe::device::TxMetadata tx   = fill_both;
     tx.fill_l4_checksum           = aloe::device::L4Checksum::Tcp;
     aloe::fabric::Packet received = exchange(seeded, tx);
@@ -89,8 +90,8 @@ TEST_F(FabricOffloads, FillsTcpToo) {
 }
 
 TEST_F(FabricOffloads, FillsOnlyWhatIsAsked) {
-    const auto seeded = aloe::testing::ipv4_frame(
-        spec(aloe::device::Ipv4Protocol::Udp, aloe::testing::Checksums::Seeded), aloe::testing::pattern(9));
+    const auto seeded = aloe::testing::ipv4_frame(spec(aloe::wire::Ipv4Protocol::Udp, aloe::testing::Checksums::Seeded),
+                                                  aloe::testing::pattern(9));
     aloe::device::TxMetadata tx   = fill_both;
     tx.fill_l4_checksum           = aloe::device::L4Checksum::None;
     aloe::fabric::Packet received = exchange(seeded, tx);
@@ -99,7 +100,7 @@ TEST_F(FabricOffloads, FillsOnlyWhatIsAsked) {
 }
 
 TEST_F(FabricOffloads, VerifiesWrongChecksumsAsBad) {
-    const auto wrong = aloe::testing::ipv4_frame(spec(aloe::device::Ipv4Protocol::Udp, aloe::testing::Checksums::Wrong),
+    const auto wrong = aloe::testing::ipv4_frame(spec(aloe::wire::Ipv4Protocol::Udp, aloe::testing::Checksums::Wrong),
                                                  aloe::testing::pattern(9));
     aloe::fabric::Packet received = exchange(wrong, aloe::device::TxMetadata{});
     EXPECT_EQ(received.rx().l3, aloe::device::ChecksumVerdict::Bad);
@@ -113,8 +114,8 @@ TEST_F(FabricOffloads, LeavesNonIpv4AndUdpWithoutChecksumUnknown) {
     EXPECT_EQ(received.rx().l3, aloe::device::ChecksumVerdict::Unknown);
     EXPECT_EQ(received.rx().l4, aloe::device::ChecksumVerdict::Unknown);
 
-    auto no_checksum = aloe::testing::ipv4_frame(
-        spec(aloe::device::Ipv4Protocol::Udp, aloe::testing::Checksums::Correct), aloe::testing::pattern(9));
+    auto no_checksum = aloe::testing::ipv4_frame(spec(aloe::wire::Ipv4Protocol::Udp, aloe::testing::Checksums::Correct),
+                                                 aloe::testing::pattern(9));
     no_checksum[14 + 20 + 6] = std::byte{0};
     no_checksum[14 + 20 + 7] = std::byte{0};
     received                 = exchange(no_checksum, aloe::device::TxMetadata{});
@@ -129,7 +130,7 @@ TEST(FabricOffloadsNone, APlainPortReportsNothingAndVerifiesNothing) {
     EXPECT_FALSE(b.capabilities().rx_ipv4_checksum);
     EXPECT_FALSE(b.capabilities().tx_l4_checksum);
 
-    const auto wrong = aloe::testing::ipv4_frame(spec(aloe::device::Ipv4Protocol::Udp, aloe::testing::Checksums::Wrong),
+    const auto wrong = aloe::testing::ipv4_frame(spec(aloe::wire::Ipv4Protocol::Udp, aloe::testing::Checksums::Wrong),
                                                  aloe::testing::pattern(9));
     auto packet      = a.allocate(0);
     ASSERT_TRUE(packet.has_value());
@@ -145,7 +146,7 @@ TEST(FabricOffloadsNone, APlainPortReportsNothingAndVerifiesNothing) {
 
 TEST_F(FabricOffloads, IgnoresEthernetPaddingWhenVerifying) {
     // The kernel pads short frames to 60 bytes; the IPv4 total length says where the datagram ends.
-    auto padded = aloe::testing::ipv4_frame(spec(aloe::device::Ipv4Protocol::Udp, aloe::testing::Checksums::Correct),
+    auto padded = aloe::testing::ipv4_frame(spec(aloe::wire::Ipv4Protocol::Udp, aloe::testing::Checksums::Correct),
                                             aloe::testing::pattern(2));
     ASSERT_LT(padded.size(), 60);
     padded.resize(60, std::byte{0});
@@ -157,11 +158,11 @@ TEST_F(FabricOffloads, IgnoresEthernetPaddingWhenVerifying) {
 
 TEST_F(FabricOffloads, FillsAndVerifiesAHeaderWithOptions) {
     const auto seeded = aloe::testing::with_ipv4_options(
-        aloe::testing::ipv4_frame(spec(aloe::device::Ipv4Protocol::Udp, aloe::testing::Checksums::Seeded),
+        aloe::testing::ipv4_frame(spec(aloe::wire::Ipv4Protocol::Udp, aloe::testing::Checksums::Seeded),
                                   aloe::testing::pattern(9)),
         1);
     const auto correct = aloe::testing::with_ipv4_options(
-        aloe::testing::ipv4_frame(spec(aloe::device::Ipv4Protocol::Udp, aloe::testing::Checksums::Correct),
+        aloe::testing::ipv4_frame(spec(aloe::wire::Ipv4Protocol::Udp, aloe::testing::Checksums::Correct),
                                   aloe::testing::pattern(9)),
         1);
     aloe::device::TxMetadata tx   = fill_both;

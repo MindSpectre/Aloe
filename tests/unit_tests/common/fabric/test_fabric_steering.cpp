@@ -1,4 +1,5 @@
 #include <aloe/fabric>
+#include <aloe/wire>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -11,10 +12,10 @@
 
 namespace {
 
-    constexpr aloe::device::MacAddress client{0x02, 0, 0, 0, 0, 0x01};
-    constexpr aloe::device::MacAddress server{0x02, 0, 0, 0, 0, 0x02};
-    constexpr aloe::device::Ipv4Address client_ip{10, 0, 0, 1};
-    constexpr aloe::device::Ipv4Address server_ip{10, 0, 0, 2};
+    constexpr aloe::wire::MacAddress client{0x02, 0, 0, 0, 0, 0x01};
+    constexpr aloe::wire::MacAddress server{0x02, 0, 0, 0, 0, 0x02};
+    constexpr aloe::wire::Ipv4Address client_ip{10, 0, 0, 1};
+    constexpr aloe::wire::Ipv4Address server_ip{10, 0, 0, 2};
 
     class FabricSteering : public testing::Test {
     protected:
@@ -46,8 +47,7 @@ namespace {
             return result;
         }
 
-        static aloe::testing::Ipv4Spec spec(const aloe::device::Ipv4Protocol protocol,
-                                            const std::uint16_t source_port) {
+        static aloe::testing::Ipv4Spec spec(const aloe::wire::Ipv4Protocol protocol, const std::uint16_t source_port) {
             return {.destination_mac  = server,
                     .source_mac       = client,
                     .source           = client_ip,
@@ -74,8 +74,7 @@ TEST_F(FabricSteering, AMultiQueuePortSteersByRss) {
 TEST_F(FabricSteering, TcpAndUdpLandOnTheQueueTheirFourTupleSelects) {
     std::array<bool, 4> seen{};
     for (std::uint16_t port = 40000; port < 40064; ++port) {
-        for (const aloe::device::Ipv4Protocol protocol :
-             {aloe::device::Ipv4Protocol::Tcp, aloe::device::Ipv4Protocol::Udp}) {
+        for (const aloe::wire::Ipv4Protocol protocol : {aloe::wire::Ipv4Protocol::Tcp, aloe::wire::Ipv4Protocol::Udp}) {
             const auto frame_spec = spec(protocol, port);
             const std::uint16_t expected =
                 aloe::device::queue_for(server_port_.steering(), aloe::testing::flow_of(frame_spec));
@@ -91,16 +90,16 @@ TEST_F(FabricSteering, TcpAndUdpLandOnTheQueueTheirFourTupleSelects) {
 }
 
 TEST_F(FabricSteering, OtherIpv4LandsOnTheQueueTheAddressesSelect) {
-    const auto frame_spec        = spec(aloe::device::Ipv4Protocol::Icmp, 0);
+    const auto frame_spec        = spec(aloe::wire::Ipv4Protocol::Icmp, 0);
     const std::uint16_t expected = aloe::device::queue_for(server_port_.steering(), aloe::testing::flow_of(frame_spec));
     send(aloe::testing::ipv4_frame(frame_spec, aloe::testing::pattern(8)));
     EXPECT_FALSE(receive_only_on(expected).empty());
 }
 
 TEST_F(FabricSteering, AFragmentIsSteeredByAddressesOnly) {
-    auto fragment           = spec(aloe::device::Ipv4Protocol::Tcp, 40000);
+    auto fragment           = spec(aloe::wire::Ipv4Protocol::Tcp, 40000);
     fragment.flags_fragment = 0x2000;  // more fragments, offset zero
-    auto whole              = spec(aloe::device::Ipv4Protocol::Icmp, 0);
+    auto whole              = spec(aloe::wire::Ipv4Protocol::Icmp, 0);
     EXPECT_FALSE(aloe::testing::flow_of(fragment).protocol.has_value());
     const std::uint16_t expected = aloe::device::queue_for(server_port_.steering(), aloe::testing::flow_of(whole));
     send(aloe::testing::ipv4_frame(fragment, aloe::testing::pattern(8)));
@@ -116,7 +115,7 @@ TEST_F(FabricSteering, NonIpv4GoesToQueueZeroWithoutAHash) {
 }
 
 TEST_F(FabricSteering, ASingleQueuePortHashesNothing) {
-    auto reply            = spec(aloe::device::Ipv4Protocol::Tcp, 40000);
+    auto reply            = spec(aloe::wire::Ipv4Protocol::Tcp, 40000);
     reply.destination_mac = client;
     reply.source_mac      = server;
     auto packet           = server_port_.allocate(0);
@@ -131,7 +130,7 @@ TEST_F(FabricSteering, ASingleQueuePortHashesNothing) {
 }
 
 TEST_F(FabricSteering, ATruncatedFrameIsStillSteeredAndDoesNotCrash) {
-    const auto frame_spec = spec(aloe::device::Ipv4Protocol::Tcp, 40000);
+    const auto frame_spec = spec(aloe::wire::Ipv4Protocol::Tcp, 40000);
     auto frame            = aloe::testing::ipv4_frame(frame_spec, aloe::testing::pattern(64));
     frame.resize(frame.size() - 40);  // the total length now claims more than the frame carries
     const std::uint16_t expected = aloe::device::queue_for(server_port_.steering(), aloe::testing::flow_of(frame_spec));
@@ -140,7 +139,7 @@ TEST_F(FabricSteering, ATruncatedFrameIsStillSteeredAndDoesNotCrash) {
 }
 
 TEST_F(FabricSteering, AnIpv4HeaderWithOptionsIsParsedByItsLength) {
-    const auto frame_spec        = spec(aloe::device::Ipv4Protocol::Udp, 40001);
+    const auto frame_spec        = spec(aloe::wire::Ipv4Protocol::Udp, 40001);
     const std::uint16_t expected = aloe::device::queue_for(server_port_.steering(), aloe::testing::flow_of(frame_spec));
     send(aloe::testing::with_ipv4_options(aloe::testing::ipv4_frame(frame_spec, aloe::testing::pattern(8)), 2));
     aloe::fabric::Packet packet = receive_only_on(expected);

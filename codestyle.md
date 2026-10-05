@@ -566,12 +566,12 @@ Consumers include the whole module via `#include <aloe/<module>>`:
 
 ### Which Namespace
 
-Every module gets a namespace named after it: `aloe::core`, `aloe::execution`, `aloe::log`, `aloe::device`,
-`aloe::fabric`, `aloe::ethdev`. A name says which module it comes from, so `aloe::execution::ex::just`, `aloe::device::MacAddress`
+Every module gets a namespace named after it: `aloe::core`, `aloe::execution`, `aloe::log`, `aloe::wire`,
+`aloe::device`, `aloe::fabric`, `aloe::ethdev`. A name says which module it comes from, so `aloe::execution::ex::just`, `aloe::wire::MacAddress`
 and `aloe::fabric::Port` need no lookup to place. Nothing is declared directly in `aloe`.
 
 Code in one module names another module's vocabulary through the module namespace, never through a
-using-directive: inside `aloe::fabric`, write `device::MacAddress`. Inside the module itself the names stay
+using-directive: inside `aloe::fabric`, write `wire::MacAddress`. Inside the module itself the names stay
 unqualified.
 
 ### Opening Style

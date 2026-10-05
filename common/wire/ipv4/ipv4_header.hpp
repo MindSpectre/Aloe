@@ -7,13 +7,12 @@
 #include <span>
 #include <utility>
 
-#include <address.hpp>
 #include <bytes.hpp>
-#include <checksum.hpp>
-#include <ethernet.hpp>
-#include <protocol.hpp>
+#include <ipv4_address.hpp>
+#include <ipv4_checksum.hpp>
+#include <ipv4_protocol.hpp>
 
-namespace aloe::net {
+namespace aloe::wire {
 
     /**
      * @brief An IPv4 header as the brick reads and writes it.
@@ -31,10 +30,10 @@ namespace aloe::net {
         bool more_fragments           = false;
         std::uint16_t fragment_offset = 0;  ///< In units of eight bytes.
         std::uint8_t ttl              = 64;
-        device::Ipv4Protocol protocol = device::Ipv4Protocol::Icmp;
+        Ipv4Protocol protocol         = Ipv4Protocol::Icmp;
         std::uint16_t checksum        = 0;
-        device::Ipv4Address source{};
-        device::Ipv4Address destination{};
+        Ipv4Address source{};
+        Ipv4Address destination{};
 
         [[nodiscard]] constexpr bool is_fragment() const noexcept {
             return more_fragments || fragment_offset != 0;
@@ -70,24 +69,24 @@ namespace aloe::net {
         if (header_length < ipv4_header_size || header_length > payload.size()) {
             return std::nullopt;
         }
-        const std::uint16_t total_length = device::load_be16(payload.subspan(2, 2));
+        const std::uint16_t total_length = load_be16(payload.subspan(2, 2));
         if (total_length < header_length || total_length > payload.size()) {
             return std::nullopt;
         }
-        const unsigned flags_fragment = device::load_be16(payload.subspan(6, 2));
+        const unsigned flags_fragment = load_be16(payload.subspan(6, 2));
         return Ipv4Header{
             .header_length   = static_cast<std::uint8_t>(header_length),
             .dscp_ecn        = std::to_integer<std::uint8_t>(payload[1]),
             .total_length    = total_length,
-            .identification  = device::load_be16(payload.subspan(4, 2)),
+            .identification  = load_be16(payload.subspan(4, 2)),
             .dont_fragment   = (flags_fragment & detail::ipv4_flag_dont_fragment) != 0,
             .more_fragments  = (flags_fragment & detail::ipv4_flag_more_fragments) != 0,
             .fragment_offset = static_cast<std::uint16_t>(flags_fragment & detail::ipv4_fragment_offset_mask),
             .ttl             = std::to_integer<std::uint8_t>(payload[8]),
-            .protocol        = device::Ipv4Protocol{std::to_integer<std::uint8_t>(payload[9])},
-            .checksum        = device::load_be16(payload.subspan(device::ipv4_checksum_offset, 2)),
-            .source          = detail::load_ipv4(payload.subspan(12, 4)),
-            .destination     = detail::load_ipv4(payload.subspan(16, 4)),
+            .protocol        = Ipv4Protocol{std::to_integer<std::uint8_t>(payload[9])},
+            .checksum        = load_be16(payload.subspan(ipv4_checksum_offset, 2)),
+            .source          = Ipv4Address::load(payload.subspan(12, 4)),
+            .destination     = Ipv4Address::load(payload.subspan(16, 4)),
         };
     }
 
@@ -97,8 +96,8 @@ namespace aloe::net {
         assert(header.header_length == ipv4_header_size && "options are never written");
         out[0] = std::byte{0x45};  // version 4, five words
         out[1] = std::byte{header.dscp_ecn};
-        device::store_be16(out.subspan(2, 2), header.total_length);
-        device::store_be16(out.subspan(4, 2), header.identification);
+        store_be16(out.subspan(2, 2), header.total_length);
+        store_be16(out.subspan(4, 2), header.identification);
         unsigned flags_fragment = header.fragment_offset & detail::ipv4_fragment_offset_mask;
         if (header.dont_fragment) {
             flags_fragment |= detail::ipv4_flag_dont_fragment;
@@ -106,12 +105,12 @@ namespace aloe::net {
         if (header.more_fragments) {
             flags_fragment |= detail::ipv4_flag_more_fragments;
         }
-        device::store_be16(out.subspan(6, 2), static_cast<std::uint16_t>(flags_fragment));
+        store_be16(out.subspan(6, 2), static_cast<std::uint16_t>(flags_fragment));
         out[8] = std::byte{header.ttl};
         out[9] = std::byte{std::to_underlying(header.protocol)};
-        device::store_be16(out.subspan(device::ipv4_checksum_offset, 2), header.checksum);
-        detail::store_ipv4(out.subspan(12, 4), header.source);
-        detail::store_ipv4(out.subspan(16, 4), header.destination);
+        store_be16(out.subspan(ipv4_checksum_offset, 2), header.checksum);
+        header.source.store(out.subspan(12, 4));
+        header.destination.store(out.subspan(16, 4));
     }
 
-}  // namespace aloe::net
+}  // namespace aloe::wire

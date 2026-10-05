@@ -10,9 +10,9 @@
 #include <stdexcept>
 #include <vector>
 
-#include <address.hpp>
 #include <bytes.hpp>
-#include <protocol.hpp>
+#include <ipv4_address.hpp>
+#include <ipv4_protocol.hpp>
 
 namespace aloe::device {
 
@@ -44,11 +44,11 @@ namespace aloe::device {
 
     /// The IPv4 fields a hash is computed over.
     struct FlowTuple {
-        Ipv4Address source;
-        Ipv4Address destination;
+        wire::Ipv4Address source;
+        wire::Ipv4Address destination;
         std::uint16_t source_port      = 0;
         std::uint16_t destination_port = 0;
-        std::optional<Ipv4Protocol> protocol =
+        std::optional<wire::Ipv4Protocol> protocol =
             std::nullopt;  ///< Absent for a fragment: no protocol or ports take part.
     };
 
@@ -81,7 +81,7 @@ namespace aloe::device {
                                                         const std::span<const std::byte> input) noexcept {
         assert(key.size() >= 4);
         std::uint32_t result   = 0;
-        std::uint32_t window   = load_be32(key.first(4));
+        std::uint32_t window   = wire::load_be32(key.first(4));
         std::size_t next_bit   = 32;
         const std::size_t bits = key.size() * 8;
         for (const std::byte in : input) {
@@ -112,16 +112,16 @@ namespace aloe::device {
             return 0;
         }
         std::array<std::byte, 12> input{};
-        for (std::size_t index = 0; index < Ipv4Address::size; ++index) {
+        for (std::size_t index = 0; index < wire::Ipv4Address::size; ++index) {
             input[index]     = flow.source.bytes()[index];
             input[4 + index] = flow.destination.bytes()[index];
         }
         const std::span<const std::byte> key{rss.key.data(), std::min<std::size_t>(rss.key_length, rss_key_capacity)};
-        const bool with_ports = (flow.protocol == Ipv4Protocol::Tcp && rss.types.ipv4_tcp) ||
-                                (flow.protocol == Ipv4Protocol::Udp && rss.types.ipv4_udp);
+        const bool with_ports = (flow.protocol == wire::Ipv4Protocol::Tcp && rss.types.ipv4_tcp) ||
+                                (flow.protocol == wire::Ipv4Protocol::Udp && rss.types.ipv4_udp);
         if (with_ports) {
-            store_be16(std::span<std::byte>{input}.subspan(8, 2), flow.source_port);
-            store_be16(std::span<std::byte>{input}.subspan(10, 2), flow.destination_port);
+            wire::store_be16(std::span<std::byte>{input}.subspan(8, 2), flow.source_port);
+            wire::store_be16(std::span<std::byte>{input}.subspan(10, 2), flow.destination_port);
             return toeplitz_hash(key, input);
         }
         if (rss.types.ipv4) {

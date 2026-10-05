@@ -1,4 +1,5 @@
 #include <aloe/net>
+#include <aloe/wire>
 #include <chrono>
 #include <cstddef>
 #include <tuple>
@@ -18,9 +19,9 @@ namespace {
     using aloe::testing::stack_ip;
     using aloe::testing::stack_mac;
 
-    constexpr aloe::device::Ipv4Address stranger{10, 0, 0, 77};
-    constexpr aloe::device::MacAddress stranger_mac{0x02, 0, 0, 0, 0, 0x77};
-    const aloe::device::MacAddress broadcast = aloe::device::MacAddress::broadcast();
+    constexpr aloe::wire::Ipv4Address stranger{10, 0, 0, 77};
+    constexpr aloe::wire::MacAddress stranger_mac{0x02, 0, 0, 0, 0, 0x77};
+    const aloe::wire::MacAddress broadcast = aloe::wire::MacAddress::broadcast();
 
     class NetArp : public aloe::testing::NetFixture {};
 
@@ -64,15 +65,15 @@ TEST_P(NetArp, ARequestForAnotherHostTeachesNothing) {
 }
 
 TEST_P(NetArp, AProbeWithAZeroSenderIsAnsweredAndTeachesNothing) {
-    inject(aloe::testing::arp_frame(aloe::testing::arp_request(harness_mac, aloe::device::Ipv4Address{}, stack_ip),
+    inject(aloe::testing::arp_frame(aloe::testing::arp_request(harness_mac, aloe::wire::Ipv4Address{}, stack_ip),
                                     broadcast));
 
     const auto frames = harness_received();
     ASSERT_EQ(frames.size(), 1);
     const auto reply = aloe::testing::parse_frame(frames[0]);
     ASSERT_TRUE(reply.arp.has_value());
-    EXPECT_EQ(reply.arp->operation, aloe::net::ArpOperation::Reply);
-    EXPECT_EQ(reply.arp->target_ip, aloe::device::Ipv4Address{});
+    EXPECT_EQ(reply.arp->operation, aloe::wire::ArpOperation::Reply);
+    EXPECT_EQ(reply.arp->target_ip, aloe::wire::Ipv4Address{});
     EXPECT_TRUE(ip_.resolved().empty());
     EXPECT_EQ(ip_.counters().resolutions, 0);
     EXPECT_EQ(ip_.counters().arp_replies_sent, 1);

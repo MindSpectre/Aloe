@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <aloe/device>
+#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -28,15 +29,15 @@ namespace aloe::testing {
     }
 
     /// An Ethernet frame: header, then the payload as it is.
-    [[nodiscard]] inline std::vector<std::byte> ethernet_frame(const device::MacAddress& destination,
-                                                               const device::MacAddress& source,
+    [[nodiscard]] inline std::vector<std::byte> ethernet_frame(const wire::MacAddress& destination,
+                                                               const wire::MacAddress& source,
                                                                std::uint16_t ethertype,
                                                                std::span<const std::byte> payload) {
-        std::vector<std::byte> frame(device::ethernet_header_size + payload.size());
+        std::vector<std::byte> frame(wire::ethernet_header_size + payload.size());
         std::ranges::copy(destination.bytes(), frame.begin());
         std::ranges::copy(source.bytes(), frame.begin() + 6);
-        device::store_be16(std::span<std::byte>{frame}.subspan(12, 2), ethertype);
-        std::ranges::copy(payload, frame.begin() + static_cast<std::ptrdiff_t>(device::ethernet_header_size));
+        wire::store_be16(std::span<std::byte>{frame}.subspan(12, 2), ethertype);
+        std::ranges::copy(payload, frame.begin() + static_cast<std::ptrdiff_t>(wire::ethernet_header_size));
         return frame;
     }
 
@@ -49,13 +50,13 @@ namespace aloe::testing {
     };
 
     struct Ipv4Spec {
-        device::MacAddress destination_mac;
-        device::MacAddress source_mac;
-        device::Ipv4Address source;
-        device::Ipv4Address destination;
+        wire::MacAddress destination_mac;
+        wire::MacAddress source_mac;
+        wire::Ipv4Address source;
+        wire::Ipv4Address destination;
         std::uint16_t source_port      = 0;
         std::uint16_t destination_port = 0;
-        device::Ipv4Protocol protocol  = device::Ipv4Protocol::Udp;
+        wire::Ipv4Protocol protocol    = wire::Ipv4Protocol::Udp;
         std::uint16_t flags_fragment   = 0x4000;  ///< Don't-fragment set, offset zero.
         Checksums checksums            = Checksums::Correct;
     };
@@ -67,15 +68,15 @@ namespace aloe::testing {
      * protocol carries the payload straight after the IPv4 header.
      */
     [[nodiscard]] inline std::vector<std::byte> ipv4_frame(const Ipv4Spec& spec, std::span<const std::byte> payload) {
-        const std::size_t l4_header = spec.protocol == device::Ipv4Protocol::Tcp   ? 20
-                                      : spec.protocol == device::Ipv4Protocol::Udp ? 8
-                                                                                   : 0;
+        const std::size_t l4_header = spec.protocol == wire::Ipv4Protocol::Tcp   ? 20
+                                      : spec.protocol == wire::Ipv4Protocol::Udp ? 8
+                                                                                 : 0;
         const std::size_t l4_length = l4_header + payload.size();
         std::vector<std::byte> ip(20 + l4_length);
         const std::span<std::byte> header = std::span<std::byte>{ip}.first(20);
         header[0]                         = std::byte{0x45};
-        device::store_be16(header.subspan(2, 2), static_cast<std::uint16_t>(ip.size()));
-        device::store_be16(header.subspan(6, 2), spec.flags_fragment);
+        wire::store_be16(header.subspan(2, 2), static_cast<std::uint16_t>(ip.size()));
+        wire::store_be16(header.subspan(6, 2), spec.flags_fragment);
         header[8] = std::byte{64};
         header[9] = std::byte{std::to_underlying(spec.protocol)};
         std::ranges::copy(spec.source.bytes(), header.begin() + 12);
@@ -83,14 +84,14 @@ namespace aloe::testing {
 
         const std::span<std::byte> l4 = std::span<std::byte>{ip}.subspan(20);
         std::size_t checksum_offset   = 0;
-        if (spec.protocol == device::Ipv4Protocol::Udp) {
-            device::store_be16(l4.subspan(0, 2), spec.source_port);
-            device::store_be16(l4.subspan(2, 2), spec.destination_port);
-            device::store_be16(l4.subspan(4, 2), static_cast<std::uint16_t>(l4_length));
+        if (spec.protocol == wire::Ipv4Protocol::Udp) {
+            wire::store_be16(l4.subspan(0, 2), spec.source_port);
+            wire::store_be16(l4.subspan(2, 2), spec.destination_port);
+            wire::store_be16(l4.subspan(4, 2), static_cast<std::uint16_t>(l4_length));
             checksum_offset = 6;
-        } else if (spec.protocol == device::Ipv4Protocol::Tcp) {
-            device::store_be16(l4.subspan(0, 2), spec.source_port);
-            device::store_be16(l4.subspan(2, 2), spec.destination_port);
+        } else if (spec.protocol == wire::Ipv4Protocol::Tcp) {
+            wire::store_be16(l4.subspan(0, 2), spec.source_port);
+            wire::store_be16(l4.subspan(2, 2), spec.destination_port);
             l4[12]          = std::byte{0x50};  // data offset 5 words
             l4[13]          = std::byte{0x10};  // ACK
             checksum_offset = 16;
@@ -99,16 +100,15 @@ namespace aloe::testing {
 
         if (spec.checksums != Checksums::Zero) {
             if (spec.checksums == Checksums::Correct || spec.checksums == Checksums::Wrong) {
-                device::store_be16(header.subspan(device::ipv4_checksum_offset, 2),
-                                   device::ipv4_header_checksum(header));
+                wire::store_be16(header.subspan(wire::ipv4_checksum_offset, 2), wire::ipv4_header_checksum(header));
             }
             if (l4_header != 0) {
                 const std::uint16_t value =
                     spec.checksums == Checksums::Seeded
-                        ? device::ipv4_pseudo_header_sum(
+                        ? wire::ipv4_pseudo_header_sum(
                               spec.source, spec.destination, spec.protocol, static_cast<std::uint16_t>(l4_length))
-                        : device::ipv4_l4_checksum(spec.source, spec.destination, spec.protocol, l4);
-                device::store_be16(l4.subspan(checksum_offset, 2), value);
+                        : wire::ipv4_l4_checksum(spec.source, spec.destination, spec.protocol, l4);
+                wire::store_be16(l4.subspan(checksum_offset, 2), value);
             }
             if (spec.checksums == Checksums::Wrong) {
                 header[10] ^= std::byte{0x01};
@@ -128,15 +128,15 @@ namespace aloe::testing {
      * IPv4 header.
      */
     [[nodiscard]] inline std::vector<std::byte> with_ipv4_options(std::vector<std::byte> frame, std::size_t words) {
-        const auto begin = frame.begin() + static_cast<std::ptrdiff_t>(device::ethernet_header_size + 20);
+        const auto begin = frame.begin() + static_cast<std::ptrdiff_t>(wire::ethernet_header_size + 20);
         frame.insert(begin, words * 4, std::byte{0x01});
         const std::span<std::byte> header =
-            std::span<std::byte>{frame}.subspan(device::ethernet_header_size, 20 + words * 4);
+            std::span<std::byte>{frame}.subspan(wire::ethernet_header_size, 20 + words * 4);
         header[0] = std::byte{static_cast<std::uint8_t>(0x40 | (5 + words))};
-        device::store_be16(header.subspan(2, 2),
-                           static_cast<std::uint16_t>(device::load_be16(header.subspan(2, 2)) + words * 4));
-        if (device::load_be16(header.subspan(device::ipv4_checksum_offset, 2)) != 0) {
-            device::store_be16(header.subspan(device::ipv4_checksum_offset, 2), device::ipv4_header_checksum(header));
+        wire::store_be16(header.subspan(2, 2),
+                         static_cast<std::uint16_t>(wire::load_be16(header.subspan(2, 2)) + words * 4));
+        if (wire::load_be16(header.subspan(wire::ipv4_checksum_offset, 2)) != 0) {
+            wire::store_be16(header.subspan(wire::ipv4_checksum_offset, 2), wire::ipv4_header_checksum(header));
         }
         return frame;
     }

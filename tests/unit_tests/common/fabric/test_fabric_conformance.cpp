@@ -1,4 +1,5 @@
 #include <aloe/fabric>
+#include <aloe/wire>
 
 #include <device_conformance.hpp>
 #include <gtest/gtest.h>
@@ -14,7 +15,7 @@ namespace aloe::testing {
 
             static fabric::PortConfig single_queue_port() {
                 return {
-                    .mac = device::MacAddress{0x02, 0, 0, 0, 0, 0x01},
+                    .mac = wire::MacAddress{0x02, 0, 0, 0, 0, 0x01},
                       .queues = 1, .pool_size = 64
                 };
             }

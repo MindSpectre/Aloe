@@ -4,6 +4,7 @@
 #include <aloe/device>
 #include <aloe/loop>
 #include <aloe/runtime>
+#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -33,12 +34,12 @@ namespace aloe::testing {
         void on_receive(std::span<Packet> burst) noexcept {
             for (Packet& packet : burst) {
                 const std::span<std::byte> data = packet.data();
-                if (data.size() < device::ethernet_header_size + 2 || !addressed_to_me(data)) {
+                if (data.size() < wire::ethernet_header_size + 2 || !addressed_to_me(data)) {
                     ++dropped_;
                     continue;
                 }
                 std::swap_ranges(data.begin(), data.begin() + 6, data.begin() + 6);
-                device::store_be16(data.last(2), context_->index());
+                wire::store_be16(data.last(2), context_->index());
                 if (queue_->transmit(std::move(packet))) {
                     ++echoed_;
                 } else {
@@ -61,9 +62,9 @@ namespace aloe::testing {
 
     private:
         [[nodiscard]] bool addressed_to_me(const std::span<const std::byte> frame) const noexcept {
-            device::MacAddress::Bytes destination{};
-            std::ranges::copy(frame.first(device::MacAddress::size), destination.begin());
-            return device::MacAddress{destination} == queue_->mac();
+            wire::MacAddress::Bytes destination{};
+            std::ranges::copy(frame.first(wire::MacAddress::size), destination.begin());
+            return wire::MacAddress{destination} == queue_->mac();
         }
 
         runtime::ShardContext* context_;
@@ -75,7 +76,7 @@ namespace aloe::testing {
 
     /// The shard index an echo stamped into a frame.
     [[nodiscard]] inline std::uint16_t stamp_of(const std::span<const std::byte> frame) {
-        return device::load_be16(frame.last(2));
+        return wire::load_be16(frame.last(2));
     }
 
 }  // namespace aloe::testing

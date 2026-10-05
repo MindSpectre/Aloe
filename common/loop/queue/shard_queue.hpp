@@ -9,9 +9,9 @@
 #include <utility>
 #include <vector>
 
-#include <address.hpp>
 #include <counters.hpp>
 #include <device.hpp>
+#include <mac_address.hpp>
 #include <rss.hpp>
 
 
@@ -111,7 +111,7 @@ namespace aloe::loop {
             return queue_;
         }
 
-        [[nodiscard]] device::MacAddress mac() const noexcept {
+        [[nodiscard]] wire::MacAddress mac() const noexcept {
             return device_->mac();
         }
 

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <aloe/device>
+#include <aloe/wire>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -81,7 +82,7 @@ namespace {
         [[nodiscard]] std::uint16_t queue_count() const noexcept {
             return static_cast<std::uint16_t>(counters_.size());
         }
-        [[nodiscard]] aloe::device::MacAddress mac() const noexcept {
+        [[nodiscard]] aloe::wire::MacAddress mac() const noexcept {
             return mac_;
         }
         [[nodiscard]] std::uint16_t mtu() const noexcept {
@@ -116,7 +117,7 @@ namespace {
         }
 
     private:
-        aloe::device::MacAddress mac_{0x02, 0, 0, 0, 0, 1};
+        aloe::wire::MacAddress mac_{0x02, 0, 0, 0, 0, 1};
         aloe::device::Capabilities capabilities_{.max_mtu = 1500};
         aloe::device::RssDescription steering_;
         std::array<aloe::device::QueueCounters, 1> counters_{};

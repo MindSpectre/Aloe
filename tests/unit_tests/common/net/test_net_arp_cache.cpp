@@ -1,4 +1,5 @@
 #include <aloe/net>
+#include <aloe/wire>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -20,14 +21,14 @@ namespace {
         return start + offset;
     }
 
-    constexpr aloe::device::Ipv4Address peer{10, 0, 0, 1};
-    constexpr aloe::device::MacAddress peer_mac{0x02, 0, 0, 0, 0, 0x01};
-    constexpr aloe::device::MacAddress other_mac{0x02, 0, 0, 0, 0, 0x02};
+    constexpr aloe::wire::Ipv4Address peer{10, 0, 0, 1};
+    constexpr aloe::wire::MacAddress peer_mac{0x02, 0, 0, 0, 0, 0x01};
+    constexpr aloe::wire::MacAddress other_mac{0x02, 0, 0, 0, 0, 0x02};
 
     /// Eight slots and a window of eight: every address can reach every slot, so the ninth entry must evict.
     constexpr aloe::net::ArpCacheConfig small{.capacity = 8, .reachable = 60s, .expire = 120s, .request_interval = 1s};
 
-    [[nodiscard]] aloe::device::Ipv4Address host(const std::uint8_t index) {
+    [[nodiscard]] aloe::wire::Ipv4Address host(const std::uint8_t index) {
         return {10, 0, 1, index};
     }
 

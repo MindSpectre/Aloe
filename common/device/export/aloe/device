@@ -2,14 +2,11 @@
 
 /**
  * Public umbrella for the Aloe device module: the Packet and Device concepts,
- * addresses, checksums and receive-side scaling. Consumers link
+ * the packet metadata and receive-side scaling. The addresses and checksums a
+ * device speaks in come from the wire module. Consumers link
  * Aloe::Common::Device and write `#include <aloe/device>`.
  */
 
-#include <address.hpp>
-#include <bytes.hpp>
-#include <checksum.hpp>
 #include <device.hpp>
 #include <packet.hpp>
-#include <protocol.hpp>
 #include <rss.hpp>

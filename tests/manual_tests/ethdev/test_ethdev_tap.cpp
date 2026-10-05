@@ -1,4 +1,5 @@
 #include <aloe/ethdev>
+#include <aloe/wire>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -22,7 +23,7 @@
 namespace {
 
     constexpr std::string_view interface = "aloe-test";
-    constexpr aloe::device::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
+    constexpr aloe::wire::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
     constexpr std::chrono::milliseconds patience{2000};
 
     const auto* const environment =
@@ -72,7 +73,7 @@ TEST(EthdevTap, FramesCrossBetweenTheKernelAndThePort) {
     ASSERT_TRUE(kernel.send(inbound));
     EXPECT_TRUE(port_receives(port, inbound)) << "a frame written on the kernel side reaches the port";
 
-    const auto outbound = aloe::testing::ethernet_frame(aloe::device::MacAddress::broadcast(),
+    const auto outbound = aloe::testing::ethernet_frame(aloe::wire::MacAddress::broadcast(),
                                                         port.mac(),
                                                         aloe::testing::ethertype_experimental,
                                                         aloe::testing::pattern(60, 2));

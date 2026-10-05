@@ -9,7 +9,7 @@
 
 #include <bytes.hpp>
 
-namespace aloe::net {
+namespace aloe::wire {
 
     /// The ICMP types the brick acts on. Any other byte is still representable, and dropped.
     enum class IcmpType : std::uint8_t {
@@ -36,8 +36,8 @@ namespace aloe::net {
         }
         return IcmpHeader{.type     = IcmpType{std::to_integer<std::uint8_t>(message[0])},
                           .code     = std::to_integer<std::uint8_t>(message[1]),
-                          .checksum = device::load_be16(message.subspan(icmp_checksum_offset, 2)),
-                          .rest     = device::load_be32(message.subspan(4, 4))};
+                          .checksum = load_be16(message.subspan(icmp_checksum_offset, 2)),
+                          .rest     = load_be32(message.subspan(4, 4))};
     }
 
     /// Writes `header` into the first 8 bytes of `out`. The checksum covers the whole message and is the caller's to
@@ -46,8 +46,8 @@ namespace aloe::net {
         assert(out.size() >= icmp_header_size);
         out[0] = std::byte{std::to_underlying(header.type)};
         out[1] = std::byte{header.code};
-        device::store_be16(out.subspan(icmp_checksum_offset, 2), header.checksum);
-        device::store_be32(out.subspan(4, 4), header.rest);
+        store_be16(out.subspan(icmp_checksum_offset, 2), header.checksum);
+        store_be32(out.subspan(4, 4), header.rest);
     }
 
-}  // namespace aloe::net
+}  // namespace aloe::wire

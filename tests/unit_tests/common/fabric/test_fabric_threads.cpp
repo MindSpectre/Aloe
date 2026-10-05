@@ -1,4 +1,5 @@
 #include <aloe/fabric>
+#include <aloe/wire>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -19,27 +20,27 @@ namespace {
     constexpr std::uint16_t queues            = 4;
     constexpr std::size_t producers           = 6;
     constexpr std::size_t frames_per_producer = 500;
-    constexpr aloe::device::MacAddress server{0x02, 0, 0, 0, 0, 0xee};
-    constexpr aloe::device::Ipv4Address server_ip{10, 0, 0, 2};
+    constexpr aloe::wire::MacAddress server{0x02, 0, 0, 0, 0, 0xee};
+    constexpr aloe::wire::Ipv4Address server_ip{10, 0, 0, 2};
 
-    aloe::device::MacAddress producer_mac(std::size_t producer) {
+    aloe::wire::MacAddress producer_mac(std::size_t producer) {
         return {0x02, 0, 0, 0, 1, static_cast<std::uint8_t>(producer)};
     }
 
     /// A frame whose payload names its producer and sequence number, on a port that spreads the hash.
     std::vector<std::byte> frame_of(std::size_t producer, std::size_t sequence) {
         std::array<std::byte, 8> payload{};
-        aloe::device::store_be32(std::span<std::byte>{payload}.first(4), static_cast<std::uint32_t>(producer));
-        aloe::device::store_be32(std::span<std::byte>{payload}.subspan(4, 4), static_cast<std::uint32_t>(sequence));
+        aloe::wire::store_be32(std::span<std::byte>{payload}.first(4), static_cast<std::uint32_t>(producer));
+        aloe::wire::store_be32(std::span<std::byte>{payload}.subspan(4, 4), static_cast<std::uint32_t>(sequence));
         return aloe::testing::ipv4_frame(
             {
                 .destination_mac  = server,
                 .source_mac       = producer_mac(producer),
-                .source           = aloe::device::Ipv4Address{10, 0, 1, static_cast<std::uint8_t>(producer)},
+                .source           = aloe::wire::Ipv4Address{10, 0, 1, static_cast<std::uint8_t>(producer)},
                 .destination      = server_ip,
                 .source_port      = static_cast<std::uint16_t>(40000 + sequence),
                 .destination_port = 80,
-                .protocol         = aloe::device::Ipv4Protocol::Udp
+                .protocol         = aloe::wire::Ipv4Protocol::Udp
         },
             payload);
     }
@@ -82,8 +83,8 @@ TEST(FabricThreads, FramesFromManyThreadsArriveExactlyOnce) {
                 const std::lock_guard lock{seen_mutex};
                 for (std::size_t index = 0; index < count; ++index) {
                     const auto payload = burst[index].data().last(8);
-                    EXPECT_TRUE(seen.emplace(aloe::device::load_be32(payload.first(4)),
-                                             aloe::device::load_be32(payload.subspan(4, 4)))
+                    EXPECT_TRUE(seen.emplace(aloe::wire::load_be32(payload.first(4)),
+                                             aloe::wire::load_be32(payload.subspan(4, 4)))
                                     .second)
                         << "a frame arrived twice";
                     burst[index] = aloe::fabric::Packet{};

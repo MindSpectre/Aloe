@@ -25,7 +25,7 @@ namespace aloe::net {
             return config;
         }
 
-        void reset(auto& entry, const device::Ipv4Address address) noexcept {
+        void reset(auto& entry, const wire::Ipv4Address address) noexcept {
             entry.address   = address;
             entry.mac       = {};
             entry.confirmed = {};
@@ -40,11 +40,11 @@ namespace aloe::net {
           shift_{address_bits - static_cast<unsigned>(std::countr_zero(config.capacity))} {
     }
 
-    std::size_t ArpCache::home(const device::Ipv4Address address) const noexcept {
+    std::size_t ArpCache::home(const wire::Ipv4Address address) const noexcept {
         return static_cast<std::size_t>((address.to_uint32() * golden_ratio) >> shift_);
     }
 
-    const ArpCache::Entry* ArpCache::find(const device::Ipv4Address address) const noexcept {
+    const ArpCache::Entry* ArpCache::find(const wire::Ipv4Address address) const noexcept {
         const std::size_t mask  = slots_.size() - 1;
         const std::size_t start = home(address);
         for (std::size_t probe = 0; probe < probe_window; ++probe) {
@@ -59,7 +59,7 @@ namespace aloe::net {
         return nullptr;
     }
 
-    ArpCache::Entry* ArpCache::find(const device::Ipv4Address address) noexcept {
+    ArpCache::Entry* ArpCache::find(const wire::Ipv4Address address) noexcept {
         return const_cast<Entry*>(std::as_const(*this).find(address));  // one search, two constnesses
     }
 
@@ -75,7 +75,7 @@ namespace aloe::net {
         std::unreachable();
     }
 
-    ArpCache::Entry& ArpCache::insert(const device::Ipv4Address address, const core::TimePoint now) noexcept {
+    ArpCache::Entry& ArpCache::insert(const wire::Ipv4Address address, const core::TimePoint now) noexcept {
         const std::size_t mask  = slots_.size() - 1;
         const std::size_t start = home(address);
         Entry* first_expired    = nullptr;
@@ -109,7 +109,7 @@ namespace aloe::net {
         return true;
     }
 
-    ArpCache::Lookup ArpCache::lookup(const device::Ipv4Address address, const core::TimePoint now) noexcept {
+    ArpCache::Lookup ArpCache::lookup(const wire::Ipv4Address address, const core::TimePoint now) noexcept {
         Entry* entry = find(address);
         if (entry == nullptr) {
             entry = &insert(address, now);
@@ -127,9 +127,8 @@ namespace aloe::net {
         return {.mac = std::nullopt, .send_request = request_due(*entry, now)};
     }
 
-    void ArpCache::learn(const device::Ipv4Address address,
-                         const device::MacAddress mac,
-                         const core::TimePoint now) noexcept {
+    void
+    ArpCache::learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
         Entry* entry = find(address);
         if (entry == nullptr) {
             entry = &insert(address, now);
@@ -140,7 +139,7 @@ namespace aloe::net {
         entry->requested.reset();
     }
 
-    bool ArpCache::contains(const device::Ipv4Address address) const noexcept {
+    bool ArpCache::contains(const wire::Ipv4Address address) const noexcept {
         return find(address) != nullptr;
     }
 

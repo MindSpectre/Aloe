@@ -11,9 +11,14 @@
 #include <utility>
 #include <vector>
 
+#include <bytes.hpp>
 #include <checksum.hpp>
 #include <detail/frame.hpp>
+#include <ethernet.hpp>
 #include <fabric.hpp>
+#include <ipv4_checksum.hpp>
+#include <ipv4_protocol.hpp>
+#include <mac_address.hpp>
 
 namespace aloe::fabric {
 
@@ -24,7 +29,7 @@ namespace aloe::fabric {
 
         [[nodiscard]] device::Capabilities capabilities_of(const PortConfig& config) {
             const bool checksums     = config.offloads == EmulatedOffloads::Checksums;
-            const std::size_t larger = std::min<std::size_t>(config.data_capacity - device::ethernet_header_size,
+            const std::size_t larger = std::min<std::size_t>(config.data_capacity - wire::ethernet_header_size,
                                                              std::numeric_limits<std::uint16_t>::max());
             return device::Capabilities{
                 .max_rx_queues  = config.queues,
@@ -93,14 +98,14 @@ namespace aloe::fabric {
             queue       = device::queue_for(steering_, flow);
         }
         if (config_.offloads == EmulatedOffloads::Checksums) {
-            rx.l3 = verdict(device::internet_checksum(ipv4->header(frame)) == 0);
+            rx.l3 = verdict(wire::internet_checksum(ipv4->header(frame)) == 0);
             if (const auto offset = ipv4->l4_checksum_offset()) {
                 const bool udp_without_checksum =
-                    ipv4->protocol == device::Ipv4Protocol::Udp && device::load_be16(frame.subspan(*offset, 2)) == 0;
+                    ipv4->protocol == wire::Ipv4Protocol::Udp && wire::load_be16(frame.subspan(*offset, 2)) == 0;
                 if (!udp_without_checksum) {
-                    const std::uint32_t pseudo = device::ipv4_pseudo_header_sum(
+                    const std::uint32_t pseudo = wire::ipv4_pseudo_header_sum(
                         ipv4->source, ipv4->destination, ipv4->protocol, static_cast<std::uint16_t>(ipv4->l4_length));
-                    rx.l4 = verdict(device::checksum_finish(device::checksum_add(pseudo, ipv4->l4(frame))) == 0);
+                    rx.l4 = verdict(wire::checksum_finish(wire::checksum_add(pseudo, ipv4->l4(frame))) == 0);
                 }
             }
         }
@@ -112,7 +117,7 @@ namespace aloe::fabric {
         const device::RxMetadata rx = inspect(frame, queue);
         Queue& destination          = *queues_[queue];
         const std::lock_guard lock{destination.mutex};
-        if (frame.size() > static_cast<std::size_t>(config_.mtu) + device::ethernet_header_size) {
+        if (frame.size() > static_cast<std::size_t>(config_.mtu) + wire::ethernet_header_size) {
             ++destination.counters.oversized;
             return;
         }
@@ -165,28 +170,28 @@ namespace aloe::fabric {
             return;
         }
         // A card finds the headers by the metadata, not by parsing; a wrong length fails there, so it fails here.
-        assert(tx.l2_length == device::ethernet_header_size &&
+        assert(tx.l2_length == wire::ethernet_header_size &&
                "device::TxMetadata::l2_length is not the Ethernet header");
         assert(tx.l3_length == ipv4->header_length && "device::TxMetadata::l3_length is not the IPv4 header length");
-        assert((tx.fill_l4_checksum != device::L4Checksum::Tcp || ipv4->protocol == device::Ipv4Protocol::Tcp) &&
+        assert((tx.fill_l4_checksum != device::L4Checksum::Tcp || ipv4->protocol == wire::Ipv4Protocol::Tcp) &&
                "a TCP checksum was requested for a segment that is not TCP");
-        assert((tx.fill_l4_checksum != device::L4Checksum::Udp || ipv4->protocol == device::Ipv4Protocol::Udp) &&
+        assert((tx.fill_l4_checksum != device::L4Checksum::Udp || ipv4->protocol == wire::Ipv4Protocol::Udp) &&
                "a UDP checksum was requested for a segment that is not UDP");
-        assert((!tx.fill_ipv4_checksum || device::load_be16(frame.subspan(
-                                              device::ethernet_header_size + device::ipv4_checksum_offset, 2)) == 0) &&
+        assert((!tx.fill_ipv4_checksum ||
+                wire::load_be16(frame.subspan(wire::ethernet_header_size + wire::ipv4_checksum_offset, 2)) == 0) &&
                "an IPv4 checksum fill needs zero in the field");
         if (tx.fill_ipv4_checksum) {
-            const std::uint16_t checksum = device::ipv4_header_checksum(ipv4->header(frame));
-            device::store_be16(frame.subspan(device::ethernet_header_size + device::ipv4_checksum_offset, 2), checksum);
+            const std::uint16_t checksum = wire::ipv4_header_checksum(ipv4->header(frame));
+            wire::store_be16(frame.subspan(wire::ethernet_header_size + wire::ipv4_checksum_offset, 2), checksum);
         }
         if (tx.fill_l4_checksum != device::L4Checksum::None) {
             if (const auto offset = ipv4->l4_checksum_offset()) {
                 // The field holds the pseudo-header sum; summing the segment as it is completes it.
-                std::uint16_t checksum = device::internet_checksum(ipv4->l4(frame));
-                if (ipv4->protocol == device::Ipv4Protocol::Udp && checksum == 0) {
+                std::uint16_t checksum = wire::internet_checksum(ipv4->l4(frame));
+                if (ipv4->protocol == wire::Ipv4Protocol::Udp && checksum == 0) {
                     checksum = 0xffff;  // zero means "no checksum" in UDP
                 }
-                device::store_be16(frame.subspan(*offset, 2), checksum);
+                wire::store_be16(frame.subspan(*offset, 2), checksum);
             }
         }
     }
@@ -200,8 +205,8 @@ namespace aloe::fabric {
             }
             fill_checksums(packet);
             const std::span<const std::byte> frame = packet.data();
-            if (frame.size() < device::ethernet_header_size ||
-                frame.size() > static_cast<std::size_t>(config_.mtu) + device::ethernet_header_size) {
+            if (frame.size() < wire::ethernet_header_size ||
+                frame.size() > static_cast<std::size_t>(config_.mtu) + wire::ethernet_header_size) {
                 const std::lock_guard lock{source.mutex};
                 ++source.counters.oversized;
             } else {
@@ -218,7 +223,7 @@ namespace aloe::fabric {
         if (config.queues == 0) {
             throw std::invalid_argument{"a fabric port needs at least one queue"};
         }
-        if (config.data_capacity < static_cast<std::size_t>(config.mtu) + device::ethernet_header_size) {
+        if (config.data_capacity < static_cast<std::size_t>(config.mtu) + wire::ethernet_header_size) {
             throw std::invalid_argument{"a fabric port's data capacity must hold a maximum-size frame"};
         }
         for (const auto& port : ports_) {
@@ -231,8 +236,8 @@ namespace aloe::fabric {
     }
 
     void Fabric::deliver(const Port& source, const std::span<const std::byte> frame) {
-        assert(frame.size() >= device::ethernet_header_size);
-        const device::MacAddress destination{
+        assert(frame.size() >= wire::ethernet_header_size);
+        const wire::MacAddress destination{
             {frame[0], frame[1], frame[2], frame[3], frame[4], frame[5]},
         };
         if (destination.is_multicast()) {

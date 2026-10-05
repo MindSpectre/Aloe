@@ -8,7 +8,8 @@ API in the spirit of Boost.Beast, for the code that waits. Three goals rank ever
 **predictable low latency on the data path**, **high throughput**, and **long-lived connections**.
 
 This page describes the design the stack is built towards. Today the repository holds the build skeleton, the
-[`core`](core.md), [`execution`](execution.md) and [`log`](log.md) modules, the [device layer](device.md), the [loop bricks](loop.md),
+[`core`](core.md), [`execution`](execution.md) and [`log`](log.md) modules, the protocol formats in
+[`wire`](wire.md), the [device layer](device.md), the [loop bricks](loop.md),
 the [shard runtime](runtime.md) and the IP base ([`net`](net.md)); the rest arrives phase by phase, as the [roadmap](../roadmap.md) lays
 out. Each section says what exists and what is still design.
 
@@ -58,7 +59,7 @@ for (;;) {
     const auto now      = Clock::now();
     const std::size_t n = queue.receive(burst);
     ip.process({burst.data(), n}, now);                              // ARP and ping answered; datagrams sorted per transport
-    tcp.process(ip.received(aloe::device::Ipv4Protocol::Tcp), now);  // segments in; acks and retransmits queued
+    tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);  // segments in; acks and retransmits queued
 
     for (aloe::tcp::Connection& c : tcp.events()) {                  // intrusive list: readable, connected, closed, writable
         if (c.readable()) {
@@ -108,7 +109,7 @@ The seam between IPv4 and the transports is a list: `net::Ipv4::process` sorts t
 accepts into one list per transport, and the loop hands `received(Tcp)` to TCP and `received(Udp)` to
 UDP. IPv4 calls nobody above it. ARP is private to the brick, as it is to the kernel.
 
-Protocol headers include `<aloe/core>`, `<aloe/loop>` and `<aloe/device>` and never `<aloe/execution>` or
+Protocol headers include `<aloe/core>`, `<aloe/wire>`, `<aloe/loop>` and `<aloe/device>` and never `<aloe/execution>` or
 `<aloe/log>`. No target below the runtime links `execution` or `log`, so stdexec and quill stay out of the
 data path by construction, not by review.
 

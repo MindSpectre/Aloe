@@ -1,4 +1,5 @@
 #include <aloe/net>
+#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -45,20 +46,20 @@ TEST_P(NetIcmp, AnEchoRequestGetsAReplyWithBothChecksumsRight) {
     ASSERT_TRUE(reply.ipv4.has_value());
     EXPECT_EQ(reply.ipv4->source, stack_ip);
     EXPECT_EQ(reply.ipv4->destination, harness_ip);
-    EXPECT_EQ(reply.ipv4->protocol, aloe::device::Ipv4Protocol::Icmp);
+    EXPECT_EQ(reply.ipv4->protocol, aloe::wire::Ipv4Protocol::Icmp);
     EXPECT_EQ(reply.ipv4->header_length, 20);
     EXPECT_EQ(reply.ipv4->total_length, 20 + 8 + 56);
     EXPECT_EQ(reply.ipv4->ttl, 64);
     EXPECT_TRUE(reply.ipv4->dont_fragment);
     EXPECT_FALSE(reply.ipv4->is_fragment());
     EXPECT_EQ(reply.ipv4->identification, 0) << "queue 0 times 4096, first datagram";
-    EXPECT_EQ(aloe::device::internet_checksum(reply.ipv4_header), 0)
+    EXPECT_EQ(aloe::wire::internet_checksum(reply.ipv4_header), 0)
         << "header checksum right, by " << (offloads() ? "the device" : "software");
     ASSERT_TRUE(reply.icmp.has_value());
-    EXPECT_EQ(reply.icmp->type, aloe::net::IcmpType::EchoReply);
+    EXPECT_EQ(reply.icmp->type, aloe::wire::IcmpType::EchoReply);
     EXPECT_EQ(reply.icmp->code, 0);
     EXPECT_EQ(reply.icmp->rest, (std::uint32_t{0x1234} << 16U) | 1U);
-    EXPECT_EQ(aloe::device::internet_checksum(reply.l4), 0) << "ICMP checksum right";
+    EXPECT_EQ(aloe::wire::internet_checksum(reply.l4), 0) << "ICMP checksum right";
     EXPECT_EQ(std::vector<std::byte>(reply.l4.begin() + 8, reply.l4.end()), payload);
     EXPECT_TRUE(burst_empty());
     EXPECT_EQ(ip_.counters().echo_replies_sent, 1);
@@ -99,8 +100,8 @@ TEST_P(NetIcmp, AnEchoRequestWithOptionsGetsAReplyWithATwentyByteHeader) {
     ASSERT_TRUE(reply.ipv4.has_value());
     EXPECT_EQ(reply.ipv4->header_length, 20) << "options are never sent";
     EXPECT_EQ(reply.ipv4->total_length, 20 + 8 + 16);
-    EXPECT_EQ(aloe::device::internet_checksum(reply.ipv4_header), 0);
-    EXPECT_EQ(aloe::device::internet_checksum(reply.l4), 0);
+    EXPECT_EQ(aloe::wire::internet_checksum(reply.ipv4_header), 0);
+    EXPECT_EQ(aloe::wire::internet_checksum(reply.l4), 0);
     EXPECT_EQ(std::vector<std::byte>(reply.l4.begin() + 8, reply.l4.end()), payload) << "the message moved up intact";
 }
 
@@ -115,7 +116,7 @@ TEST_P(NetIcmp, AShortEchoPaddedToSixtyBytesGetsAReplyWithTheRightTotalLength) {
     ASSERT_TRUE(reply.ipv4.has_value());
     EXPECT_EQ(reply.ipv4->total_length, 20 + 8 + 2) << "the padding is not part of the datagram";
     ASSERT_EQ(reply.l4.size(), 10U);
-    EXPECT_EQ(aloe::device::internet_checksum(reply.l4), 0) << "the checksum covers the message, not the padding";
+    EXPECT_EQ(aloe::wire::internet_checksum(reply.l4), 0) << "the checksum covers the message, not the padding";
     EXPECT_EQ(std::vector<std::byte>(reply.l4.begin() + 8, reply.l4.end()), payload);
 }
 
@@ -130,13 +131,13 @@ TEST_P(NetIcmp, ABadIcmpChecksumIsDropped) {
 
 TEST_P(NetIcmp, ABroadcastEchoAndOtherTypesAreDropped) {
     aloe::testing::EchoSpec broadcast = echo();
-    broadcast.destination_mac         = aloe::device::MacAddress::broadcast();
+    broadcast.destination_mac         = aloe::wire::MacAddress::broadcast();
     broadcast.destination             = {10, 0, 0, 255};
     inject(aloe::testing::icmp_echo_frame(broadcast, aloe::testing::pattern(8)));
     EXPECT_EQ(ip_.counters().dropped_icmp, 1) << "as the kernel does by default";
 
     aloe::testing::EchoSpec reply_in = echo();
-    reply_in.type                    = aloe::net::IcmpType::EchoReply;
+    reply_in.type                    = aloe::wire::IcmpType::EchoReply;
     inject(aloe::testing::icmp_echo_frame(reply_in, aloe::testing::pattern(8)));
     EXPECT_EQ(ip_.counters().dropped_icmp, 2);
     EXPECT_TRUE(harness_received().empty());
@@ -148,7 +149,7 @@ TEST_P(NetIcmp, AShortIcmpMessageIsDropped) {
                                        .source_mac      = harness_mac,
                                        .source          = harness_ip,
                                        .destination     = stack_ip,
-                                       .protocol        = aloe::device::Ipv4Protocol::Icmp};
+                                       .protocol        = aloe::wire::Ipv4Protocol::Icmp};
     inject(aloe::testing::ipv4_frame(stub, aloe::testing::pattern(4)));  // four bytes where eight are the minimum
     EXPECT_EQ(ip_.counters().dropped_bad_header, 1);
     EXPECT_TRUE(harness_received().empty());

@@ -1,16 +1,19 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <cassert>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <format>
 #include <optional>
 #include <ostream>
+#include <span>
 #include <string>
 #include <string_view>
 
-namespace aloe::device {
+namespace aloe::wire {
     namespace detail {
         [[nodiscard]] constexpr std::optional<unsigned> hex_digit(const char character) noexcept {
             if (character >= '0' && character <= '9') {
@@ -78,6 +81,20 @@ namespace aloe::device {
             return bytes_;
         }
 
+        /// Reads an address from the first `size` bytes, as the wire carries it.
+        [[nodiscard]] static constexpr MacAddress load(const std::span<const std::byte> bytes) noexcept {
+            assert(bytes.size() >= size);
+            Bytes raw{};
+            std::ranges::copy(bytes.first(size), raw.begin());
+            return MacAddress{raw};
+        }
+
+        /// Writes the address into the first `size` bytes of `out`.
+        constexpr void store(const std::span<std::byte> out) const noexcept {
+            assert(out.size() >= size);
+            std::ranges::copy(bytes_, out.begin());
+        }
+
         [[nodiscard]] constexpr bool is_broadcast() const noexcept {
             return *this == broadcast();
         }
@@ -108,109 +125,11 @@ namespace aloe::device {
     private:
         Bytes bytes_{};
     };
-
-    /**
-     * @brief A 32-bit IPv4 address, stored in network byte order.
-     */
-    class Ipv4Address {
-    public:
-        static constexpr std::size_t size = 4;
-        using Bytes                       = std::array<std::byte, size>;
-
-        constexpr Ipv4Address() = default;
-
-        constexpr explicit Ipv4Address(const Bytes& bytes) noexcept
-            : bytes_{bytes} {
-        }
-
-        constexpr Ipv4Address(const std::uint8_t a,
-                              const std::uint8_t b,
-                              const std::uint8_t c,
-                              const std::uint8_t d) noexcept
-            : bytes_{std::byte{a}, std::byte{b}, std::byte{c}, std::byte{d}} {
-        }
-
-        /// From a host-order value: 0xC0A80001 is 192.168.0.1.
-        [[nodiscard]] static constexpr Ipv4Address from_uint32(const std::uint32_t value) noexcept {
-            return {static_cast<std::uint8_t>(value >> 24U),
-                    static_cast<std::uint8_t>(value >> 16U),
-                    static_cast<std::uint8_t>(value >> 8U),
-                    static_cast<std::uint8_t>(value)};
-        }
-
-        /// Parses dotted decimal, `192.168.0.1`. Anything else yields nothing.
-        [[nodiscard]] static constexpr std::optional<Ipv4Address> parse(const std::string_view text) noexcept {
-            Bytes bytes{};
-            std::size_t index = 0;
-            unsigned value    = 0;
-            unsigned digits   = 0;
-            for (const char character : text) {
-                if (character >= '0' && character <= '9') {
-                    value = value * 10U + static_cast<unsigned>(character - '0');
-                    ++digits;
-                    if (digits > 3 || value > 255U) {
-                        return std::nullopt;
-                    }
-                } else if (character == '.') {
-                    if (digits == 0 || index == size - 1) {
-                        return std::nullopt;
-                    }
-                    bytes[index++] = std::byte{static_cast<std::uint8_t>(value)};
-                    value          = 0;
-                    digits         = 0;
-                } else {
-                    return std::nullopt;
-                }
-            }
-            if (digits == 0 || index != size - 1) {
-                return std::nullopt;
-            }
-            bytes[index] = std::byte{static_cast<std::uint8_t>(value)};
-            return Ipv4Address{bytes};
-        }
-
-        [[nodiscard]] constexpr const Bytes& bytes() const noexcept {
-            return bytes_;
-        }
-
-        /// As a host-order value: 192.168.0.1 is 0xC0A80001.
-        [[nodiscard]] constexpr std::uint32_t to_uint32() const noexcept {
-            return (std::to_integer<std::uint32_t>(bytes_[0]) << 24U) |
-                   (std::to_integer<std::uint32_t>(bytes_[1]) << 16U) |
-                   (std::to_integer<std::uint32_t>(bytes_[2]) << 8U) | std::to_integer<std::uint32_t>(bytes_[3]);
-        }
-
-        [[nodiscard]] std::string to_string() const {
-            return std::format("{}.{}.{}.{}",
-                               std::to_integer<unsigned>(bytes_[0]),
-                               std::to_integer<unsigned>(bytes_[1]),
-                               std::to_integer<unsigned>(bytes_[2]),
-                               std::to_integer<unsigned>(bytes_[3]));
-        }
-
-        friend constexpr bool operator==(const Ipv4Address&, const Ipv4Address&) noexcept = default;
-
-        friend constexpr std::strong_ordering operator<=>(const Ipv4Address&, const Ipv4Address&) noexcept = default;
-
-        friend std::ostream& operator<<(std::ostream& stream, const Ipv4Address& address) {
-            return stream << address.to_string();
-        }
-
-    private:
-        Bytes bytes_{};
-    };
-}  // namespace aloe::device
+}  // namespace aloe::wire
 
 template <>
-struct std::formatter<aloe::device::MacAddress> : std::formatter<std::string_view> {
-    auto format(const aloe::device::MacAddress& address, auto& context) const {
-        return std::formatter<std::string_view>::format(address.to_string(), context);
-    }
-};
-
-template <>
-struct std::formatter<aloe::device::Ipv4Address> : std::formatter<std::string_view> {
-    auto format(const aloe::device::Ipv4Address& address, auto& context) const {
+struct std::formatter<aloe::wire::MacAddress> : std::formatter<std::string_view> {
+    auto format(const aloe::wire::MacAddress& address, auto& context) const {
         return std::formatter<std::string_view>::format(address.to_string(), context);
     }
 };

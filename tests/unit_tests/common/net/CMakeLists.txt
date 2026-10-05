@@ -1,8 +1,7 @@
 ##############################################################################
-# Test Net: the wire formats, the ARP cache and the brick over a fabric
+# Test Net: the ARP cache and the brick over a fabric
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Net
-        test_net_wire.cpp
         test_net_arp_cache.cpp
         test_net_receive.cpp
         test_net_arp.cpp

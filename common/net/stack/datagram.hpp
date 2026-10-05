@@ -5,9 +5,10 @@
 #include <cstdint>
 #include <span>
 
-#include <address.hpp>
+#include <ipv4_address.hpp>
+#include <ipv4_protocol.hpp>
+#include <mac_address.hpp>
 #include <packet.hpp>
-#include <protocol.hpp>
 
 namespace aloe::net {
 
@@ -20,9 +21,9 @@ namespace aloe::net {
     template <device::IsPacket Packet>
     struct Datagram {
         Packet packet{};
-        device::Ipv4Address source{};
-        device::Ipv4Address destination{};
-        device::Ipv4Protocol protocol       = device::Ipv4Protocol::Icmp;
+        wire::Ipv4Address source{};
+        wire::Ipv4Address destination{};
+        wire::Ipv4Protocol protocol         = wire::Ipv4Protocol::Icmp;
         std::uint8_t l3_offset              = 0;  ///< Where the IPv4 header starts: 14 today.
         std::uint8_t l3_length              = 0;  ///< 20 to 60; options are accepted and left in place.
         std::uint16_t l4_length             = 0;  ///< From the total length, never from the frame.
@@ -37,8 +38,8 @@ namespace aloe::net {
 
     /// A mapping learned from an ARP frame, reported so a loop can forward it to the other shards.
     struct ArpResolution {
-        device::Ipv4Address address{};
-        device::MacAddress mac{};
+        wire::Ipv4Address address{};
+        wire::MacAddress mac{};
 
         friend constexpr bool operator==(const ArpResolution&, const ArpResolution&) noexcept = default;
     };

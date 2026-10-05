@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <aloe/core>
 #include <aloe/net>
+#include <aloe/wire>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -16,7 +17,6 @@
 namespace {
 
     using namespace std::chrono_literals;
-    using aloe::device::Ipv4Protocol;
     using aloe::device::L4Checksum;
     using aloe::net::SendError;
     using aloe::testing::far_ip;
@@ -25,6 +25,7 @@ namespace {
     using aloe::testing::harness_mac;
     using aloe::testing::stack_ip;
     using aloe::testing::stack_mac;
+    using aloe::wire::Ipv4Protocol;
 
     /// A device that takes nothing on transmit. The fabric port under it never refuses, so this does.
     class StuckPort {
@@ -39,7 +40,7 @@ namespace {
             return inner_->queue_count();
         }
 
-        [[nodiscard]] aloe::device::MacAddress mac() const noexcept {
+        [[nodiscard]] aloe::wire::MacAddress mac() const noexcept {
             return inner_->mac();
         }
 
@@ -91,10 +92,10 @@ namespace {
             EXPECT_TRUE(packet.has_value());
             const auto room = packet->append(8 + payload.size());
             EXPECT_TRUE(room.has_value());
-            aloe::device::store_be16(room->subspan(0, 2), 40000);
-            aloe::device::store_be16(room->subspan(2, 2), 80);
-            aloe::device::store_be16(room->subspan(4, 2), static_cast<std::uint16_t>(8 + payload.size()));
-            aloe::device::store_be16(room->subspan(6, 2), 0);
+            aloe::wire::store_be16(room->subspan(0, 2), 40000);
+            aloe::wire::store_be16(room->subspan(2, 2), 80);
+            aloe::wire::store_be16(room->subspan(4, 2), static_cast<std::uint16_t>(8 + payload.size()));
+            aloe::wire::store_be16(room->subspan(6, 2), 0);
             std::ranges::copy(payload, room->begin() + 8);
             return std::move(*packet);
         }
@@ -106,16 +107,16 @@ namespace {
             const auto room = packet->append(20 + payload.size());
             EXPECT_TRUE(room.has_value());
             std::ranges::fill(room->first(20), std::byte{0});
-            aloe::device::store_be16(room->subspan(0, 2), 40000);
-            aloe::device::store_be16(room->subspan(2, 2), 80);
+            aloe::wire::store_be16(room->subspan(0, 2), 40000);
+            aloe::wire::store_be16(room->subspan(2, 2), 80);
             (*room)[12] = std::byte{0x50};  // data offset: five words
             (*room)[13] = std::byte{0x10};  // ACK
-            aloe::device::store_be16(room->subspan(14, 2), 0xffff);
+            aloe::wire::store_be16(room->subspan(14, 2), 0xffff);
             std::ranges::copy(payload, room->begin() + 20);
             return std::move(*packet);
         }
 
-        [[nodiscard]] static aloe::net::SendRequest udp_to(const aloe::device::Ipv4Address destination) {
+        [[nodiscard]] static aloe::net::SendRequest udp_to(const aloe::wire::Ipv4Address destination) {
             return {.destination = destination, .protocol = Ipv4Protocol::Udp, .checksum = L4Checksum::Udp};
         }
     };
@@ -148,10 +149,10 @@ TEST_P(NetSend, AnOnSubnetSendCarriesBothHeadersAndBothChecksums) {
     EXPECT_EQ(sent.ipv4->ttl, 64);
     EXPECT_TRUE(sent.ipv4->dont_fragment);
     EXPECT_EQ(sent.ipv4->identification, 0);
-    EXPECT_EQ(aloe::device::internet_checksum(sent.ipv4_header), 0);
+    EXPECT_EQ(aloe::wire::internet_checksum(sent.ipv4_header), 0);
     EXPECT_EQ(aloe::testing::l4_checksum_residue(*sent.ipv4, sent.l4), 0)
         << "UDP checksum right, by " << (offloads() ? "the device from the pseudo-header sum" : "software");
-    EXPECT_EQ(aloe::device::load_be16(std::span<const std::byte>{sent.l4}.first(2)), 40000);
+    EXPECT_EQ(aloe::wire::load_be16(std::span<const std::byte>{sent.l4}.first(2)), 40000);
     EXPECT_EQ(std::vector<std::byte>(sent.l4.begin() + 8, sent.l4.end()), payload);
     EXPECT_EQ(ip_.counters().datagrams_sent, 1);
     EXPECT_EQ(ip_.counters().arp_requests_sent, 0);
@@ -170,14 +171,14 @@ TEST_P(NetSend, ATcpSegmentGetsItsChecksumAtOffsetSixteen) {
     EXPECT_EQ(sent.ipv4->protocol, Ipv4Protocol::Tcp);
     EXPECT_EQ(sent.l4[12], std::byte{0x50});
     EXPECT_EQ(aloe::testing::l4_checksum_residue(*sent.ipv4, sent.l4), 0);
-    EXPECT_NE(aloe::device::load_be16(std::span<const std::byte>{sent.l4}.subspan(16, 2)), 0)
+    EXPECT_NE(aloe::wire::load_be16(std::span<const std::byte>{sent.l4}.subspan(16, 2)), 0)
         << "something was written there";
 }
 
 TEST_P(NetSend, WithoutAFillRequestTheL4FieldIsLeftAlone) {
     ip_.learn(harness_ip, harness_mac, now_);
     Packet packet = udp_segment(aloe::testing::pattern(4));
-    aloe::device::store_be16(packet.data().subspan(6, 2), 0xabcd);
+    aloe::wire::store_be16(packet.data().subspan(6, 2), 0xabcd);
     ASSERT_TRUE(ip_.send(std::move(packet),
                          {.destination = harness_ip, .protocol = Ipv4Protocol::Udp, .checksum = L4Checksum::None},
                          now_)
@@ -185,8 +186,8 @@ TEST_P(NetSend, WithoutAFillRequestTheL4FieldIsLeftAlone) {
     const auto frames = harness_received();
     ASSERT_EQ(frames.size(), 1);
     const auto sent = aloe::testing::parse_frame(frames[0]);
-    EXPECT_EQ(aloe::device::load_be16(std::span<const std::byte>{sent.l4}.subspan(6, 2)), 0xabcd);
-    EXPECT_EQ(aloe::device::internet_checksum(sent.ipv4_header), 0) << "the IPv4 checksum is always filled";
+    EXPECT_EQ(aloe::wire::load_be16(std::span<const std::byte>{sent.l4}.subspan(6, 2)), 0xabcd);
+    EXPECT_EQ(aloe::wire::internet_checksum(sent.ipv4_header), 0) << "the IPv4 checksum is always filled";
 }
 
 TEST_P(NetSend, AnOffSubnetSendGoesThroughTheGatewayOnceItResolves) {
@@ -199,7 +200,7 @@ TEST_P(NetSend, AnOffSubnetSendGoesThroughTheGatewayOnceItResolves) {
     const auto request = aloe::testing::parse_frame(frames[0]);
     ASSERT_TRUE(request.arp.has_value());
     EXPECT_EQ(request.arp->target_ip, gateway_ip) << "the next hop is the gateway";
-    EXPECT_EQ(request.ethernet.destination, aloe::device::MacAddress::broadcast());
+    EXPECT_EQ(request.ethernet.destination, aloe::wire::MacAddress::broadcast());
 
     // The harness plays the gateway: it answers for gateway_ip with its own MAC, so the fabric delivers to it.
     inject(aloe::testing::arp_frame(aloe::testing::arp_reply(harness_mac, gateway_ip, stack_mac, stack_ip), stack_mac));
@@ -249,10 +250,10 @@ TEST_P(NetSend, BroadcastsAndMulticastGoOutWithoutArp) {
     ASSERT_TRUE(ip_.send(udp_segment(aloe::testing::pattern(4)), udp_to({239, 1, 2, 3}), now_).has_value());
     const auto frames = harness_received();
     ASSERT_EQ(frames.size(), 3) << "the fabric delivers broadcast and multicast to every other port";
-    EXPECT_EQ(aloe::testing::parse_frame(frames[0]).ethernet.destination, aloe::device::MacAddress::broadcast());
-    EXPECT_EQ(aloe::testing::parse_frame(frames[1]).ethernet.destination, aloe::device::MacAddress::broadcast());
+    EXPECT_EQ(aloe::testing::parse_frame(frames[0]).ethernet.destination, aloe::wire::MacAddress::broadcast());
+    EXPECT_EQ(aloe::testing::parse_frame(frames[1]).ethernet.destination, aloe::wire::MacAddress::broadcast());
     EXPECT_EQ(aloe::testing::parse_frame(frames[2]).ethernet.destination,
-              aloe::device::MacAddress(0x01, 0x00, 0x5e, 0x01, 0x02, 0x03));
+              aloe::wire::MacAddress(0x01, 0x00, 0x5e, 0x01, 0x02, 0x03));
     EXPECT_EQ(ip_.counters().arp_requests_sent, 0);
     EXPECT_EQ(ip_.counters().datagrams_sent, 3);
 }

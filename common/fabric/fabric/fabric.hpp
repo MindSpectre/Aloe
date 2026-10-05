@@ -9,9 +9,9 @@
 #include <span>
 #include <vector>
 
-#include <address.hpp>
 #include <device.hpp>
 #include <fabric_packet.hpp>
+#include <mac_address.hpp>
 #include <rss.hpp>
 
 namespace aloe::fabric {
@@ -25,7 +25,7 @@ namespace aloe::fabric {
     };
 
     struct PortConfig {
-        device::MacAddress mac;
+        wire::MacAddress mac;
         std::uint16_t queues      = 1;
         std::uint16_t mtu         = 1500;
         std::size_t data_capacity = 2048;  ///< Bytes of data a packet holds; at least `mtu + 14`.
@@ -61,7 +61,7 @@ namespace aloe::fabric {
             return config_.queues;
         }
 
-        [[nodiscard]] device::MacAddress mac() const noexcept {
+        [[nodiscard]] wire::MacAddress mac() const noexcept {
             return config_.mac;
         }
 

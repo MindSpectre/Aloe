@@ -6,7 +6,7 @@ transports. It answers ARP and ping, sorts incoming IPv4 datagrams into one list
 layer above to drain, and sends a transport's segment by routing it, finding the next hop's MAC, writing
 both headers and handing the frame to the queue. Everything is reached through the umbrella
 `#include <aloe/net>` (`export/aloe/net`), and targets link `Aloe::Common::Net`. It depends on
-[`loop`](loop.md), [`device`](device.md) and [`core`](core.md), and not on [`execution`](execution.md) or
+[`loop`](loop.md), [`device`](device.md), [`wire`](wire.md) and [`core`](core.md), and not on [`execution`](execution.md) or
 [`log`](log.md): no header
 here names the asynchronous model, logs, or reads a clock.
 
@@ -34,9 +34,8 @@ here names the asynchronous model, logs, or reads a clock.
   with bounded linear probing, aged lazily against the stamp the caller passes. Reachable, then stale with
   a background refresh, then expired.
 - **`aloe::net::Ipv4Counters`** -- what happened, one counter per drop reason and per send error.
-- **The wire formats** -- `EthernetHeader`, `ArpPacket`, `Ipv4Header`, `IcmpHeader`, each with a
-  `parse_*` returning `std::optional` and a `write_*` over byte spans, all `constexpr`. `multicast_mac`
-  maps a group address to its MAC.
+- **The wire formats** -- `EthernetHeader`, `ArpPacket`, `Ipv4Header`, `IcmpHeader` and the addresses
+  are the [wire](wire.md) module's; the brick reads and writes them and holds none of its own.
 
 ## Usage
 
@@ -73,8 +72,8 @@ aloe::tcp::Stack<aloe::net::Ipv4<aloe::ethdev::Port>> tcp{ip, wheel, tcp_config}
 aloe::udp::Stack<aloe::net::Ipv4<aloe::ethdev::Port>> udp{ip, udp_config};
 
 ip.process(std::span{burst}.first(received), now);
-tcp.process(ip.received(aloe::device::Ipv4Protocol::Tcp), now);
-udp.process(ip.received(aloe::device::Ipv4Protocol::Udp), now);
+tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);
+udp.process(ip.received(aloe::wire::Ipv4Protocol::Udp), now);
 ```
 
 A transport sends by appending its segment to a packet from `allocate()`, with the checksum field zero,
@@ -83,7 +82,7 @@ and asking the brick to fill it:
 ```cpp
 auto packet = ip.allocate();
 // append the UDP header and payload to *packet ...
-const auto sent = ip.send(std::move(*packet), {.destination = peer, .protocol = aloe::device::Ipv4Protocol::Udp,
+const auto sent = ip.send(std::move(*packet), {.destination = peer, .protocol = aloe::wire::Ipv4Protocol::Udp,
                                                 .checksum = aloe::device::L4Checksum::Udp}, now);
 if (!sent) {
     // sent.error(): NoRoute, Unresolved (a request is out: retry later), Oversized, Refused. The packet is yours again.

@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <span>
 
-namespace aloe::device {
+namespace aloe::wire {
 
     /// Reads a big-endian 16-bit value from the first two bytes.
     [[nodiscard]] constexpr std::uint16_t load_be16(const std::span<const std::byte> bytes) noexcept {
@@ -37,4 +37,4 @@ namespace aloe::device {
         bytes[3] = std::byte{static_cast<std::uint8_t>(value)};
     }
 
-}  // namespace aloe::device
+}  // namespace aloe::wire

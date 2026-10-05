@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <aloe/fabric>
 #include <aloe/runtime>
+#include <aloe/wire>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -21,8 +22,8 @@ namespace {
     using TimePoint = aloe::core::TimePoint;
 
     constexpr TimePoint start{};
-    constexpr aloe::device::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
-    constexpr aloe::device::MacAddress client{0x02, 0, 0, 0, 0, 0x02};
+    constexpr aloe::wire::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
+    constexpr aloe::wire::MacAddress client{0x02, 0, 0, 0, 0, 0x02};
 
     /// A device that accepts at most `accept` packets per transmit call; everything else is the port's.
     class Throttled {
@@ -39,7 +40,7 @@ namespace {
             return port_->queue_count();
         }
 
-        [[nodiscard]] aloe::device::MacAddress mac() const noexcept {
+        [[nodiscard]] aloe::wire::MacAddress mac() const noexcept {
             return port_->mac();
         }
 

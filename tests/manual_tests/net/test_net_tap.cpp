@@ -2,6 +2,7 @@
 #include <aloe/ethdev>
 #include <aloe/loop>
 #include <aloe/net>
+#include <aloe/wire>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -36,9 +37,9 @@ namespace {
     using namespace std::chrono_literals;
 
     constexpr std::string_view interface = "aloe-ping";
-    constexpr aloe::device::Ipv4Address kernel_ip{10, 77, 0, 1};
-    constexpr aloe::device::Ipv4Address stack_ip{10, 77, 0, 2};
-    constexpr aloe::device::Ipv4Address netmask{255, 255, 255, 0};
+    constexpr aloe::wire::Ipv4Address kernel_ip{10, 77, 0, 1};
+    constexpr aloe::wire::Ipv4Address stack_ip{10, 77, 0, 2};
+    constexpr aloe::wire::Ipv4Address netmask{255, 255, 255, 0};
     constexpr std::uint16_t identifier = 0xa10e;
     constexpr auto patience            = 2000ms;
 
@@ -47,17 +48,17 @@ namespace {
 
     /// Gives the kernel end of the tap an address and brings it up: `ip addr add` and `ip link set up`, by ioctl.
     void configure_interface(const std::string_view name,
-                             const aloe::device::Ipv4Address address,
-                             const aloe::device::Ipv4Address mask) {
+                             const aloe::wire::Ipv4Address address,
+                             const aloe::wire::Ipv4Address mask) {
         const int fd = socket(AF_INET, SOCK_DGRAM, 0);
         ASSERT_GE(fd, 0) << std::strerror(errno);
         ifreq request{};
         std::strncpy(request.ifr_name, std::string{name}.c_str(), IFNAMSIZ - 1);
         auto& in      = *reinterpret_cast<sockaddr_in*>(&request.ifr_addr);
         in.sin_family = AF_INET;
-        std::memcpy(&in.sin_addr, address.bytes().data(), aloe::device::Ipv4Address::size);
+        std::memcpy(&in.sin_addr, address.bytes().data(), aloe::wire::Ipv4Address::size);
         EXPECT_EQ(ioctl(fd, SIOCSIFADDR, &request), 0) << "SIOCSIFADDR: " << std::strerror(errno);
-        std::memcpy(&in.sin_addr, mask.bytes().data(), aloe::device::Ipv4Address::size);
+        std::memcpy(&in.sin_addr, mask.bytes().data(), aloe::wire::Ipv4Address::size);
         EXPECT_EQ(ioctl(fd, SIOCSIFNETMASK, &request), 0) << "SIOCSIFNETMASK: " << std::strerror(errno);
         EXPECT_EQ(ioctl(fd, SIOCGIFFLAGS, &request), 0) << "SIOCGIFFLAGS: " << std::strerror(errno);
         request.ifr_flags = static_cast<short>(request.ifr_flags | IFF_UP | IFF_RUNNING);
@@ -122,14 +123,14 @@ namespace {
     /// An echo request as `ping` sends it: 8-byte header, 56 bytes of payload, our identifier, sequence 1.
     [[nodiscard]] std::array<std::byte, 64> echo_request(const std::span<const std::byte> payload) {
         std::array<std::byte, 64> message{};
-        aloe::net::write_icmp(message,
-                              {.type     = aloe::net::IcmpType::EchoRequest,
-                               .code     = 0,
-                               .checksum = 0,
-                               .rest     = (static_cast<std::uint32_t>(identifier) << 16U) | 1U});
-        std::ranges::copy(payload, message.begin() + static_cast<std::ptrdiff_t>(aloe::net::icmp_header_size));
-        aloe::device::store_be16(std::span<std::byte>{message}.subspan(aloe::net::icmp_checksum_offset, 2),
-                                 aloe::device::internet_checksum(message));
+        aloe::wire::write_icmp(message,
+                               {.type     = aloe::wire::IcmpType::EchoRequest,
+                                .code     = 0,
+                                .checksum = 0,
+                                .rest     = (static_cast<std::uint32_t>(identifier) << 16U) | 1U});
+        std::ranges::copy(payload, message.begin() + static_cast<std::ptrdiff_t>(aloe::wire::icmp_header_size));
+        aloe::wire::store_be16(std::span<std::byte>{message}.subspan(aloe::wire::icmp_checksum_offset, 2),
+                               aloe::wire::internet_checksum(message));
         return message;
     }
 
@@ -151,7 +152,7 @@ TEST(NetTap, TheKernelPingsTheBrick) {
     const auto message = echo_request(payload);
     sockaddr_in to{};
     to.sin_family = AF_INET;
-    std::memcpy(&to.sin_addr, stack_ip.bytes().data(), aloe::device::Ipv4Address::size);
+    std::memcpy(&to.sin_addr, stack_ip.bytes().data(), aloe::wire::Ipv4Address::size);
     const ssize_t sent =
         sendto(fd, message.data(), message.size(), 0, reinterpret_cast<const sockaddr*>(&to), sizeof(to));
     ASSERT_EQ(sent, static_cast<ssize_t>(message.size())) << std::strerror(errno);
@@ -173,18 +174,18 @@ TEST(NetTap, TheKernelPingsTheBrick) {
             break;
         }
         const std::span<const std::byte> datagram{buffer.data(), static_cast<std::size_t>(got)};
-        const auto ip = aloe::net::parse_ipv4(datagram);
-        if (!ip || ip->source != stack_ip || ip->protocol != aloe::device::Ipv4Protocol::Icmp) {
+        const auto ip = aloe::wire::parse_ipv4(datagram);
+        if (!ip || ip->source != stack_ip || ip->protocol != aloe::wire::Ipv4Protocol::Icmp) {
             continue;
         }
         const std::span<const std::byte> reply =
             datagram.subspan(ip->header_length, ip->total_length - ip->header_length);
-        const auto icmp = aloe::net::parse_icmp(reply);
-        if (!icmp || icmp->type != aloe::net::IcmpType::EchoReply || (icmp->rest >> 16U) != identifier) {
+        const auto icmp = aloe::wire::parse_icmp(reply);
+        if (!icmp || icmp->type != aloe::wire::IcmpType::EchoReply || (icmp->rest >> 16U) != identifier) {
             continue;
         }
         EXPECT_EQ(icmp->rest & 0xffffU, 1U);
-        EXPECT_EQ(aloe::device::internet_checksum(reply), 0);
+        EXPECT_EQ(aloe::wire::internet_checksum(reply), 0);
         EXPECT_EQ(std::vector<std::byte>(reply.begin() + 8, reply.end()), payload);
         answered = true;
     }

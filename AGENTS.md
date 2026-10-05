@@ -6,7 +6,8 @@ Aloe is a C++26 userspace TCP/IP stack on DPDK for Linux. It is two products:
 bricks, plain calls a program writes its own loop over, and a runtime built only
 from the bricks that writes the loop for you and offers senders and receivers
 (stdexec) for the code that waits. The repository holds the build skeleton, the
-device layer (the packet and device concepts, an in-memory backend `fabric` for
+foundation (`core`, with `execution` and `log` beside it), the protocol formats
+(`wire`), the device layer (the packet and device concepts, an in-memory backend `fabric` for
 tests and the DPDK backend `ethdev`), the loop bricks (`loop`), the shard
 runtime (`runtime`) and the IP base (`net`: Ethernet, ARP, IPv4 and ICMP echo, the first protocol
 brick). The stack is built in phases: shard runtime, minimal TCP, full TCP, TLS, HTTP/1.1 with WebSocket.
@@ -38,7 +39,7 @@ ctest --preset debug -L unit     # or: integration, functional
 
 | Path                                                                       | Contents                                                                                                                                                                                                   |
 |----------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `common/<module>/`                                                         | Stack and foundation modules. `core` holds the small things every module links, with no dependencies (version, clock aliases, header-only helpers); `execution` is the one header that names stdexec and `log` the one that names quill, both linked on demand; `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime; built on `loop`, no DPDK), `net` (the IP base: wire formats, the ARP cache, the `Ipv4<Device>` brick; built on `loop` and `device`, no `execution`, no `log`, no DPDK). |
+| `common/<module>/`                                                         | Stack and foundation modules. `core` holds the small things every module links, with no dependencies (version, clock aliases, header-only helpers); `execution` is the one header that names stdexec and `log` the one that names quill, both linked on demand; `wire` (addresses, headers and checksums grouped by protocol: `ethernet/`, `ipv4/`, `arp/`, `icmp/`; values only, no state); `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime; built on `loop`, no DPDK), `net` (the IP base: the ARP cache and the `Ipv4<Device>` brick over `wire`'s formats; built on `loop` and `device`, no `execution`, no `log`, no DPDK). |
 | `component/<module>/`                                                      | Protocol modules (HTTP/1.1, HTTP/2, HTTP/3, WebSocket, ...), each an independent unit built on `common`. None exist yet; the directory appears with the first. |
 | `<module>/export/aloe/<module>`                                            | Umbrella header, no extension. Consumers write `#include <aloe/<module>>`.                                                                                                                                 |
 | `tests/unit_tests/`, `tests/integration_tests/`, `tests/functional_tests/` | One CTest label each.                                                                                                                                                                                      |
@@ -79,10 +80,10 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - **Style.** `codestyle.md` covers what `.clang-format` does not: naming,
   namespaces, parameters, attributes, error handling, include order.
 - **Namespaces.** Every module gets a namespace named after it: `aloe::core`,
-  `aloe::execution`, `aloe::log`, `aloe::device`, `aloe::fabric`, `aloe::ethdev`, `aloe::loop`,
+  `aloe::execution`, `aloe::log`, `aloe::wire`, `aloe::device`, `aloe::fabric`, `aloe::ethdev`, `aloe::loop`,
   `aloe::runtime`, `aloe::net`. Nothing is
   declared directly in `aloe`. Another module's names are qualified with its
-  namespace (`device::MacAddress` inside `aloe::fabric`), never pulled in with
+  namespace (`wire::MacAddress` inside `aloe::fabric`), never pulled in with
   `using namespace`. Test helpers live in `aloe::testing`.
 - **stdexec and quill stay out of hot-path headers.** Only the runtime, the
   examples and the tests include `<aloe/execution>` or `<aloe/log>`; a device or

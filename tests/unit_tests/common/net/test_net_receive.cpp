@@ -1,4 +1,5 @@
 #include <aloe/net>
+#include <aloe/wire>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -13,11 +14,11 @@
 
 namespace {
 
-    using aloe::device::Ipv4Protocol;
     using aloe::testing::harness_ip;
     using aloe::testing::harness_mac;
     using aloe::testing::stack_ip;
     using aloe::testing::stack_mac;
+    using aloe::wire::Ipv4Protocol;
 
     class NetReceive : public aloe::testing::NetFixture {
     protected:
@@ -59,7 +60,7 @@ TEST_P(NetReceive, AUdpDatagramLandsInTheUdpListWithWhatIpv4Parsed) {
     EXPECT_EQ(received.l3_length, 20);
     EXPECT_EQ(received.l4_length, 8 + 32);
     ASSERT_EQ(received.l4().size(), 40U);
-    EXPECT_EQ(aloe::device::load_be16(received.l4().first(2)), 40000);
+    EXPECT_EQ(aloe::wire::load_be16(received.l4().first(2)), 40000);
     EXPECT_EQ(std::vector<std::byte>(received.l4().begin() + 8, received.l4().end()), payload);
     EXPECT_EQ(received.l4_checksum,
               offloads() ? aloe::device::ChecksumVerdict::Good : aloe::device::ChecksumVerdict::Unknown)
@@ -121,12 +122,12 @@ TEST_P(NetReceive, AHeaderWithOptionsIsAcceptedAndItsLengthReported) {
     auto& received = ip_.received(Ipv4Protocol::Udp)[0];
     EXPECT_EQ(received.l3_length, 28);
     EXPECT_EQ(received.l4_length, 16);
-    EXPECT_EQ(aloe::device::load_be16(received.l4().first(2)), 40000) << "l4() starts after the options";
+    EXPECT_EQ(aloe::wire::load_be16(received.l4().first(2)), 40000) << "l4() starts after the options";
 }
 
 TEST_P(NetReceive, BroadcastDatagramsAreForUs) {
     aloe::testing::Ipv4Spec subnet = datagram(Ipv4Protocol::Udp);
-    subnet.destination_mac         = aloe::device::MacAddress::broadcast();
+    subnet.destination_mac         = aloe::wire::MacAddress::broadcast();
     subnet.destination             = {10, 0, 0, 255};
     inject(aloe::testing::ipv4_frame(subnet, aloe::testing::pattern(8)));
     EXPECT_EQ(ip_.counters().delivered_udp, 1);
@@ -192,10 +193,10 @@ TEST_P(NetReceive, AFragmentIsDropped) {
 }
 
 TEST_P(NetReceive, AMartianSourceIsDropped) {
-    for (const aloe::device::Ipv4Address source : {
-             aloe::device::Ipv4Address{224, 0,   0,   5  },
-             aloe::device::Ipv4Address{255, 255, 255, 255},
-             aloe::device::Ipv4Address{127, 0,   0,   1  }
+    for (const aloe::wire::Ipv4Address source : {
+             aloe::wire::Ipv4Address{224, 0,   0,   5  },
+             aloe::wire::Ipv4Address{255, 255, 255, 255},
+             aloe::wire::Ipv4Address{127, 0,   0,   1  }
     }) {
         aloe::testing::Ipv4Spec spec = datagram(Ipv4Protocol::Udp);
         spec.source                  = source;

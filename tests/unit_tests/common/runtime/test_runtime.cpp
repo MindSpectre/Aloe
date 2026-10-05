@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <aloe/fabric>
 #include <aloe/runtime>
+#include <aloe/wire>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -24,10 +25,10 @@ namespace {
     using namespace std::chrono_literals;
 
     constexpr std::uint16_t queues = 4;
-    constexpr aloe::device::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
-    constexpr aloe::device::MacAddress client{0x02, 0, 0, 0, 0, 0x02};
-    constexpr aloe::device::Ipv4Address server_ip{10, 0, 0, 2};
-    constexpr aloe::device::Ipv4Address client_ip{10, 0, 0, 1};
+    constexpr aloe::wire::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
+    constexpr aloe::wire::MacAddress client{0x02, 0, 0, 0, 0, 0x02};
+    constexpr aloe::wire::Ipv4Address server_ip{10, 0, 0, 2};
+    constexpr aloe::wire::Ipv4Address client_ip{10, 0, 0, 1};
     constexpr auto patience = 5s;
 
     using EchoRuntime = aloe::runtime::Runtime<aloe::fabric::Port, aloe::testing::EchoStack<aloe::fabric::Port>>;
@@ -179,7 +180,7 @@ TEST_F(RuntimeTest, AFrameIsAnsweredByTheShardItsHashSelects) {
                                        .destination      = server_ip,
                                        .source_port      = 40000,
                                        .destination_port = 80,
-                                       .protocol         = aloe::device::Ipv4Protocol::Udp};
+                                       .protocol         = aloe::wire::Ipv4Protocol::Udp};
     const auto frame             = aloe::testing::ipv4_frame(spec, aloe::testing::pattern(16));
     const std::uint16_t expected = aloe::device::queue_for(server_.steering(), aloe::testing::flow_of(spec));
 

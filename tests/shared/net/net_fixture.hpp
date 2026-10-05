@@ -4,6 +4,7 @@
 #include <aloe/fabric>
 #include <aloe/loop>
 #include <aloe/net>
+#include <aloe/wire>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -19,13 +20,13 @@
 
 namespace aloe::testing {
 
-    inline constexpr device::MacAddress stack_mac{0x02, 0, 0, 0, 0, 0x01};
-    inline constexpr device::MacAddress harness_mac{0x02, 0, 0, 0, 0, 0x02};
-    inline constexpr device::MacAddress gateway_mac{0x02, 0, 0, 0, 0, 0xfe};
-    inline constexpr device::Ipv4Address stack_ip{10, 0, 0, 2};
-    inline constexpr device::Ipv4Address harness_ip{10, 0, 0, 1};
-    inline constexpr device::Ipv4Address gateway_ip{10, 0, 0, 254};
-    inline constexpr device::Ipv4Address far_ip{192, 168, 7, 7};  ///< Off the subnet: reached through the gateway.
+    inline constexpr wire::MacAddress stack_mac{0x02, 0, 0, 0, 0, 0x01};
+    inline constexpr wire::MacAddress harness_mac{0x02, 0, 0, 0, 0, 0x02};
+    inline constexpr wire::MacAddress gateway_mac{0x02, 0, 0, 0, 0, 0xfe};
+    inline constexpr wire::Ipv4Address stack_ip{10, 0, 0, 2};
+    inline constexpr wire::Ipv4Address harness_ip{10, 0, 0, 1};
+    inline constexpr wire::Ipv4Address gateway_ip{10, 0, 0, 254};
+    inline constexpr wire::Ipv4Address far_ip{192, 168, 7, 7};  ///< Off the subnet: reached through the gateway.
 
     /// The brick's config in the fixture: a /24 with a gateway.
     [[nodiscard]] inline net::Ipv4Config stack_config() {

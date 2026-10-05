@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace aloe::device {
+namespace aloe::wire {
 
     /**
      * @brief An IPv4 protocol number: the `protocol` byte of the header.
@@ -16,4 +16,4 @@ namespace aloe::device {
         Udp  = 17,
     };
 
-}  // namespace aloe::device
+}  // namespace aloe::wire
