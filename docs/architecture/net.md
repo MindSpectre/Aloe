@@ -112,9 +112,14 @@ when it asks for our address and never learned.
 with the stamp the caller passes. Fresh entries are used as they are; stale ones are still used while one
 unicast refresh goes out per interval, so a live flow never stalls on a refresh; expired ones are
 unresolved again. No timer node, no wheel, and the brick's constructor takes the queue and the config and
-nothing else. The table holds `arp_capacity` entries in windows of eight; a lookup miss or a learn in a
-full window evicts the oldest confirmed entry of that window, so a storm of distinct unresolved destinations
-can displace a live entry for one ARP round trip. The capacity is a power of two of at least eight.
+nothing else. The table holds `arp_capacity` entries in windows of eight. A lookup miss or a learn in a
+full window evicts, in this order: an expired entry; an incomplete one whose request is at least
+`arp_request_interval` old, since its reply is not coming; the entry with the oldest confirmation; and only
+then the incomplete entry whose request left first. An entry waiting for its reply goes last because
+evicting it drops that reply as unsolicited, and two destinations that share a window would keep evicting
+each other's requests. The price is that a storm of distinct unresolved destinations displaces live
+entries, the gateway's included, and each displaced one costs one ARP round trip on its next send. The
+capacity is a power of two of at least eight.
 
 **The echo reply never consults the cache.** It is built in the request's packet and goes back to the
 frame's source MAC: the last hop, which is the right next hop back whether the pinger is on the subnet or

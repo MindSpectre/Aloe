@@ -75,11 +75,18 @@ namespace aloe::net {
         std::unreachable();
     }
 
+    bool ArpCache::pending(const Entry& entry, const core::TimePoint now) const noexcept {
+        return entry.state == State::Incomplete && entry.requested.has_value() &&
+               now - *entry.requested < config_.request_interval;
+    }
+
     ArpCache::Entry& ArpCache::insert(const wire::Ipv4Address address, const core::TimePoint now) noexcept {
         const std::size_t mask  = slots_.size() - 1;
         const std::size_t start = home(address);
         Entry* first_expired    = nullptr;
-        Entry* oldest           = nullptr;
+        Entry* first_lapsed     = nullptr;  // incomplete, and its request is too old for a reply to be coming
+        Entry* oldest_reachable = nullptr;
+        Entry* oldest_pending   = nullptr;  // incomplete, with a request still waiting for its reply
         for (std::size_t probe = 0; probe < probe_window; ++probe) {
             Entry& slot = slots_[(start + probe) & mask];
             if (slot.state == State::Free) {
@@ -88,17 +95,25 @@ namespace aloe::net {
                 slot.state = State::Incomplete;
                 return slot;
             }
-            if (first_expired == nullptr && expired(slot, now)) {
-                first_expired = &slot;
-            }
-            if (oldest == nullptr || slot.confirmed < oldest->confirmed) {
-                oldest = &slot;
+            if (expired(slot, now)) {
+                first_expired = first_expired != nullptr ? first_expired : &slot;
+            } else if (pending(slot, now)) {
+                if (oldest_pending == nullptr || *slot.requested < *oldest_pending->requested) {
+                    oldest_pending = &slot;
+                }
+            } else if (slot.state == State::Incomplete) {
+                first_lapsed = first_lapsed != nullptr ? first_lapsed : &slot;
+            } else if (oldest_reachable == nullptr || slot.confirmed < oldest_reachable->confirmed) {
+                oldest_reachable = &slot;
             }
         }
-        Entry& victim = first_expired != nullptr ? *first_expired : *oldest;
-        reset(victim, address);
-        victim.state = State::Incomplete;
-        return victim;
+        Entry* victim = first_expired;
+        for (Entry* candidate : {first_lapsed, oldest_reachable, oldest_pending}) {
+            victim = victim != nullptr ? victim : candidate;
+        }
+        reset(*victim, address);
+        victim->state = State::Incomplete;
+        return *victim;
     }
 
     bool ArpCache::request_due(Entry& entry, const core::TimePoint now) const noexcept {

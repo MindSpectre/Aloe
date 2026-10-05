@@ -25,8 +25,11 @@ namespace aloe::net {
      * A fixed table: open addressing with linear probing bounded to `probe_window` slots from a
      * multiplicative hash of the address. A slot is free or occupied and never goes back to free, so
      * probe chains stay intact without tombstones. A new entry takes the first free slot in its
-     * window, else the first expired one, else the one with the oldest confirmation. One thread uses
-     * a cache; nothing in it is synchronised, and nothing allocates after construction.
+     * window, else the first expired one, else an incomplete one whose request is at least
+     * `request_interval` old, else the one with the oldest confirmation, else the incomplete one whose
+     * request left first. An entry waiting for its reply goes last, because a reply for an address the
+     * cache no longer holds is dropped as unsolicited. One thread uses a cache; nothing in it is
+     * synchronised, and nothing allocates after construction.
      *
      * An entry is incomplete (asked about, not answered) or reachable (confirmed at some stamp).
      * `lookup` returns the MAC while the confirmation is younger than `expire`, asks for a request
@@ -81,8 +84,7 @@ namespace aloe::net {
             wire::Ipv4Address address{};
             wire::MacAddress mac{};
             State state = State::Free;
-            core::TimePoint
-                confirmed{};  ///< Meaningful when reachable; the epoch otherwise, so incomplete entries are the oldest.
+            core::TimePoint confirmed{};  ///< Meaningful when reachable; the epoch otherwise.
             std::optional<core::TimePoint> requested = std::nullopt;  ///< The last request; none yet when absent.
         };
 
@@ -91,6 +93,8 @@ namespace aloe::net {
         [[nodiscard]] Entry* find(wire::Ipv4Address address) noexcept;
         [[nodiscard]] Entry& insert(wire::Ipv4Address address, core::TimePoint now) noexcept;
         [[nodiscard]] bool expired(const Entry& entry, core::TimePoint now) const noexcept;
+        /// Incomplete, with a request younger than `request_interval`: its reply may still arrive.
+        [[nodiscard]] bool pending(const Entry& entry, core::TimePoint now) const noexcept;
         /// True, and records the stamp, when the entry's last request is absent or at least an interval old.
         [[nodiscard]] bool request_due(Entry& entry, core::TimePoint now) const noexcept;
 
