@@ -496,6 +496,8 @@ arguments]`, printing the counters on interrupt. It is how a real card is checke
 - **The kernel end of the tap.** Configuring it through `ioctl` is more code than a packet socket
   but is what makes the kernel's own ARP and ICMP do the work the issue asks for. The test fails
   with a clear message when not root, like the runtime tap test.
+  The tap test was compiled on 2026-10-05 and not run (no root), so the shared-MAC risk and the
+  `SIOCSIFHWADDR` fallback stay unverified.
 - **Options in a request.** The reply drops them by `trim_front`, which assumes the ICMP message
   need not move. It does not: it already sits after the options.
 
@@ -517,6 +519,8 @@ and never reassembled. The brick accepts no IPv4 options on transmit and ignores
   does not stall anything, so the longer value costs nothing; revisit if a router ages faster.
 - Whether the identification counter should start from a random value instead of the queue
   index times 4096.
+- The plan's Task 1 placed the ARP target IP at offset 22, overlapping the target MAC; the
+  implementation uses 24 (RFC 826) and the round-trip test pins it.
 
 ## Work order
 
