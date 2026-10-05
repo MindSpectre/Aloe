@@ -1,10 +1,10 @@
+#include <aloe/frames>
 #include <aloe/net>
 #include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
-#include <frames.hpp>
 #include <gtest/gtest.h>
 #include <net_fixture.hpp>
 
@@ -19,7 +19,7 @@ namespace {
     class NetIcmp : public aloe::testing::NetFixture {
     protected:
         /// An echo request from the harness to the stack, identifier 0x1234, sequence 1.
-        [[nodiscard]] static aloe::testing::EchoSpec echo() {
+        [[nodiscard]] static aloe::frames::EchoSpec echo() {
             return {
                 .destination_mac = stack_mac, .source_mac = harness_mac, .source = harness_ip, .destination = stack_ip};
         }
@@ -34,15 +34,15 @@ namespace {
 }  // namespace
 
 TEST_P(NetIcmp, AnEchoRequestGetsAReplyWithBothChecksumsRight) {
-    const auto payload = aloe::testing::pattern(56);  // what `ping` sends
-    inject(aloe::testing::icmp_echo_frame(echo(), payload));
+    const auto payload = aloe::frames::pattern(56);  // what `ping` sends
+    inject(aloe::frames::icmp_echo_frame(echo(), payload));
 
     const auto frames = harness_received();
     ASSERT_EQ(frames.size(), 1);
-    const auto reply = aloe::testing::parse_frame(frames[0]);
+    const auto reply = aloe::frames::parse_frame(frames[0]).value();
     EXPECT_EQ(reply.ethernet.destination, harness_mac);
     EXPECT_EQ(reply.ethernet.source, stack_mac);
-    EXPECT_EQ(reply.ethernet.ethertype, aloe::testing::ethertype_ipv4);
+    EXPECT_EQ(reply.ethernet.ethertype, aloe::frames::ethertype_ipv4);
     ASSERT_TRUE(reply.ipv4.has_value());
     EXPECT_EQ(reply.ipv4->source, stack_ip);
     EXPECT_EQ(reply.ipv4->destination, harness_ip);
@@ -68,23 +68,23 @@ TEST_P(NetIcmp, AnEchoRequestGetsAReplyWithBothChecksumsRight) {
 }
 
 TEST_P(NetIcmp, TheIdentificationAdvancesPerReply) {
-    inject(aloe::testing::icmp_echo_frame(echo(), aloe::testing::pattern(8)));
-    inject(aloe::testing::icmp_echo_frame(echo(), aloe::testing::pattern(8)));
+    inject(aloe::frames::icmp_echo_frame(echo(), aloe::frames::pattern(8)));
+    inject(aloe::frames::icmp_echo_frame(echo(), aloe::frames::pattern(8)));
     const auto frames = harness_received();
     ASSERT_EQ(frames.size(), 2);
-    EXPECT_EQ(aloe::testing::parse_frame(frames[0]).ipv4->identification, 0);
-    EXPECT_EQ(aloe::testing::parse_frame(frames[1]).ipv4->identification, 1);
+    EXPECT_EQ(aloe::frames::parse_frame(frames[0]).value().ipv4->identification, 0);
+    EXPECT_EQ(aloe::frames::parse_frame(frames[1]).value().ipv4->identification, 1);
 }
 
 TEST_P(NetIcmp, APingerBehindARouterGetsTheReplyAtTheFramesSourceMac) {
     // The harness plays the router: an off-subnet source address behind the harness's own MAC. The fabric
     // delivers a unicast frame only to the port that owns the MAC, so the reply must come back to the harness.
-    aloe::testing::EchoSpec routed = echo();
-    routed.source                  = far_ip;
-    inject(aloe::testing::icmp_echo_frame(routed, aloe::testing::pattern(8)));
+    aloe::frames::EchoSpec routed = echo();
+    routed.source                 = far_ip;
+    inject(aloe::frames::icmp_echo_frame(routed, aloe::frames::pattern(8)));
     const auto frames = harness_received();
     ASSERT_EQ(frames.size(), 1);
-    const auto reply = aloe::testing::parse_frame(frames[0]);
+    const auto reply = aloe::frames::parse_frame(frames[0]).value();
     EXPECT_EQ(reply.ethernet.destination, harness_mac) << "the last hop is the next hop back";
     ASSERT_TRUE(reply.ipv4.has_value());
     EXPECT_EQ(reply.ipv4->destination, far_ip);
@@ -92,11 +92,11 @@ TEST_P(NetIcmp, APingerBehindARouterGetsTheReplyAtTheFramesSourceMac) {
 }
 
 TEST_P(NetIcmp, AnEchoRequestWithOptionsGetsAReplyWithATwentyByteHeader) {
-    const auto payload = aloe::testing::pattern(16);
-    inject(aloe::testing::with_ipv4_options(aloe::testing::icmp_echo_frame(echo(), payload), 3));
+    const auto payload = aloe::frames::pattern(16);
+    inject(aloe::frames::with_ipv4_options(aloe::frames::icmp_echo_frame(echo(), payload), 3));
     const auto frames = harness_received();
     ASSERT_EQ(frames.size(), 1);
-    const auto reply = aloe::testing::parse_frame(frames[0]);
+    const auto reply = aloe::frames::parse_frame(frames[0]).value();
     ASSERT_TRUE(reply.ipv4.has_value());
     EXPECT_EQ(reply.ipv4->header_length, 20) << "options are never sent";
     EXPECT_EQ(reply.ipv4->total_length, 20 + 8 + 16);
@@ -106,13 +106,13 @@ TEST_P(NetIcmp, AnEchoRequestWithOptionsGetsAReplyWithATwentyByteHeader) {
 }
 
 TEST_P(NetIcmp, AShortEchoPaddedToSixtyBytesGetsAReplyWithTheRightTotalLength) {
-    const auto payload = aloe::testing::pattern(2);
-    auto frame         = aloe::testing::icmp_echo_frame(echo(), payload);  // 44 bytes
+    const auto payload = aloe::frames::pattern(2);
+    auto frame         = aloe::frames::icmp_echo_frame(echo(), payload);  // 44 bytes
     frame.resize(60);
     inject(frame);
     const auto frames = harness_received();
     ASSERT_EQ(frames.size(), 1);
-    const auto reply = aloe::testing::parse_frame(frames[0]);
+    const auto reply = aloe::frames::parse_frame(frames[0]).value();
     ASSERT_TRUE(reply.ipv4.has_value());
     EXPECT_EQ(reply.ipv4->total_length, 20 + 8 + 2) << "the padding is not part of the datagram";
     ASSERT_EQ(reply.l4.size(), 10U);
@@ -121,36 +121,36 @@ TEST_P(NetIcmp, AShortEchoPaddedToSixtyBytesGetsAReplyWithTheRightTotalLength) {
 }
 
 TEST_P(NetIcmp, ABadIcmpChecksumIsDropped) {
-    aloe::testing::EchoSpec bad = echo();
-    bad.bad_icmp_checksum       = true;
-    inject(aloe::testing::icmp_echo_frame(bad, aloe::testing::pattern(8)));
+    aloe::frames::EchoSpec bad = echo();
+    bad.bad_icmp_checksum      = true;
+    inject(aloe::frames::icmp_echo_frame(bad, aloe::frames::pattern(8)));
     EXPECT_TRUE(harness_received().empty());
     EXPECT_EQ(ip_.counters().dropped_bad_checksum, 1);
     EXPECT_EQ(ip_.counters().echo_replies_sent, 0);
 }
 
 TEST_P(NetIcmp, ABroadcastEchoAndOtherTypesAreDropped) {
-    aloe::testing::EchoSpec broadcast = echo();
-    broadcast.destination_mac         = aloe::wire::MacAddress::broadcast();
-    broadcast.destination             = {10, 0, 0, 255};
-    inject(aloe::testing::icmp_echo_frame(broadcast, aloe::testing::pattern(8)));
+    aloe::frames::EchoSpec broadcast = echo();
+    broadcast.destination_mac        = aloe::wire::MacAddress::broadcast();
+    broadcast.destination            = {10, 0, 0, 255};
+    inject(aloe::frames::icmp_echo_frame(broadcast, aloe::frames::pattern(8)));
     EXPECT_EQ(ip_.counters().dropped_icmp, 1) << "as the kernel does by default";
 
-    aloe::testing::EchoSpec reply_in = echo();
-    reply_in.type                    = aloe::wire::IcmpType::EchoReply;
-    inject(aloe::testing::icmp_echo_frame(reply_in, aloe::testing::pattern(8)));
+    aloe::frames::EchoSpec reply_in = echo();
+    reply_in.type                   = aloe::wire::IcmpType::EchoReply;
+    inject(aloe::frames::icmp_echo_frame(reply_in, aloe::frames::pattern(8)));
     EXPECT_EQ(ip_.counters().dropped_icmp, 2);
     EXPECT_TRUE(harness_received().empty());
     EXPECT_EQ(ip_.counters().datagrams_received, 2) << "valid IPv4 for us, just not answered";
 }
 
 TEST_P(NetIcmp, AShortIcmpMessageIsDropped) {
-    const aloe::testing::Ipv4Spec stub{.destination_mac = stack_mac,
-                                       .source_mac      = harness_mac,
-                                       .source          = harness_ip,
-                                       .destination     = stack_ip,
-                                       .protocol        = aloe::wire::Ipv4Protocol::Icmp};
-    inject(aloe::testing::ipv4_frame(stub, aloe::testing::pattern(4)));  // four bytes where eight are the minimum
+    const aloe::frames::Ipv4Spec stub{.destination_mac = stack_mac,
+                                      .source_mac      = harness_mac,
+                                      .source          = harness_ip,
+                                      .destination     = stack_ip,
+                                      .protocol        = aloe::wire::Ipv4Protocol::Icmp};
+    inject(aloe::frames::ipv4_frame(stub, aloe::frames::pattern(4)));  // four bytes where eight are the minimum
     EXPECT_EQ(ip_.counters().dropped_bad_header, 1);
     EXPECT_TRUE(harness_received().empty());
 }

@@ -1,4 +1,5 @@
 #include <aloe/fabric>
+#include <aloe/frames>
 #include <aloe/runtime>
 #include <aloe/wire>
 #include <array>
@@ -13,7 +14,6 @@
 #include <vector>
 
 #include <echo_stack.hpp>
-#include <frames.hpp>
 #include <gtest/gtest.h>
 
 namespace {
@@ -29,7 +29,7 @@ namespace {
     constexpr aloe::wire::Ipv4Address client_ip{10, 0, 0, 1};
     constexpr std::size_t payload_offset = 14 + 20 + 8;  ///< Ethernet, IPv4 without options, UDP.
 
-    [[nodiscard]] aloe::testing::Ipv4Spec spec_of(const std::size_t flow) {
+    [[nodiscard]] aloe::frames::Ipv4Spec spec_of(const std::size_t flow) {
         return {.destination_mac  = server,
                 .source_mac       = client,
                 .source           = client_ip,
@@ -43,7 +43,7 @@ namespace {
     [[nodiscard]] std::vector<std::byte> frame_of(const std::size_t flow) {
         std::array<std::byte, 8> payload{};
         aloe::wire::store_be32(std::span<std::byte>{payload}.first(4), static_cast<std::uint32_t>(flow));
-        return aloe::testing::ipv4_frame(spec_of(flow), payload);
+        return aloe::frames::ipv4_frame(spec_of(flow), payload);
     }
 
 }  // namespace
@@ -64,13 +64,13 @@ TEST(Steering, EveryFrameIsAnsweredOnceByTheShardItsHashSelects) {
     std::vector<std::uint16_t> expected(flows);
     std::array<std::size_t, queues> expected_per_shard{};
     for (std::size_t flow = 0; flow < flows; ++flow) {
-        expected[flow] = aloe::device::queue_for(server_port.steering(), aloe::testing::flow_of(spec_of(flow)));
+        expected[flow] = aloe::device::queue_for(server_port.steering(), aloe::frames::flow_of(spec_of(flow)));
         ++expected_per_shard[expected[flow]];
         std::optional<aloe::fabric::Packet> packet;
         while (!(packet = client_port.allocate(0))) {
             std::this_thread::yield();
         }
-        ASSERT_TRUE(aloe::testing::fill(*packet, frame_of(flow)));
+        ASSERT_TRUE(aloe::frames::fill(*packet, frame_of(flow)));
         std::array<aloe::fabric::Packet, 1> burst{std::move(*packet)};
         ASSERT_EQ(client_port.transmit(0, burst), 1);
     }

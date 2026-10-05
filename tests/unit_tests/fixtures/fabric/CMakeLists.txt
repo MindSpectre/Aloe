@@ -10,7 +10,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Fabric
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Fabric
         PRIVATE
-        Aloe::Common::Fabric
+        Aloe::Fixtures::Fabric
         ${SHARED_TESTING_TARGET}.Device
         ${TEST_LIBS}
 )
@@ -24,7 +24,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Fabric.Threads
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Fabric.Threads
         PRIVATE
-        Aloe::Common::Fabric
+        Aloe::Fixtures::Fabric
         ${SHARED_TESTING_TARGET}.Device
         ${TEST_LIBS}
 )

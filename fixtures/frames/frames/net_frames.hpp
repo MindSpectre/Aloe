@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <aloe/device>
-#include <aloe/net>
 #include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
@@ -11,13 +10,12 @@
 #include <vector>
 
 #include <frames.hpp>
-#include <gtest/gtest.h>
 
 /**
  * Builders for the ARP and ICMP frames the net tests exchange with the brick, over the module's own
  * writers, and a parser for what the brick transmits.
  */
-namespace aloe::testing {
+namespace aloe::frames {
 
     inline constexpr std::uint16_t ethertype_arp = 0x0806;
 
@@ -104,13 +102,13 @@ namespace aloe::testing {
         std::vector<std::byte> l4;           ///< The segment or message: total length less the header, no padding.
     };
 
-    [[nodiscard]] inline ParsedFrame parse_frame(const std::span<const std::byte> frame) {
-        ParsedFrame parsed;
+    /// The frame taken apart, or nothing for a frame shorter than an Ethernet header.
+    [[nodiscard]] inline std::optional<ParsedFrame> parse_frame(const std::span<const std::byte> frame) {
         const std::optional<wire::EthernetHeader> ethernet = wire::EthernetHeader::parse(frame);
-        EXPECT_TRUE(ethernet.has_value()) << "a frame shorter than an Ethernet header";
         if (!ethernet) {
-            return parsed;
+            return std::nullopt;
         }
+        ParsedFrame parsed;
         parsed.ethernet                          = *ethernet;
         const std::span<const std::byte> payload = frame.subspan(wire::EthernetHeader::size);
         if (ethernet->ethertype == ethertype_arp) {
@@ -142,4 +140,4 @@ namespace aloe::testing {
         return wire::checksum_finish(wire::checksum_add(pseudo, l4));
     }
 
-}  // namespace aloe::testing
+}  // namespace aloe::frames

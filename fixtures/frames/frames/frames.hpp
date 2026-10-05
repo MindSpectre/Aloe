@@ -14,7 +14,7 @@
  * Builders for the Ethernet frames the device tests exchange, and helpers to
  * move bytes in and out of packets of any backend.
  */
-namespace aloe::testing {
+namespace aloe::frames {
 
     inline constexpr std::uint16_t ethertype_ipv4         = 0x0800;
     inline constexpr std::uint16_t ethertype_experimental = 0x88b5;  ///< Reserved for local experiments.
@@ -169,4 +169,4 @@ namespace aloe::testing {
         return {data.begin(), data.end()};
     }
 
-}  // namespace aloe::testing
+}  // namespace aloe::frames

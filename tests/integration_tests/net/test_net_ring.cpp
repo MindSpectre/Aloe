@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <aloe/ethdev>
+#include <aloe/frames>
 #include <aloe/loop>
 #include <aloe/net>
 #include <aloe/wire>
@@ -13,9 +14,7 @@
 #include <vector>
 
 #include <eal_environment.hpp>
-#include <frames.hpp>
 #include <gtest/gtest.h>
-#include <net_frames.hpp>
 
 // The brick over DPDK's ring driver, which loops a queue's transmit back into its own receive: ARP, echo and
 // send on real mbufs, with no root. The ring has no offloads, so this is the software checksum path on ethdev.
@@ -47,7 +46,7 @@ namespace {
         void inject(const std::span<const std::byte> frame) {
             auto packet = port_.allocate(0);
             ASSERT_TRUE(packet.has_value());
-            ASSERT_TRUE(aloe::testing::fill(*packet, frame));
+            ASSERT_TRUE(aloe::frames::fill(*packet, frame));
             std::array<Packet, 1> out{std::move(*packet)};
             ASSERT_EQ(port_.transmit(0, out), 1);
         }
@@ -66,7 +65,7 @@ namespace {
             const std::size_t count = port_.receive(0, out);
             frames.reserve(count);
             for (std::size_t index = 0; index < count; ++index) {
-                frames.push_back(aloe::testing::bytes_of(out[index]));
+                frames.push_back(aloe::frames::bytes_of(out[index]));
             }
             return frames;
         }
@@ -75,31 +74,31 @@ namespace {
 }  // namespace
 
 TEST_F(NetRing, AnArpRequestIsAnsweredOnRealMbufs) {
-    inject(aloe::testing::arp_frame(aloe::testing::arp_request(peer_mac, peer_ip, stack_ip),
-                                    aloe::wire::MacAddress::broadcast()));
+    inject(aloe::frames::arp_frame(aloe::frames::arp_request(peer_mac, peer_ip, stack_ip),
+                                   aloe::wire::MacAddress::broadcast()));
     tick();
     const auto frames = on_the_wire();
     ASSERT_EQ(frames.size(), 1);
-    const auto reply = aloe::testing::parse_frame(frames[0]);
+    const auto reply = aloe::frames::parse_frame(frames[0]).value();
     EXPECT_EQ(reply.ethernet.destination, peer_mac);
     EXPECT_EQ(reply.ethernet.source, port_.mac());
     ASSERT_TRUE(reply.arp.has_value());
-    EXPECT_EQ(*reply.arp, aloe::testing::arp_reply(port_.mac(), stack_ip, peer_mac, peer_ip));
+    EXPECT_EQ(*reply.arp, aloe::frames::arp_reply(port_.mac(), stack_ip, peer_mac, peer_ip));
     EXPECT_EQ(ip_.counters().arp_replies_sent, 1);
 }
 
 TEST_F(NetRing, AnEchoRequestIsAnsweredOnRealMbufs) {
     ASSERT_FALSE(port_.capabilities().tx_ipv4_checksum) << "the ring has no offloads: software checksums";
-    const auto payload = aloe::testing::pattern(56);
-    inject(aloe::testing::with_ipv4_options(
-        aloe::testing::icmp_echo_frame(
+    const auto payload = aloe::frames::pattern(56);
+    inject(aloe::frames::with_ipv4_options(
+        aloe::frames::icmp_echo_frame(
             {.destination_mac = port_.mac(), .source_mac = peer_mac, .source = peer_ip, .destination = stack_ip},
             payload),
         3));  // options make `trim_front` run with a non-zero count on a real mbuf
     tick();
     const auto frames = on_the_wire();
     ASSERT_EQ(frames.size(), 1);
-    const auto reply = aloe::testing::parse_frame(frames[0]);
+    const auto reply = aloe::frames::parse_frame(frames[0]).value();
     EXPECT_EQ(reply.ethernet.destination, peer_mac);
     EXPECT_EQ(reply.ethernet.source, port_.mac());
     ASSERT_TRUE(reply.ipv4.has_value());
@@ -122,7 +121,7 @@ TEST_F(NetRing, ASentSegmentComesBackThroughTheRingIntoTheUdpList) {
     peer.learn(stack_ip, port_.mac(), now_);
     auto packet = peer.allocate();
     ASSERT_TRUE(packet.has_value());
-    const auto payload = aloe::testing::pattern(16);
+    const auto payload = aloe::frames::pattern(16);
     const auto room    = packet->append(8 + payload.size());
     ASSERT_TRUE(room.has_value());
     aloe::wire::store_be16(room->subspan(0, 2), 40000);
@@ -147,7 +146,7 @@ TEST_F(NetRing, ASentSegmentComesBackThroughTheRingIntoTheUdpList) {
     EXPECT_EQ(received.l4_length, 8 + 16);
     const auto header = aloe::wire::Ipv4Header::parse(received.packet.data().subspan(aloe::wire::EthernetHeader::size));
     ASSERT_TRUE(header.has_value());
-    EXPECT_EQ(aloe::testing::l4_checksum_residue(*header, received.l4()), 0) << "the software UDP checksum";
+    EXPECT_EQ(aloe::frames::l4_checksum_residue(*header, received.l4()), 0) << "the software UDP checksum";
     EXPECT_EQ(std::vector<std::byte>(received.l4().begin() + 8, received.l4().end()), payload);
     EXPECT_EQ(peer.counters().datagrams_sent, 1);
     EXPECT_EQ(ip_.counters().delivered_udp, 1);

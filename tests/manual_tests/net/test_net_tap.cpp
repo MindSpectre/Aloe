@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <aloe/ethdev>
+#include <aloe/frames>
 #include <aloe/loop>
 #include <aloe/net>
 #include <aloe/wire>
@@ -18,7 +19,6 @@
 #include <vector>
 
 #include <eal_environment.hpp>
-#include <frames.hpp>
 #include <gtest/gtest.h>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -148,7 +148,7 @@ TEST(NetTap, TheKernelPingsTheBrick) {
 
     const int fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     ASSERT_GE(fd, 0) << std::strerror(errno);
-    const auto payload = aloe::testing::pattern(56);
+    const auto payload = aloe::frames::pattern(56);
     const auto message = echo_request(payload);
     sockaddr_in to{};
     to.sin_family = AF_INET;

@@ -1,4 +1,4 @@
-set(FABRIC ${COMMON}.Fabric)
+set(FABRIC ${FIXTURES}.Fabric)
 
 ##############################################################################
 # The fabric's packet and pool
@@ -45,5 +45,5 @@ add_combined_library(${FABRIC}
         ${FABRIC}.Fabric
 )
 
-add_library(Aloe::Common::Fabric ALIAS ${FABRIC})
+add_library(Aloe::Fixtures::Fabric ALIAS ${FABRIC})
 ##############################################################################

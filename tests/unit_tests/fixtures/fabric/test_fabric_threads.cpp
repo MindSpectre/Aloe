@@ -1,4 +1,5 @@
 #include <aloe/fabric>
+#include <aloe/frames>
 #include <aloe/wire>
 #include <array>
 #include <atomic>
@@ -12,7 +13,6 @@
 #include <utility>
 #include <vector>
 
-#include <frames.hpp>
 #include <gtest/gtest.h>
 
 namespace {
@@ -32,7 +32,7 @@ namespace {
         std::array<std::byte, 8> payload{};
         aloe::wire::store_be32(std::span<std::byte>{payload}.first(4), static_cast<std::uint32_t>(producer));
         aloe::wire::store_be32(std::span<std::byte>{payload}.subspan(4, 4), static_cast<std::uint32_t>(sequence));
-        return aloe::testing::ipv4_frame(
+        return aloe::frames::ipv4_frame(
             {
                 .destination_mac  = server,
                 .source_mac       = producer_mac(producer),
@@ -106,7 +106,7 @@ TEST(FabricThreads, FramesFromManyThreadsArriveExactlyOnce) {
                         while (!(packet = source.allocate(0))) {
                             std::this_thread::yield();
                         }
-                        ASSERT_TRUE(aloe::testing::fill(*packet, frame_of(producer, sequence)));
+                        ASSERT_TRUE(aloe::frames::fill(*packet, frame_of(producer, sequence)));
                         std::array<aloe::fabric::Packet, 1> burst{std::move(*packet)};
                         ASSERT_EQ(source.transmit(0, burst), 1);
                     }

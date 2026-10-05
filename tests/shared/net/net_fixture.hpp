@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <aloe/fabric>
+#include <aloe/frames>
 #include <aloe/loop>
 #include <aloe/net>
 #include <aloe/wire>
@@ -14,9 +15,7 @@
 #include <utility>
 #include <vector>
 
-#include <frames.hpp>
 #include <gtest/gtest.h>
-#include <net_frames.hpp>
 
 namespace aloe::testing {
 
@@ -70,7 +69,7 @@ namespace aloe::testing {
         void inject(const std::span<const std::byte> frame) {
             auto packet = harness_.allocate(0);
             ASSERT_TRUE(packet.has_value());
-            ASSERT_TRUE(fill(*packet, frame));
+            ASSERT_TRUE(frames::fill(*packet, frame));
             std::array<Packet, 1> out{std::move(*packet)};
             ASSERT_EQ(harness_.transmit(0, out), 1);
             process_pending();
@@ -87,7 +86,7 @@ namespace aloe::testing {
         void local(const std::span<const std::byte> frame) {
             auto packet = port_.allocate(0);
             ASSERT_TRUE(packet.has_value());
-            ASSERT_TRUE(fill(*packet, frame));
+            ASSERT_TRUE(frames::fill(*packet, frame));
             burst_[0]   = std::move(*packet);
             last_burst_ = 1;
             ip_.process(std::span<Packet>{burst_}.first(1), now_);
@@ -100,7 +99,7 @@ namespace aloe::testing {
             std::array<Packet, 16> out;
             for (std::size_t count = harness_.receive(0, out); count > 0; count = harness_.receive(0, out)) {
                 for (std::size_t index = 0; index < count; ++index) {
-                    frames.push_back(bytes_of(out[index]));
+                    frames.push_back(frames::bytes_of(out[index]));
                     out[index] = Packet{};
                 }
             }

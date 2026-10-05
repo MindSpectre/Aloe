@@ -26,11 +26,18 @@ for the design and the [roadmap](docs/roadmap.md) for the phases.
 | `aloe::log`     | `common/log/`        | Named loggers over quill, linked on demand.                                                                     | [docs/architecture/log.md](docs/architecture/log.md)         |
 | `aloe::wire`    | `common/wire/`       | Addresses, headers and checksums grouped by protocol (Ethernet, IPv4, ARP, ICMP): values and formats, no state. | [docs/architecture/wire.md](docs/architecture/wire.md)       |
 | `aloe::device`  | `common/device/`     | The Packet and Device concepts, the packet metadata and receive-side scaling.                                   | [docs/architecture/device.md](docs/architecture/device.md)   |
-| `aloe::fabric`  | `common/fabric/`     | The in-memory device backend: a fixture for tests, simulation and demos.                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
 | `aloe::ethdev`  | `common/ethdev/`     | The DPDK device backend.                                                                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
 | `aloe::loop`    | `common/loop/`       | The bricks a loop is built from: a device queue with its transmit ring, the timer wheel, the work node with the run queue and the inbox, and the counters. | [docs/architecture/loop.md](docs/architecture/loop.md)       |
 | `aloe::runtime` | `common/runtime/`    | The loop written for you: shards on pinned threads, the scheduler, timer senders, scope and task, and the runtime that launches one shard per queue. | [docs/architecture/runtime.md](docs/architecture/runtime.md) |
 | `aloe::net`     | `common/net/`        | The first protocol brick: IPv4 over a device queue with ARP and ICMP echo, datagrams sorted per transport, checksums by offload or software. | [docs/architecture/net.md](docs/architecture/net.md)         |
+
+Fixtures for testing code written over the bricks live apart from the stack, in `fixtures/`
+([docs/architecture/fixtures.md](docs/architecture/fixtures.md)):
+
+| Namespace       | Directory            | Description                                                                                                     |
+|-----------------|----------------------|-----------------------------------------------------------------------------------------------------------------|
+| `aloe::fabric`  | `fixtures/fabric/`   | The in-memory device backend: deterministic, no root, no hugepages, no network card.                            |
+| `aloe::frames`  | `fixtures/frames/`   | Frame builders and a parser over the wire formats, and packet byte helpers.                                     |
 
 Each module ships an umbrella header. Consumers link the module's target and
 include it by name:

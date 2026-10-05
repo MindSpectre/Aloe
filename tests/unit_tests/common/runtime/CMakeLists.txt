@@ -12,7 +12,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Runtime
 target_link_libraries(${UNIT_TESTING_TARGET}.Runtime
         PRIVATE
         Aloe::Common::Runtime
-        Aloe::Common::Fabric
+        Aloe::Fixtures::Fabric
         ${SHARED_TESTING_TARGET}.Device
         ${SHARED_TESTING_TARGET}.Runtime
         ${SHARED_TESTING_TARGET}.Log
@@ -31,7 +31,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Runtime.Threads
 target_link_libraries(${UNIT_TESTING_TARGET}.Runtime.Threads
         PRIVATE
         Aloe::Common::Runtime
-        Aloe::Common::Fabric
+        Aloe::Fixtures::Fabric
         ${SHARED_TESTING_TARGET}.Device
         ${SHARED_TESTING_TARGET}.Runtime
         ${SHARED_TESTING_TARGET}.Log

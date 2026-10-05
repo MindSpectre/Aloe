@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <aloe/ethdev>
+#include <aloe/frames>
 #include <aloe/loop>
 #include <aloe/runtime>
 #include <aloe/wire>
@@ -14,7 +15,6 @@
 
 #include <eal_environment.hpp>
 #include <echo_stack.hpp>
-#include <frames.hpp>
 #include <gtest/gtest.h>
 #include <logging_environment.hpp>
 #include <rte_lcore.h>
@@ -52,10 +52,10 @@ namespace {
                                      std::atomic<unsigned>* lcore,
                                      std::atomic<int>* outcome) {
         lcore->store(rte_lcore_id());
-        const auto frame = aloe::testing::ethernet_frame(
-            queue->mac(), peer, aloe::testing::ethertype_experimental, aloe::testing::pattern(40));
+        const auto frame = aloe::frames::ethernet_frame(
+            queue->mac(), peer, aloe::frames::ethertype_experimental, aloe::frames::pattern(40));
         auto packet = queue->allocate();
-        if (!packet || !aloe::testing::fill(*packet, frame) || !queue->transmit(std::move(*packet))) {
+        if (!packet || !aloe::frames::fill(*packet, frame) || !queue->transmit(std::move(*packet))) {
             outcome->store(-1);
             co_return;
         }

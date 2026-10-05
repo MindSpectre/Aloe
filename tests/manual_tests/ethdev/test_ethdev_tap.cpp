@@ -1,4 +1,5 @@
 #include <aloe/ethdev>
+#include <aloe/frames>
 #include <aloe/wire>
 #include <array>
 #include <chrono>
@@ -10,7 +11,6 @@
 #include <vector>
 
 #include <eal_environment.hpp>
-#include <frames.hpp>
 #include <gtest/gtest.h>
 #include <packet_socket.hpp>
 #include <unistd.h>
@@ -37,7 +37,7 @@ namespace {
             std::array<aloe::ethdev::Packet, 8> burst;
             const std::size_t count = port.receive(0, burst);
             for (std::size_t index = 0; index < count; ++index) {
-                if (aloe::testing::bytes_of(burst[index]) == std::vector<std::byte>(wanted.begin(), wanted.end())) {
+                if (aloe::frames::bytes_of(burst[index]) == std::vector<std::byte>(wanted.begin(), wanted.end())) {
                     return true;
                 }
             }
@@ -68,18 +68,18 @@ TEST(EthdevTap, FramesCrossBetweenTheKernelAndThePort) {
     EXPECT_EQ(port.driver_name(), "net_tap");
     const aloe::testing::PacketSocket kernel{interface};
 
-    const auto inbound = aloe::testing::ethernet_frame(
-        port.mac(), peer, aloe::testing::ethertype_experimental, aloe::testing::pattern(60, 1));
+    const auto inbound = aloe::frames::ethernet_frame(
+        port.mac(), peer, aloe::frames::ethertype_experimental, aloe::frames::pattern(60, 1));
     ASSERT_TRUE(kernel.send(inbound));
     EXPECT_TRUE(port_receives(port, inbound)) << "a frame written on the kernel side reaches the port";
 
-    const auto outbound = aloe::testing::ethernet_frame(aloe::wire::MacAddress::broadcast(),
-                                                        port.mac(),
-                                                        aloe::testing::ethertype_experimental,
-                                                        aloe::testing::pattern(60, 2));
+    const auto outbound = aloe::frames::ethernet_frame(aloe::wire::MacAddress::broadcast(),
+                                                       port.mac(),
+                                                       aloe::frames::ethertype_experimental,
+                                                       aloe::frames::pattern(60, 2));
     auto packet         = port.allocate(0);
     ASSERT_TRUE(packet.has_value());
-    ASSERT_TRUE(aloe::testing::fill(*packet, outbound));
+    ASSERT_TRUE(aloe::frames::fill(*packet, outbound));
     std::array<aloe::ethdev::Packet, 1> burst{std::move(*packet)};
     ASSERT_EQ(port.transmit(0, burst), 1);
     EXPECT_TRUE(kernel_receives(kernel, outbound)) << "a frame transmitted by the port reaches the kernel";

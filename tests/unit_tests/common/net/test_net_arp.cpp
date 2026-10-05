@@ -1,3 +1,4 @@
+#include <aloe/frames>
 #include <aloe/net>
 #include <aloe/wire>
 #include <chrono>
@@ -5,7 +6,6 @@
 #include <tuple>
 #include <vector>
 
-#include <frames.hpp>
 #include <gtest/gtest.h>
 #include <net_fixture.hpp>
 
@@ -34,16 +34,16 @@ namespace {
 }  // namespace
 
 TEST_P(NetArp, ARequestForOurAddressGetsAReplyAndTeachesTheSender) {
-    inject(aloe::testing::arp_frame(aloe::testing::arp_request(harness_mac, harness_ip, stack_ip), broadcast));
+    inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, harness_ip, stack_ip), broadcast));
 
     const auto frames = harness_received();
     ASSERT_EQ(frames.size(), 1);
-    const auto reply = aloe::testing::parse_frame(frames[0]);
+    const auto reply = aloe::frames::parse_frame(frames[0]).value();
     EXPECT_EQ(reply.ethernet.destination, harness_mac);
     EXPECT_EQ(reply.ethernet.source, stack_mac);
-    EXPECT_EQ(reply.ethernet.ethertype, aloe::testing::ethertype_arp);
+    EXPECT_EQ(reply.ethernet.ethertype, aloe::frames::ethertype_arp);
     ASSERT_TRUE(reply.arp.has_value());
-    EXPECT_EQ(*reply.arp, aloe::testing::arp_reply(stack_mac, stack_ip, harness_mac, harness_ip));
+    EXPECT_EQ(*reply.arp, aloe::frames::arp_reply(stack_mac, stack_ip, harness_mac, harness_ip));
     EXPECT_TRUE(burst_empty());
 
     ASSERT_EQ(ip_.resolved().size(), 1);
@@ -56,7 +56,7 @@ TEST_P(NetArp, ARequestForOurAddressGetsAReplyAndTeachesTheSender) {
 }
 
 TEST_P(NetArp, ARequestForAnotherHostTeachesNothing) {
-    inject(aloe::testing::arp_frame(aloe::testing::arp_request(harness_mac, harness_ip, {10, 0, 0, 9}), broadcast));
+    inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, harness_ip, {10, 0, 0, 9}), broadcast));
     EXPECT_TRUE(harness_received().empty());
     EXPECT_TRUE(ip_.resolved().empty());
     EXPECT_EQ(ip_.counters().arp_requests_received, 1);
@@ -65,12 +65,12 @@ TEST_P(NetArp, ARequestForAnotherHostTeachesNothing) {
 }
 
 TEST_P(NetArp, AProbeWithAZeroSenderIsAnsweredAndTeachesNothing) {
-    inject(aloe::testing::arp_frame(aloe::testing::arp_request(harness_mac, aloe::wire::Ipv4Address{}, stack_ip),
-                                    broadcast));
+    inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, aloe::wire::Ipv4Address{}, stack_ip),
+                                   broadcast));
 
     const auto frames = harness_received();
     ASSERT_EQ(frames.size(), 1);
-    const auto reply = aloe::testing::parse_frame(frames[0]);
+    const auto reply = aloe::frames::parse_frame(frames[0]).value();
     ASSERT_TRUE(reply.arp.has_value());
     EXPECT_EQ(reply.arp->operation, aloe::wire::ArpOperation::Reply);
     EXPECT_EQ(reply.arp->target_ip, aloe::wire::Ipv4Address{});
@@ -81,8 +81,8 @@ TEST_P(NetArp, AProbeWithAZeroSenderIsAnsweredAndTeachesNothing) {
 
 TEST_P(NetArp, ARequestFromAGroupMacIsNeitherAnsweredNorLearned) {
     constexpr aloe::wire::MacAddress group{0x01, 0x00, 0x5e, 0x00, 0x00, 0x01};
-    local(aloe::testing::arp_frame(aloe::testing::arp_request(group, harness_ip, stack_ip), broadcast));
-    local(aloe::testing::arp_frame(aloe::testing::arp_request(group, aloe::wire::Ipv4Address{}, stack_ip), broadcast));
+    local(aloe::frames::arp_frame(aloe::frames::arp_request(group, harness_ip, stack_ip), broadcast));
+    local(aloe::frames::arp_frame(aloe::frames::arp_request(group, aloe::wire::Ipv4Address{}, stack_ip), broadcast));
 
     EXPECT_TRUE(harness_received().empty()) << "a reply would go to a group";
     EXPECT_TRUE(ip_.resolved().empty());
@@ -93,7 +93,7 @@ TEST_P(NetArp, ARequestFromAGroupMacIsNeitherAnsweredNorLearned) {
 
 TEST_P(NetArp, ARequestForAnotherHostRefreshesAnEntryWeHold) {
     ip_.learn(harness_ip, stranger_mac, now_);  // a stale MAC
-    inject(aloe::testing::arp_frame(aloe::testing::arp_request(harness_mac, harness_ip, {10, 0, 0, 9}), broadcast));
+    inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, harness_ip, {10, 0, 0, 9}), broadcast));
 
     EXPECT_TRUE(harness_received().empty());
     ASSERT_EQ(ip_.resolved().size(), 1);
@@ -106,11 +106,11 @@ TEST_P(NetArp, ResolveSendsOneBroadcastRequestPerInterval) {
     EXPECT_FALSE(ip_.resolve(harness_ip, now_).has_value());
     auto frames = harness_received();
     ASSERT_EQ(frames.size(), 1);
-    const auto request = aloe::testing::parse_frame(frames[0]);
+    const auto request = aloe::frames::parse_frame(frames[0]).value();
     EXPECT_EQ(request.ethernet.destination, broadcast);
     EXPECT_EQ(request.ethernet.source, stack_mac);
     ASSERT_TRUE(request.arp.has_value());
-    EXPECT_EQ(*request.arp, aloe::testing::arp_request(stack_mac, stack_ip, harness_ip));
+    EXPECT_EQ(*request.arp, aloe::frames::arp_request(stack_mac, stack_ip, harness_ip));
 
     now_ += 500ms;
     EXPECT_FALSE(ip_.resolve(harness_ip, now_).has_value());
@@ -124,7 +124,7 @@ TEST_P(NetArp, ResolveSendsOneBroadcastRequestPerInterval) {
 TEST_P(NetArp, AReplyToOurRequestResolvesAndIsReported) {
     std::ignore = ip_.resolve(harness_ip, now_);
     std::ignore = harness_received();
-    inject(aloe::testing::arp_frame(aloe::testing::arp_reply(harness_mac, harness_ip, stack_mac, stack_ip), stack_mac));
+    inject(aloe::frames::arp_frame(aloe::frames::arp_reply(harness_mac, harness_ip, stack_mac, stack_ip), stack_mac));
     ASSERT_EQ(ip_.resolved().size(), 1);
     EXPECT_EQ(ip_.resolved()[0], (aloe::net::ArpResolution{.address = harness_ip, .mac = harness_mac}));
     EXPECT_EQ(ip_.counters().arp_replies_received, 1);
@@ -134,7 +134,7 @@ TEST_P(NetArp, AReplyToOurRequestResolvesAndIsReported) {
 }
 
 TEST_P(NetArp, AnUnsolicitedReplyIsDroppedAndTeachesNothing) {
-    inject(aloe::testing::arp_frame(aloe::testing::arp_reply(stranger_mac, stranger, stack_mac, stack_ip), stack_mac));
+    inject(aloe::frames::arp_frame(aloe::frames::arp_reply(stranger_mac, stranger, stack_mac, stack_ip), stack_mac));
     EXPECT_EQ(ip_.counters().dropped_arp_unsolicited, 1);
     EXPECT_EQ(ip_.counters().arp_replies_received, 1);
     EXPECT_TRUE(ip_.resolved().empty());
@@ -143,8 +143,8 @@ TEST_P(NetArp, AnUnsolicitedReplyIsDroppedAndTeachesNothing) {
 }
 
 TEST_P(NetArp, AFrameClaimingOurOwnAddressIsAConflict) {
-    inject(aloe::testing::arp_frame(aloe::testing::arp_request(harness_mac, stack_ip, stack_ip), broadcast));
-    inject(aloe::testing::arp_frame(aloe::testing::arp_reply(harness_mac, stack_ip, stack_mac, stack_ip), stack_mac));
+    inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, stack_ip, stack_ip), broadcast));
+    inject(aloe::frames::arp_frame(aloe::frames::arp_reply(harness_mac, stack_ip, stack_mac, stack_ip), stack_mac));
     EXPECT_EQ(ip_.counters().dropped_arp_conflict, 2);
     EXPECT_TRUE(harness_received().empty());
     EXPECT_TRUE(ip_.resolved().empty());
@@ -152,7 +152,7 @@ TEST_P(NetArp, AFrameClaimingOurOwnAddressIsAConflict) {
 }
 
 TEST_P(NetArp, AMalformedArpFrameIsDropped) {
-    auto frame = aloe::testing::arp_frame(aloe::testing::arp_request(harness_mac, harness_ip, stack_ip), broadcast);
+    auto frame = aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, harness_ip, stack_ip), broadcast);
     frame[15]  = std::byte{6};  // hardware type: token ring
     inject(frame);
     EXPECT_EQ(ip_.counters().dropped_arp_malformed, 1);
@@ -174,10 +174,10 @@ TEST_P(NetArp, AStaleEntryRefreshesByUnicastWhileStillInUse) {
     EXPECT_EQ(ip_.resolve(harness_ip, now_), harness_mac) << "stale, still usable";
     auto frames = harness_received();
     ASSERT_EQ(frames.size(), 1);
-    const auto refresh = aloe::testing::parse_frame(frames[0]);
+    const auto refresh = aloe::frames::parse_frame(frames[0]).value();
     EXPECT_EQ(refresh.ethernet.destination, harness_mac) << "unicast to the MAC we have";
     ASSERT_TRUE(refresh.arp.has_value());
-    EXPECT_EQ(*refresh.arp, aloe::testing::arp_request(stack_mac, stack_ip, harness_ip));
+    EXPECT_EQ(*refresh.arp, aloe::frames::arp_request(stack_mac, stack_ip, harness_ip));
 
     now_ += 500ms;
     EXPECT_EQ(ip_.resolve(harness_ip, now_), harness_mac);
@@ -187,12 +187,12 @@ TEST_P(NetArp, AStaleEntryRefreshesByUnicastWhileStillInUse) {
     EXPECT_FALSE(ip_.resolve(harness_ip, now_).has_value());
     frames = harness_received();
     ASSERT_EQ(frames.size(), 1);
-    EXPECT_EQ(aloe::testing::parse_frame(frames[0]).ethernet.destination, broadcast) << "back to broadcast";
+    EXPECT_EQ(aloe::frames::parse_frame(frames[0]).value().ethernet.destination, broadcast) << "back to broadcast";
 }
 
 TEST_P(NetArp, ARefreshLearnedFromTheWireIsReportedAgain) {
     ip_.learn(harness_ip, harness_mac, now_);  // seeded: no event
-    inject(aloe::testing::arp_frame(aloe::testing::arp_request(harness_mac, harness_ip, stack_ip), broadcast));
+    inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, harness_ip, stack_ip), broadcast));
     EXPECT_EQ(ip_.resolved().size(), 1) << "every mapping from the wire is reported, so other shards stay fresh";
     std::ignore = harness_received();
 }

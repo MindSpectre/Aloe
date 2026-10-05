@@ -10,7 +10,8 @@ API in the spirit of Boost.Beast, for the code that waits. Three goals rank ever
 This page describes the design the stack is built towards. Today the repository holds the build skeleton, the
 [`core`](core.md), [`execution`](execution.md) and [`log`](log.md) modules, the protocol formats in
 [`wire`](wire.md), the [device layer](device.md), the [loop bricks](loop.md),
-the [shard runtime](runtime.md) and the IP base ([`net`](net.md)); the rest arrives phase by phase, as the [roadmap](../roadmap.md) lays
+the [shard runtime](runtime.md), the IP base ([`net`](net.md)) and, apart from the stack, the [fixtures](fixtures.md) for
+testing code written over the bricks; the rest arrives phase by phase, as the [roadmap](../roadmap.md) lays
 out. Each section says what exists and what is still design.
 
 ## The shard, as a rule

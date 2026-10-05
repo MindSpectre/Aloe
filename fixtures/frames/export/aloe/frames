@@ -1,0 +1,12 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe frames fixture: builders for Ethernet, IPv4, ARP
+ * and ICMP frames as bytes, a parser that takes a transmitted frame apart, and
+ * helpers that move bytes in and out of a packet of any backend. For tests of
+ * code written over the bricks. Consumers link Aloe::Fixtures::Frames and write
+ * `#include <aloe/frames>`.
+ */
+
+#include <frames.hpp>
+#include <net_frames.hpp>

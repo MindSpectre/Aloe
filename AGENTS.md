@@ -7,8 +7,8 @@ bricks, plain calls a program writes its own loop over, and a runtime built only
 from the bricks that writes the loop for you and offers senders and receivers
 (stdexec) for the code that waits. The repository holds the build skeleton, the
 foundation (`core`, with `execution` and `log` beside it), the protocol formats
-(`wire`), the device layer (the packet and device concepts, an in-memory backend `fabric` for
-tests and the DPDK backend `ethdev`), the loop bricks (`loop`), the shard
+(`wire`), the device layer (the packet and device concepts and the DPDK backend `ethdev`), the
+fixtures (`fabric`, an in-memory device backend, and `frames`, for tests), the loop bricks (`loop`), the shard
 runtime (`runtime`) and the IP base (`net`: Ethernet, ARP, IPv4 and ICMP echo, the first protocol
 brick). The stack is built in phases: shard runtime, minimal TCP, full TCP, TLS, HTTP/1.1 with WebSocket.
 
@@ -39,18 +39,19 @@ ctest --preset debug -L unit     # or: integration, functional
 
 | Path                                                                       | Contents                                                                                                                                                                                                   |
 |----------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `common/<module>/`                                                         | Stack and foundation modules. `core` holds the small things every module links, with no dependencies (version, clock aliases, header-only helpers); `execution` is the one header that names stdexec and `log` the one that names quill, both linked on demand; `wire` (addresses, headers and checksums grouped by protocol: `ethernet/`, `ipv4/`, `arp/`, `icmp/`; values only, no state); `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime; built on `loop`, no DPDK), `net` (the IP base: the ARP cache and the `Ipv4<Device>` brick over `wire`'s formats; built on `loop` and `device`, no `execution`, no `log`, no DPDK). |
+| `common/<module>/`                                                         | Stack and foundation modules. `core` holds the small things every module links, with no dependencies (version, clock aliases, header-only helpers); `execution` is the one header that names stdexec and `log` the one that names quill, both linked on demand; `wire` (addresses, headers and checksums grouped by protocol: `ethernet/`, `ipv4/`, `arp/`, `icmp/`; values only, no state); `device` (concepts, no DPDK), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime; built on `loop`, no DPDK), `net` (the IP base: the ARP cache and the `Ipv4<Device>` brick over `wire`'s formats; built on `loop` and `device`, no `execution`, no `log`, no DPDK). |
+| `fixtures/<module>/`                                                       | What Aloe ships for testing code written over the bricks, kept apart from the stack: `fabric` (the in-memory device backend) and `frames` (frame builders and a parser). Built on `common`; nothing in `common` depends on them. |
 | `component/<module>/`                                                      | Protocol modules (HTTP/1.1, HTTP/2, HTTP/3, WebSocket, ...), each an independent unit built on `common`. None exist yet; the directory appears with the first. |
 | `<module>/export/aloe/<module>`                                            | Umbrella header, no extension. Consumers write `#include <aloe/<module>>`.                                                                                                                                 |
 | `tests/unit_tests/`, `tests/integration_tests/`, `tests/functional_tests/` | One CTest label each.                                                                                                                                                                                      |
 | `tests/manual_tests/`                                                      | Label `manual`: tests that need privileges or hardware. Every test preset excludes the label; run the binary by hand.                                                                                      |
-| `tests/shared/`                                                            | Test helpers: the unprivileged EAL arguments, the EAL as a gtest environment, frame builders, and the device conformance suite every backend runs.                                                         |
+| `tests/shared/`                                                            | Helpers for Aloe's own test binaries: the unprivileged EAL arguments, the EAL as a gtest environment, the net and runtime fixtures, and the device conformance suite every backend runs.                                                         |
 | `cmake/`                                                                   | `vcpkg-bootstrap.cmake` (the toolchain file), `dpdk.cmake`, test and library helpers.                                                                                                                      |
 | `triplets/`                                                                | The vcpkg overlay triplet every port is built with.                                                                                                                                                        |
 | `examples/`, `benchmarks/`                                                 | Living examples; benchmark targets as the stack grows.                                                                                                                                                     |
 
 Targets are named `Aloe.<Group>.<Module>` with an `Aloe::<Group>::<Module>`
-alias. Register tests with `add_unit_test`, `add_integration_test`,
+alias; the groups are `Common` and `Fixtures`. Register tests with `add_unit_test`, `add_integration_test`,
 `add_functional_test` or `add_manual_test` from `cmake/tests.cmake`.
 
 Every module's public headers sit on one flat include path, so header
@@ -80,7 +81,7 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - **Style.** `codestyle.md` covers what `.clang-format` does not: naming,
   namespaces, parameters, attributes, error handling, include order.
 - **Namespaces.** Every module gets a namespace named after it: `aloe::core`,
-  `aloe::execution`, `aloe::log`, `aloe::wire`, `aloe::device`, `aloe::fabric`, `aloe::ethdev`, `aloe::loop`,
+  `aloe::execution`, `aloe::log`, `aloe::wire`, `aloe::device`, `aloe::fabric`, `aloe::frames`, `aloe::ethdev`, `aloe::loop`,
   `aloe::runtime`, `aloe::net`. Nothing is
   declared directly in `aloe`. Another module's names are qualified with its
   namespace (`wire::MacAddress` inside `aloe::fabric`), never pulled in with
