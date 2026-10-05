@@ -8,8 +8,8 @@ API in the spirit of Boost.Beast, for the code that waits. Three goals rank ever
 **predictable low latency on the data path**, **high throughput**, and **long-lived connections**.
 
 This page describes the design the stack is built towards. Today the repository holds the build skeleton, the
-[`core`](core.md) and [`utils`](utils.md) modules, the [device layer](device.md), the [loop bricks](loop.md)
-and the [shard runtime](runtime.md); the rest arrives phase by phase, as the [roadmap](../roadmap.md) lays
+[`core`](core.md) and [`utils`](utils.md) modules, the [device layer](device.md), the [loop bricks](loop.md),
+the [shard runtime](runtime.md) and the IP base ([`net`](net.md)); the rest arrives phase by phase, as the [roadmap](../roadmap.md) lays
 out. Each section says what exists and what is still design.
 
 ## The shard, as a rule
@@ -50,13 +50,15 @@ with the TCP names still to be fixed in phase 1:
 ```cpp
 aloe::loop::ShardQueue<aloe::ethdev::Port> queue{port, 0, 512, counters};
 aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, Clock::now()};
-aloe::tcp::Stack<aloe::ethdev::Port> tcp{queue, wheel, config};     // depends on the device below, on nothing above
+aloe::net::Ipv4<aloe::ethdev::Port> ip{queue, ip_config};            // IPv4 with its ARP and ICMP echo
+aloe::tcp::Stack<aloe::net::Ipv4<aloe::ethdev::Port>> tcp{ip, wheel, config};   // depends on the layer below, on nothing above
 aloe::tcp::Connection& session = tcp.connect(exchange);              // non-blocking; the SYN leaves at the next flush
 
 for (;;) {
     const auto now      = Clock::now();
     const std::size_t n = queue.receive(burst);
-    tcp.process({burst.data(), n}, now);                             // segments in; acks and retransmits queued
+    ip.process({burst.data(), n}, now);                              // ARP and ping answered; datagrams sorted per transport
+    tcp.process(ip.received(aloe::device::Ipv4Protocol::Tcp), now);  // segments in; acks and retransmits queued
 
     for (aloe::tcp::Connection& c : tcp.events()) {                  // intrusive list: readable, connected, closed, writable
         if (c.readable()) {
@@ -86,7 +88,8 @@ every line of protocol code.
 drains, and the runtime wraps it in a sender afterwards. The runtime never has a capability the bricks
 lack. The documentation and the examples lead with the bricks.
 
-Status: `loop` and `runtime` exist. The protocol bricks and the connection senders arrive in phase 1.
+Status: `loop`, `runtime` and the first protocol brick, `net`, exist. The
+transport bricks and the connection senders arrive in phase 1.
 
 ## Layers
 
@@ -100,6 +103,10 @@ operations, flush. The stream concept that TLS and WebSocket reuse is defined in
 `process`, `events`, `unread` and `consume`, `send`, `flush`, with the connection senders in the runtime
 expressed over them. Phase 1 gets the most design care although its code is the simplest, because the v1
 freeze at the end of phase 2 fixes that shape.
+
+The seam between IPv4 and the transports is a list: `net::Ipv4::process` sorts the datagrams it
+accepts into one list per transport, and the loop hands `received(Tcp)` to TCP and `received(Udp)` to
+UDP. IPv4 calls nobody above it. ARP is private to the brick, as it is to the kernel.
 
 Protocol headers include `<aloe/loop>` and `<aloe/device>` and never `<aloe/core>`. The `loop` target does
 not link `core`, so stdexec stays out of the data path by construction, not by review.
@@ -116,8 +123,9 @@ Network cards vary, so offloads such as checksums and segmentation are queried f
 and every offload has a software fallback. Steering is a pure function of what the card reports, so a
 program can predict which queue any flow lands on.
 
-Status: the device layer and the loop exist, see [device](device.md) and [loop](loop.md). IPv4, UDP and TCP
-arrive in phases 1 and 2, TLS in phase 3, HTTP/1.1 and WebSocket in phase 4.
+Status: the device layer, the loop and the IP base exist, see
+[device](device.md), [loop](loop.md) and [net](net.md). UDP and TCP arrive in phase 1, TLS in phase 3,
+HTTP/1.1 and WebSocket in phase 4.
 
 ## Senders and receivers
 

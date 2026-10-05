@@ -7,9 +7,9 @@ bricks, plain calls a program writes its own loop over, and a runtime built only
 from the bricks that writes the loop for you and offers senders and receivers
 (stdexec) for the code that waits. The repository holds the build skeleton, the
 device layer (the packet and device concepts, an in-memory backend `fabric` for
-tests and the DPDK backend `ethdev`), the loop bricks (`loop`) and the shard
-runtime (`runtime`). The stack is built in phases: shard runtime, minimal TCP,
-full TCP, TLS, HTTP/1.1 with WebSocket.
+tests and the DPDK backend `ethdev`), the loop bricks (`loop`), the shard
+runtime (`runtime`) and the IP base (`net`: Ethernet, ARP, IPv4 and ICMP echo, the first protocol
+brick). The stack is built in phases: shard runtime, minimal TCP, full TCP, TLS, HTTP/1.1 with WebSocket.
 
 ## Build and test
 
@@ -38,7 +38,7 @@ ctest --preset debug -L unit     # or: integration, functional
 
 | Path                                                                       | Contents                                                                                                                                                                                                   |
 |----------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `common/<module>/`                                                         | Stack and foundation modules. `core` holds the version and the execution alias; `utils` holds small header-only helpers with no dependencies; `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime; built on `loop`, no DPDK). |
+| `common/<module>/`                                                         | Stack and foundation modules. `core` holds the version and the execution alias; `utils` holds small header-only helpers with no dependencies; `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime; built on `loop`, no DPDK), `net` (the IP base: wire formats, the ARP cache, the `Ipv4<Device>` brick; built on `loop` and `device`, no `core`, no DPDK). |
 | `component/<module>/`                                                      | Protocol modules (HTTP/1.1, HTTP/2, HTTP/3, WebSocket, ...), each an independent unit built on `common`. None exist yet; the directory appears with the first. |
 | `<module>/export/aloe/<module>`                                            | Umbrella header, no extension. Consumers write `#include <aloe/<module>>`.                                                                                                                                 |
 | `tests/unit_tests/`, `tests/integration_tests/`, `tests/functional_tests/` | One CTest label each.                                                                                                                                                                                      |
@@ -78,7 +78,7 @@ basenames are unique across modules: `packet.hpp` is the concept,
   namespaces, parameters, attributes, error handling, include order.
 - **Namespaces.** Every module gets a namespace named after it: `aloe::core`,
   `aloe::utils`, `aloe::device`, `aloe::fabric`, `aloe::ethdev`, `aloe::loop`,
-  `aloe::runtime`. Nothing is
+  `aloe::runtime`, `aloe::net`. Nothing is
   declared directly in `aloe`. Another module's names are qualified with its
   namespace (`device::MacAddress` inside `aloe::fabric`), never pulled in with
   `using namespace`. Test helpers live in `aloe::testing`.
@@ -146,6 +146,12 @@ basenames are unique across modules: `packet.hpp` is the concept,
   it. Tests that match configure output collapse whitespace first.
 - Debug executables that link DPDK are about 200 MB, because every driver is
   linked whole.
+- `loop::ShardQueue::transmit(Packet&&)` moves the packet only on success. Code that uses the packet
+  after a refused transmit is right, and clang-tidy's `bugprone-use-after-move` flags it anyway; mark
+  the lines `NOLINT(bugprone-use-after-move)` with that reason, as `net::Ipv4::send` does.
+- The fabric never refuses a transmit and refuses frames shorter than an Ethernet header. A test that
+  needs a refused send wraps the port in a device whose `transmit` returns 0; a test of a short frame
+  builds the packet on the port's own pool and calls the brick directly.
 
 ## Documentation
 

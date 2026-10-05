@@ -28,6 +28,7 @@ for the design and the [roadmap](docs/roadmap.md) for the phases.
 | `aloe::ethdev`  | `common/ethdev/`     | The DPDK device backend.                                                                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
 | `aloe::loop`    | `common/loop/`       | The bricks a loop is built from: a device queue with its transmit ring, the timer wheel, the work node with the run queue and the inbox, and the counters. | [docs/architecture/loop.md](docs/architecture/loop.md)       |
 | `aloe::runtime` | `common/runtime/`    | The loop written for you: shards on pinned threads, the scheduler, timer senders, scope and task, and the runtime that launches one shard per queue. | [docs/architecture/runtime.md](docs/architecture/runtime.md) |
+| `aloe::net`     | `common/net/`        | The first protocol brick: IPv4 over a device queue with ARP and ICMP echo, datagrams sorted per transport, checksums by offload or software. | [docs/architecture/net.md](docs/architecture/net.md)         |
 
 Each module ships an umbrella header. Consumers link the module's target and
 include it by name:
