@@ -3,6 +3,7 @@
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Net
         test_net_wire.cpp
+        test_net_arp_cache.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Net
         PRIVATE

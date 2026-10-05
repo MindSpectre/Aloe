@@ -8,6 +8,7 @@
  */
 
 #include <arp.hpp>
+#include <arp_cache.hpp>
 #include <ethernet.hpp>
 #include <icmp.hpp>
 #include <ipv4_header.hpp>
