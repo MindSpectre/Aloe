@@ -1,4 +1,6 @@
 #include <aloe/ethdev>
+#include <aloe/frames>
+#include <aloe/wire>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -8,7 +10,6 @@
 
 #include <device_conformance.hpp>
 #include <eal_environment.hpp>
-#include <frames.hpp>
 #include <gtest/gtest.h>
 
 namespace aloe::testing {
@@ -29,7 +30,7 @@ namespace aloe::testing {
             }
         };
 
-        constexpr device::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
+        constexpr wire::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
 
     }  // namespace
 
@@ -65,13 +66,13 @@ TEST(EthdevRing, EachQueueLoopsBackToItself) {
         {.name = aloe::testing::probe_vdev("net_ring"), .queues = 4, .pool_size = 256}
     };
     for (std::uint16_t queue = 0; queue < 4; ++queue) {
-        const auto frame = aloe::testing::ethernet_frame(port.mac(),
-                                                         aloe::testing::peer,
-                                                         aloe::testing::ethertype_experimental,
-                                                         aloe::testing::pattern(40, static_cast<std::uint8_t>(queue)));
+        const auto frame = aloe::frames::ethernet_frame(port.mac(),
+                                                        aloe::testing::peer,
+                                                        aloe::frames::ethertype_experimental,
+                                                        aloe::frames::pattern(40, static_cast<std::uint8_t>(queue)));
         auto packet      = port.allocate(queue);
         ASSERT_TRUE(packet.has_value());
-        ASSERT_TRUE(aloe::testing::fill(*packet, frame));
+        ASSERT_TRUE(aloe::frames::fill(*packet, frame));
         std::array<aloe::ethdev::Packet, 1> burst{std::move(*packet)};
         ASSERT_EQ(port.transmit(queue, burst), 1);
 
@@ -80,7 +81,7 @@ TEST(EthdevRing, EachQueueLoopsBackToItself) {
             const std::size_t count = port.receive(other, received);
             if (other == queue) {
                 ASSERT_EQ(count, 1) << "queue " << other;
-                EXPECT_EQ(aloe::testing::bytes_of(received[0]), frame);
+                EXPECT_EQ(aloe::frames::bytes_of(received[0]), frame);
             } else {
                 EXPECT_EQ(count, 0) << "queue " << other;
             }
@@ -92,8 +93,8 @@ TEST(EthdevRing, RefusesTheTransmitThatWouldOverfillTheRing) {
     aloe::ethdev::Port port{
         {.name = aloe::testing::probe_vdev("net_ring"), .queues = 1, .pool_size = 2048}
     };
-    const auto frame = aloe::testing::ethernet_frame(
-        port.mac(), aloe::testing::peer, aloe::testing::ethertype_experimental, aloe::testing::pattern(20));
+    const auto frame = aloe::frames::ethernet_frame(
+        port.mac(), aloe::testing::peer, aloe::frames::ethertype_experimental, aloe::frames::pattern(20));
     std::size_t accepted = 0;
     std::size_t offered  = 0;
     while (accepted == offered && accepted < 2000) {
@@ -101,7 +102,7 @@ TEST(EthdevRing, RefusesTheTransmitThatWouldOverfillTheRing) {
         for (auto& packet : burst) {
             auto allocated = port.allocate(0);
             ASSERT_TRUE(allocated.has_value());
-            ASSERT_TRUE(aloe::testing::fill(*allocated, frame));
+            ASSERT_TRUE(aloe::frames::fill(*allocated, frame));
             packet = std::move(*allocated);
         }
         offered  += burst.size();
@@ -112,7 +113,7 @@ TEST(EthdevRing, RefusesTheTransmitThatWouldOverfillTheRing) {
     EXPECT_GT(accepted, 1000);
 
     std::array<aloe::ethdev::Packet, 1> one{port.allocate(0).value()};
-    ASSERT_TRUE(aloe::testing::fill(one[0], frame));
+    ASSERT_TRUE(aloe::frames::fill(one[0], frame));
     EXPECT_EQ(port.transmit(0, one), 0) << "a full ring accepts nothing";
     EXPECT_FALSE(one[0].empty());
 
@@ -133,14 +134,14 @@ TEST(EthdevRing, BurstsLargerThanMaxBurstMoveInParts) {
     aloe::ethdev::Port port{
         {.name = aloe::testing::probe_vdev("net_ring"), .queues = 1, .pool_size = 512}
     };
-    const auto frame = aloe::testing::ethernet_frame(
-        port.mac(), aloe::testing::peer, aloe::testing::ethertype_experimental, aloe::testing::pattern(20));
+    const auto frame = aloe::frames::ethernet_frame(
+        port.mac(), aloe::testing::peer, aloe::frames::ethertype_experimental, aloe::frames::pattern(20));
     constexpr std::size_t count = aloe::ethdev::Port::max_burst + 36;
     std::vector<aloe::ethdev::Packet> burst(count);
     for (auto& packet : burst) {
         auto allocated = port.allocate(0);
         ASSERT_TRUE(allocated.has_value());
-        ASSERT_TRUE(aloe::testing::fill(*allocated, frame));
+        ASSERT_TRUE(aloe::frames::fill(*allocated, frame));
         packet = std::move(*allocated);
     }
     EXPECT_EQ(port.transmit(0, burst), aloe::ethdev::Port::max_burst);
@@ -156,20 +157,20 @@ TEST(EthdevRing, TheTransmitterRefusesRuntsAndOversizedFramesInOrder) {
     aloe::ethdev::Port port{
         {.name = aloe::testing::probe_vdev("net_ring"), .queues = 1, .pool_size = 256}
     };
-    const auto first = aloe::testing::ethernet_frame(
-        port.mac(), aloe::testing::peer, aloe::testing::ethertype_experimental, aloe::testing::pattern(20, 1));
-    const auto last = aloe::testing::ethernet_frame(
-        port.mac(), aloe::testing::peer, aloe::testing::ethertype_experimental, aloe::testing::pattern(20, 2));
-    const auto huge = aloe::testing::ethernet_frame(port.mac(),
-                                                    aloe::testing::peer,
-                                                    aloe::testing::ethertype_experimental,
-                                                    aloe::testing::pattern(static_cast<std::size_t>(port.mtu()) + 1));
-    const std::vector<std::byte> runt(aloe::device::ethernet_header_size - 1);
+    const auto first = aloe::frames::ethernet_frame(
+        port.mac(), aloe::testing::peer, aloe::frames::ethertype_experimental, aloe::frames::pattern(20, 1));
+    const auto last = aloe::frames::ethernet_frame(
+        port.mac(), aloe::testing::peer, aloe::frames::ethertype_experimental, aloe::frames::pattern(20, 2));
+    const auto huge = aloe::frames::ethernet_frame(port.mac(),
+                                                   aloe::testing::peer,
+                                                   aloe::frames::ethertype_experimental,
+                                                   aloe::frames::pattern(static_cast<std::size_t>(port.mtu()) + 1));
+    const std::vector<std::byte> runt(aloe::wire::EthernetHeader::size - 1);
     std::array<aloe::ethdev::Packet, 4> burst;
     for (std::size_t index = 0; const auto& frame : {first, runt, huge, last}) {
         auto packet = port.allocate(0);
         ASSERT_TRUE(packet.has_value());
-        ASSERT_TRUE(aloe::testing::fill(*packet, frame));
+        ASSERT_TRUE(aloe::frames::fill(*packet, frame));
         burst[index++] = std::move(*packet);
     }
     EXPECT_EQ(port.transmit(0, burst), 4) << "refused frames count as accepted";
@@ -178,20 +179,20 @@ TEST(EthdevRing, TheTransmitterRefusesRuntsAndOversizedFramesInOrder) {
 
     std::array<aloe::ethdev::Packet, 4> received;
     ASSERT_EQ(port.receive(0, received), 2);
-    EXPECT_EQ(aloe::testing::bytes_of(received[0]), first);
-    EXPECT_EQ(aloe::testing::bytes_of(received[1]), last);
+    EXPECT_EQ(aloe::frames::bytes_of(received[0]), first);
+    EXPECT_EQ(aloe::frames::bytes_of(received[1]), last);
 }
 
 TEST(EthdevRing, ARefusedFrameBehindAPartialSendStaysWithTheCaller) {
     aloe::ethdev::Port port{
         {.name = aloe::testing::probe_vdev("net_ring"), .queues = 1, .pool_size = 2048}
     };
-    const auto frame = aloe::testing::ethernet_frame(
-        port.mac(), aloe::testing::peer, aloe::testing::ethertype_experimental, aloe::testing::pattern(20));
+    const auto frame = aloe::frames::ethernet_frame(
+        port.mac(), aloe::testing::peer, aloe::frames::ethertype_experimental, aloe::frames::pattern(20));
     const auto packet_of = [&](std::span<const std::byte> bytes) {
         auto packet = port.allocate(0);
         EXPECT_TRUE(packet.has_value());
-        EXPECT_TRUE(aloe::testing::fill(*packet, bytes));
+        EXPECT_TRUE(aloe::frames::fill(*packet, bytes));
         return std::move(*packet);
     };
 
@@ -203,13 +204,13 @@ TEST(EthdevRing, ARefusedFrameBehindAPartialSendStaysWithTheCaller) {
         ++queued;
     }
 
-    const std::vector<std::byte> runt(aloe::device::ethernet_header_size - 1);
+    const std::vector<std::byte> runt(aloe::wire::EthernetHeader::size - 1);
     std::array<aloe::ethdev::Packet, 4> burst{packet_of(frame), packet_of(frame), packet_of(runt), packet_of(frame)};
     EXPECT_EQ(port.transmit(0, burst), 1) << "only the first frame fit";
     EXPECT_TRUE(burst[0].empty());
-    EXPECT_EQ(aloe::testing::bytes_of(burst[1]), frame);
-    EXPECT_EQ(aloe::testing::bytes_of(burst[2]), runt) << "the runt behind the unsent frame is untouched";
-    EXPECT_EQ(aloe::testing::bytes_of(burst[3]), frame);
+    EXPECT_EQ(aloe::frames::bytes_of(burst[1]), frame);
+    EXPECT_EQ(aloe::frames::bytes_of(burst[2]), runt) << "the runt behind the unsent frame is untouched";
+    EXPECT_EQ(aloe::frames::bytes_of(burst[3]), frame);
     EXPECT_EQ(port.counters(0).oversized, 0) << "and not counted";
     EXPECT_EQ(port.counters(0).transmitted, 1023);
 }

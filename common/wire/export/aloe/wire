@@ -1,0 +1,19 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe wire module: addresses, headers and checksums,
+ * grouped by protocol, as values and formats with no packets and no state.
+ * Consumers link Aloe::Common::Wire and write `#include <aloe/wire>`.
+ */
+
+#include <arp.hpp>
+#include <bytes.hpp>
+#include <checksum.hpp>
+#include <ethernet.hpp>
+#include <icmp.hpp>
+#include <ipv4_address.hpp>
+#include <ipv4_checksum.hpp>
+#include <ipv4_header.hpp>
+#include <ipv4_protocol.hpp>
+#include <ipv4_subnet.hpp>
+#include <mac_address.hpp>

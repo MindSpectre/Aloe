@@ -15,23 +15,23 @@ namespace {
 
     /// A sender the test completes by hand, which records what its receiver's environment said.
     struct ManualSender {
-        using sender_concept = aloe::core::ex::sender_t;
+        using sender_concept = aloe::execution::ex::sender_t;
         using completion_signatures =
-            aloe::core::ex::completion_signatures<aloe::core::ex::set_value_t(),
-                                                  aloe::core::ex::set_error_t(std::exception_ptr),
-                                                  aloe::core::ex::set_stopped_t()>;
+            aloe::execution::ex::completion_signatures<aloe::execution::ex::set_value_t(),
+                                                       aloe::execution::ex::set_error_t(std::exception_ptr),
+                                                       aloe::execution::ex::set_stopped_t()>;
 
         struct Handle {
             virtual ~Handle()               = default;
             virtual void value() noexcept   = 0;
             virtual void stopped() noexcept = 0;
             virtual void error() noexcept   = 0;
-            aloe::core::ex::inplace_stop_token token;
+            aloe::execution::ex::inplace_stop_token token;
         };
 
         std::vector<Handle*>* handles;
 
-        template <aloe::core::ex::receiver Receiver>
+        template <aloe::execution::ex::receiver Receiver>
         struct Operation : Handle {
             Receiver receiver;
             std::vector<Handle*>* handles;
@@ -42,35 +42,36 @@ namespace {
             }
 
             void start() & noexcept {
-                token = aloe::core::ex::get_stop_token(aloe::core::ex::get_env(receiver));
+                token = aloe::execution::ex::get_stop_token(aloe::execution::ex::get_env(receiver));
                 if (token.stop_requested()) {
-                    aloe::core::ex::set_stopped(std::move(receiver));
+                    aloe::execution::ex::set_stopped(std::move(receiver));
                     return;
                 }
                 handles->push_back(this);
             }
 
             void value() noexcept override {
-                aloe::core::ex::set_value(std::move(receiver));
+                aloe::execution::ex::set_value(std::move(receiver));
             }
 
             void stopped() noexcept override {
-                aloe::core::ex::set_stopped(std::move(receiver));
+                aloe::execution::ex::set_stopped(std::move(receiver));
             }
 
             void error() noexcept override {
-                aloe::core::ex::set_error(std::move(receiver), std::make_exception_ptr(std::runtime_error{"boom"}));
+                aloe::execution::ex::set_error(std::move(receiver),
+                                               std::make_exception_ptr(std::runtime_error{"boom"}));
             }
         };
 
-        template <aloe::core::ex::receiver Receiver>
+        template <aloe::execution::ex::receiver Receiver>
         [[nodiscard]] auto connect(Receiver receiver) const -> Operation<Receiver> {
             return Operation<Receiver>{std::move(receiver), handles};
         }
     };
 
     struct FlagReceiver {
-        using receiver_concept = aloe::core::ex::receiver_t;
+        using receiver_concept = aloe::execution::ex::receiver_t;
         bool* flag;
 
         void set_value() const noexcept {
@@ -97,7 +98,7 @@ namespace {
     class TaskScopeTest : public testing::Test {
     protected:
         aloe::loop::ShardCounters counters_;
-        aloe::runtime::TaskScope scope_{aloe::core::logger("aloe.runtime"), 0, counters_};
+        aloe::runtime::TaskScope scope_{aloe::log::logger("aloe.runtime"), 0, counters_};
         std::vector<ManualSender::Handle*> handles_;
 
         [[nodiscard]] ManualSender manual() noexcept {
@@ -107,22 +108,22 @@ namespace {
 
     /// A sender that records what its receiver's environment answers to the tag query.
     struct Recording {
-        using sender_concept        = aloe::core::ex::sender_t;
-        using completion_signatures = aloe::core::ex::completion_signatures<aloe::core::ex::set_value_t()>;
+        using sender_concept        = aloe::execution::ex::sender_t;
+        using completion_signatures = aloe::execution::ex::completion_signatures<aloe::execution::ex::set_value_t()>;
         int* seen;
 
-        template <aloe::core::ex::receiver Receiver>
+        template <aloe::execution::ex::receiver Receiver>
         struct Operation {
             Receiver receiver;
             int* seen;
 
             void start() & noexcept {
-                *seen = TagEnv::TagQuery{}(aloe::core::ex::get_env(receiver));
-                aloe::core::ex::set_value(std::move(receiver));
+                *seen = TagEnv::TagQuery{}(aloe::execution::ex::get_env(receiver));
+                aloe::execution::ex::set_value(std::move(receiver));
             }
         };
 
-        template <aloe::core::ex::receiver Receiver>
+        template <aloe::execution::ex::receiver Receiver>
         [[nodiscard]] auto connect(Receiver receiver) const -> Operation<Receiver> {
             return Operation<Receiver>{std::move(receiver), seen};
         }
@@ -132,7 +133,7 @@ namespace {
 
 TEST_F(TaskScopeTest, InlineCompletionLeavesTheScopeEmptyAndCounted) {
     EXPECT_TRUE(scope_.empty());
-    scope_.spawn(aloe::core::ex::just());
+    scope_.spawn(aloe::execution::ex::just());
     EXPECT_TRUE(scope_.empty());
     EXPECT_EQ(counters_.tasks_spawned, 1);
     EXPECT_EQ(counters_.tasks_completed, 1);
@@ -170,7 +171,7 @@ TEST_F(TaskScopeTest, RequestStopReachesRunningWorkAndWorkSpawnedAfterwards) {
 
 TEST_F(TaskScopeTest, AFailedTaskIsCountedAndTheScopeContinues) {
     scope_.spawn(manual());
-    scope_.spawn(aloe::core::ex::just_error(std::make_exception_ptr(std::runtime_error{"boom"})));
+    scope_.spawn(aloe::execution::ex::just_error(std::make_exception_ptr(std::runtime_error{"boom"})));
     EXPECT_EQ(counters_.tasks_failed, 1);
     EXPECT_EQ(scope_.size(), 1) << "the other task is unaffected";
 
@@ -181,15 +182,15 @@ TEST_F(TaskScopeTest, AFailedTaskIsCountedAndTheScopeContinues) {
 
 TEST_F(TaskScopeTest, JoinCompletesWhenTheLastTaskEndsOrAtOnceWhenEmpty) {
     bool joined    = false;
-    auto immediate = aloe::core::ex::connect(scope_.join(), FlagReceiver{&joined});
-    aloe::core::ex::start(immediate);
+    auto immediate = aloe::execution::ex::connect(scope_.join(), FlagReceiver{&joined});
+    aloe::execution::ex::start(immediate);
     EXPECT_TRUE(joined) << "an empty scope joins at once";
 
     joined = false;
     scope_.spawn(manual());
     scope_.spawn(manual());
-    auto waiting = aloe::core::ex::connect(scope_.join(), FlagReceiver{&joined});
-    aloe::core::ex::start(waiting);
+    auto waiting = aloe::execution::ex::connect(scope_.join(), FlagReceiver{&joined});
+    aloe::execution::ex::start(waiting);
     EXPECT_FALSE(joined);
     handles_[0]->value();
     EXPECT_FALSE(joined) << "one task still runs";

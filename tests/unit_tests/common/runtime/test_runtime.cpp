@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <aloe/fabric>
+#include <aloe/frames>
 #include <aloe/runtime>
+#include <aloe/wire>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -15,7 +17,6 @@
 #include <vector>
 
 #include <echo_stack.hpp>
-#include <frames.hpp>
 #include <gtest/gtest.h>
 #include <sched.h>
 
@@ -24,10 +25,10 @@ namespace {
     using namespace std::chrono_literals;
 
     constexpr std::uint16_t queues = 4;
-    constexpr aloe::device::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
-    constexpr aloe::device::MacAddress client{0x02, 0, 0, 0, 0, 0x02};
-    constexpr aloe::device::Ipv4Address server_ip{10, 0, 0, 2};
-    constexpr aloe::device::Ipv4Address client_ip{10, 0, 0, 1};
+    constexpr aloe::wire::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
+    constexpr aloe::wire::MacAddress client{0x02, 0, 0, 0, 0, 0x02};
+    constexpr aloe::wire::Ipv4Address server_ip{10, 0, 0, 2};
+    constexpr aloe::wire::Ipv4Address client_ip{10, 0, 0, 1};
     constexpr auto patience = 5s;
 
     using EchoRuntime = aloe::runtime::Runtime<aloe::fabric::Port, aloe::testing::EchoStack<aloe::fabric::Port>>;
@@ -45,7 +46,7 @@ namespace {
     }
 
     aloe::runtime::task<void> mark(std::atomic<int>* slot, std::atomic<int>* ran_on) {
-        const auto scheduler = co_await aloe::core::ex::read_env(aloe::core::ex::get_scheduler);
+        const auto scheduler = co_await aloe::execution::ex::read_env(aloe::execution::ex::get_scheduler);
         ran_on->store(scheduler.context().index());
         slot->store(1);
     }
@@ -173,19 +174,19 @@ TEST_F(RuntimeTest, StopUnwindsParkedTasksOnEveryShardAndJoinReturnsPromptly) {
 TEST_F(RuntimeTest, AFrameIsAnsweredByTheShardItsHashSelects) {
     EchoRuntime runtime{config_, server_};
     runtime.start();
-    const aloe::testing::Ipv4Spec spec{.destination_mac  = server,
-                                       .source_mac       = client,
-                                       .source           = client_ip,
-                                       .destination      = server_ip,
-                                       .source_port      = 40000,
-                                       .destination_port = 80,
-                                       .protocol         = aloe::device::Ipv4Protocol::Udp};
-    const auto frame             = aloe::testing::ipv4_frame(spec, aloe::testing::pattern(16));
-    const std::uint16_t expected = aloe::device::queue_for(server_.steering(), aloe::testing::flow_of(spec));
+    const aloe::frames::Ipv4Spec spec{.destination_mac  = server,
+                                      .source_mac       = client,
+                                      .source           = client_ip,
+                                      .destination      = server_ip,
+                                      .source_port      = 40000,
+                                      .destination_port = 80,
+                                      .protocol         = aloe::wire::Ipv4Protocol::Udp};
+    const auto frame             = aloe::frames::ipv4_frame(spec, aloe::frames::pattern(16));
+    const std::uint16_t expected = aloe::device::queue_for(server_.steering(), aloe::frames::flow_of(spec));
 
     auto packet = client_.allocate(0);
     ASSERT_TRUE(packet.has_value());
-    ASSERT_TRUE(aloe::testing::fill(*packet, frame));
+    ASSERT_TRUE(aloe::frames::fill(*packet, frame));
     std::array<aloe::fabric::Packet, 1> burst{std::move(*packet)};
     ASSERT_EQ(client_.transmit(0, burst), 1);
 
@@ -193,7 +194,7 @@ TEST_F(RuntimeTest, AFrameIsAnsweredByTheShardItsHashSelects) {
     ASSERT_TRUE(eventually([&] {
         std::array<aloe::fabric::Packet, 1> received;
         if (client_.receive(0, received) == 1) {
-            reply = aloe::testing::bytes_of(received[0]);
+            reply = aloe::frames::bytes_of(received[0]);
             return true;
         }
         return false;

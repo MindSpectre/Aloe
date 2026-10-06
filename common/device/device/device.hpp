@@ -6,7 +6,7 @@
 #include <optional>
 #include <span>
 
-#include <address.hpp>
+#include <mac_address.hpp>
 #include <packet.hpp>
 #include <rss.hpp>
 
@@ -70,7 +70,7 @@ namespace aloe::device {
             typename D::Packet;
             requires IsPacket<typename D::Packet>;
             { const_device.queue_count() } -> std::same_as<std::uint16_t>;
-            { const_device.mac() } -> std::same_as<MacAddress>;
+            { const_device.mac() } -> std::same_as<wire::MacAddress>;
             { const_device.mtu() } -> std::same_as<std::uint16_t>;
             { const_device.link_up() } -> std::same_as<bool>;
             { const_device.capabilities() } -> std::same_as<const Capabilities&>;
@@ -80,8 +80,5 @@ namespace aloe::device {
             { device.transmit(queue, packets) } -> std::same_as<std::size_t>;
             { const_device.counters(queue) } -> std::same_as<QueueCounters>;
         };
-
-    /// Ethernet header length, the `14` in `mtu() + 14`.
-    inline constexpr std::size_t ethernet_header_size = 14;
 
 }  // namespace aloe::device

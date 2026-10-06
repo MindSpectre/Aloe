@@ -12,7 +12,7 @@
 namespace {
 
     using namespace std::chrono_literals;
-    using TimePoint = aloe::loop::Timer::TimePoint;
+    using TimePoint = aloe::core::TimePoint;
 
     constexpr TimePoint start{};
     constexpr auto resolution = 1ms;

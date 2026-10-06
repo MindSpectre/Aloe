@@ -6,7 +6,8 @@ transports. It answers ARP and ping, sorts incoming IPv4 datagrams into one list
 layer above to drain, and sends a transport's segment by routing it, finding the next hop's MAC, writing
 both headers and handing the frame to the queue. Everything is reached through the umbrella
 `#include <aloe/net>` (`export/aloe/net`), and targets link `Aloe::Common::Net`. It depends on
-[`loop`](loop.md), [`device`](device.md) and [`utils`](utils.md), and not on [`core`](core.md): no header
+[`loop`](loop.md), [`device`](device.md), [`wire`](wire.md) and [`core`](core.md), and not on [`execution`](execution.md) or
+[`log`](log.md): no header
 here names the asynchronous model, logs, or reads a clock.
 
 ## Key types
@@ -33,9 +34,8 @@ here names the asynchronous model, logs, or reads a clock.
   with bounded linear probing, aged lazily against the stamp the caller passes. Reachable, then stale with
   a background refresh, then expired.
 - **`aloe::net::Ipv4Counters`** -- what happened, one counter per drop reason and per send error.
-- **The wire formats** -- `EthernetHeader`, `ArpPacket`, `Ipv4Header`, `IcmpHeader`, each with a
-  `parse_*` returning `std::optional` and a `write_*` over byte spans, all `constexpr`. `multicast_mac`
-  maps a group address to its MAC.
+- **The wire formats** -- `EthernetHeader`, `ArpPacket`, `Ipv4Header`, `IcmpHeader` and the addresses
+  are the [wire](wire.md) module's; the brick reads and writes them and holds none of its own.
 
 ## Usage
 
@@ -72,8 +72,8 @@ aloe::tcp::Stack<aloe::net::Ipv4<aloe::ethdev::Port>> tcp{ip, wheel, tcp_config}
 aloe::udp::Stack<aloe::net::Ipv4<aloe::ethdev::Port>> udp{ip, udp_config};
 
 ip.process(std::span{burst}.first(received), now);
-tcp.process(ip.received(aloe::device::Ipv4Protocol::Tcp), now);
-udp.process(ip.received(aloe::device::Ipv4Protocol::Udp), now);
+tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);
+udp.process(ip.received(aloe::wire::Ipv4Protocol::Udp), now);
 ```
 
 A transport sends by appending its segment to a packet from `allocate()`, with the checksum field zero,
@@ -82,7 +82,7 @@ and asking the brick to fill it:
 ```cpp
 auto packet = ip.allocate();
 // append the UDP header and payload to *packet ...
-const auto sent = ip.send(std::move(*packet), {.destination = peer, .protocol = aloe::device::Ipv4Protocol::Udp,
+const auto sent = ip.send(std::move(*packet), {.destination = peer, .protocol = aloe::wire::Ipv4Protocol::Udp,
                                                 .checksum = aloe::device::L4Checksum::Udp}, now);
 if (!sent) {
     // sent.error(): NoRoute, Unresolved (a request is out: retry later), Oversized, Refused. The packet is yours again.
@@ -105,16 +105,22 @@ shards never echo each other. ARP frames carry no IP header, so a card puts them
 queue 0 on both backends; the loop that owns that queue forwards resolutions to the other shards, which
 arrives with connection placement in phase 1. A request from another host for a third party refreshes
 an entry we already hold and never creates one, so a router's gratuitous ARP after a failover takes effect
-at once; a sender that cannot be a host (a zero, multicast or broadcast address, or a group MAC) is answered
-when it asks for our address and never learned.
+at once; a sender that cannot be a host (a zero, multicast or broadcast address) is answered when it asks for
+our address and never learned, which keeps RFC 5227 probes working. A request from a group MAC is dropped as
+martian instead, since the reply would go to a group.
 
 **Aging without a timer.** The cache keeps the stamp of each entry's last confirmation and compares it
 with the stamp the caller passes. Fresh entries are used as they are; stale ones are still used while one
 unicast refresh goes out per interval, so a live flow never stalls on a refresh; expired ones are
 unresolved again. No timer node, no wheel, and the brick's constructor takes the queue and the config and
-nothing else. The table holds `arp_capacity` entries in windows of eight; a lookup miss or a learn in a
-full window evicts the oldest confirmed entry of that window, so a storm of distinct unresolved destinations
-can displace a live entry for one ARP round trip. The capacity is a power of two of at least eight.
+nothing else. The table holds `arp_capacity` entries in windows of eight. A lookup miss or a learn in a
+full window evicts, in this order: an expired entry; an incomplete one whose request is at least
+`arp_request_interval` old, since its reply is not coming; the entry with the oldest confirmation; and only
+then the incomplete entry whose request left first. An entry waiting for its reply goes last because
+evicting it drops that reply as unsolicited, and two destinations that share a window would keep evicting
+each other's requests. The price is that a storm of distinct unresolved destinations displaces live
+entries, the gateway's included, and each displaced one costs one ARP round trip on its next send. The
+capacity is a power of two of at least eight.
 
 **The echo reply never consults the cache.** It is built in the request's packet and goes back to the
 frame's source MAC: the last hop, which is the right next hop back whether the pinger is on the subnet or
@@ -127,8 +133,14 @@ the offload, so both paths run in CI.
 
 **Every slot empty.** `process` moves a packet into a list, transmits it as a reply, or releases it, so a
 hand-written loop resets nothing and the runtime's leftover sweep finds nothing. Datagrams whose source is a
-multicast, limited-broadcast or loopback address are dropped and counted as martian, as the kernel does at
-IP input; TCP never sees them.
+multicast, limited-broadcast or loopback address, or our own address, are dropped and counted as martian, as
+the kernel does at IP input; TCP never sees them. Broadcasts reach UDP, and never TCP: RFC 1122 makes TCP
+unicast only, so a TCP segment to the limited or subnet broadcast is dropped and counted here rather than
+left to every transport to check.
+
+**A config that cannot be a host is refused.** The address must be a unicast host on its subnet: not zero,
+multicast, loopback or 255.255.255.255, and not the subnet's network or broadcast address when the prefix is
+30 or less (a /31 or /32 has neither). The gateway must be another such host on the same subnet.
 
 **Deferred.** Forwarding resolutions between shards and flow rules come with TCP's placement; multicast
 reception with UDP; ICMP errors with phase 2. Fragments are dropped and counted, never reassembled. IPv4

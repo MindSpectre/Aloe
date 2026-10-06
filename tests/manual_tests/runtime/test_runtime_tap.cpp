@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <aloe/ethdev>
+#include <aloe/frames>
 #include <aloe/runtime>
+#include <aloe/wire>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -11,7 +13,6 @@
 
 #include <eal_environment.hpp>
 #include <echo_stack.hpp>
-#include <frames.hpp>
 #include <gtest/gtest.h>
 #include <logging_environment.hpp>
 #include <packet_socket.hpp>
@@ -26,7 +27,7 @@ namespace {
     using namespace std::chrono_literals;
 
     constexpr std::string_view interface = "aloe-echo";
-    constexpr aloe::device::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
+    constexpr aloe::wire::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
     constexpr auto patience = 2000ms;
 
     const auto* const environment =
@@ -36,7 +37,7 @@ namespace {
     /// What the echo makes of `frame`: addresses swapped, shard 0 stamped into the last two bytes.
     [[nodiscard]] std::vector<std::byte> echo_of(std::vector<std::byte> frame) {
         std::swap_ranges(frame.begin(), frame.begin() + 6, frame.begin() + 6);
-        aloe::device::store_be16(std::span<std::byte>{frame}.last(2), 0);
+        aloe::wire::store_be16(std::span<std::byte>{frame}.last(2), 0);
         return frame;
     }
 
@@ -59,8 +60,8 @@ TEST(RuntimeTap, TheKernelGetsItsFramesBackWithTheAddressesSwapped) {
     const aloe::testing::PacketSocket kernel{interface};
 
     for (std::uint8_t round = 0; round < 3; ++round) {
-        const auto frame = aloe::testing::ethernet_frame(
-            port.mac(), peer, aloe::testing::ethertype_experimental, aloe::testing::pattern(60, round));
+        const auto frame = aloe::frames::ethernet_frame(
+            port.mac(), peer, aloe::frames::ethertype_experimental, aloe::frames::pattern(60, round));
         ASSERT_TRUE(kernel.send(frame));
         const auto expected = echo_of(frame);
         bool answered       = false;

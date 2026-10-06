@@ -334,7 +334,7 @@ uses `std::expected<T, std::variant<E1, E2, ...>>`; build failures with `std::un
 
 ```cpp
 // Receive path - called for every packet
-[[nodiscard]] aloe::core::task<std::expected<Segment, ReceiveError>>
+[[nodiscard]] aloe::execution::task<std::expected<Segment, ReceiveError>>
 next_segment();
 
 // Tight loop processing
@@ -551,7 +551,7 @@ for every public header of the module:
 // common/core/export/aloe/core
 #pragma once
 
-#include <execution.hpp>
+#include <clock.hpp>
 #include <version.hpp>
 // ...
 ```
@@ -566,12 +566,12 @@ Consumers include the whole module via `#include <aloe/<module>>`:
 
 ### Which Namespace
 
-Every module gets a namespace named after it: `aloe::core`, `aloe::utils`, `aloe::device`, `aloe::fabric`,
-`aloe::ethdev`. A name says which module it comes from, so `aloe::core::ex::just`, `aloe::device::MacAddress`
+Every module gets a namespace named after it: `aloe::core`, `aloe::execution`, `aloe::log`, `aloe::wire`,
+`aloe::device`, `aloe::fabric`, `aloe::ethdev`. A name says which module it comes from, so `aloe::execution::ex::just`, `aloe::wire::MacAddress`
 and `aloe::fabric::Port` need no lookup to place. Nothing is declared directly in `aloe`.
 
 Code in one module names another module's vocabulary through the module namespace, never through a
-using-directive: inside `aloe::fabric`, write `device::MacAddress`. Inside the module itself the names stay
+using-directive: inside `aloe::fabric`, write `wire::MacAddress`. Inside the module itself the names stay
 unqualified.
 
 ### Opening Style
@@ -619,7 +619,7 @@ Order (separated by blank lines):
 
 #include <stdexec/execution.hpp>
 
-#include <aloe/core>
+#include <aloe/execution>
 
 #include <segment.hpp>
 #include "local_helper.hpp"
@@ -706,9 +706,9 @@ need `#ifdef` guards:
 
 ## Coroutines and Senders
 
-Name the execution facilities through `<aloe/core>`: `aloe::core::ex::` for senders,
-receivers and schedulers, `aloe::core::task<T>` for coroutine tasks. Never spell
-`stdexec::` or `exec::` outside `common/core/execution/execution.hpp`. That
+Name the execution facilities through `<aloe/execution>`: `aloe::execution::ex::` for
+senders, receivers and schedulers, `aloe::execution::task<T>` for coroutine tasks. Never
+spell `stdexec::` or `exec::` outside `common/execution/execution/execution.hpp`. That
 header is the only place that changes when the standard library ships
 std::execution.
 

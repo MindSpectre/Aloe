@@ -11,7 +11,7 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
-source_directories=(common tests examples benchmarks)
+source_directories=(common component fixtures tests examples benchmarks)
 
 staged=false
 case ${1:-} in

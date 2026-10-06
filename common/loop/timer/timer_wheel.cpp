@@ -46,11 +46,11 @@ namespace aloe::loop {
 
     }  // namespace
 
-    TimerWheel::TimerWheel(const Duration resolution, const TimePoint start)
+    TimerWheel::TimerWheel(const core::Duration resolution, const core::TimePoint start)
         : resolution_{resolution},
           start_{start},
           now_{start} {
-        if (resolution <= Duration::zero()) {
+        if (resolution <= core::Duration::zero()) {
             throw std::invalid_argument{"timer wheel resolution must be positive"};
         }
         make_empty(due_);
@@ -71,23 +71,23 @@ namespace aloe::loop {
         }
     }
 
-    std::uint64_t TimerWheel::tick_of(const TimePoint time) const noexcept {
+    std::uint64_t TimerWheel::tick_of(const core::TimePoint time) const noexcept {
         if (time <= start_) {
             return 0;
         }
         return static_cast<std::uint64_t>((time - start_) / resolution_);
     }
 
-    std::uint64_t TimerWheel::deadline_tick(const TimePoint deadline) const noexcept {
+    std::uint64_t TimerWheel::deadline_tick(const core::TimePoint deadline) const noexcept {
         if (deadline <= start_) {
             return 0;
         }
-        const Duration elapsed = deadline - start_;
-        const auto whole       = static_cast<std::uint64_t>(elapsed / resolution_);
-        return (elapsed % resolution_ == Duration::zero()) ? whole : whole + 1;
+        const core::Duration elapsed = deadline - start_;
+        const auto whole             = static_cast<std::uint64_t>(elapsed / resolution_);
+        return (elapsed % resolution_ == core::Duration::zero()) ? whole : whole + 1;
     }
 
-    void TimerWheel::arm(Timer& timer, const TimePoint deadline) noexcept {
+    void TimerWheel::arm(Timer& timer, const core::TimePoint deadline) noexcept {
         assert(timer.fire != nullptr && "a Timer needs a fire function before it is armed");
         if (timer.armed()) {
             unlink(timer);
@@ -173,7 +173,7 @@ namespace aloe::loop {
         return count;
     }
 
-    std::size_t TimerWheel::advance(const TimePoint now) noexcept {
+    std::size_t TimerWheel::advance(const core::TimePoint now) noexcept {
         if (now > now_) {
             now_ = now;
         }

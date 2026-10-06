@@ -7,6 +7,7 @@ add_executable(${EXAMPLES}.Hello
 target_link_libraries(${EXAMPLES}.Hello
         PRIVATE
         Aloe::Common::Core
+        Aloe::Common::Execution
         Aloe::Dpdk
 )
 ##############################################################################

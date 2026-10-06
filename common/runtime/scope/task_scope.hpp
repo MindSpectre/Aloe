@@ -1,6 +1,7 @@
 #pragma once
 
-#include <aloe/core>
+#include <aloe/execution>
+#include <aloe/log>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
@@ -24,10 +25,10 @@ namespace aloe::runtime {
         /// The receiver environment of spawned work: the scope's stop token, then whatever `Env` answers.
         template <typename Env>
         struct ScopeEnv {
-            core::ex::inplace_stop_token token;
+            execution::ex::inplace_stop_token token;
             Env env;
 
-            [[nodiscard]] core::ex::inplace_stop_token query(core::ex::get_stop_token_t) const noexcept {
+            [[nodiscard]] execution::ex::inplace_stop_token query(execution::ex::get_stop_token_t) const noexcept {
                 return token;
             }
 
@@ -45,7 +46,7 @@ namespace aloe::runtime {
 
         template <typename Sender, typename Env>
         struct SpawnReceiver {
-            using receiver_concept = core::ex::receiver_t;
+            using receiver_concept = execution::ex::receiver_t;
 
             SpawnOperation<Sender, Env>* operation;
 
@@ -82,7 +83,7 @@ namespace aloe::runtime {
     public:
         class JoinSender;
 
-        TaskScope(core::Logger logger, std::uint16_t index, loop::ShardCounters& counters) noexcept;
+        TaskScope(log::Logger logger, std::uint16_t index, loop::ShardCounters& counters) noexcept;
         TaskScope(const TaskScope&)            = delete;
         TaskScope& operator=(const TaskScope&) = delete;
         TaskScope(TaskScope&&)                 = delete;
@@ -90,7 +91,7 @@ namespace aloe::runtime {
         ~TaskScope();
 
         /// Shard thread only. `Env` answers the queries the work asks of its environment, such as `get_scheduler`.
-        template <core::ex::sender Sender, typename Env = detail::EmptyEnv>
+        template <execution::ex::sender Sender, typename Env = detail::EmptyEnv>
         void spawn(Sender&& sender, Env env = {});
 
         void request_stop() noexcept;
@@ -99,7 +100,7 @@ namespace aloe::runtime {
             return stop_source_.stop_requested();
         }
 
-        [[nodiscard]] core::ex::inplace_stop_token stop_token() const noexcept {
+        [[nodiscard]] execution::ex::inplace_stop_token stop_token() const noexcept {
             return stop_source_.get_token();
         }
 
@@ -127,10 +128,10 @@ namespace aloe::runtime {
         void one_less() noexcept;
         void wait(detail::JoinBase& join) noexcept;
 
-        core::Logger logger_;
+        log::Logger logger_;
         std::uint16_t index_;
         loop::ShardCounters* counters_;
-        core::ex::inplace_stop_source stop_source_;
+        execution::ex::inplace_stop_source stop_source_;
         std::size_t live_         = 0;
         detail::JoinBase* joiner_ = nullptr;
         std::optional<std::thread::id> owner_;  ///< The thread of the first spawn; every completion must arrive on it.
@@ -142,12 +143,12 @@ namespace aloe::runtime {
         struct SpawnOperation {
             TaskScope* scope;
             Env env;
-            core::ex::connect_result_t<Sender, SpawnReceiver<Sender, Env>> state;
+            execution::ex::connect_result_t<Sender, SpawnReceiver<Sender, Env>> state;
 
             SpawnOperation(TaskScope* owner, Sender&& sender, Env environment)
                 : scope{owner},
                   env{std::move(environment)},
-                  state{core::ex::connect(std::move(sender), SpawnReceiver<Sender, Env>{this})} {
+                  state{execution::ex::connect(std::move(sender), SpawnReceiver<Sender, Env>{this})} {
             }
 
             /// Frees the state first, then tells the scope: the scope may complete a join from there.
@@ -208,27 +209,27 @@ namespace aloe::runtime {
 
         void start() & noexcept {
             if (scope->empty()) {
-                core::ex::set_value(std::move(receiver));
+                execution::ex::set_value(std::move(receiver));
             } else {
                 scope->wait(*this);
             }
         }
 
         static void finish(detail::JoinBase& base) noexcept {
-            core::ex::set_value(std::move(static_cast<JoinOperation&>(base).receiver));
+            execution::ex::set_value(std::move(static_cast<JoinOperation&>(base).receiver));
         }
     };
 
     class TaskScope::JoinSender {
     public:
-        using sender_concept        = core::ex::sender_t;
-        using completion_signatures = core::ex::completion_signatures<core::ex::set_value_t()>;
+        using sender_concept        = execution::ex::sender_t;
+        using completion_signatures = execution::ex::completion_signatures<execution::ex::set_value_t()>;
 
         explicit JoinSender(TaskScope& scope) noexcept
             : scope_{&scope} {
         }
 
-        template <core::ex::receiver Receiver>
+        template <execution::ex::receiver Receiver>
         [[nodiscard]] auto connect(Receiver receiver) const noexcept -> JoinOperation<Receiver> {
             return JoinOperation<Receiver>{scope_, std::move(receiver)};
         }
@@ -241,7 +242,7 @@ namespace aloe::runtime {
         return JoinSender{*this};
     }
 
-    template <core::ex::sender Sender, typename Env>
+    template <execution::ex::sender Sender, typename Env>
     void TaskScope::spawn(Sender&& sender, Env env) {
         using Plain     = std::remove_cvref_t<Sender>;
         using Operation = detail::SpawnOperation<Plain, Env>;
@@ -252,7 +253,7 @@ namespace aloe::runtime {
         auto* operation = new Operation{this, std::move(owned), std::move(env)};
         ++live_;
         ++counters_->tasks_spawned;
-        core::ex::start(operation->state);
+        execution::ex::start(operation->state);
     }
 
 }  // namespace aloe::runtime

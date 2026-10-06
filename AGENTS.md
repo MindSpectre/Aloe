@@ -6,8 +6,9 @@ Aloe is a C++26 userspace TCP/IP stack on DPDK for Linux. It is two products:
 bricks, plain calls a program writes its own loop over, and a runtime built only
 from the bricks that writes the loop for you and offers senders and receivers
 (stdexec) for the code that waits. The repository holds the build skeleton, the
-device layer (the packet and device concepts, an in-memory backend `fabric` for
-tests and the DPDK backend `ethdev`), the loop bricks (`loop`), the shard
+foundation (`core`, with `execution` and `log` beside it), the protocol formats
+(`wire`), the device layer (the packet and device concepts and the DPDK backend `ethdev`), the
+fixtures (`fabric`, an in-memory device backend, and `frames`, for tests), the loop bricks (`loop`), the shard
 runtime (`runtime`) and the IP base (`net`: Ethernet, ARP, IPv4 and ICMP echo, the first protocol
 brick). The stack is built in phases: shard runtime, minimal TCP, full TCP, TLS, HTTP/1.1 with WebSocket.
 
@@ -38,18 +39,19 @@ ctest --preset debug -L unit     # or: integration, functional
 
 | Path                                                                       | Contents                                                                                                                                                                                                   |
 |----------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `common/<module>/`                                                         | Stack and foundation modules. `core` holds the version and the execution alias; `utils` holds small header-only helpers with no dependencies; `device` (concepts, no DPDK), `fabric` (in-memory backend), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime; built on `loop`, no DPDK), `net` (the IP base: wire formats, the ARP cache, the `Ipv4<Device>` brick; built on `loop` and `device`, no `core`, no DPDK). |
+| `common/<module>/`                                                         | Stack and foundation modules. `core` holds the small things every module links, with no dependencies (version, clock aliases, header-only helpers); `execution` is the one header that names stdexec and `log` the one that names quill, both linked on demand; `wire` (addresses, headers and checksums grouped by protocol: `ethernet/`, `ipv4/`, `arp/`, `icmp/`; values only, no state); `device` (concepts, no DPDK), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime; built on `loop`, no DPDK), `net` (the IP base: the ARP cache and the `Ipv4<Device>` brick over `wire`'s formats; built on `loop` and `device`, no `execution`, no `log`, no DPDK). |
+| `fixtures/<module>/`                                                       | What Aloe ships for testing code written over the bricks, kept apart from the stack: `fabric` (the in-memory device backend) and `frames` (frame builders and a parser). Built on `common`; nothing in `common` depends on them. |
 | `component/<module>/`                                                      | Protocol modules (HTTP/1.1, HTTP/2, HTTP/3, WebSocket, ...), each an independent unit built on `common`. None exist yet; the directory appears with the first. |
 | `<module>/export/aloe/<module>`                                            | Umbrella header, no extension. Consumers write `#include <aloe/<module>>`.                                                                                                                                 |
 | `tests/unit_tests/`, `tests/integration_tests/`, `tests/functional_tests/` | One CTest label each.                                                                                                                                                                                      |
 | `tests/manual_tests/`                                                      | Label `manual`: tests that need privileges or hardware. Every test preset excludes the label; run the binary by hand.                                                                                      |
-| `tests/shared/`                                                            | Test helpers: the unprivileged EAL arguments, the EAL as a gtest environment, frame builders, and the device conformance suite every backend runs.                                                         |
+| `tests/shared/`                                                            | Helpers for Aloe's own test binaries: the unprivileged EAL arguments, the EAL as a gtest environment, the net and runtime fixtures, and the device conformance suite every backend runs.                                                         |
 | `cmake/`                                                                   | `vcpkg-bootstrap.cmake` (the toolchain file), `dpdk.cmake`, test and library helpers.                                                                                                                      |
 | `triplets/`                                                                | The vcpkg overlay triplet every port is built with.                                                                                                                                                        |
 | `examples/`, `benchmarks/`                                                 | Living examples; benchmark targets as the stack grows.                                                                                                                                                     |
 
 Targets are named `Aloe.<Group>.<Module>` with an `Aloe::<Group>::<Module>`
-alias. Register tests with `add_unit_test`, `add_integration_test`,
+alias; the groups are `Common` and `Fixtures`. Register tests with `add_unit_test`, `add_integration_test`,
 `add_functional_test` or `add_manual_test` from `cmake/tests.cmake`.
 
 Every module's public headers sit on one flat include path, so header
@@ -58,13 +60,15 @@ basenames are unique across modules: `packet.hpp` is the concept,
 
 ## Rules
 
-- **Execution facilities.** Write `aloe::core::ex::` for senders, receivers and
-  schedulers, `aloe::core::task<T>` for coroutine tasks, and
-  `aloe::core::TaskEnvironment` for a task bound to a concrete scheduler. Only
-  `common/core/execution/execution.hpp` may name `stdexec::` or `exec::`.
-- **Logging.** Only `common/core/log/log.hpp` may name `quill::`. Everything else
-  takes a `core::Logger` from `core::logger(name)` and writes
+- **Execution facilities.** Write `aloe::execution::ex::` for senders, receivers
+  and schedulers, `aloe::execution::task<T>` for coroutine tasks, and
+  `aloe::execution::TaskEnvironment` for a task bound to a concrete scheduler.
+  Only `common/execution/execution/execution.hpp` may name `stdexec::` or `exec::`.
+- **Logging.** Only `common/log/log/log.hpp` may name `quill::`. Everything else
+  takes a `log::Logger` from `log::logger(name)` and writes
   `log.info<"text {}">(value)`. Nothing logs on a hot path.
+- **Time.** A stamp is `core::TimePoint`, an interval `core::Duration`, the clock
+  `core::Clock`. A class does not declare its own clock aliases.
 - **DPDK.** Link the target `Aloe::Dpdk` and nothing else. Linking DPDK's
   pkg-config data directly builds a program that starts with no drivers.
 - **Dependencies.** Libraries come from `vcpkg.json` only: no system
@@ -77,16 +81,16 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - **Style.** `codestyle.md` covers what `.clang-format` does not: naming,
   namespaces, parameters, attributes, error handling, include order.
 - **Namespaces.** Every module gets a namespace named after it: `aloe::core`,
-  `aloe::utils`, `aloe::device`, `aloe::fabric`, `aloe::ethdev`, `aloe::loop`,
+  `aloe::execution`, `aloe::log`, `aloe::wire`, `aloe::device`, `aloe::fabric`, `aloe::frames`, `aloe::ethdev`, `aloe::loop`,
   `aloe::runtime`, `aloe::net`. Nothing is
   declared directly in `aloe`. Another module's names are qualified with its
-  namespace (`device::MacAddress` inside `aloe::fabric`), never pulled in with
+  namespace (`wire::MacAddress` inside `aloe::fabric`), never pulled in with
   `using namespace`. Test helpers live in `aloe::testing`.
-- **stdexec stays out of hot-path headers.** Only the runtime and the public
-  surface include `<aloe/core>`; a device or protocol header takes helpers from
-  `<aloe/utils>` and the loop's bricks from `<aloe/loop>`, which does not link
-  `core`, so a protocol module that links `Aloe::Common::Loop` and not
-  `Aloe::Common::Core` cannot include stdexec by accident.
+- **stdexec and quill stay out of hot-path headers.** Only the runtime, the
+  examples and the tests include `<aloe/execution>` or `<aloe/log>`; a device or
+  protocol header takes helpers from `<aloe/core>` and the loop's bricks from
+  `<aloe/loop>`. No module below the runtime links `Aloe::Common::Execution` or
+  `Aloe::Common::Log`, so a brick cannot include either by accident.
 - **Bricks before runtime.** A capability lands in `loop` or a protocol module
   first, as a plain call or an event the caller drains, and the runtime wraps it
   in a sender afterwards. The runtime never has a capability the bricks lack,
@@ -110,10 +114,10 @@ basenames are unique across modules: `packet.hpp` is the concept,
   sets the check's `StrictMode` to `false`, so it flags only polymorphic
   downcasts; do not re-enable strict mode.
 - clang-tidy's `readability-make-member-function-const` fires on a member that
-  only writes through a pointer member. Call `utils::force_non_const(this)`
+  only writes through a pointer member. Call `core::force_non_const(this)`
   first when the type owns what the pointer reaches (`ethdev::Packet`,
   `ShardQueue`); make the member `const` when the type is a non-owning handle
-  (`core::Logger`).
+  (`log::Logger`).
 - clang-tidy's `readability-convert-member-functions-to-static` fires on stdexec
   `query` members that never touch `this`. Make them `static`; stdexec calls
   `env.query(tag)` either way.
@@ -125,7 +129,7 @@ basenames are unique across modules: `packet.hpp` is the concept,
   (`device` against `device()`). Rename the parameter, keep the member.
 - Inside a class template, a call to a member template of a dependent object
   needs `.template`: `logger().template info<"...">(...)`.
-- `core::Logger::flush` spins forever when no `Logging` is alive; quill waits for
+- `log::Logger::flush` spins forever when no `Logging` is alive; quill waits for
   the backend to acknowledge the flush.
 - A shard task awaits every sender directly, with no `affine` wrap; it awaits
   only its own shard's senders and child tasks (threading contract rule 4), and

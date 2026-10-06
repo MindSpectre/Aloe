@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <aloe/fabric>
+#include <aloe/frames>
 #include <aloe/loop>
 #include <aloe/net>
+#include <aloe/wire>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -13,19 +15,17 @@
 #include <utility>
 #include <vector>
 
-#include <frames.hpp>
 #include <gtest/gtest.h>
-#include <net_frames.hpp>
 
 namespace aloe::testing {
 
-    inline constexpr device::MacAddress stack_mac{0x02, 0, 0, 0, 0, 0x01};
-    inline constexpr device::MacAddress harness_mac{0x02, 0, 0, 0, 0, 0x02};
-    inline constexpr device::MacAddress gateway_mac{0x02, 0, 0, 0, 0, 0xfe};
-    inline constexpr device::Ipv4Address stack_ip{10, 0, 0, 2};
-    inline constexpr device::Ipv4Address harness_ip{10, 0, 0, 1};
-    inline constexpr device::Ipv4Address gateway_ip{10, 0, 0, 254};
-    inline constexpr device::Ipv4Address far_ip{192, 168, 7, 7};  ///< Off the subnet: reached through the gateway.
+    inline constexpr wire::MacAddress stack_mac{0x02, 0, 0, 0, 0, 0x01};
+    inline constexpr wire::MacAddress harness_mac{0x02, 0, 0, 0, 0, 0x02};
+    inline constexpr wire::MacAddress gateway_mac{0x02, 0, 0, 0, 0, 0xfe};
+    inline constexpr wire::Ipv4Address stack_ip{10, 0, 0, 2};
+    inline constexpr wire::Ipv4Address harness_ip{10, 0, 0, 1};
+    inline constexpr wire::Ipv4Address gateway_ip{10, 0, 0, 254};
+    inline constexpr wire::Ipv4Address far_ip{192, 168, 7, 7};  ///< Off the subnet: reached through the gateway.
 
     /// The brick's config in the fixture: a /24 with a gateway.
     [[nodiscard]] inline net::Ipv4Config stack_config() {
@@ -47,7 +47,7 @@ namespace aloe::testing {
     protected:
         using Packet    = fabric::Packet;
         using Ipv4      = net::Ipv4<fabric::Port>;
-        using TimePoint = Ipv4::TimePoint;
+        using TimePoint = aloe::core::TimePoint;
 
         static constexpr std::size_t ring_capacity = 16;
 
@@ -69,7 +69,7 @@ namespace aloe::testing {
         void inject(const std::span<const std::byte> frame) {
             auto packet = harness_.allocate(0);
             ASSERT_TRUE(packet.has_value());
-            ASSERT_TRUE(fill(*packet, frame));
+            ASSERT_TRUE(frames::fill(*packet, frame));
             std::array<Packet, 1> out{std::move(*packet)};
             ASSERT_EQ(harness_.transmit(0, out), 1);
             process_pending();
@@ -86,7 +86,7 @@ namespace aloe::testing {
         void local(const std::span<const std::byte> frame) {
             auto packet = port_.allocate(0);
             ASSERT_TRUE(packet.has_value());
-            ASSERT_TRUE(fill(*packet, frame));
+            ASSERT_TRUE(frames::fill(*packet, frame));
             burst_[0]   = std::move(*packet);
             last_burst_ = 1;
             ip_.process(std::span<Packet>{burst_}.first(1), now_);
@@ -99,7 +99,7 @@ namespace aloe::testing {
             std::array<Packet, 16> out;
             for (std::size_t count = harness_.receive(0, out); count > 0; count = harness_.receive(0, out)) {
                 for (std::size_t index = 0; index < count; ++index) {
-                    frames.push_back(bytes_of(out[index]));
+                    frames.push_back(frames::bytes_of(out[index]));
                     out[index] = Packet{};
                 }
             }

@@ -1,68 +1,78 @@
 # Core Module
 
-The core module (`common/core/`) is Aloe's foundation: the library version, and the one header that names
-the execution facilities every asynchronous part of the stack is written in. It depends on stdexec and quill, and on
-[`utils`](utils.md) for `FixedString`. Everything is reached through the umbrella `#include <aloe/core>`
-(`export/aloe/core`), and targets link `Aloe::Common::Core`.
+The core module (`common/core/`) is Aloe's foundation: the small things every module links. The library
+version, the clock and stamp types the whole stack shares, and header-only helpers: discarding values on
+purpose, choosing a fallback, a string literal as a template parameter, and two guards that pin what a
+member function is. It has no dependencies and keeps none. Everything is reached through the umbrella
+`#include <aloe/core>` (`export/aloe/core`), and targets link `Aloe::Common::Core`. The execution facilities
+and logging are modules of their own, [`execution`](execution.md) and [`log`](log.md), linked on demand.
 
 ## Key types
 
-- **`aloe::core::ex`** -- namespace alias for the senders-and-receivers facilities: `aloe::core::ex::just`,
-  `aloe::core::ex::then`, `aloe::core::ex::sync_wait`, schedulers, stop tokens. It names stdexec today.
-- **`aloe::core::task<T, Env>`** -- the C++26 coroutine task (P3552). Inside one, `co_await` accepts any
-  sender. `Env` fixes the scheduler type, stop source, errors and allocator; the default erases the
-  scheduler, and the runtime binds its concrete one.
-- **`aloe::core::TaskEnvironment<Scheduler, StopSource>`** -- an environment for `task` that names a concrete
-  scheduler. The one place that spells the member stdexec and P3552 name differently.
-- **`aloe::core::completion_behavior`, `aloe::core::get_completion_behavior_t<Tag>`** -- how a sender says where
-  it completes. A scheduler whose `schedule()` sender answers `asynchronous_affine` lets tasks await
-  without rescheduling.
-- **`aloe::core::Logging`, `aloe::core::LoggingConfig`** -- the process's logging backend: construct one, once,
-  with the level, an optional file instead of the console, and an optional CPU to pin the backend thread to.
-- **`aloe::core::Logger`, `aloe::core::logger(name)`** -- a named logger. `log.info<"shard {} starting">(index)`:
-  the format string is a template parameter, so there are no macros and each call site owns its metadata.
-  Formatting happens on the backend thread.
-- **`aloe::core::LogLevel`** -- `Trace` to `Critical`, and `None`.
+- **`aloe::core::Clock`, `aloe::core::TimePoint`, `aloe::core::Duration`** -- `std::chrono::steady_clock`,
+  its time point, and `std::chrono::nanoseconds`. A loop reads `Clock` once per iteration and passes the
+  `TimePoint` down; bricks never read a clock themselves. Configs spell their intervals as `Duration`.
 - **`aloe::core::version_major`, `version_minor`, `version_patch`, `version_string`** -- the library version as
   `constexpr` values, generated from the version in the root `CMakeLists.txt`, so the two cannot drift.
+- **`aloe::core::unused_value(values...)`** -- discards any number of values inside a body, where a
+  template decides not to use something it was handed. `[[maybe_unused]]` marks a declaration and
+  `std::ignore = f()` discards one result at a call; this is the visible form for everything else. Every
+  argument is evaluated exactly once.
+- **`aloe::core::value_or(value, fallback)`** -- GCC's `value ?: fallback` as a function: `value` when it
+  converts to true, else `fallback`, with `value` evaluated once. Two lvalues of one type yield that lvalue,
+  so nothing is copied; any other mix yields a value of the common type.
+- **`aloe::core::FixedString<N>`** -- a string literal as a template parameter: `template <FixedString Text>`.
+  Structural, so equal texts are one specialisation. The logger takes its format strings this way.
+- **`aloe::core::force_non_const(this)`** -- does not compile inside a const member function. A const
+  member may still write through a pointer member, so the compiler never objects when such a function is
+  declared const by mistake; this does.
+- **`aloe::core::force_non_static(this)`** -- does not compile inside a static member function, where there
+  is no `this`.
 
 ## Usage
 
 ```cpp
 #include <aloe/core>
 
-aloe::core::task<int> add_one(int value) {
-    co_return value + 1;
+class Handle {
+public:
+    void set(const int value) noexcept {
+        aloe::core::force_non_const(this);  // writes through target_, which a const member could still do
+        *target_ = value;
+    }
+
+private:
+    int* target_ = nullptr;
+};
+
+template <typename... Args>
+void ignore_all(Args&&... args) {
+    aloe::core::unused_value(args...);
 }
 
-aloe::core::task<int> twice_plus_one(int value) {
-    const int incremented = co_await add_one(value);
-    co_return co_await (aloe::core::ex::just(incremented) | aloe::core::ex::then([](int v) { return v * 2; }));
+const char* name_or_default(const char* name) {
+    return aloe::core::value_or(name, "anonymous");
 }
 
-int main() {
-    const auto result = aloe::core::ex::sync_wait(twice_plus_one(1));  // std::optional<std::tuple<int>>
-    return std::get<0>(*result) == 4 ? 0 : 1;
+bool due(const aloe::core::TimePoint now, const aloe::core::TimePoint deadline) {
+    return now >= deadline;
 }
 ```
 
 ## Design notes
 
-Only `common/core/execution/execution.hpp` spells `stdexec::` or `exec::`; the rest of the code base writes
-`aloe::core::ex::` and `aloe::core::task`. When libstdc++ ships `std::execution`, that header changes and nothing else
-does. The alias is a namespace alias rather than a set of wrappers, so there is no forwarding layer between
-Aloe code and the sender algorithms, and every stdexec facility is available the day it is needed.
+Core has no dependencies so that every module can link it, the hot-path ones included. stdexec and quill
+live in [`execution`](execution.md) and [`log`](log.md), which only the runtime, the examples and the tests
+link, so a brick cannot include either by accident.
 
-`task` is the standard-track P3552 task, not stdexec's older `exec::task`. The older one stores a type-erased
-scheduler and reschedules through it after every await; the P3552 task takes its scheduler type from its
-environment, so a runtime with a concrete scheduler pays nothing for the abstraction. The spot that
-differs between stdexec and the paper, the environment's member name, is confined to `TaskEnvironment`.
+The clock aliases exist so the stack has one clock: a stamp from the runtime's loop, a brick's `now`
+parameter and a timer's deadline are the same type without each class declaring its own alias.
+`Duration` is `std::chrono::nanoseconds` by name rather than `Clock::duration`, so a config's units do not
+depend on the standard library's choice.
+
+The guards cost nothing: empty `constexpr` functions whose only content is a `static_assert` on the deduced
+type. They exist for handle types such as the ethdev packet, whose state lives behind a pointer. There,
+`const` on a member function is a promise the compiler cannot check, and the guard turns it into one it can.
 
 The version header is a CMake template (`version/version.hpp.in`) instead of hand-written constants. The
 version therefore has one source, the `project()` call, and a release cannot ship with a stale number.
-
-Logging is quill behind the same kind of alias as stdexec: `common/core/log/log.hpp` is the only file that
-names `quill::`. The wrapper is macro-free, which the "public headers define no macros" rule demands, and keeps
-quill's shape: a lock-free per-thread queue on the calling side, one backend thread that formats and writes.
-That backend thread must not land on a shard's core, which is what `LoggingConfig::backend_cpu` is for. Nothing
-in the stack logs on a hot path; the convention is enforced by review, not by the type system.

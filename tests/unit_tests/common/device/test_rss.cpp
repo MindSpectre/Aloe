@@ -1,4 +1,5 @@
 #include <aloe/device>
+#include <aloe/wire>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -12,8 +13,8 @@ namespace {
 
     // Microsoft's RSS verification vectors for IPv4, as DPDK's app/test/test_thash.c lists them.
     struct Vector {
-        aloe::device::Ipv4Address destination;
-        aloe::device::Ipv4Address source;
+        aloe::wire::Ipv4Address destination;
+        aloe::wire::Ipv4Address source;
         std::uint16_t destination_port = 0;
         std::uint16_t source_port      = 0;
         std::uint32_t hash_2_tuple     = 0;
@@ -36,7 +37,7 @@ namespace {
         return rss;
     }
 
-    aloe::device::FlowTuple tuple(const Vector& vector, const aloe::device::Ipv4Protocol protocol) {
+    aloe::device::FlowTuple tuple(const Vector& vector, const aloe::wire::Ipv4Protocol protocol) {
         return {.source           = vector.source,
                 .destination      = vector.destination,
                 .source_port      = vector.source_port,
@@ -49,15 +50,15 @@ namespace {
 TEST(Rss, ToeplitzMatchesTheVerificationVectorsWithPorts) {
     const auto rss = microsoft_key_rss();
     for (const Vector& vector : vectors) {
-        EXPECT_EQ(aloe::device::flow_hash(rss, tuple(vector, aloe::device::Ipv4Protocol::Tcp)), vector.hash_4_tuple);
-        EXPECT_EQ(aloe::device::flow_hash(rss, tuple(vector, aloe::device::Ipv4Protocol::Udp)), vector.hash_4_tuple);
+        EXPECT_EQ(aloe::device::flow_hash(rss, tuple(vector, aloe::wire::Ipv4Protocol::Tcp)), vector.hash_4_tuple);
+        EXPECT_EQ(aloe::device::flow_hash(rss, tuple(vector, aloe::wire::Ipv4Protocol::Udp)), vector.hash_4_tuple);
     }
 }
 
 TEST(Rss, ToeplitzMatchesTheVerificationVectorsWithoutPorts) {
     const auto rss = microsoft_key_rss();
     for (const Vector& vector : vectors) {
-        EXPECT_EQ(aloe::device::flow_hash(rss, tuple(vector, aloe::device::Ipv4Protocol::Icmp)), vector.hash_2_tuple);
+        EXPECT_EQ(aloe::device::flow_hash(rss, tuple(vector, aloe::wire::Ipv4Protocol::Icmp)), vector.hash_2_tuple);
     }
 }
 
@@ -65,43 +66,41 @@ TEST(Rss, TheFullKeyHashesIpv4TheSameAsTheFortyByteKey) {
     const auto full  = aloe::device::round_robin_rss(4);
     const auto forty = microsoft_key_rss();
     for (const Vector& vector : vectors) {
-        EXPECT_EQ(aloe::device::flow_hash(full, tuple(vector, aloe::device::Ipv4Protocol::Tcp)), vector.hash_4_tuple);
-        EXPECT_EQ(aloe::device::flow_hash(forty, tuple(vector, aloe::device::Ipv4Protocol::Tcp)), vector.hash_4_tuple);
+        EXPECT_EQ(aloe::device::flow_hash(full, tuple(vector, aloe::wire::Ipv4Protocol::Tcp)), vector.hash_4_tuple);
+        EXPECT_EQ(aloe::device::flow_hash(forty, tuple(vector, aloe::wire::Ipv4Protocol::Tcp)), vector.hash_4_tuple);
     }
 }
 
 TEST(Rss, FallsBackToTheTwoTupleWhenThePortTypeIsOff) {
     auto rss           = microsoft_key_rss();
     rss.types.ipv4_udp = false;
-    EXPECT_EQ(aloe::device::flow_hash(rss, tuple(vectors[0], aloe::device::Ipv4Protocol::Udp)),
-              vectors[0].hash_2_tuple);
-    EXPECT_EQ(aloe::device::flow_hash(rss, tuple(vectors[0], aloe::device::Ipv4Protocol::Tcp)),
-              vectors[0].hash_4_tuple);
+    EXPECT_EQ(aloe::device::flow_hash(rss, tuple(vectors[0], aloe::wire::Ipv4Protocol::Udp)), vectors[0].hash_2_tuple);
+    EXPECT_EQ(aloe::device::flow_hash(rss, tuple(vectors[0], aloe::wire::Ipv4Protocol::Tcp)), vectors[0].hash_4_tuple);
 }
 
 TEST(Rss, HashesZeroWhenNoTypeApplies) {
     auto rss  = microsoft_key_rss();
     rss.types = {};
-    EXPECT_EQ(aloe::device::flow_hash(rss, tuple(vectors[0], aloe::device::Ipv4Protocol::Tcp)), 0U);
+    EXPECT_EQ(aloe::device::flow_hash(rss, tuple(vectors[0], aloe::wire::Ipv4Protocol::Tcp)), 0U);
     aloe::device::RssDescription disabled;
-    EXPECT_EQ(aloe::device::flow_hash(disabled, tuple(vectors[0], aloe::device::Ipv4Protocol::Tcp)), 0U);
+    EXPECT_EQ(aloe::device::flow_hash(disabled, tuple(vectors[0], aloe::wire::Ipv4Protocol::Tcp)), 0U);
 }
 
 TEST(Rss, QueueForIndexesTheTableWithTheHash) {
     const auto rss = microsoft_key_rss();
     for (const Vector& vector : vectors) {
         const std::uint16_t expected = rss.table[vector.hash_4_tuple & (rss.table.size() - 1)];
-        EXPECT_EQ(aloe::device::queue_for(rss, tuple(vector, aloe::device::Ipv4Protocol::Tcp)), expected);
+        EXPECT_EQ(aloe::device::queue_for(rss, tuple(vector, aloe::wire::Ipv4Protocol::Tcp)), expected);
         EXPECT_EQ(expected, vector.hash_4_tuple % 4) << "round robin table";
     }
 }
 
 TEST(Rss, QueueForIsZeroWhenSteeringIsOff) {
     aloe::device::RssDescription disabled;
-    EXPECT_EQ(aloe::device::queue_for(disabled, tuple(vectors[0], aloe::device::Ipv4Protocol::Tcp)), 0);
+    EXPECT_EQ(aloe::device::queue_for(disabled, tuple(vectors[0], aloe::wire::Ipv4Protocol::Tcp)), 0);
     auto no_table = microsoft_key_rss();
     no_table.table.clear();
-    EXPECT_EQ(aloe::device::queue_for(no_table, tuple(vectors[0], aloe::device::Ipv4Protocol::Tcp)), 0);
+    EXPECT_EQ(aloe::device::queue_for(no_table, tuple(vectors[0], aloe::wire::Ipv4Protocol::Tcp)), 0);
 }
 
 TEST(Rss, RoundRobinDescriptionSpreadsQueuesOverTheTable) {

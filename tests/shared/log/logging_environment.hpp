@@ -1,6 +1,6 @@
 #pragma once
 
-#include <aloe/core>
+#include <aloe/log>
 #include <optional>
 #include <utility>
 
@@ -17,7 +17,7 @@ namespace aloe::testing {
      */
     class LoggingEnvironment : public ::testing::Environment {
     public:
-        explicit LoggingEnvironment(core::LoggingConfig config = {.level = core::LogLevel::Warning})
+        explicit LoggingEnvironment(log::LoggingConfig config = {.level = log::LogLevel::Warning})
             : config_{std::move(config)} {
         }
 
@@ -30,8 +30,8 @@ namespace aloe::testing {
         }
 
     private:
-        core::LoggingConfig config_;
-        std::optional<core::Logging> logging_;
+        log::LoggingConfig config_;
+        std::optional<log::Logging> logging_;
     };
 
 }  // namespace aloe::testing

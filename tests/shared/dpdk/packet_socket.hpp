@@ -1,6 +1,7 @@
 #pragma once
 
 #include <aloe/device>
+#include <aloe/wire>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
@@ -57,8 +58,8 @@ namespace aloe::testing {
             sockaddr_ll address{};
             address.sll_family  = AF_PACKET;
             address.sll_ifindex = index_;
-            address.sll_halen   = aloe::device::MacAddress::size;
-            std::memcpy(address.sll_addr, frame.data(), aloe::device::MacAddress::size);
+            address.sll_halen   = aloe::wire::MacAddress::size;
+            std::memcpy(address.sll_addr, frame.data(), aloe::wire::MacAddress::size);
             const ssize_t sent = sendto(
                 fd_, frame.data(), frame.size(), 0, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
             return sent == static_cast<ssize_t>(frame.size());

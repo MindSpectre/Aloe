@@ -21,14 +21,23 @@ for the design and the [roadmap](docs/roadmap.md) for the phases.
 
 | Namespace       | Directory            | Description                                                                                                     | Docs                                                         |
 |-----------------|----------------------|-----------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------|
-| `aloe::core`    | `common/core/`       | Library version, and the one header that names the execution facilities.                                        | [docs/architecture/core.md](docs/architecture/core.md)       |
-| `aloe::utils`   | `common/utils/`      | Small header-only helpers with no dependencies: discarding values, a fallback, and the const and static guards. | [docs/architecture/utils.md](docs/architecture/utils.md)     |
-| `aloe::device`  | `common/device/`     | The Packet and Device concepts, addresses, checksums and receive-side scaling.                                  | [docs/architecture/device.md](docs/architecture/device.md)   |
-| `aloe::fabric`  | `common/fabric/`     | The in-memory device backend: a fixture for tests, simulation and demos.                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
+| `aloe::core`    | `common/core/`       | The small things every module links, with no dependencies: the version, the clock aliases, discarding values, a fallback, and the const and static guards. | [docs/architecture/core.md](docs/architecture/core.md)       |
+| `aloe::execution` | `common/execution/` | The one header that names the execution facilities (stdexec), linked on demand.                              | [docs/architecture/execution.md](docs/architecture/execution.md) |
+| `aloe::log`     | `common/log/`        | Named loggers over quill, linked on demand.                                                                     | [docs/architecture/log.md](docs/architecture/log.md)         |
+| `aloe::wire`    | `common/wire/`       | Addresses, headers and checksums grouped by protocol (Ethernet, IPv4, ARP, ICMP): values and formats, no state. | [docs/architecture/wire.md](docs/architecture/wire.md)       |
+| `aloe::device`  | `common/device/`     | The Packet and Device concepts, the packet metadata and receive-side scaling.                                   | [docs/architecture/device.md](docs/architecture/device.md)   |
 | `aloe::ethdev`  | `common/ethdev/`     | The DPDK device backend.                                                                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
 | `aloe::loop`    | `common/loop/`       | The bricks a loop is built from: a device queue with its transmit ring, the timer wheel, the work node with the run queue and the inbox, and the counters. | [docs/architecture/loop.md](docs/architecture/loop.md)       |
 | `aloe::runtime` | `common/runtime/`    | The loop written for you: shards on pinned threads, the scheduler, timer senders, scope and task, and the runtime that launches one shard per queue. | [docs/architecture/runtime.md](docs/architecture/runtime.md) |
 | `aloe::net`     | `common/net/`        | The first protocol brick: IPv4 over a device queue with ARP and ICMP echo, datagrams sorted per transport, checksums by offload or software. | [docs/architecture/net.md](docs/architecture/net.md)         |
+
+Fixtures for testing code written over the bricks live apart from the stack, in `fixtures/`
+([docs/architecture/fixtures.md](docs/architecture/fixtures.md)):
+
+| Namespace       | Directory            | Description                                                                                                     |
+|-----------------|----------------------|-----------------------------------------------------------------------------------------------------------------|
+| `aloe::fabric`  | `fixtures/fabric/`   | The in-memory device backend: deterministic, no root, no hugepages, no network card.                            |
+| `aloe::frames`  | `fixtures/frames/`   | Frame builders and a parser over the wire formats, and packet byte helpers.                                     |
 
 Each module ships an umbrella header. Consumers link the module's target and
 include it by name:
@@ -43,14 +52,15 @@ Trimmed from `examples/hello/hello.cpp`:
 
 ```cpp
 #include <aloe/core>
+#include <aloe/execution>
 #include <print>
 #include <tuple>
 
 #include <rte_version.h>
 
 int main() {
-    const auto result =
-        aloe::core::ex::sync_wait(aloe::core::ex::just(41) | aloe::core::ex::then([](int value) { return value + 1; }));
+    const auto result = aloe::execution::ex::sync_wait(aloe::execution::ex::just(41) |
+                                                       aloe::execution::ex::then([](int value) { return value + 1; }));
 
     std::println("Aloe {}", aloe::core::version_string);
     std::println("{}", rte_version());

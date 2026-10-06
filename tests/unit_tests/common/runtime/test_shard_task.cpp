@@ -7,7 +7,7 @@
 namespace {
 
     using namespace std::chrono_literals;
-    using TimePoint = aloe::runtime::ShardContext::TimePoint;
+    using TimePoint = aloe::core::TimePoint;
 
     constexpr TimePoint start{};
 
@@ -23,8 +23,8 @@ namespace {
     }
 
     aloe::runtime::task<int> child(aloe::runtime::Scheduler expected, bool* stop_seen) {
-        const auto here  = co_await aloe::core::ex::read_env(aloe::core::ex::get_scheduler);
-        const auto token = co_await aloe::core::ex::read_env(aloe::core::ex::get_stop_token);
+        const auto here  = co_await aloe::execution::ex::read_env(aloe::execution::ex::get_scheduler);
+        const auto token = co_await aloe::execution::ex::read_env(aloe::execution::ex::get_stop_token);
         *stop_seen       = token.stop_possible();
         co_return here == expected ? 1 : 0;
     }
@@ -38,7 +38,7 @@ namespace {
     }
 
     aloe::runtime::task<void> throws() {
-        co_await aloe::core::ex::just();
+        co_await aloe::execution::ex::just();
         throw std::runtime_error{"boom"};
     }
 

@@ -8,11 +8,12 @@
 // Frames addressed to the port's MAC come back with the addresses swapped.
 
 #include <algorithm>
-#include <aloe/core>
 #include <aloe/device>
 #include <aloe/ethdev>
+#include <aloe/log>
 #include <aloe/loop>
 #include <aloe/runtime>
+#include <aloe/wire>
 #include <charconv>
 #include <csignal>
 #include <cstdint>
@@ -43,7 +44,7 @@ namespace {
         void on_receive(std::span<Packet> burst) noexcept {
             for (Packet& packet : burst) {
                 const std::span<std::byte> data = packet.data();
-                if (data.size() < aloe::device::ethernet_header_size || !addressed_to_me(data)) {
+                if (data.size() < aloe::wire::EthernetHeader::size || !addressed_to_me(data)) {
                     continue;  // the shard frees what we leave
                 }
                 std::swap_ranges(data.begin(), data.begin() + 6, data.begin() + 6);
@@ -59,9 +60,9 @@ namespace {
 
     private:
         [[nodiscard]] bool addressed_to_me(const std::span<const std::byte> frame) const noexcept {
-            aloe::device::MacAddress::Bytes destination{};
-            std::ranges::copy(frame.first(aloe::device::MacAddress::size), destination.begin());
-            return aloe::device::MacAddress{destination} == queue_->mac();
+            aloe::wire::MacAddress::Bytes destination{};
+            std::ranges::copy(frame.first(aloe::wire::MacAddress::size), destination.begin());
+            return aloe::wire::MacAddress{destination} == queue_->mac();
         }
 
         aloe::loop::ShardQueue<aloe::ethdev::Port>* queue_;
@@ -123,7 +124,7 @@ int main(int argc, char** argv) {
     }
     const sigset_t signals = block_termination_signals();
 
-    aloe::core::Logging logging{{.level = aloe::core::LogLevel::Info}};
+    aloe::log::Logging logging{{.level = aloe::log::LogLevel::Info}};
     aloe::ethdev::Eal eal{arguments->eal};
     aloe::ethdev::Port port{
         {.name = arguments->port, .queues = arguments->queues}

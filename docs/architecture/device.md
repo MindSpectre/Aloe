@@ -1,13 +1,14 @@
 # Device Layer
 
 The device layer is the bottom of the stack: it moves Ethernet frames between the protocols above
-and whatever carries them, and it reports what that carrier can do. It is three modules under
-`common/`, so nothing above it links DPDK unless it chooses the DPDK backend.
+and whatever carries them, and it reports what that carrier can do. It is three modules: `device`
+and `ethdev` under `common/`, and the `fabric` under [`fixtures/`](fixtures.md). Nothing above it links DPDK
+unless it chooses the DPDK backend.
 
 | Module   | Include                  | Target                    | Holds                                                                                                        |
 |----------|--------------------------|---------------------------|--------------------------------------------------------------------------------------------------------------|
-| `device` | `#include <aloe/device>` | `Aloe::Common::Device` | The `IsPacket` and `IsDevice` concepts, addresses, checksums and receive-side scaling. Header-only, no DPDK. |
-| `fabric` | `#include <aloe/fabric>` | `Aloe::Common::Fabric` | The in-memory backend: a broadcast domain of ports, the fixture for tests, simulation and demos. No DPDK.    |
+| `device` | `#include <aloe/device>` | `Aloe::Common::Device` | The `IsPacket` and `IsDevice` concepts, the packet metadata and receive-side scaling. Header-only, no DPDK.  |
+| `fabric` | `#include <aloe/fabric>` | `Aloe::Fixtures::Fabric` | The in-memory backend: a broadcast domain of ports, the fixture for tests, simulation and demos. No DPDK.    |
 | `ethdev` | `#include <aloe/ethdev>` | `Aloe::Common::Ethdev` | The DPDK backend: one port of any driver. The only module that links `Aloe::Dpdk`.                           |
 
 The layer exists because network cards differ in what they can do. It hides everything about the
@@ -35,11 +36,10 @@ them on top of it.
 - **`aloe::device::RssDescription`**, **`aloe::device::FlowTuple`**, **`aloe::device::queue_for`** -- the steering rule.
   `queue_for(description, flow)` is a pure function of what the device reports, so the runtime can
   predict which queue any flow lands on. `aloe::device::toeplitz_hash` is the hash cards compute.
-- **`aloe::device::MacAddress`**, **`aloe::device::Ipv4Address`** -- value types with parsing and formatting.
-- **`aloe::device::Ipv4Protocol`** -- the IPv4 protocol number as a type: `Icmp`, `Tcp`, `Udp` named, any other
-  byte still representable. A `FlowTuple` carries it as `std::optional`, absent for a fragment.
-- **`aloe::device::internet_checksum`** and friends -- the Internet checksum, the IPv4 header checksum,
-  and the IPv4 pseudo-header sum that transmit checksum offload starts from.
+- The addresses, protocol numbers and checksums a device speaks in -- `wire::MacAddress`,
+  `wire::Ipv4Address`, `wire::Ipv4Protocol`, `wire::ipv4_pseudo_header_sum` -- come from the
+  [wire](wire.md) module, which the device layer links. A `FlowTuple` carries the protocol as
+  `std::optional`, absent for a fragment.
 
 ### Backends
 
@@ -78,7 +78,7 @@ std::size_t echo(Device& device, std::span<const std::byte> frame) {
 
 int main() {
     aloe::fabric::Fabric fabric;
-    aloe::fabric::Port& port = fabric.add_port({.mac = aloe::device::MacAddress{0x02, 0, 0, 0, 0, 1}});
+    aloe::fabric::Port& port = fabric.add_port({.mac = aloe::wire::MacAddress{0x02, 0, 0, 0, 0, 1}});
     // build a frame addressed to port.mac() ...
 }
 ```
@@ -95,7 +95,7 @@ echo(port, frame);
 ```
 
 Transmit checksum offload follows DPDK's convention on both backends: before asking the device to
-fill the L4 checksum, write the IPv4 pseudo-header sum (`aloe::device::ipv4_pseudo_header_sum`) into the
+fill the L4 checksum, write the IPv4 pseudo-header sum (`aloe::wire::ipv4_pseudo_header_sum`) into the
 checksum field and zero into the IPv4 checksum field, then set `TxMetadata` with the header lengths
 and the fills wanted. Ask only for what `capabilities()` offers.
 
@@ -119,7 +119,7 @@ vectors apply, and an IPv4 4-tuple uses only the first 16 bytes of it, so a card
 bytes and one that takes 52 compute the same hash.
 
 **The fabric is a fixture.** It exists for tests, simulation and demos and never carries production
-traffic. Delivery takes a lock per receive queue and copies frames twice, on
+traffic, which is why it lives in [`fixtures/`](fixtures.md) and not in `common/`. Delivery takes a lock per receive queue and copies frames twice, on
 transmit and on receive, so a packet pool is only ever touched by its queue's thread. Simplicity
 wins over speed. Scripted loss, reordering and delay arrive in a later phase; the delivery function
 is the one place they plug in.

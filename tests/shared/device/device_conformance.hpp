@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <aloe/device>
+#include <aloe/frames>
+#include <aloe/wire>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -10,7 +12,6 @@
 #include <utility>
 #include <vector>
 
-#include <frames.hpp>
 #include <gtest/gtest.h>
 
 /**
@@ -34,7 +35,7 @@ namespace aloe::testing {
         using Packet = typename Device::Packet;
         static_assert(device::IsDevice<Device>);
 
-        static constexpr device::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
+        static constexpr wire::MacAddress peer{0x02, 0, 0, 0, 0xfe, 0xed};
         static constexpr std::size_t burst_size = 32;
 
         Fixture fixture_;
@@ -45,7 +46,8 @@ namespace aloe::testing {
 
         /// A frame to the device's own MAC with `payload` bytes of pattern.
         std::vector<std::byte> frame(std::size_t payload, std::uint8_t seed = 0) {
-            return ethernet_frame(device().mac(), peer, ethertype_experimental, pattern(payload, seed));
+            return frames::ethernet_frame(
+                device().mac(), peer, frames::ethertype_experimental, frames::pattern(payload, seed));
         }
 
         /// A packet from queue 0 holding `bytes`.
@@ -55,7 +57,7 @@ namespace aloe::testing {
             if (!packet) {
                 return Packet{};
             }
-            EXPECT_TRUE(fill(*packet, bytes));
+            EXPECT_TRUE(frames::fill(*packet, bytes));
             return std::move(*packet);
         }
 
@@ -102,7 +104,7 @@ namespace aloe::testing {
         EXPECT_EQ(packet->size(), 0);
         EXPECT_TRUE(packet->data().empty());
         EXPECT_EQ(packet->headroom(), device::packet_headroom);
-        EXPECT_GE(packet->tailroom(), static_cast<std::size_t>(this->device().mtu()) + device::ethernet_header_size);
+        EXPECT_GE(packet->tailroom(), static_cast<std::size_t>(this->device().mtu()) + wire::EthernetHeader::size);
         EXPECT_EQ(packet->rx(), device::RxMetadata{});
         EXPECT_EQ(packet->tx(), device::TxMetadata{});
     }
@@ -146,7 +148,7 @@ namespace aloe::testing {
 
         auto received = this->receive_up_to(1);
         ASSERT_EQ(received.size(), 1);
-        EXPECT_EQ(bytes_of(received[0]), frame);
+        EXPECT_EQ(frames::bytes_of(received[0]), frame);
         EXPECT_FALSE(received[0].rx().rss_hash.has_value());
         EXPECT_EQ(received[0].rx().l3, device::ChecksumVerdict::Unknown);
         EXPECT_EQ(received[0].rx().l4, device::ChecksumVerdict::Unknown);
@@ -156,12 +158,12 @@ namespace aloe::testing {
 
     TYPED_TEST_P(DeviceConformance, AMaximumSizeFrameComesBack) {
         const auto frame = this->frame(this->device().mtu(), 3);
-        EXPECT_EQ(frame.size(), static_cast<std::size_t>(this->device().mtu()) + device::ethernet_header_size);
+        EXPECT_EQ(frame.size(), static_cast<std::size_t>(this->device().mtu()) + wire::EthernetHeader::size);
         std::array<typename TestFixture::Packet, 1> burst{this->packet_with(frame)};
         ASSERT_EQ(this->device().transmit(0, burst), 1);
         auto received = this->receive_up_to(1);
         ASSERT_EQ(received.size(), 1);
-        EXPECT_EQ(bytes_of(received[0]), frame);
+        EXPECT_EQ(frames::bytes_of(received[0]), frame);
     }
 
     TYPED_TEST_P(DeviceConformance, AnOversizedFrameIsDroppedAndCounted) {
@@ -174,7 +176,7 @@ namespace aloe::testing {
 
     TYPED_TEST_P(DeviceConformance, ARuntIsRefusedAndCountedByTheTransmitter) {
         const device::QueueCounters before = this->device().counters(0);
-        const std::vector<std::byte> runt(device::ethernet_header_size - 1);
+        const std::vector<std::byte> runt(wire::EthernetHeader::size - 1);
         std::array<typename TestFixture::Packet, 1> burst{this->packet_with(runt)};
         ASSERT_EQ(this->device().transmit(0, burst), 1) << "a refused frame counts as accepted";
         EXPECT_TRUE(burst[0].empty());
@@ -196,7 +198,7 @@ namespace aloe::testing {
         auto received = this->receive_up_to(count);
         ASSERT_EQ(received.size(), count);
         for (std::size_t index = 0; index < count; ++index) {
-            EXPECT_EQ(bytes_of(received[index]), frames[index]) << "frame " << index;
+            EXPECT_EQ(frames::bytes_of(received[index]), frames[index]) << "frame " << index;
         }
     }
 
@@ -211,14 +213,14 @@ namespace aloe::testing {
         for (std::size_t index = 0; index < burst.size(); ++index) {
             EXPECT_EQ(burst[index].empty(), index < accepted) << "slot " << index;
             if (index >= accepted) {
-                EXPECT_EQ(bytes_of(burst[index]), frames[index]) << "slot " << index;
+                EXPECT_EQ(frames::bytes_of(burst[index]), frames[index]) << "slot " << index;
                 EXPECT_EQ(burst[index].tx(), device::TxMetadata{}) << "slot " << index;
             }
         }
         auto received = this->receive_up_to(accepted);
         ASSERT_EQ(received.size(), accepted);
         for (std::size_t index = 0; index < accepted; ++index) {
-            EXPECT_EQ(bytes_of(received[index]), frames[index]) << "frame " << index;
+            EXPECT_EQ(frames::bytes_of(received[index]), frames[index]) << "frame " << index;
         }
     }
 
@@ -230,8 +232,8 @@ namespace aloe::testing {
         EXPECT_EQ(this->device().transmit(0, burst), 3);
         auto received = this->receive_up_to(2);
         ASSERT_EQ(received.size(), 2);
-        EXPECT_EQ(bytes_of(received[0]), frames[0]);
-        EXPECT_EQ(bytes_of(received[1]), frames[1]);
+        EXPECT_EQ(frames::bytes_of(received[0]), frames[0]);
+        EXPECT_EQ(frames::bytes_of(received[1]), frames[1]);
         EXPECT_TRUE(this->receive_up_to(1, 20).empty()) << "nothing was sent for the empty slot";
         EXPECT_EQ(this->device().counters(0).transmitted, before.transmitted + 2);
     }

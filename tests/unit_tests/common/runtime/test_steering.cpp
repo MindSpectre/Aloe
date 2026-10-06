@@ -1,5 +1,7 @@
 #include <aloe/fabric>
+#include <aloe/frames>
 #include <aloe/runtime>
+#include <aloe/wire>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -12,7 +14,6 @@
 #include <vector>
 
 #include <echo_stack.hpp>
-#include <frames.hpp>
 #include <gtest/gtest.h>
 
 namespace {
@@ -22,27 +23,27 @@ namespace {
     constexpr std::uint16_t queues = 4;
     constexpr std::size_t flows    = 256;
     constexpr auto patience        = 20s;
-    constexpr aloe::device::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
-    constexpr aloe::device::MacAddress client{0x02, 0, 0, 0, 0, 0x02};
-    constexpr aloe::device::Ipv4Address server_ip{10, 0, 0, 2};
-    constexpr aloe::device::Ipv4Address client_ip{10, 0, 0, 1};
+    constexpr aloe::wire::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
+    constexpr aloe::wire::MacAddress client{0x02, 0, 0, 0, 0, 0x02};
+    constexpr aloe::wire::Ipv4Address server_ip{10, 0, 0, 2};
+    constexpr aloe::wire::Ipv4Address client_ip{10, 0, 0, 1};
     constexpr std::size_t payload_offset = 14 + 20 + 8;  ///< Ethernet, IPv4 without options, UDP.
 
-    [[nodiscard]] aloe::testing::Ipv4Spec spec_of(const std::size_t flow) {
+    [[nodiscard]] aloe::frames::Ipv4Spec spec_of(const std::size_t flow) {
         return {.destination_mac  = server,
                 .source_mac       = client,
                 .source           = client_ip,
                 .destination      = server_ip,
                 .source_port      = static_cast<std::uint16_t>(40000 + flow),
                 .destination_port = 80,
-                .protocol         = aloe::device::Ipv4Protocol::Udp};
+                .protocol         = aloe::wire::Ipv4Protocol::Udp};
     }
 
     /// Payload: the flow number, then four spare bytes the echo stamps the last two of.
     [[nodiscard]] std::vector<std::byte> frame_of(const std::size_t flow) {
         std::array<std::byte, 8> payload{};
-        aloe::device::store_be32(std::span<std::byte>{payload}.first(4), static_cast<std::uint32_t>(flow));
-        return aloe::testing::ipv4_frame(spec_of(flow), payload);
+        aloe::wire::store_be32(std::span<std::byte>{payload}.first(4), static_cast<std::uint32_t>(flow));
+        return aloe::frames::ipv4_frame(spec_of(flow), payload);
     }
 
 }  // namespace
@@ -63,13 +64,13 @@ TEST(Steering, EveryFrameIsAnsweredOnceByTheShardItsHashSelects) {
     std::vector<std::uint16_t> expected(flows);
     std::array<std::size_t, queues> expected_per_shard{};
     for (std::size_t flow = 0; flow < flows; ++flow) {
-        expected[flow] = aloe::device::queue_for(server_port.steering(), aloe::testing::flow_of(spec_of(flow)));
+        expected[flow] = aloe::device::queue_for(server_port.steering(), aloe::frames::flow_of(spec_of(flow)));
         ++expected_per_shard[expected[flow]];
         std::optional<aloe::fabric::Packet> packet;
         while (!(packet = client_port.allocate(0))) {
             std::this_thread::yield();
         }
-        ASSERT_TRUE(aloe::testing::fill(*packet, frame_of(flow)));
+        ASSERT_TRUE(aloe::frames::fill(*packet, frame_of(flow)));
         std::array<aloe::fabric::Packet, 1> burst{std::move(*packet)};
         ASSERT_EQ(client_port.transmit(0, burst), 1);
     }
@@ -87,7 +88,7 @@ TEST(Steering, EveryFrameIsAnsweredOnceByTheShardItsHashSelects) {
         }
         for (std::size_t index = 0; index < count; ++index) {
             const std::span<const std::byte> data = burst[index].data();
-            const std::uint32_t flow              = aloe::device::load_be32(data.subspan(payload_offset, 4));
+            const std::uint32_t flow              = aloe::wire::load_be32(data.subspan(payload_offset, 4));
             ASSERT_LT(flow, flows);
             ++seen[flow];
             const std::uint16_t stamp = aloe::testing::stamp_of(data);

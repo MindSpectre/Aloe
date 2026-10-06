@@ -23,6 +23,9 @@ add_library(${LOOP}.Timer STATIC
 target_include_directories(${LOOP}.Timer PUBLIC
         timer/
 )
+target_link_libraries(${LOOP}.Timer PUBLIC
+        Aloe::Common::Core
+)
 ##############################################################################
 
 ##############################################################################
@@ -48,7 +51,7 @@ target_include_directories(${LOOP}.Queue INTERFACE
 target_link_libraries(${LOOP}.Queue INTERFACE
         ${LOOP}.Counters
         Aloe::Common::Device
-        Aloe::Common::Utils
+        Aloe::Common::Core
 )
 ##############################################################################
 

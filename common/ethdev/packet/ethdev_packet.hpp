@@ -1,7 +1,7 @@
 #pragma once
 
 #include <algorithm>
-#include <aloe/utils>
+#include <aloe/core>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -103,7 +103,7 @@ namespace aloe::ethdev {
 
         void trim_front(const std::size_t count) noexcept {
             assert(count <= size());
-            utils::force_non_const(this);  // writes the mbuf, which a const member could still do
+            core::force_non_const(this);  // writes the mbuf, which a const member could still do
             if (mbuf_ != nullptr) {
                 std::ignore = rte_pktmbuf_adj(mbuf_, static_cast<std::uint16_t>(std::min(count, size())));
             }
@@ -111,7 +111,7 @@ namespace aloe::ethdev {
 
         void trim_back(const std::size_t count) noexcept {
             assert(count <= size());
-            utils::force_non_const(this);  // writes the mbuf, which a const member could still do
+            core::force_non_const(this);  // writes the mbuf, which a const member could still do
             if (mbuf_ != nullptr) {
                 std::ignore = rte_pktmbuf_trim(mbuf_, static_cast<std::uint16_t>(std::min(count, size())));
             }
@@ -151,7 +151,7 @@ namespace aloe::ethdev {
         }
 
         void set_tx(const device::TxMetadata& tx) noexcept {
-            utils::force_non_const(this);  // writes the mbuf, which a const member could still do
+            core::force_non_const(this);  // writes the mbuf, which a const member could still do
             if (mbuf_ == nullptr) {
                 return;
             }

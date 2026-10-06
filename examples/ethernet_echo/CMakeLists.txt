@@ -6,7 +6,7 @@ add_executable(${EXAMPLES}.EthernetEcho
 )
 target_link_libraries(${EXAMPLES}.EthernetEcho
         PRIVATE
-        Aloe::Common::Core
+        Aloe::Common::Log
         Aloe::Common::Runtime
         Aloe::Common::Ethdev
 )

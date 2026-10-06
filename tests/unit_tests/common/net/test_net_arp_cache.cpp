@@ -1,4 +1,5 @@
 #include <aloe/net>
+#include <aloe/wire>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -11,7 +12,7 @@
 namespace {
 
     using namespace std::chrono_literals;
-    using TimePoint = aloe::net::ArpCache::TimePoint;
+    using TimePoint = aloe::core::TimePoint;
     using Lookup    = aloe::net::ArpCache::Lookup;
 
     constexpr TimePoint start{};
@@ -20,14 +21,14 @@ namespace {
         return start + offset;
     }
 
-    constexpr aloe::device::Ipv4Address peer{10, 0, 0, 1};
-    constexpr aloe::device::MacAddress peer_mac{0x02, 0, 0, 0, 0, 0x01};
-    constexpr aloe::device::MacAddress other_mac{0x02, 0, 0, 0, 0, 0x02};
+    constexpr aloe::wire::Ipv4Address peer{10, 0, 0, 1};
+    constexpr aloe::wire::MacAddress peer_mac{0x02, 0, 0, 0, 0, 0x01};
+    constexpr aloe::wire::MacAddress other_mac{0x02, 0, 0, 0, 0, 0x02};
 
     /// Eight slots and a window of eight: every address can reach every slot, so the ninth entry must evict.
     constexpr aloe::net::ArpCacheConfig small{.capacity = 8, .reachable = 60s, .expire = 120s, .request_interval = 1s};
 
-    [[nodiscard]] aloe::device::Ipv4Address host(const std::uint8_t index) {
+    [[nodiscard]] aloe::wire::Ipv4Address host(const std::uint8_t index) {
         return {10, 0, 1, index};
     }
 
@@ -113,16 +114,48 @@ TEST(ArpCache, AFullWindowReusesAnExpiredSlotBeforeEvictingTheOldestConfirmation
     }
 }
 
-TEST(ArpCache, AnIncompleteEntryIsTheFirstToGo) {
+TEST(ArpCache, AnIncompleteEntryWhoseRequestHasLapsedGoesBeforeAnyConfirmedOne) {
     aloe::net::ArpCache cache{small};
-    std::ignore = cache.lookup(peer, at(0s));  // incomplete: asked, never answered
+    std::ignore = cache.lookup(peer, at(0s));  // asked at 0 s, never answered
     for (std::uint8_t index = 0; index < 7; ++index) {
         cache.learn(host(index), peer_mac, at(1s));
     }
     ASSERT_EQ(cache.size(), 8);
-    cache.learn(host(7), peer_mac, at(2s));
-    EXPECT_FALSE(cache.contains(peer)) << "an entry with no confirmation is older than any confirmed one";
-    EXPECT_EQ(cache.size(), 8);
+    cache.learn(host(7), peer_mac, at(2s));  // the request is a whole interval old: its reply is not coming
+    EXPECT_FALSE(cache.contains(peer));
+    for (std::uint8_t index = 0; index < 8; ++index) {
+        EXPECT_TRUE(cache.contains(host(index)));
+    }
+}
+
+TEST(ArpCache, AnEntryWaitingForItsReplyOutlivesTheOldestConfirmation) {
+    aloe::net::ArpCache cache{small};
+    for (std::uint8_t index = 0; index < 7; ++index) {
+        cache.learn(host(index), peer_mac, at(std::chrono::milliseconds{index}));
+    }
+    std::ignore = cache.lookup(peer, at(100ms));  // the request leaves now
+    ASSERT_EQ(cache.size(), 8);
+
+    cache.learn(host(7), peer_mac, at(200ms));  // the reply is still on its way
+    EXPECT_TRUE(cache.contains(peer)) << "evicting it would drop its reply as unsolicited";
+    EXPECT_FALSE(cache.contains(host(0))) << "the oldest confirmation goes instead";
+
+    cache.learn(peer, other_mac, at(300ms));
+    EXPECT_EQ(cache.lookup(peer, at(400ms)), (Lookup{.mac = other_mac, .send_request = false}));
+}
+
+TEST(ArpCache, AWindowOfPendingEntriesGivesUpTheOldestRequest) {
+    aloe::net::ArpCache cache{small};
+    for (std::uint8_t index = 0; index < 8; ++index) {
+        std::ignore = cache.lookup(host(index), at(std::chrono::milliseconds{index}));
+    }
+    ASSERT_EQ(cache.size(), 8);
+    EXPECT_EQ(cache.lookup(peer, at(10ms)), (Lookup{.mac = std::nullopt, .send_request = true}));
+    EXPECT_TRUE(cache.contains(peer));
+    EXPECT_FALSE(cache.contains(host(0))) << "the request sent first is the one given up";
+    for (std::uint8_t index = 1; index < 8; ++index) {
+        EXPECT_TRUE(cache.contains(host(index)));
+    }
 }
 
 TEST(ArpCache, ABadConfigThrows) {

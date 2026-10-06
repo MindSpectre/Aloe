@@ -8,8 +8,10 @@ API in the spirit of Boost.Beast, for the code that waits. Three goals rank ever
 **predictable low latency on the data path**, **high throughput**, and **long-lived connections**.
 
 This page describes the design the stack is built towards. Today the repository holds the build skeleton, the
-[`core`](core.md) and [`utils`](utils.md) modules, the [device layer](device.md), the [loop bricks](loop.md),
-the [shard runtime](runtime.md) and the IP base ([`net`](net.md)); the rest arrives phase by phase, as the [roadmap](../roadmap.md) lays
+[`core`](core.md), [`execution`](execution.md) and [`log`](log.md) modules, the protocol formats in
+[`wire`](wire.md), the [device layer](device.md), the [loop bricks](loop.md),
+the [shard runtime](runtime.md), the IP base ([`net`](net.md)) and, apart from the stack, the [fixtures](fixtures.md) for
+testing code written over the bricks; the rest arrives phase by phase, as the [roadmap](../roadmap.md) lays
 out. Each section says what exists and what is still design.
 
 ## The shard, as a rule
@@ -58,7 +60,7 @@ for (;;) {
     const auto now      = Clock::now();
     const std::size_t n = queue.receive(burst);
     ip.process({burst.data(), n}, now);                              // ARP and ping answered; datagrams sorted per transport
-    tcp.process(ip.received(aloe::device::Ipv4Protocol::Tcp), now);  // segments in; acks and retransmits queued
+    tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);  // segments in; acks and retransmits queued
 
     for (aloe::tcp::Connection& c : tcp.events()) {                  // intrusive list: readable, connected, closed, writable
         if (c.readable()) {
@@ -108,8 +110,9 @@ The seam between IPv4 and the transports is a list: `net::Ipv4::process` sorts t
 accepts into one list per transport, and the loop hands `received(Tcp)` to TCP and `received(Udp)` to
 UDP. IPv4 calls nobody above it. ARP is private to the brick, as it is to the kernel.
 
-Protocol headers include `<aloe/loop>` and `<aloe/device>` and never `<aloe/core>`. The `loop` target does
-not link `core`, so stdexec stays out of the data path by construction, not by review.
+Protocol headers include `<aloe/core>`, `<aloe/wire>`, `<aloe/loop>` and `<aloe/device>` and never `<aloe/execution>` or
+`<aloe/log>`. No target below the runtime links `execution` or `log`, so stdexec and quill stay out of the
+data path by construction, not by review.
 
 Two goals for TCP follow from the gateway case and are stated here so phase 1 leaves room for them. A send
 of many small messages in one tick posts them as one transmit burst of as many segments, never coalesced
@@ -130,7 +133,7 @@ HTTP/1.1 and WebSocket in phase 4.
 ## Senders and receivers
 
 The runtime's asynchronous model is senders and receivers: stdexec today, `std::execution` once the standard
-library ships it. Code names these facilities only through the [`core`](core.md) module, so the switch is a
+library ships it. Code names these facilities only through the [`execution`](execution.md) module, so the switch is a
 one-header change. The protocol bricks know nothing about it. Between them and the senders there is one
 seam: the event list a brick reports, which the runtime's step drains to wake parked operation states. On
 that seam the runtime provides:

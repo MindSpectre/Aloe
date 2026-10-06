@@ -1,0 +1,9 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe execution module: senders, receivers, schedulers
+ * and coroutine tasks, the one place that names stdexec. Consumers link
+ * Aloe::Common::Execution and write `#include <aloe/execution>`.
+ */
+
+#include <execution.hpp>

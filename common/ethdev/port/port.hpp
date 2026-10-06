@@ -8,9 +8,9 @@
 #include <string_view>
 #include <vector>
 
-#include <address.hpp>
 #include <device.hpp>
 #include <ethdev_packet.hpp>
+#include <mac_address.hpp>
 #include <rss.hpp>
 
 struct rte_mempool;
@@ -54,7 +54,7 @@ namespace aloe::ethdev {
             return queues_;
         }
 
-        [[nodiscard]] device::MacAddress mac() const noexcept {
+        [[nodiscard]] wire::MacAddress mac() const noexcept {
             return mac_;
         }
 
@@ -99,7 +99,7 @@ namespace aloe::ethdev {
         std::uint16_t mtu_     = 0;
         bool owned_            = false;
         bool started_          = false;
-        device::MacAddress mac_;
+        wire::MacAddress mac_;
         std::string driver_;
         device::Capabilities capabilities_;
         device::RssDescription steering_;

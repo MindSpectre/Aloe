@@ -1,7 +1,7 @@
 #pragma once
 
 #include <algorithm>
-#include <aloe/utils>
+#include <aloe/core>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -9,9 +9,9 @@
 #include <utility>
 #include <vector>
 
-#include <address.hpp>
 #include <counters.hpp>
 #include <device.hpp>
+#include <mac_address.hpp>
 #include <rss.hpp>
 
 
@@ -44,13 +44,13 @@ namespace aloe::loop {
         ~ShardQueue()                            = default;
 
         [[nodiscard]] std::optional<Packet> allocate() noexcept {
-            utils::force_non_const(this);  // the stack's mutable view of the device, though only the pointee is written
+            core::force_non_const(this);  // the stack's mutable view of the device, though only the pointee is written
             return device_->allocate(queue_);
         }
 
         /// Fills `out` from the front and returns how many; the slots must hold empty packets.
         [[nodiscard]] std::size_t receive(std::span<Packet> out) noexcept {
-            utils::force_non_const(this);  // the stack's mutable view of the device, though only the pointee is written
+            core::force_non_const(this);  // the stack's mutable view of the device, though only the pointee is written
             return device_->receive(queue_, out);
         }
 
@@ -111,7 +111,7 @@ namespace aloe::loop {
             return queue_;
         }
 
-        [[nodiscard]] device::MacAddress mac() const noexcept {
+        [[nodiscard]] wire::MacAddress mac() const noexcept {
             return device_->mac();
         }
 

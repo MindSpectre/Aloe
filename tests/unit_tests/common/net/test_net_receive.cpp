@@ -1,4 +1,6 @@
+#include <aloe/frames>
 #include <aloe/net>
+#include <aloe/wire>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -7,24 +9,23 @@
 #include <utility>
 #include <vector>
 
-#include <frames.hpp>
 #include <gtest/gtest.h>
 #include <net_fixture.hpp>
 
 namespace {
 
-    using aloe::device::Ipv4Protocol;
     using aloe::testing::harness_ip;
     using aloe::testing::harness_mac;
     using aloe::testing::stack_ip;
     using aloe::testing::stack_mac;
+    using aloe::wire::Ipv4Protocol;
 
     class NetReceive : public aloe::testing::NetFixture {
     protected:
         /// A UDP or TCP datagram from the harness to the stack, port 40000 to port 80.
-        [[nodiscard]] static aloe::testing::Ipv4Spec
+        [[nodiscard]] static aloe::frames::Ipv4Spec
         datagram(const Ipv4Protocol protocol,
-                 const aloe::testing::Checksums checksums = aloe::testing::Checksums::Correct) {
+                 const aloe::frames::Checksums checksums = aloe::frames::Checksums::Correct) {
             return {.destination_mac  = stack_mac,
                     .source_mac       = harness_mac,
                     .source           = harness_ip,
@@ -45,8 +46,8 @@ namespace {
 }  // namespace
 
 TEST_P(NetReceive, AUdpDatagramLandsInTheUdpListWithWhatIpv4Parsed) {
-    const auto payload = aloe::testing::pattern(32);
-    inject(aloe::testing::ipv4_frame(datagram(Ipv4Protocol::Udp), payload));
+    const auto payload = aloe::frames::pattern(32);
+    inject(aloe::frames::ipv4_frame(datagram(Ipv4Protocol::Udp), payload));
 
     ASSERT_EQ(ip_.received(Ipv4Protocol::Udp).size(), 1);
     EXPECT_TRUE(ip_.received(Ipv4Protocol::Tcp).empty());
@@ -59,7 +60,7 @@ TEST_P(NetReceive, AUdpDatagramLandsInTheUdpListWithWhatIpv4Parsed) {
     EXPECT_EQ(received.l3_length, 20);
     EXPECT_EQ(received.l4_length, 8 + 32);
     ASSERT_EQ(received.l4().size(), 40U);
-    EXPECT_EQ(aloe::device::load_be16(received.l4().first(2)), 40000);
+    EXPECT_EQ(aloe::wire::load_be16(received.l4().first(2)), 40000);
     EXPECT_EQ(std::vector<std::byte>(received.l4().begin() + 8, received.l4().end()), payload);
     EXPECT_EQ(received.l4_checksum,
               offloads() ? aloe::device::ChecksumVerdict::Good : aloe::device::ChecksumVerdict::Unknown)
@@ -72,7 +73,7 @@ TEST_P(NetReceive, AUdpDatagramLandsInTheUdpListWithWhatIpv4Parsed) {
 }
 
 TEST_P(NetReceive, ATcpSegmentLandsInTheTcpList) {
-    inject(aloe::testing::ipv4_frame(datagram(Ipv4Protocol::Tcp), aloe::testing::pattern(10)));
+    inject(aloe::frames::ipv4_frame(datagram(Ipv4Protocol::Tcp), aloe::frames::pattern(10)));
     ASSERT_EQ(ip_.received(Ipv4Protocol::Tcp).size(), 1);
     EXPECT_TRUE(ip_.received(Ipv4Protocol::Udp).empty());
     EXPECT_EQ(ip_.received(Ipv4Protocol::Tcp)[0].protocol, Ipv4Protocol::Tcp);
@@ -81,8 +82,8 @@ TEST_P(NetReceive, ATcpSegmentLandsInTheTcpList) {
 }
 
 TEST_P(NetReceive, TheListsClearOnTheNextProcess) {
-    inject(aloe::testing::ipv4_frame(datagram(Ipv4Protocol::Udp), aloe::testing::pattern(8, 1)));
-    inject(aloe::testing::ipv4_frame(datagram(Ipv4Protocol::Udp), aloe::testing::pattern(8, 2)));
+    inject(aloe::frames::ipv4_frame(datagram(Ipv4Protocol::Udp), aloe::frames::pattern(8, 1)));
+    inject(aloe::frames::ipv4_frame(datagram(Ipv4Protocol::Udp), aloe::frames::pattern(8, 2)));
     ASSERT_EQ(ip_.received(Ipv4Protocol::Udp).size(), 1) << "only the second";
     EXPECT_EQ(ip_.received(Ipv4Protocol::Udp)[0].l4()[8], std::byte{2});
     process_pending();  // nothing pending
@@ -91,7 +92,7 @@ TEST_P(NetReceive, TheListsClearOnTheNextProcess) {
 }
 
 TEST_P(NetReceive, ATransportMayKeepThePacket) {
-    inject(aloe::testing::ipv4_frame(datagram(Ipv4Protocol::Udp), aloe::testing::pattern(8)));
+    inject(aloe::frames::ipv4_frame(datagram(Ipv4Protocol::Udp), aloe::frames::pattern(8)));
     ASSERT_EQ(ip_.received(Ipv4Protocol::Udp).size(), 1);
     Packet kept = std::move(ip_.received(Ipv4Protocol::Udp)[0].packet);
     EXPECT_TRUE(ip_.received(Ipv4Protocol::Udp)[0].packet.empty());
@@ -106,7 +107,7 @@ TEST_P(NetReceive, EmptySlotsAreSkipped) {
 }
 
 TEST_P(NetReceive, ADatagramsLengthComesFromTheTotalLengthNotTheFrame) {
-    auto frame = aloe::testing::ipv4_frame(datagram(Ipv4Protocol::Udp), aloe::testing::pattern(4));  // 46 bytes
+    auto frame = aloe::frames::ipv4_frame(datagram(Ipv4Protocol::Udp), aloe::frames::pattern(4));  // 46 bytes
     frame.resize(60);  // padded to the minimum frame, as a card does
     inject(frame);
     ASSERT_EQ(ip_.received(Ipv4Protocol::Udp).size(), 1);
@@ -115,54 +116,71 @@ TEST_P(NetReceive, ADatagramsLengthComesFromTheTotalLengthNotTheFrame) {
 }
 
 TEST_P(NetReceive, AHeaderWithOptionsIsAcceptedAndItsLengthReported) {
-    inject(aloe::testing::with_ipv4_options(
-        aloe::testing::ipv4_frame(datagram(Ipv4Protocol::Udp), aloe::testing::pattern(8)), 2));
+    inject(aloe::frames::with_ipv4_options(
+        aloe::frames::ipv4_frame(datagram(Ipv4Protocol::Udp), aloe::frames::pattern(8)), 2));
     ASSERT_EQ(ip_.received(Ipv4Protocol::Udp).size(), 1);
     auto& received = ip_.received(Ipv4Protocol::Udp)[0];
     EXPECT_EQ(received.l3_length, 28);
     EXPECT_EQ(received.l4_length, 16);
-    EXPECT_EQ(aloe::device::load_be16(received.l4().first(2)), 40000) << "l4() starts after the options";
+    EXPECT_EQ(aloe::wire::load_be16(received.l4().first(2)), 40000) << "l4() starts after the options";
 }
 
 TEST_P(NetReceive, BroadcastDatagramsAreForUs) {
-    aloe::testing::Ipv4Spec subnet = datagram(Ipv4Protocol::Udp);
-    subnet.destination_mac         = aloe::device::MacAddress::broadcast();
-    subnet.destination             = {10, 0, 0, 255};
-    inject(aloe::testing::ipv4_frame(subnet, aloe::testing::pattern(8)));
+    aloe::frames::Ipv4Spec subnet = datagram(Ipv4Protocol::Udp);
+    subnet.destination_mac        = aloe::wire::MacAddress::broadcast();
+    subnet.destination            = {10, 0, 0, 255};
+    inject(aloe::frames::ipv4_frame(subnet, aloe::frames::pattern(8)));
     EXPECT_EQ(ip_.counters().delivered_udp, 1);
 
-    aloe::testing::Ipv4Spec limited = subnet;
-    limited.destination             = {255, 255, 255, 255};
-    inject(aloe::testing::ipv4_frame(limited, aloe::testing::pattern(8)));
+    aloe::frames::Ipv4Spec limited = subnet;
+    limited.destination            = {255, 255, 255, 255};
+    inject(aloe::frames::ipv4_frame(limited, aloe::frames::pattern(8)));
     EXPECT_EQ(ip_.counters().delivered_udp, 2);
     EXPECT_EQ(ip_.counters().dropped_not_for_us, 0);
 }
 
+TEST_P(NetReceive, TcpToABroadcastAddressIsDropped) {
+    aloe::frames::Ipv4Spec subnet = datagram(Ipv4Protocol::Tcp);
+    subnet.destination_mac        = aloe::wire::MacAddress::broadcast();
+    subnet.destination            = {10, 0, 0, 255};
+    inject(aloe::frames::ipv4_frame(subnet, aloe::frames::pattern(20)));
+
+    aloe::frames::Ipv4Spec limited = subnet;
+    limited.destination            = aloe::wire::Ipv4Address::limited_broadcast();
+    inject(aloe::frames::ipv4_frame(limited, aloe::frames::pattern(20)));
+
+    EXPECT_EQ(ip_.counters().dropped_tcp_broadcast, 2) << "RFC 1122: TCP is unicast only";
+    EXPECT_TRUE(ip_.received(Ipv4Protocol::Tcp).empty());
+    EXPECT_EQ(ip_.counters().delivered_tcp, 0);
+    EXPECT_EQ(ip_.counters().datagrams_received, 0);
+    EXPECT_TRUE(burst_empty());
+}
+
 TEST_P(NetReceive, WhatIsNotForUsIsDroppedAndCounted) {
-    aloe::testing::Ipv4Spec other_address = datagram(Ipv4Protocol::Udp);
-    other_address.destination             = {10, 0, 0, 9};
-    inject(aloe::testing::ipv4_frame(other_address, aloe::testing::pattern(8)));
+    aloe::frames::Ipv4Spec other_address = datagram(Ipv4Protocol::Udp);
+    other_address.destination            = {10, 0, 0, 9};
+    inject(aloe::frames::ipv4_frame(other_address, aloe::frames::pattern(8)));
     EXPECT_EQ(ip_.counters().dropped_not_for_us, 1);
     EXPECT_TRUE(ip_.received(Ipv4Protocol::Udp).empty());
 
-    aloe::testing::Ipv4Spec other_mac = datagram(Ipv4Protocol::Udp);
-    other_mac.destination_mac         = {0x02, 0, 0, 0, 0, 0x09};
-    local(aloe::testing::ipv4_frame(other_mac, aloe::testing::pattern(8)));  // the fabric would not deliver it
+    aloe::frames::Ipv4Spec other_mac = datagram(Ipv4Protocol::Udp);
+    other_mac.destination_mac        = {0x02, 0, 0, 0, 0, 0x09};
+    local(aloe::frames::ipv4_frame(other_mac, aloe::frames::pattern(8)));  // the fabric would not deliver it
     EXPECT_EQ(ip_.counters().dropped_not_for_us, 2);
     EXPECT_TRUE(burst_empty());
 }
 
 TEST_P(NetReceive, AShortFrameAndAnUnknownEthertypeAreDropped) {
-    local(aloe::testing::pattern(10));  // the fabric refuses it, the brick must not trust the device
+    local(aloe::frames::pattern(10));  // the fabric refuses it, the brick must not trust the device
     EXPECT_EQ(ip_.counters().dropped_short, 1);
-    inject(aloe::testing::ethernet_frame(
-        stack_mac, harness_mac, aloe::testing::ethertype_experimental, aloe::testing::pattern(40)));
+    inject(aloe::frames::ethernet_frame(
+        stack_mac, harness_mac, aloe::frames::ethertype_experimental, aloe::frames::pattern(40)));
     EXPECT_EQ(ip_.counters().dropped_ethertype, 1);
     EXPECT_TRUE(burst_empty());
 }
 
 TEST_P(NetReceive, ABadHeaderIsDropped) {
-    auto frame = aloe::testing::ipv4_frame(datagram(Ipv4Protocol::Udp), aloe::testing::pattern(8));
+    auto frame = aloe::frames::ipv4_frame(datagram(Ipv4Protocol::Udp), aloe::frames::pattern(8));
     frame[14]  = std::byte{0x65};  // version 6
     inject(frame);
     EXPECT_EQ(ip_.counters().dropped_bad_header, 1);
@@ -170,44 +188,45 @@ TEST_P(NetReceive, ABadHeaderIsDropped) {
 }
 
 TEST_P(NetReceive, ABadChecksumIsDroppedOnBothPaths) {
-    inject(aloe::testing::ipv4_frame(datagram(Ipv4Protocol::Udp, aloe::testing::Checksums::Wrong),
-                                     aloe::testing::pattern(8)));
+    inject(aloe::frames::ipv4_frame(datagram(Ipv4Protocol::Udp, aloe::frames::Checksums::Wrong),
+                                    aloe::frames::pattern(8)));
     EXPECT_EQ(ip_.counters().dropped_bad_checksum, 1) << (offloads() ? "the device's Bad verdict" : "software");
-    inject(aloe::testing::ipv4_frame(datagram(Ipv4Protocol::Udp, aloe::testing::Checksums::Zero),
-                                     aloe::testing::pattern(8)));
+    inject(
+        aloe::frames::ipv4_frame(datagram(Ipv4Protocol::Udp, aloe::frames::Checksums::Zero), aloe::frames::pattern(8)));
     EXPECT_EQ(ip_.counters().dropped_bad_checksum, 2) << "a zero header checksum is a wrong one";
     EXPECT_TRUE(ip_.received(Ipv4Protocol::Udp).empty());
     EXPECT_EQ(ip_.counters().datagrams_received, 0);
 }
 
 TEST_P(NetReceive, AFragmentIsDropped) {
-    aloe::testing::Ipv4Spec more = datagram(Ipv4Protocol::Udp);
-    more.flags_fragment          = 0x2000;  // more fragments, offset zero
-    inject(aloe::testing::ipv4_frame(more, aloe::testing::pattern(8)));
-    aloe::testing::Ipv4Spec offset = datagram(Ipv4Protocol::Udp);
-    offset.flags_fragment          = 0x0001;  // the second piece
-    inject(aloe::testing::ipv4_frame(offset, aloe::testing::pattern(8)));
+    aloe::frames::Ipv4Spec more = datagram(Ipv4Protocol::Udp);
+    more.flags_fragment         = 0x2000;  // more fragments, offset zero
+    inject(aloe::frames::ipv4_frame(more, aloe::frames::pattern(8)));
+    aloe::frames::Ipv4Spec offset = datagram(Ipv4Protocol::Udp);
+    offset.flags_fragment         = 0x0001;  // the second piece
+    inject(aloe::frames::ipv4_frame(offset, aloe::frames::pattern(8)));
     EXPECT_EQ(ip_.counters().dropped_fragment, 2);
     EXPECT_TRUE(ip_.received(Ipv4Protocol::Udp).empty());
 }
 
 TEST_P(NetReceive, AMartianSourceIsDropped) {
-    for (const aloe::device::Ipv4Address source : {
-             aloe::device::Ipv4Address{224, 0,   0,   5  },
-             aloe::device::Ipv4Address{255, 255, 255, 255},
-             aloe::device::Ipv4Address{127, 0,   0,   1  }
+    for (const aloe::wire::Ipv4Address source : {
+             aloe::wire::Ipv4Address{224, 0,   0,   5  },
+             aloe::wire::Ipv4Address{255, 255, 255, 255},
+             aloe::wire::Ipv4Address{127, 0,   0,   1  },
+             stack_ip
     }) {
-        aloe::testing::Ipv4Spec spec = datagram(Ipv4Protocol::Udp);
-        spec.source                  = source;
-        inject(aloe::testing::ipv4_frame(spec, aloe::testing::pattern(8)));
+        aloe::frames::Ipv4Spec spec = datagram(Ipv4Protocol::Udp);
+        spec.source                 = source;
+        inject(aloe::frames::ipv4_frame(spec, aloe::frames::pattern(8)));
     }
-    EXPECT_EQ(ip_.counters().dropped_martian, 3);
+    EXPECT_EQ(ip_.counters().dropped_martian, 4) << "our own address too, as the kernel drops it";
     EXPECT_TRUE(ip_.received(Ipv4Protocol::Udp).empty());
     EXPECT_EQ(ip_.counters().datagrams_received, 0);
 }
 
 TEST_P(NetReceive, AnUnknownProtocolIsDropped) {
-    inject(aloe::testing::ipv4_frame(datagram(Ipv4Protocol{47}), aloe::testing::pattern(8)));  // GRE
+    inject(aloe::frames::ipv4_frame(datagram(Ipv4Protocol{47}), aloe::frames::pattern(8)));  // GRE
     EXPECT_EQ(ip_.counters().dropped_protocol, 1);
     EXPECT_EQ(ip_.counters().datagrams_received, 1) << "valid IPv4 for us, just nobody's";
 }
@@ -218,6 +237,31 @@ TEST_P(NetReceive, TheBrickReportsItsConfigurationAndTheDevicesMtu) {
     EXPECT_EQ(ip_.gateway(), aloe::testing::gateway_ip);
     EXPECT_EQ(ip_.mtu(), 1500);
     EXPECT_EQ(ip_.max_l4_size(), 1480);
+}
+
+TEST_P(NetReceive, AnAddressThatIsNotAUnicastHostThrows) {
+    const auto config = [](const aloe::wire::Ipv4Address address, const std::uint8_t prefix) {
+        return aloe::net::Ipv4Config{.address = address, .prefix = prefix};
+    };
+    EXPECT_THROW((Ipv4{queue_, config({224, 0, 0, 1}, 24)}), std::invalid_argument) << "multicast";
+    EXPECT_THROW((Ipv4{queue_, config({127, 0, 0, 1}, 8)}), std::invalid_argument) << "loopback";
+    EXPECT_THROW((Ipv4{queue_, config(aloe::wire::Ipv4Address::limited_broadcast(), 24)}), std::invalid_argument)
+        << "limited broadcast";
+    EXPECT_THROW((Ipv4{queue_, config({10, 0, 0, 0}, 24)}), std::invalid_argument) << "the subnet's network";
+    EXPECT_THROW((Ipv4{queue_, config({10, 0, 0, 255}, 24)}), std::invalid_argument) << "the subnet's broadcast";
+    EXPECT_THROW((Ipv4{queue_, config({10, 0, 0, 3}, 30)}), std::invalid_argument) << "a /30 still has a broadcast";
+
+    EXPECT_NO_THROW((Ipv4{queue_, config({10, 0, 0, 0}, 31)})) << "RFC 3021: both addresses of a /31 are hosts";
+    EXPECT_NO_THROW((Ipv4{queue_, config({10, 0, 0, 255}, 32)}));
+}
+
+TEST_P(NetReceive, AGatewayThatIsNotAUnicastNeighbourThrows) {
+    const auto config = [](const aloe::wire::Ipv4Address gateway) {
+        return aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24, .gateway = gateway};
+    };
+    EXPECT_THROW((Ipv4{queue_, config(stack_ip)}), std::invalid_argument) << "ourselves";
+    EXPECT_THROW((Ipv4{queue_, config({10, 0, 0, 0})}), std::invalid_argument) << "the network";
+    EXPECT_THROW((Ipv4{queue_, config({10, 0, 0, 255})}), std::invalid_argument) << "the broadcast";
 }
 
 TEST_P(NetReceive, ABadConfigThrows) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/log>
 #include <chrono>
 #include <cstdint>
 
@@ -13,8 +14,8 @@
 namespace aloe::runtime {
 
     struct ShardContextConfig {
-        std::uint16_t index                       = 0;  ///< The shard's, and its queue's, index.
-        std::chrono::nanoseconds timer_resolution = std::chrono::milliseconds{1};
+        std::uint16_t index             = 0;  ///< The shard's, and its queue's, index.
+        core::Duration timer_resolution = std::chrono::milliseconds{1};
     };
 
     /**
@@ -32,11 +33,8 @@ namespace aloe::runtime {
      */
     class ShardContext {
     public:
-        using Clock     = std::chrono::steady_clock;
-        using TimePoint = Clock::time_point;
-
         /// `start` is where the wheel's tick zero begins; the shard passes the clock, tests pass any stamp.
-        ShardContext(const ShardContextConfig& config, TimePoint start);
+        ShardContext(const ShardContextConfig& config, core::TimePoint start);
         ShardContext(const ShardContext&)            = delete;
         ShardContext& operator=(const ShardContext&) = delete;
         ShardContext(ShardContext&&)                 = delete;
@@ -61,7 +59,7 @@ namespace aloe::runtime {
         };
 
         /// One step. Returns whether anything ran or fired.
-        bool run_once(TimePoint now) noexcept;
+        bool run_once(core::TimePoint now) noexcept;
 
         /**
          * Shard thread: sets the stop flag and stops the scope. Idempotent.
@@ -82,7 +80,7 @@ namespace aloe::runtime {
         }
 
         /// The stamp of the current or last step, never a clock read.
-        [[nodiscard]] TimePoint now() const noexcept {
+        [[nodiscard]] core::TimePoint now() const noexcept {
             return now_;
         }
 
@@ -90,7 +88,7 @@ namespace aloe::runtime {
             return index_;
         }
 
-        [[nodiscard]] core::Logger logger() const noexcept {
+        [[nodiscard]] log::Logger logger() const noexcept {
             return logger_;
         }
 
@@ -120,9 +118,9 @@ namespace aloe::runtime {
 
     private:
         std::uint16_t index_;
-        core::Logger logger_;
+        log::Logger logger_;
         loop::ShardCounters counters_;
-        TimePoint now_;
+        core::TimePoint now_;
         loop::RunQueue ready_;
         loop::Inbox inbox_;
         loop::TimerWheel timers_;

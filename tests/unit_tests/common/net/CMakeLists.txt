@@ -1,8 +1,7 @@
 ##############################################################################
-# Test Net: the wire formats, the ARP cache and the brick over a fabric
+# Test Net: the ARP cache and the brick over a fabric
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Net
-        test_net_wire.cpp
         test_net_arp_cache.cpp
         test_net_receive.cpp
         test_net_arp.cpp
@@ -12,7 +11,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Net
 target_link_libraries(${UNIT_TESTING_TARGET}.Net
         PRIVATE
         Aloe::Common::Net
-        Aloe::Common::Fabric
+        Aloe::Fixtures::Fabric
         ${SHARED_TESTING_TARGET}.Device
         ${SHARED_TESTING_TARGET}.Net
         ${TEST_LIBS}

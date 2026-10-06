@@ -5,8 +5,8 @@ bounded transmit ring, the timer wheel, the work node with its two queues, and t
 of Aloe's two products, the one a program writes its own loop over, and the [runtime](runtime.md) is written
 over it too. Everything is reached through the umbrella `#include <aloe/loop>` (`export/aloe/loop`), and
 targets link `Aloe::Common::Loop`. It depends on [`device`](device.md) for the device concept and on
-[`utils`](utils.md). It does not depend on [`core`](core.md): no header here names the asynchronous model,
-and a protocol module that links this target and not `core` cannot include stdexec by accident.
+[`core`](core.md). It does not depend on [`execution`](execution.md) or [`log`](log.md): no header here names
+the asynchronous model, and a protocol module that links this target cannot include stdexec by accident.
 
 ## Key types
 

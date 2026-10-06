@@ -16,32 +16,46 @@ target_include_directories(${CORE}.Version INTERFACE
 ##############################################################################
 
 ##############################################################################
-# Execution facilities: the one place that names stdexec
+# Clock: the clock, stamp and interval types the whole stack shares
 ##############################################################################
-add_library(${CORE}.Execution INTERFACE
-        execution/execution.hpp
+add_library(${CORE}.Clock INTERFACE
+        clock/clock.hpp
 )
-target_include_directories(${CORE}.Execution INTERFACE
-        execution/
-)
-target_link_libraries(${CORE}.Execution INTERFACE
-        STDEXEC::stdexec
+target_include_directories(${CORE}.Clock INTERFACE
+        clock/
 )
 ##############################################################################
 
 ##############################################################################
-# Logging: the one place that names quill
+# Values: discarding values on purpose, and choosing a fallback
 ##############################################################################
-add_library(${CORE}.Log INTERFACE
-        log/log.hpp
+add_library(${CORE}.Values INTERFACE
+        values/values.hpp
 )
-target_include_directories(${CORE}.Log INTERFACE
-        log/
+target_include_directories(${CORE}.Values INTERFACE
+        values/
 )
-target_link_libraries(${CORE}.Log INTERFACE
-        quill::quill
-        Aloe::Common::Utils
-        Threads::Threads
+##############################################################################
+
+##############################################################################
+# Guards: static assertions that pin a member function as mutating or as an instance function
+##############################################################################
+add_library(${CORE}.Guards INTERFACE
+        guards/guards.hpp
+)
+target_include_directories(${CORE}.Guards INTERFACE
+        guards/
+)
+##############################################################################
+
+##############################################################################
+# FixedString: a string literal as a template parameter
+##############################################################################
+add_library(${CORE}.FixedString INTERFACE
+        fixed_string/fixed_string.hpp
+)
+target_include_directories(${CORE}.FixedString INTERFACE
+        fixed_string/
 )
 ##############################################################################
 
@@ -55,8 +69,10 @@ add_combined_library(${CORE}
         export/aloe/core
         LIBRARIES
         ${CORE}.Version
-        ${CORE}.Execution
-        ${CORE}.Log
+        ${CORE}.Clock
+        ${CORE}.Values
+        ${CORE}.Guards
+        ${CORE}.FixedString
 )
 
 add_library(Aloe::Common::Core ALIAS ${CORE})

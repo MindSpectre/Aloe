@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <aloe/fabric>
+#include <aloe/frames>
 #include <aloe/runtime>
+#include <aloe/wire>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -12,17 +14,16 @@
 #include <vector>
 
 #include <echo_stack.hpp>
-#include <frames.hpp>
 #include <gtest/gtest.h>
 
 namespace {
 
     using namespace std::chrono_literals;
-    using TimePoint = aloe::runtime::ShardContext::TimePoint;
+    using TimePoint = aloe::core::TimePoint;
 
     constexpr TimePoint start{};
-    constexpr aloe::device::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
-    constexpr aloe::device::MacAddress client{0x02, 0, 0, 0, 0, 0x02};
+    constexpr aloe::wire::MacAddress server{0x02, 0, 0, 0, 0, 0x01};
+    constexpr aloe::wire::MacAddress client{0x02, 0, 0, 0, 0, 0x02};
 
     /// A device that accepts at most `accept` packets per transmit call; everything else is the port's.
     class Throttled {
@@ -39,7 +40,7 @@ namespace {
             return port_->queue_count();
         }
 
-        [[nodiscard]] aloe::device::MacAddress mac() const noexcept {
+        [[nodiscard]] aloe::wire::MacAddress mac() const noexcept {
             return port_->mac();
         }
 
@@ -85,7 +86,7 @@ namespace {
     void send(aloe::fabric::Port& from, const std::span<const std::byte> frame) {
         auto packet = from.allocate(0);
         ASSERT_TRUE(packet.has_value());
-        ASSERT_TRUE(aloe::testing::fill(*packet, frame));
+        ASSERT_TRUE(aloe::frames::fill(*packet, frame));
         std::array<aloe::fabric::Packet, 1> burst{std::move(*packet)};
         ASSERT_EQ(from.transmit(0, burst), 1);
     }
@@ -95,7 +96,7 @@ namespace {
         std::array<aloe::fabric::Packet, 16> burst;
         for (std::size_t count = port.receive(0, burst); count > 0; count = port.receive(0, burst)) {
             for (std::size_t index = 0; index < count; ++index) {
-                frames.push_back(aloe::testing::bytes_of(burst[index]));
+                frames.push_back(aloe::frames::bytes_of(burst[index]));
                 burst[index] = aloe::fabric::Packet{};
             }
         }
@@ -120,8 +121,8 @@ namespace {
 TEST_F(ShardTest, TheEchoRepliesInTheTickTheFrameArrived) {
     aloe::runtime::Shard<aloe::fabric::Port, aloe::testing::EchoStack<aloe::fabric::Port>> shard{
         config_, server_, 0, start};
-    const auto frame = aloe::testing::ethernet_frame(
-        server, client, aloe::testing::ethertype_experimental, aloe::testing::pattern(30));
+    const auto frame =
+        aloe::frames::ethernet_frame(server, client, aloe::frames::ethertype_experimental, aloe::frames::pattern(30));
     send(client_, frame);
 
     EXPECT_TRUE(shard.step(start));
@@ -147,7 +148,7 @@ TEST_F(ShardTest, PacketsTheStackLeavesAreFreedSoThePoolNeverRunsDry) {
     aloe::runtime::Shard<aloe::fabric::Port, aloe::testing::EchoStack<aloe::fabric::Port>> shard{
         config_, server_, 0, start};
     const auto too_short =
-        aloe::testing::ethernet_frame(server, client, aloe::testing::ethertype_experimental, aloe::testing::pattern(1));
+        aloe::frames::ethernet_frame(server, client, aloe::frames::ethertype_experimental, aloe::frames::pattern(1));
     constexpr std::size_t rounds    = 5;
     constexpr std::size_t per_round = 12;  // less than the 16-packet pool, more than one 8-packet burst
 
@@ -170,8 +171,8 @@ TEST_F(ShardTest, PacketsTheStackLeavesAreFreedSoThePoolNeverRunsDry) {
 TEST_F(ShardTest, TheTransmitRingFlushesWhenFullAndRefusesWhenTheDeviceDoes) {
     Throttled throttled{server_};
     aloe::runtime::Shard<Throttled, aloe::testing::EchoStack<Throttled>> shard{config_, throttled, 0, start};
-    const auto frame = aloe::testing::ethernet_frame(
-        server, client, aloe::testing::ethertype_experimental, aloe::testing::pattern(20));
+    const auto frame =
+        aloe::frames::ethernet_frame(server, client, aloe::frames::ethertype_experimental, aloe::frames::pattern(20));
     for (int index = 0; index < 6; ++index) {
         send(client_, frame);
     }

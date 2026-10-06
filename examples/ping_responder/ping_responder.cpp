@@ -13,6 +13,7 @@
 #include <aloe/ethdev>
 #include <aloe/loop>
 #include <aloe/net>
+#include <aloe/wire>
 #include <atomic>
 #include <charconv>
 #include <chrono>
@@ -56,7 +57,7 @@ namespace {
         if (slash == std::string_view::npos) {
             return std::nullopt;
         }
-        const auto address = aloe::device::Ipv4Address::parse(cidr.substr(0, slash));
+        const auto address = aloe::wire::Ipv4Address::parse(cidr.substr(0, slash));
         unsigned prefix    = 0;
         const auto length  = cidr.substr(slash + 1);
         if (!address || std::from_chars(length.data(), length.data() + length.size(), prefix).ec != std::errc{} ||
@@ -68,7 +69,7 @@ namespace {
 
         std::size_t next = 3;
         if (next < argv.size() && std::string_view{argv[next]} != "--") {
-            const auto gateway = aloe::device::Ipv4Address::parse(argv[next]);
+            const auto gateway = aloe::wire::Ipv4Address::parse(argv[next]);
             if (!gateway) {
                 return std::nullopt;
             }
@@ -142,6 +143,7 @@ int main(int argc, char** argv) {
                  c.dropped_ethertype,
                  c.dropped_bad_checksum,
                  c.dropped_short + c.dropped_arp_malformed + c.dropped_arp_conflict + c.dropped_arp_unsolicited +
-                     c.dropped_bad_header + c.dropped_fragment + c.dropped_protocol + c.dropped_icmp);
+                     c.dropped_bad_header + c.dropped_fragment + c.dropped_protocol + c.dropped_icmp +
+                     c.dropped_martian + c.dropped_tcp_broadcast);
     return EXIT_SUCCESS;
 }
