@@ -10,5 +10,8 @@
 #include <flow_table.hpp>
 #include <read_view.hpp>
 #include <tcp_config.hpp>
+#include <tcp_connection.hpp>
 #include <tcp_counters.hpp>
+#include <tcp_fwd.hpp>
 #include <tcp_node_pool.hpp>
+#include <tcp_stack.hpp>
