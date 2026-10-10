@@ -8,8 +8,9 @@ gives senders a home on a shard, the shard-bound coroutine task, and the runtime
 device queue on its own pinned thread. Everything is reached through the umbrella `#include <aloe/runtime>`
 (`export/aloe/runtime`), which includes `<aloe/loop>`, and targets link `Aloe::Common::Runtime`. It
 depends on [`execution`](execution.md) for the execution facilities, on [`log`](log.md) for logging, on
-[`core`](core.md) for the clock, on [`loop`](loop.md) for the bricks
-and on [`device`](device.md) for the device concept. It never names DPDK.
+[`core`](core.md) for the clock, on [`loop`](loop.md) for the bricks,
+on [`device`](device.md) for the device concept, and on [`tcp`](tcp.md), [`stream`](stream.md) and
+[`net`](net.md) for the connections its stream senders wait on. It never names DPDK.
 
 Nothing here is required to use Aloe. A program that wants the loop under its own control writes it over
 the bricks, as the [loop page](loop.md) shows, and keeps every line of protocol code. The runtime adds
@@ -76,6 +77,30 @@ per packet.
   accepted and closes admission before it reports the failure.
   Post work between `start` and `stop`: once a shard has drained nothing reads its inbox, and work posted then
   never runs. A `start` that throws leaves the runtime stopped and unusable; destroy it.
+
+### Streams
+
+- **`aloe::runtime::Streams<Stack>`** -- the runtime's side of a `tcp::Stack`, constructed over the stack and
+  the shard's context with every slot allocated there: one wait slot per connection, and one listener record
+  per listener of the stack's config, each with a backlog ring as long as the connection table. `wake(now)`
+  drains the brick's `poll_event()` and, per flag, detaches the matching parked wait and pushes it onto the
+  run queue. `accept(port)` and `connect(peer)` return senders that complete with a `Stream`. `cancel(index)`
+  requests the slot's stop source and aborts the connection; `deadline(index, when)` arms the slot's one
+  timer, whose fire is `cancel`; `release(index)` is the owner's last call. `tcp()` and `context()` reach what
+  it was built over.
+- **`aloe::runtime::Stream<Stack>`** -- a move-only owner of one connection. The synchronous members
+  (`unread`, `consume`, `peer_closed`, `writable()`, `prepare`, `commit`, `committed`, `acknowledged`,
+  `unacknowledged`, `events`, `state`, `local`, `remote`, `mss`) forward to the brick's connection. The
+  senders are `readable(n)`, `writable(n)`, `acked(sequence)`, `closed()`, `send(bytes)` and `close()`.
+  `cancel()`, `deadline(when)` and `release()` go through the owner, and the destructor releases, so a task
+  that returns for any reason frees its slot. A moved-from or released handle is inert.
+- **`connection()` versus the senders.** On the handle, `send(bytes)` and `close()` are senders and
+  `writable()` is the byte query while `writable(n)` is a sender. The brick's synchronous `send` and `close`
+  are reached through `connection()`. The brick's connection models `stream::IsStream`; the handle does not,
+  by design, because its same-named members wait.
+- **All lifecycle calls go through the owner.** A connection managed by `Streams` is cancelled, given a
+  deadline and released through `Streams` or its handle, never through the brick directly, so the wait slot
+  is cleaned in the same call that frees the connection.
 
 ## Usage
 
@@ -151,6 +176,43 @@ A stack with the hooks sees one step in this order:
 
 An event raised inside `run_once`, by a timer or a task, is drained by `on_flush`, and the waiter it wakes
 is pushed onto the run queue, so its completion runs on the next step, whether or not traffic arrives.
+
+## Stream senders and wait slots
+
+Each sender is a concrete operation state over one wait node, with no allocation and no type erasure. A
+connection's slot holds one parked operation per kind (readable, writable, acked, connected, closed; debug
+builds assert it), a list of its active waits, a stop source, the terminal error once one is seen, and the
+deadline timer. A listener holds one parked accept. `send(bytes)` parks on the writable kind, so a
+`send(bytes)` and a `writable(n)` do not wait on one connection at once, and `close()` and `closed()` share
+the closed kind the same way.
+
+A sender checks the level when it starts: data already unread, credit already open or a terminal state
+already seen completes it inline, without parking and without a run-queue push. Otherwise it parks. `wake`
+runs after each phase that may raise events, drains the events and, for each flag, takes the parked wait of
+the matching kind, saves its outcome on the node and pushes it onto the run queue. The completion runs inside
+`run_once`. No receiver is ever called from a wake pass, and processing a later burst never consumes an
+event: the drained flags become outcomes saved on nodes, and the levels are read again when a wait starts.
+
+Values travel in the value channel as `std::expected<T, stream::Error>`. Cancellation, deadlines and scope
+shutdown use the stopped channel. An operation registers two stop callbacks: one on its receiver's token,
+which is how scope shutdown reaches it, and one on its slot's stop source, which is how `cancel` and the
+deadline reach every wait of the connection. An operation started after `cancel` completes stopped at once.
+
+The lifetime rules that keep a slot safe to reuse:
+
+- A wait is parked on its slot's kind pointer and linked on the slot's active list.
+- A wake, or a stop request, detaches the parked pointer before queueing, so a second wake cannot queue it
+  twice.
+- A queued completion stays on the active list until it runs, so `release` can turn its saved outcome into
+  stopped and unlink it.
+- `release` drops every callback of every active wait, queues the parked ones stopped, clears the slot, then
+  rebuilds the slot's stop source, so no callback is ever left on a source that is replaced.
+- A queued completion that runs after its slot was released and reused uses only its own outcome and
+  receiver; it never touches the slot again.
+
+A `connect` operation owns its pending connection until it hands it over: a refused, timed-out or stopped
+open releases the slot before it completes. An accept that was queued with a connection and then stopped
+gives that connection back to the brick. A reset before `Connected` reports `Refused`; after it, `Reset`.
 
 ## Design notes
 

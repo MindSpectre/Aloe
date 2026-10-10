@@ -7,12 +7,18 @@ add_unit_test(${UNIT_TESTING_TARGET}.Runtime
         test_shard.cpp
         test_shard_context.cpp
         test_shard_task.cpp
+        test_streams.cpp
         test_task_scope.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Runtime
         PRIVATE
         Aloe::Common::Runtime
+        Aloe::Common::Tcp
+        Aloe::Common::Net
         Aloe::Fixtures::Fabric
+        Aloe::Fixtures::Frames
+        ${SHARED_TESTING_TARGET}.Net
+        ${SHARED_TESTING_TARGET}.Tcp
         ${SHARED_TESTING_TARGET}.Device
         ${SHARED_TESTING_TARGET}.Runtime
         ${SHARED_TESTING_TARGET}.Log

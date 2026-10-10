@@ -73,6 +73,21 @@ return value does not cover.
 
 ## In the runtime
 
-The runtime maps its senders onto these events: a sender completes when the event it waits for is raised,
-and carries an `Error` in the value channel when the stream ends another way. The mapping is described
-when the runtime wraps a stream in senders.
+The [runtime](runtime.md) wraps a TCP connection in `runtime::Stream<Stack>`, whose senders complete when the
+event they wait for is raised, or at once when the level is already met. Every value is a
+`std::expected<T, Error>`: an error is a value, not an exception. Cancellation, a deadline and the scope's
+shutdown complete a sender through the stopped channel.
+
+| Sender            | Value                         | Completes with                                                                 |
+|-------------------|-------------------------------|--------------------------------------------------------------------------------|
+| `readable(n)`     | `expected<size_t, Error>`     | the unread bytes once at least `n`; `PeerClosed` if the FIN came first with fewer; `Reset`, `TimedOut` |
+| `writable(n)`     | `expected<size_t, Error>`     | the credit once `writable() >= n` (`n` at most the MSS); `Closed`, `Reset`, `TimedOut` |
+| `acked(sequence)` | `expected<void, Error>`       | success once `acknowledged()` reaches `sequence`; the terminal error otherwise   |
+| `closed()`        | `expected<void, Error>`       | success on a normal close; `Reset`, `TimedOut`                                  |
+| `send(bytes)`     | `expected<size_t, Error>`     | every byte committed, parking between segments; the terminal error otherwise    |
+| `close()`         | `expected<void, Error>`       | the brick's `close`, then as `closed()`                                         |
+| `accept(port)`    | `expected<Stream, Error>`     | the next accepted connection, from the backlog first; `TableFull`, or `Refused` when the port is listened to outside the runtime |
+| `connect(peer)`   | `expected<Stream, Error>`     | the connection once established; `Refused` on a reset before that; `TimedOut`, `TableFull`, `NoPort`, `Unplaceable`, `NoRoute` |
+
+The handle's `send(bytes)` and `close()` are senders; the brick's synchronous ones are reached through
+`connection()`, which models `IsStream`. The handle does not model `IsStream`, by design.
