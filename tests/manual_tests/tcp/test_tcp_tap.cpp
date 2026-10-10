@@ -144,6 +144,19 @@ namespace {
         return ::recv(fd, one.data(), one.size(), 0) == 0;
     }
 
+    /// Polls `done` until it holds or `patience` runs out; true when it held.
+    template <typename Predicate>
+    [[nodiscard]] bool eventually(Predicate done) {
+        const auto deadline = std::chrono::steady_clock::now() + patience;
+        while (!done()) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return false;
+            }
+            std::this_thread::sleep_for(1ms);
+        }
+        return true;
+    }
+
     /// The hand-written echo over the bricks on its own thread: server when `listen`, client to `peer` otherwise.
     class BrickLoop {
     public:
@@ -173,7 +186,7 @@ namespace {
             return received_;
         }
         [[nodiscard]] bool clean_close() const noexcept {
-            return clean_close_;
+            return clean_close_.load(std::memory_order_acquire);
         }
         std::atomic<bool> connected{false};
 
@@ -225,7 +238,8 @@ namespace {
                         c.close();
                     }
                     if (event->events.closed()) {
-                        clean_close_ = c.state() == aloe::tcp::State::Closed && !event->events.reset();
+                        clean_close_.store(c.state() == aloe::tcp::State::Closed && !event->events.reset(),
+                                           std::memory_order_release);
                         c.release();
                     } else if (event->events.reset() || event->events.timed_out()) {
                         c.release();
@@ -258,12 +272,12 @@ namespace {
 
         aloe::tcp::TcpCounters counters_{};
         std::vector<std::byte> received_;
-        bool clean_close_ = false;
+        std::atomic<bool> clean_close_{false};  ///< Written by the loop thread, polled by the test thread.
         std::jthread thread_;
     };
 
     /// The echo as tasks over the runtime.
-    aloe::runtime::task<void> echo_task(Stack::StreamType stream) {
+    aloe::runtime::task<void> echo_task(Stack::StreamType stream, std::atomic<int>* closed) {
         for (;;) {
             const auto readable = co_await stream.readable(1);
             if (!readable) {
@@ -277,18 +291,27 @@ namespace {
                 stream.consume(chunk.size());
             }
         }
-        std::ignore = co_await stream.close();
+        if (const auto done = co_await stream.close(); done) {
+            closed->fetch_add(1, std::memory_order_release);
+        }
     }
 
-    aloe::runtime::task<void>
-    serve_task(Stack::StreamsType* streams, aloe::runtime::Scheduler scheduler, std::atomic<int>* served) {
+    /// Counts the connections it accepts and the echoes that closed cleanly. `listening` is set just before the
+    /// first `accept` starts: the sender creates the listener synchronously on this shard thread, before the shard
+    /// processes another frame, so once the flag is visible a kernel SYN finds the listener.
+    aloe::runtime::task<void> serve_task(Stack::StreamsType* streams,
+                                         aloe::runtime::Scheduler scheduler,
+                                         std::atomic<bool>* listening,
+                                         std::atomic<int>* served,
+                                         std::atomic<int>* closed) {
         for (;;) {
+            listening->store(true, std::memory_order_release);
             auto stream = co_await streams->accept(echo_port);
             if (!stream) {
                 break;
             }
             served->fetch_add(1);
-            scheduler.spawn(echo_task(std::move(*stream)));
+            scheduler.spawn(echo_task(std::move(*stream), closed));
         }
     }
 
@@ -345,6 +368,10 @@ namespace {
 
     /// A kernel server: accepts one connection, echoes until EOF, then closes.
     void kernel_server_echo(const int listener, std::size_t expected) {
+        pollfd waiting{.fd = listener, .events = POLLIN, .revents = 0};
+        const int ready = poll(&waiting, 1, static_cast<int>(patience.count()));
+        ASSERT_GT(ready, 0) << "no connection from the stack within " << patience.count()
+                            << " ms: " << (ready < 0 ? std::strerror(errno) : "timed out");
         const int fd = accept(listener, nullptr, nullptr);
         ASSERT_GE(fd, 0) << std::strerror(errno);
         std::vector<std::byte> buffer(4096);
@@ -358,12 +385,27 @@ namespace {
         close(fd);
     }
 
+    /// A kernel socket listening on the kernel's address, or -1 with the failing call reported.
     [[nodiscard]] int kernel_listener() {
-        const int fd  = socket(AF_INET, SOCK_STREAM, 0);
+        const int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) {
+            ADD_FAILURE() << "socket: " << std::strerror(errno);
+            return -1;
+        }
         const int one = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0) {
+            ADD_FAILURE() << "setsockopt(SO_REUSEADDR): " << std::strerror(errno);
+            close(fd);
+            return -1;
+        }
         const sockaddr_in local = address_of(kernel_ip, echo_port);
-        if (bind(fd, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) != 0 || listen(fd, 1) != 0) {
+        if (bind(fd, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) != 0) {
+            ADD_FAILURE() << "bind: " << std::strerror(errno);
+            close(fd);
+            return -1;
+        }
+        if (listen(fd, 1) != 0) {
+            ADD_FAILURE() << "listen: " << std::strerror(errno);
             close(fd);
             return -1;
         }
@@ -409,6 +451,8 @@ TEST_F(TcpTap, BrickServer) {
     const auto payload = message(5000);  // larger than the MSS, combined with FIN by the kernel at the end
     BrickLoop loop{*port_, true, {}};
     kernel_client_round_trip(payload);
+    EXPECT_TRUE(eventually([&] { return loop.clean_close(); }))
+        << "the brick saw no clean close within " << patience.count() << " ms: the kernel's last ACK went missing";
     loop.stop();
     EXPECT_EQ(loop.counters().connections_accepted, 1U);
     EXPECT_EQ(loop.counters().connections_closed, 1U) << "both FINs acknowledged";
@@ -423,13 +467,8 @@ TEST_F(TcpTap, BrickClient) {
     ASSERT_GE(listener, 0);
     BrickLoop loop{*port_, false, payload};
     kernel_server_echo(listener, payload.size());
-    EXPECT_TRUE([&] {
-        const auto deadline = std::chrono::steady_clock::now() + patience;
-        while (std::chrono::steady_clock::now() < deadline && !loop.clean_close()) {
-            std::this_thread::sleep_for(1ms);
-        }
-        return loop.clean_close();
-    }());
+    EXPECT_TRUE(eventually([&] { return loop.clean_close(); }))
+        << "the brick saw no clean close within " << patience.count() << " ms";
     loop.stop();
     close(listener);
     EXPECT_EQ(loop.received(), payload);
@@ -439,7 +478,9 @@ TEST_F(TcpTap, BrickClient) {
 
 TEST_F(TcpTap, RuntimeServer) {
     const auto payload = message(5000);
+    std::atomic<bool> listening{false};
     std::atomic<int> served{0};
+    std::atomic<int> closed{0};
     Runtime runtime{
         {.shard = {}, .threads = {}, .thread_hook = aloe::ethdev::register_thread},
         *port_,
@@ -447,8 +488,13 @@ TEST_F(TcpTap, RuntimeServer) {
         aloe::tcp::TcpConfig{}
     };
     runtime.start();
-    runtime.spawn(0, serve_task(&runtime.shard(0).stack().streams(), runtime.scheduler(0), &served));
+    runtime.spawn(0,
+                  serve_task(&runtime.shard(0).stack().streams(), runtime.scheduler(0), &listening, &served, &closed));
+    ASSERT_TRUE(eventually([&] { return listening.load(std::memory_order_acquire); }))
+        << "the runtime never started listening within " << patience.count() << " ms";
     kernel_client_round_trip(payload);
+    EXPECT_TRUE(eventually([&] { return closed.load(std::memory_order_acquire) == 1; }))
+        << "the runtime's echo saw no clean close within " << patience.count() << " ms";
     runtime.stop();
     runtime.join();
     EXPECT_EQ(served.load(), 1);
@@ -472,10 +518,8 @@ TEST_F(TcpTap, RuntimeClient) {
     runtime.start();
     runtime.spawn(0, client_task(&runtime.shard(0).stack().streams(), payload, &received, &outcome));
     kernel_server_echo(listener, payload.size());
-    const auto deadline = std::chrono::steady_clock::now() + patience;
-    while (std::chrono::steady_clock::now() < deadline && outcome.load() == 0) {
-        std::this_thread::sleep_for(1ms);
-    }
+    EXPECT_TRUE(eventually([&] { return outcome.load() != 0; }))
+        << "the client task did not finish within " << patience.count() << " ms";
     runtime.stop();
     runtime.join();
     close(listener);
