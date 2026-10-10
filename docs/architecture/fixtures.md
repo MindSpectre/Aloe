@@ -9,10 +9,11 @@ depends on `common/`; nothing in `common/` depends on a fixture. Targets are nam
 | `fabric` | `#include <aloe/fabric>` | `Aloe::Fixtures::Fabric` | The in-memory device backend: a broadcast domain of ports. See the [device layer](device.md). |
 | `frames` | `#include <aloe/frames>` | `Aloe::Fixtures::Frames` | Frame builders and a parser over [`wire`](wire.md)'s formats, and packet byte helpers.       |
 
-Aloe's own tests use both. Anyone testing a loop written over `Ipv4<Device>` or `ShardQueue<Device>` needs the
-same two things: a device that runs with no root, no hugepages and no network card, and a way to make frames
-and read the replies; for TCP, a scripted peer drives the brick one segment at a time. Helpers that only make sense
-inside Aloe's own test binaries, such as the EAL as a gtest environment, stay in `tests/shared/`.
+Aloe's own tests use both. Anyone testing a loop written over `tcp::Stack`, `Ipv4<Device>` or
+`ShardQueue<Device>` needs the same two things: a device that runs with no root, no hugepages and no network
+card, and a way to make frames and read the replies; for TCP, a scripted peer drives the brick one segment at
+a time. Helpers that only make sense inside Aloe's own test binaries, such as the EAL as a gtest environment,
+stay in `tests/shared/`.
 
 ## Key types in `frames`
 

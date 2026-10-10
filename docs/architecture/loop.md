@@ -41,7 +41,7 @@ advanced by the program, and nothing calls back into it:
 #include <aloe/fabric>
 #include <aloe/loop>
 
-using Clock = aloe::loop::TimerWheel::Clock;
+using Clock = aloe::core::Clock;
 
 struct Heartbeat : aloe::loop::Timer {
     Heartbeat() noexcept : Timer{&Heartbeat::fired} {}
@@ -78,9 +78,10 @@ while (running) {
 }
 ```
 
-A TCP stack, from phase 1, slots into this loop between `receive` and `flush`: it takes the queue and the
-wheel at construction, consumes the burst, and reports what changed as an event list the loop drains. The
-[overview](overview.md) shows that loop.
+The TCP brick slots into this loop between `receive` and `flush`: it takes the IP brick over the queue and
+the wheel at construction, consumes the segments IP sorted out, and reports what changed as events the loop
+drains with `poll_event()` after advancing the wheel. The [tcp page](tcp.md) shows that loop, and
+`examples/tcp_echo` runs it on a DPDK port.
 
 ## Design notes
 
@@ -102,4 +103,4 @@ alive while it is armed or queued, and the `Timer` destructor asserts it in debu
 several frames in one tick posts them as one transmit burst, and a loop that wants a frame on the wire now
 calls `flush` right after `transmit`. A partial accept ends a flush; ethdev takes at most 64 per call, so a
 ring holding more drains over several calls. The ring depth is a run-time value, so the index wraps with a
-modulo; a power-of-two mask is on the list for the TCP phase, together with the depth.
+modulo; a power-of-two mask is still on the list, together with the depth.

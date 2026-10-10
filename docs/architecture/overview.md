@@ -10,7 +10,8 @@ API in the spirit of Boost.Beast, for the code that waits. Three goals rank ever
 This page describes the design the stack is built towards. Today the repository holds the build skeleton, the
 [`core`](core.md), [`execution`](execution.md) and [`log`](log.md) modules, the protocol formats in
 [`wire`](wire.md), the [device layer](device.md), the [loop bricks](loop.md),
-the [shard runtime](runtime.md), the IP base ([`net`](net.md)) and, apart from the stack, the [fixtures](fixtures.md) for
+the [shard runtime](runtime.md), the IP base ([`net`](net.md)), the [stream](stream.md) contract, minimal
+[TCP](tcp.md) with its senders in the runtime and, apart from the stack, the [fixtures](fixtures.md) for
 testing code written over the bricks; the rest arrives phase by phase, as the [roadmap](../roadmap.md) lays
 out. Each section says what exists and what is still design.
 
@@ -40,41 +41,49 @@ readers, writers and balancers on pinned cores keeps them and gives each one a q
   placement follows measurement and is not part of the minimal TCP implementation.
 
 Status: the single-core shard exists, as the rule the [loop bricks](loop.md) follow and as the
-[runtime](runtime.md)'s `Shard`. TCP's ownership boundaries and connection placement arrive in phase 1.
-Flow rules and concurrent execution of one connection's halves remain deferred.
+[runtime](runtime.md)'s `Shard`. TCP's ownership boundaries and its placement by the card's hash and the
+choice of local port exist in [tcp](tcp.md). Flow rules and concurrent execution of one connection's halves
+remain deferred.
 
 ## Two products
 
-**Bricks.** The [`loop`](loop.md) module and, from phase 1, the protocol modules. Every brick is a library
-that depends on the layer below it, calls nothing above it, and reports what happened as a list the caller
-drains. None of them names the asynchronous model. The loop a program writes over them is the product's
-primary form: its thread, its order, and nothing calls it back. The design for a TCP gateway's writer core,
-with the TCP names still to be fixed in phase 1:
+**Bricks.** The [`loop`](loop.md) module and the protocol modules, [`net`](net.md) and [`tcp`](tcp.md) so
+far. Every brick is a library that depends on the layer below it, calls nothing above it, and reports what
+happened as a list the caller drains. None of them names the asynchronous model. The loop a program writes
+over them is the product's primary form: its thread, its order, and nothing calls it back. A TCP gateway's
+writer core:
 
 ```cpp
+using Clock = aloe::core::Clock;
+using Ip    = aloe::net::Ipv4<aloe::ethdev::Port>;
+using Tcp   = aloe::tcp::Stack<Ip>;
+
 aloe::loop::ShardQueue<aloe::ethdev::Port> queue{port, 0, 512, counters};
 aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, Clock::now()};
-aloe::net::Ipv4<aloe::ethdev::Port> ip{queue, ip_config};            // IPv4 with its ARP and ICMP echo
-aloe::tcp::Stack<aloe::net::Ipv4<aloe::ethdev::Port>> tcp{ip, wheel, config};   // depends on the layer below, on nothing above
-aloe::tcp::Connection& session = tcp.connect(exchange);              // non-blocking; the SYN leaves at the next flush
+Ip ip{queue, ip_config};                                              // IPv4 with its ARP and ICMP echo
+Tcp tcp{ip, wheel, config};                                           // depends on the layer below, on nothing above
+Tcp::ConnectionType* session = tcp.connect(exchange, Clock::now()).value();  // the SYN is queued, or waits for ARP
 
 for (;;) {
     const auto now      = Clock::now();
     const std::size_t n = queue.receive(burst);
-    ip.process({burst.data(), n}, now);                              // ARP and ping answered; datagrams sorted per transport
-    tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);  // segments in; acks and retransmits queued
+    ip.process(std::span{burst}.first(n), now);                      // ARP and ping answered; datagrams sorted per transport
+    tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);   // segments in; immediate ACKs queued
+    std::ignore = wheel.advance(now);                                // control retransmits, before the drain
 
-    for (aloe::tcp::Connection& c : tcp.events()) {                  // intrusive list: readable, connected, closed, writable
-        if (c.readable()) {
-            c.consume(decode(c.unread(), reports));
+    while (const auto event = tcp.poll_event()) {                    // the explicit drain: a connection and its flags
+        Tcp::ConnectionType& c = *event->connection;
+        if (event->events.readable()) {
+            c.consume(decode(c.unread(), reports));                  // a zero-copy view over the received packets
         }
     }
     while (const Order* order = orders.peek()) {                     // the ring a strategy core fills
-        if (!session.send(encode(*order))) break;                    // window or ring full: keep the order
-        orders.pop();
+        const auto room = session->prepare(max_order_size);          // a span inside the packet that will leave
+        if (!room || !session->commit(encode(*order, *room))) break; // no window or no packet: keep the order
+        orders.pop();                                                // one order, one segment
     }
+    tcp.flush(now);                                                  // the ACKs no data carried
     std::ignore = queue.flush();                                     // to the transmit burst, now
-    std::ignore = wheel.advance(now);                                // TCP's timers, a plain call
 }
 ```
 
@@ -92,8 +101,9 @@ every line of protocol code.
 drains, and the runtime wraps it in a sender afterwards. The runtime never has a capability the bricks
 lack. The documentation and the examples lead with the bricks.
 
-Status: `loop`, `runtime` and the first protocol brick, `net`, exist. The
-transport bricks and the connection senders arrive in phase 1.
+Status: `loop`, `runtime`, the IP brick `net`, the TCP brick `tcp` and the connection senders over it
+exist; `examples/tcp_echo` and `examples/tcp_echo_tasks` are the same echo in both products. UDP arrives with
+the rest of phase 1.
 
 ## Layers
 
@@ -103,9 +113,9 @@ parameterised by the device and its packet type, so the hot path inlines, and ne
 which is what keeps a layer changeable and lets two halves run on two cores by composition.
 
 Every protocol brick has the same four verbs: feed it a burst, drain its events, call its non-blocking
-operations, flush. The stream concept that TLS and WebSocket reuse is defined in phase 1 in these terms,
-`process`, `events`, `unread` and `consume`, `send`, `flush`, with the connection senders in the runtime
-expressed over them. Phase 1 gets the most design care although its code is the simplest, because the v1
+operations, flush. The [stream](stream.md) concept that TLS and WebSocket reuse is defined in these terms:
+`process`, `poll_event`, `unread` and `consume`, `prepare` and `commit` with `send` as the copying
+convenience, `flush`; the connection senders in the runtime are expressed over them. Phase 1 gets the most design care although its code is the simplest, because the v1
 freeze at the end of phase 2 fixes that shape.
 
 The seam between IPv4 and the transports is a list: `net::Ipv4::process` sorts the datagrams it
@@ -128,8 +138,8 @@ Network cards vary, so offloads such as checksums and segmentation are queried f
 and every offload has a software fallback. Steering is a pure function of what the card reports, so a
 program can predict which queue any flow lands on.
 
-Status: the device layer, the loop and the IP base exist, see
-[device](device.md), [loop](loop.md) and [net](net.md). UDP and TCP arrive in phase 1, TLS in phase 3,
+Status: the device layer, the loop, the IP base and minimal TCP exist, see [device](device.md),
+[loop](loop.md), [net](net.md) and [tcp](tcp.md). UDP arrives with the rest of phase 1, TLS in phase 3,
 HTTP/1.1 and WebSocket in phase 4.
 
 ## Senders and receivers
@@ -150,19 +160,24 @@ that seam the runtime provides:
 - **Readiness on receive.** The readable sender completes when enough bytes have arrived. The application
   then reads a zero-copy view of the input and consumes what it used, through the same `unread` and
   `consume` a hand-written loop calls.
-- **Two completions on send.** One when the bytes are accepted into the send queue, and one when the peer
-  has acknowledged them, which is when a zero-copy buffer may be reused. Both are events the brick reports.
+- **Two completions on send.** One when the bytes are committed to the transmit ring (`send`), and one when
+  the peer has acknowledged them (`acked`). There is no send queue between the two: a committed segment is
+  already a packet. Both are events the brick reports.
 - **Level-triggered cancellation.** Each connection owns a stop source. A stop request wakes a parked
   operation and marks the connection closed, so any operation started afterwards completes stopped at once.
-- **Deadlines as stamps.** A connection carries a deadline, the shard's timer tick sweeps it, and expiry
-  becomes a stop request. There is one wheel per shard, never a timer per operation.
+- **Deadlines as one timer per connection.** A connection's wait slot carries one timer node in the shard's
+  wheel; its expiry is a cancel, which stops every wait of the connection. There is one wheel per shard,
+  never a timer per operation.
 - **A per-shard counting scope.** One task per connection runs in it. Requesting stop and waiting for it to
   empty is graceful shutdown.
-- **A task type bound to the shard scheduler,** with the connection's memory arena reachable from inside it.
+- **A task type bound to the shard scheduler.** The connection's memory arena reachable from inside it comes
+  later.
 
 Status: the scheduler, the timer senders, the counting scope, the stop plumbing and the shard-bound task
-exist in [runtime](runtime.md), on the C++26 task type from P3552. The connection leaf senders, readiness
-on receive, the two send completions and deadline stamps arrive with TCP in phase 1, over the event list.
+exist in [runtime](runtime.md), on the C++26 task type from P3552, and so do the connection leaf senders
+over TCP's events: accept, connect, readable, writable, send with `acked` as its second completion, close,
+and the per-connection deadline. Their outcomes are `std::expected` values; the stopped channel carries
+cancellation only.
 
 ## Build decisions
 

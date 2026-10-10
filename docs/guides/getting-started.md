@@ -143,6 +143,25 @@ echo in four scenarios: a kernel client against the brick and against the runtim
 runtime as clients of a kernel listener. Without root every case is skipped. To watch the traffic while it
 runs, `sudo tcpdump -ni aloe-tcp tcp` in another shell; the interface goes away when the suite exits.
 
+`examples/tcp_echo` and `examples/tcp_echo_tasks` are the same echo as programs: the first a hand-written loop
+over the bricks on one queue, the second tasks over the runtime on every queue the port opens. Both listen or
+connect, run until interrupted or until the client's one exchange ends, and print their counters:
+
+```bash
+sudo ./build/debug/examples/tcp_echo/Aloe.Examples.TcpEcho net_tap0 10.78.0.2/24 --listen 7 -- --vdev=net_tap0,iface=aloe0
+sudo ip addr add 10.78.0.1/24 dev aloe0 && sudo ip link set aloe0 up      # in another shell, once it runs
+nc 10.78.0.2 7                                                            # type a line, get it back
+
+sudo socat TCP-LISTEN:7,reuseaddr,fork EXEC:cat &                        # a kernel echo server, listening first
+sudo ./build/debug/examples/tcp_echo_tasks/Aloe.Examples.TcpEchoTasks net_tap0 10.78.0.2/24 --connect 10.78.0.1:7 \
+    -- --vdev=net_tap0,iface=aloe0
+sudo ip addr add 10.78.0.1/24 dev aloe0 && sudo ip link set aloe0 up      # in another shell, once it runs
+```
+
+The tap interface exists only while the program runs, so address it after the program has started. The
+client's SYN waits for ARP until the kernel end answers, so the kernel's listener must already be there. Add a gateway after the address to reach hosts off
+the subnet, and replace `net_tap0` and the `--vdev` argument with a card's PCI address to run on hardware.
+
 ## Formatting and the pre-commit hook
 
 `.clang-format` decides how C++ is laid out. `./scripts/check-format.sh` checks every

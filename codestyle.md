@@ -46,7 +46,7 @@ server.on_request([]([[maybe_unused]] const Request& req) {
 | Variables            | snake_case                | `table_name`, `result_count`  |
 | Member variables     | snake_case + trailing `_` | `table_name_`, `distinct_`    |
 | Template type params | PascalCase                | `T`, `ValueType`, `ColumnsTp` |
-| Namespaces           | lowercase                 | `aloe::net::tcp`              |
+| Namespaces           | lowercase                 | `aloe::tcp`                   |
 | Enum values          | PascalCase                | `LogLevel::Warning`           |
 | Macros               | SCREAMING_SNAKE           | `ENABLE_LOGGING`              |
 | Files                | snake_case                | `query_compiler.hpp`          |
@@ -567,7 +567,8 @@ Consumers include the whole module via `#include <aloe/<module>>`:
 ### Which Namespace
 
 Every module gets a namespace named after it: `aloe::core`, `aloe::execution`, `aloe::log`, `aloe::wire`,
-`aloe::device`, `aloe::fabric`, `aloe::ethdev`. A name says which module it comes from, so `aloe::execution::ex::just`, `aloe::wire::MacAddress`
+`aloe::device`, `aloe::fabric`, `aloe::frames`, `aloe::ethdev`, `aloe::loop`, `aloe::runtime`, `aloe::net`,
+`aloe::stream`, `aloe::tcp`. A name says which module it comes from, so `aloe::execution::ex::just`, `aloe::wire::MacAddress`
 and `aloe::fabric::Port` need no lookup to place. Nothing is declared directly in `aloe`.
 
 Code in one module names another module's vocabulary through the module namespace, never through a
@@ -580,7 +581,7 @@ Use the C++17 one-line nested form. Never nest with separate braces.
 
 ```cpp
 namespace aloe::net { ... }            // Good
-namespace aloe::net::tcp { ... }       // Good
+namespace aloe::tcp { ... }            // Good
 
 // Avoid:
 // namespace aloe { namespace net { ... } }

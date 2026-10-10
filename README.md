@@ -8,13 +8,14 @@ userspace. On top of the bricks sits a runtime that writes the loop for you and
 offers senders and receivers, and later a stream API in the spirit of
 Boost.Beast, for the code that waits.
 
-The repository contains the build skeleton, the device layer, the loop bricks
-and the shard runtime: the toolchain, the dependency setup, the packet and
-device abstraction with an in-memory backend for tests and a DPDK backend, the
-queue, wheel and work node a loop is built from, and the runtime that drives
-them on one thread per queue. The stack itself is built in phases: a minimal
-TCP, full TCP with retransmission and congestion control, TLS, and finally
-HTTP/1.1 with WebSocket. See the [architecture overview](docs/architecture/overview.md)
+The repository contains the build skeleton, the device layer, the loop bricks,
+the shard runtime, the IP base and minimal TCP: the toolchain, the dependency
+setup, the packet and device abstraction with an in-memory backend for tests and
+a DPDK backend, the queue, wheel and work node a loop is built from, the runtime
+that drives them on one thread per queue, IPv4 with ARP and ICMP echo, and a TCP
+whose connections are zero-copy streams, with senders over them in the runtime.
+The stack is built in phases: minimal TCP, then full TCP with retransmission
+and congestion control, TLS, and finally HTTP/1.1 with WebSocket. See the [architecture overview](docs/architecture/overview.md)
 for the design and the [roadmap](docs/roadmap.md) for the phases.
 
 ## Modules
@@ -24,12 +25,14 @@ for the design and the [roadmap](docs/roadmap.md) for the phases.
 | `aloe::core`    | `common/core/`       | The small things every module links, with no dependencies: the version, the clock aliases, discarding values, a fallback, and the const and static guards. | [docs/architecture/core.md](docs/architecture/core.md)       |
 | `aloe::execution` | `common/execution/` | The one header that names the execution facilities (stdexec), linked on demand.                              | [docs/architecture/execution.md](docs/architecture/execution.md) |
 | `aloe::log`     | `common/log/`        | Named loggers over quill, linked on demand.                                                                     | [docs/architecture/log.md](docs/architecture/log.md)         |
-| `aloe::wire`    | `common/wire/`       | Addresses, headers and checksums grouped by protocol (Ethernet, IPv4, ARP, ICMP): values and formats, no state. | [docs/architecture/wire.md](docs/architecture/wire.md)       |
+| `aloe::wire`    | `common/wire/`       | Addresses, headers and checksums grouped by protocol (Ethernet, IPv4, ARP, ICMP, TCP): values and formats, no state. | [docs/architecture/wire.md](docs/architecture/wire.md)       |
 | `aloe::device`  | `common/device/`     | The Packet and Device concepts, the packet metadata and receive-side scaling.                                   | [docs/architecture/device.md](docs/architecture/device.md)   |
 | `aloe::ethdev`  | `common/ethdev/`     | The DPDK device backend.                                                                                        | [docs/architecture/device.md](docs/architecture/device.md)   |
 | `aloe::loop`    | `common/loop/`       | The bricks a loop is built from: a device queue with its transmit ring, the timer wheel, the work node with the run queue and the inbox, and the counters. | [docs/architecture/loop.md](docs/architecture/loop.md)       |
-| `aloe::runtime` | `common/runtime/`    | The loop written for you: shards on pinned threads, the scheduler, timer senders, scope and task, and the runtime that launches one shard per queue. | [docs/architecture/runtime.md](docs/architecture/runtime.md) |
+| `aloe::runtime` | `common/runtime/`    | The loop written for you: shards on pinned threads, the scheduler, timer senders, scope and task, the connection senders and the ready-made TCP stack, and the runtime that launches one shard per queue. | [docs/architecture/runtime.md](docs/architecture/runtime.md) |
 | `aloe::net`     | `common/net/`        | The first protocol brick: IPv4 over a device queue with ARP and ICMP echo, datagrams sorted per transport, checksums by offload or software. | [docs/architecture/net.md](docs/architecture/net.md)         |
+| `aloe::stream`  | `common/stream/`     | The zero-copy stream contract every protocol layer offers: the concepts, the event and error vocabulary, and the copying `send`. | [docs/architecture/stream.md](docs/architecture/stream.md)   |
+| `aloe::tcp`     | `common/tcp/`        | Minimal TCP as a brick over the IP brick: the handshake both ways, in-order data held as the received packets, FIN and RST, the connection table and placement. | [docs/architecture/tcp.md](docs/architecture/tcp.md)         |
 
 Fixtures for testing code written over the bricks live apart from the stack, in `fixtures/`
 ([docs/architecture/fixtures.md](docs/architecture/fixtures.md)):

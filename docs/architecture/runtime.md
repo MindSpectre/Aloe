@@ -41,8 +41,8 @@ per packet.
   by another shard goes; `deliver_arp(address, mac)` hands it over on the owning thread with the current
   stamp. The sink names only `wire` values, no device and no `net` type. A default sink discards.
 - **`aloe::runtime::TaskScope`** -- the per-shard counting scope, shaped like the standard's
-  `counting_scope`: `spawn`, `request_stop`, `join`, with no atomics because one thread uses it. One task
-  per connection will run in it. A spawned task's exception is logged and counted; it does not take the
+  `counting_scope`: `spawn`, `request_stop`, `join`, with no atomics because one thread uses it. With
+  `TcpStack`, one task per connection runs in it. A spawned task's exception is logged and counted; it does not take the
   shard down.
 
 ### Scheduler and task
@@ -123,8 +123,8 @@ per packet.
   forward is one `detail::ArpForwardWork` node per sibling, allocated with `std::nothrow` on that cold path
   and posted with `post_control`. An accepted node runs once on the target, delivers through `deliver_arp`
   and frees itself; a rejected node, whose target has already finished, is freed by the sender at once and
-  counted in `forwards_rejected()`; a node that cannot be allocated is counted in `forwards_dropped()` and the sibling resolves the address
-  itself when it needs it.
+  counted in `forwards_rejected()`; a node that cannot be allocated is counted in `forwards_dropped()`, and
+  the sibling resolves the address itself when it needs it.
 
 ## Usage
 
@@ -203,7 +203,11 @@ for (std::uint16_t index = 0; index < runtime.shard_count(); ++index) {
 ```
 
 `runtime.shard(index)` is read here before the shard has run anything that touches its streams; the task
-itself runs on the shard. A task awaits only its own shard's senders.
+itself runs on the shard. A task awaits only its own shard's senders. The echo awaits `send(chunk)` before it
+consumes, because the sender copies from `chunk` until every byte is committed; the consume then moves the
+window's edge after the segment has left, which costs one window update per echoed segment at the flush. An
+echo that wants the reopening to ride on its data writes through the handle's synchronous members instead:
+`prepare`, copy, `consume`, `commit`. `examples/tcp_echo_tasks` is this server, with the client beside it.
 
 ## Threading contract
 
@@ -253,8 +257,8 @@ the matching kind, saves its outcome on the node and pushes it onto the run queu
 from `start`, so it answers `asynchronous_affine | inline_completion`, not the timer senders' plain
 `asynchronous_affine`. A level read at start also covers a terminal event raised but not yet drained: a
 `closed()` started right after a retransmit timer timed the connection out inside `run_once` reports
-`TimedOut`, not a normal close. No receiver is ever called from a wake pass, and processing a later burst never consumes an
-event: the drained flags become outcomes saved on nodes, and the levels are read again when a wait starts.
+`TimedOut`, not a normal close. No receiver is ever called from a wake pass, and processing a later burst
+never consumes an event: the drained flags become outcomes saved on nodes, and the levels are read again when a wait starts.
 
 Values travel in the value channel as `std::expected<T, stream::Error>`. Cancellation, deadlines and scope
 shutdown use the stopped channel. An operation registers two stop callbacks: one on its receiver's token,

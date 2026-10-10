@@ -12,7 +12,9 @@ link `Aloe::Common::Stream`. It depends on [`core`](core.md) only: no [`executio
 - **`aloe::stream::IsReadView<V>`** -- a forward range of `std::span<const std::byte>` chunks, each a span
   into the layer's own storage, with `size()` counting bytes (not chunks), `empty()` and `front()`. A read view is never a
   `std::ranges::sized_range`, whose `size()` is the chunk count: a view with a member `size()` opts out
-  through `std::ranges::disable_sized_range`, and the concept rejects one that does not.
+  through `std::ranges::disable_sized_range`, and the concept rejects one that does not. A view whose
+  iterators can be subtracted, as random-access ones can, is sized whatever it declares, so a read view's
+  iterators are forward ones.
 - **`aloe::stream::IsStream<S>`** -- the zero-copy stream: `index()`, `events()`, `unread()` (an
   `IsReadView`), `consume(n)`, `peer_closed()`, `writable()`, `prepare(n)`, `commit(n)`, `close()`,
   `abort()` and `release()`.
@@ -61,8 +63,12 @@ return value does not cover.
 
 - `unread()` is a view, invalidated by `consume` and by the next `process`. A chunk's bytes stay put until
   they are consumed or released.
-- `prepare`/`commit` write in place, one prepare at a time; `prepare(n)` returns at most `n` bytes. A false `commit` means the bytes were not
-  accepted and ownership of them stays with the caller; a `Writable` hint follows.
+- `prepare`/`commit` write in place, one prepare at a time; `prepare(n)` returns at most `n` bytes, and at
+  most `writable()`. The prepared span is the caller's from `prepare` until `commit` (any count; `commit(0)`
+  discards) or `release`: it stays writable across a `close`, an `abort`, a reset or a time-out in between.
+  A false `commit` means the bytes were not accepted and the caller still has them. When the layer refused to
+  send, a `Writable` retry hint follows; when the connection left the sendable state since the `prepare`, the
+  layer drops the prepared unit, counts it (TCP's `commits_refused`) and raises no hint: the events say why.
 - Events are edges and state is level. `unread()`, `writable()` and `peer_closed()` are levels. Only
   `poll_event()` and `release()` clear flags.
 - `send(bytes)` copies, reports the accepted prefix, never queues and never blocks. It stops at the first
@@ -74,7 +80,8 @@ return value does not cover.
 ## In the runtime
 
 The [runtime](runtime.md) wraps a TCP connection in `runtime::Stream<Stack>`, whose senders complete when the
-event they wait for is raised, or at once when the level is already met. Every value is a
+event they wait for is raised, or inline from `start` when the level is already met, which is why their
+attributes answer `asynchronous_affine | inline_completion`. Every value is a
 `std::expected<T, Error>`: an error is a value, not an exception. Cancellation, a deadline and the scope's
 shutdown complete a sender through the stopped channel.
 

@@ -72,16 +72,15 @@ while (running) {
 }
 ```
 
-With transports, from the next steps of phase 1, the same loop gains one line per transport and nothing
-else. The transports are templated on the IP type below them and transmit through it:
+With transports the same loop gains one line per transport and nothing else. The transports are templated on
+the IP type below them and transmit through it; TCP exists (see the [tcp page](tcp.md)), UDP comes next:
 
 ```cpp
 aloe::tcp::Stack<aloe::net::Ipv4<aloe::ethdev::Port>> tcp{ip, wheel, tcp_config};
-aloe::udp::Stack<aloe::net::Ipv4<aloe::ethdev::Port>> udp{ip, udp_config};
 
 ip.process(std::span{burst}.first(received), now);
 tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);
-udp.process(ip.received(aloe::wire::Ipv4Protocol::Udp), now);
+// udp.process(ip.received(aloe::wire::Ipv4Protocol::Udp), now);   // once UDP lands
 ```
 
 A transport sends by appending its segment to a packet from `allocate()`, with the checksum field zero,
@@ -162,6 +161,7 @@ flag in the `Ipv4Config` it gives every shard and owns the channel: one `loop::I
 `process` that reported something and run there by a call to `learn`. Each `resolved()` list is forwarded
 once, after the `process` that filled it, never again on a pass that received nothing.
 
-**Deferred.** Flow rules come with later placement work; multicast reception with UDP; ICMP errors with phase 2. Fragments are dropped and counted, never reassembled. IPv4
-options are accepted on receive, ignored, and never sent. The ARP table carries a `TODO` to research
-abseil's `flat_hash_set` once the connection table decides whether abseil enters the project.
+**Deferred.** Flow rules come with later placement work; multicast reception with UDP; ICMP errors with
+phase 2. Fragments are dropped and counted, never reassembled. IPv4 options are accepted on receive, ignored,
+and never sent. ARP replies are not rate-limited, which matters once `accept_unsolicited_replies` is on: a
+reply flood churns the cache. The ARP table stays Aloe's own fixed table; abseil does not enter the project.

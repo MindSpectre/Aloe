@@ -10,7 +10,9 @@ phase 1 apart from UDP and the benchmark. Tracks GitHub issue #6 `[TCP]`. Builds
 (PR #9) and the refactoring that followed it (PR #10), both merged on `main`. Everything under
 "Open questions" is left for the plan or for a later step. Revised after the latency review to
 clarify the HFT scope, event draining, ACK ordering, byte-window accounting and table hashing;
-this revision is for review before implementation planning.
+this revision is for review before implementation planning. Implemented on `tcp/minimal-tcp` on
+2026-10-10: the sketches below now carry the spellings the implementation settled, and "Decisions made
+during implementation" records where it deliberately departs from or adds to the earlier text.
 
 ## Goal
 
@@ -119,7 +121,7 @@ Made in the design sessions, with the alternatives that lost.
 | Connection table | A fixed open-addressing index from the tuple to a slot, linear probing, backward-shift deletion, no tombstones, no allocation after construction. Mix the RSS or software hash before selecting a local table bucket; RSS placement retains the original hash. No abseil; the `TODO` in `arp_cache.hpp` goes. | Directly masking the RSS hash again after queue selection. abseil's `flat_hash_map`, which rehashes and allocates, for a table that must be fixed. `std::unordered_map`. |
 | Handles and lifetime | `Connection&` and `index()` are stable until the owner calls `release()`, the only thing that frees a slot. Release aborts first if the connection is open. | Freeing on close, which pulls unread data and the index from under the owner. A generation counter: unnecessary once release wakes every parked waiter. |
 | Outbound placement | `connect` takes the first free ephemeral port whose `queue_for` is this queue. A card hashing addresses only fails `Unplaceable`. | Flow rules and software steering: the fallbacks, deferred with the device API they need. |
-| ARP across shards | Every shard forwards what its `ip.resolved()` reports to every sibling, which calls `learn`. The runtime does it through `ShardContext::siblings()` and the inboxes; a hand-written program through its own channel. | Assuming ARP lands on queue 0. |
+| ARP across shards | Every shard forwards what its `ip.resolved()` reports to every sibling, which calls `learn`. The runtime does it through `ShardContext::siblings()` and guarded control posts; a hand-written program through its own channel. The shard that receives a reply a sibling solicited learns it through `accept_unsolicited_replies`. | Assuming ARP lands on queue 0. |
 | Where the senders live | `common/runtime/stream/`, generic over the stream concept, plus `runtime::TcpStack<Device>`, a ready-made `IsStack`. The concept itself in a new module `common/stream/`, no stdexec, the way `device` holds the device concept. | Senders inside `tcp`: the brick would name stdexec. A concept in prose only: nothing pins that TLS satisfies it. |
 | Errors in senders | `std::expected<T, stream::Error>` in the value channel; the stopped channel for cancellation only. Resolves the roadmap's open question. | The error channel: the P3552 task turns it into a throw at every `co_await`, for an outcome as ordinary as a peer's reset. |
 | Deadlines | One timer per connection in the shard's wheel, owned by the runtime's slot; expiry is a cancel. Still one wheel per shard and never a timer per operation. | A stamp per connection swept by the tick: a pass over every connection each millisecond. |
@@ -133,9 +135,9 @@ Three new modules and additions to four.
 |---|---|---|---|
 | `common/wire/tcp/` | `aloe::wire` | part of `Aloe::Common::Wire` | `TcpSequence`, `TcpFlag`, `TcpFlags`, `TcpHeader`, `TcpOptions`. Values only. |
 | `common/stream/` | `aloe::stream` | `Aloe::Common::Stream`, `<aloe/stream>` | `Event`, `Events`, `Error`, `IsReadView`, `IsStream`, `send(stream, bytes)`. Links `core` only. Header-only. |
-| `common/tcp/` | `aloe::tcp` | `Aloe::Common::Tcp`, `<aloe/tcp>` | `TcpConfig`, `Endpoint`, `State`, `ConnectError`, `ListenError`, `ReadView`, `Connection`, `ConnectionEvent`, `Stack<Ip>`, `TcpCounters`, `FlowTable`. Links `net`, `stream`, `loop`, `wire`, `device`, `core`; never `execution` or `log`. |
-| `common/net/` | | | `Ipv4<Device>` gains `using Device = Device;` and `queue()`, the `ShardQueue` it was built over, so a transport reaches `index()`, `steering()`, `pending()` and `capacity()` without a second constructor argument. |
-| `common/runtime/` | | | `IsStack` with optional `on_tick` and `on_flush`; the new step order; `ShardContext::set_now(now)` and `siblings()`; `runtime/stream/`: `Streams<Stack>`, `Stream<Stack>`, the senders; `runtime/stack/`: `TcpStack<Device>`. Links `tcp` and `net` in addition. |
+| `common/tcp/` | `aloe::tcp` | `Aloe::Common::Tcp`, `<aloe/tcp>` | `TcpConfig`, `Endpoint`, `State`, `ConnectError`, `ListenError`, `ReadView<Packet>`, `Connection<Ip>`, `ConnectionEvent<Ip>`, `Stack<Ip>`, `TcpCounters`, `FlowTable`. Links `net`, `stream`, `loop`, `wire`, `device`, `core`; never `execution` or `log`. |
+| `common/net/` | | | `Ipv4<DeviceT>` gains `using Device = DeviceT;`, `queue()` in mutable and const form, the `ShardQueue` it was built over, so a transport reaches `index()`, `steering()`, `pending()` and `capacity()` without a second constructor argument, and `next_hop(destination) const -> std::optional<wire::Ipv4Address>`, the route question with no ARP or packet side effect. `Ipv4Config` gains `accept_unsolicited_replies`. |
+| `common/runtime/` | | | `IsStack` with optional `on_tick` and `on_flush`; the new step order; `ShardContext::set_now(now)`, `siblings()`, the guarded `post_control(work)` and the typed ARP sink; `runtime/stream/`: `Streams<Stack>`, `Stream<Stack>`, the senders; `runtime/stack/`: `TcpStack<Device>` and the ARP forwarding. Links `tcp` and `net` in addition. |
 | `fixtures/frames/` | `aloe::frames` | | `TcpSpec`, `tcp_frame`, `ParsedFrame::tcp`, `TcpPeer`. |
 | `tests/shared/tcp/` | `aloe::testing` | `...Shared.Tcp` | `TcpFixture`. |
 
@@ -143,7 +145,7 @@ Header basenames stay unique: `tcp_header.hpp`, `tcp_options.hpp`, `tcp_sequence
 `stream.hpp`, `stream_events.hpp` under stream; `tcp_config.hpp`, `tcp_connection.hpp`,
 `tcp_stack.hpp`, `tcp_counters.hpp`, `flow_table.hpp`, `read_view.hpp` under tcp;
 `streams.hpp`, `stream_handle.hpp`, `stream_senders.hpp`, `tcp_runtime_stack.hpp` under runtime.
-The `FlowTable` and the node pool have `.cpp` files; the rest is templates.
+The backend-independent `FlowTable` has a `.cpp` file; the node pool and the rest are templates in headers.
 
 ## Wire formats
 
@@ -231,8 +233,9 @@ public:
 
 enum class Error : std::uint8_t { Reset, TimedOut, PeerClosed, Refused, Unplaceable, TableFull, NoPort, NoRoute, Closed };
 
-template <typename V>
-concept IsReadView = std::ranges::forward_range<V> &&
+template <typename V>                     // size() counts bytes, so a read view is never a sized_range: a view
+                                          // with a member size() specialises std::ranges::disable_sized_range
+concept IsReadView = std::ranges::forward_range<V> && !std::ranges::sized_range<V> &&
                      std::same_as<std::ranges::range_value_t<V>, std::span<const std::byte>> &&
                      requires(const V& view) {
                          { view.size() } -> std::same_as<std::size_t>;      // bytes, not chunks
@@ -268,12 +271,20 @@ The contract, in words, for `docs/architecture/stream.md`:
   payloads of the received packets. A decoder reads in place and calls `consume` with what it
   used; a partial message stays where it is. The view is invalidated by `consume` and by the next
   `process`. A span over existing payload bytes remains usable until those bytes are consumed
-  or the connection is released; appending later packets does not move their storage.
+  or the connection is released; appending later packets does not move their storage. A read view
+  is never a `std::ranges::sized_range`, whose `size()` is an element count: `views::take`,
+  `ranges::distance` and `ranges::to` would trust the byte count and walk past the end. A view with
+  a member `size()` specialises `std::ranges::disable_sized_range`, and the concept rejects any
+  sized range, which also rules out random-access iterators.
 - **`prepare` and `commit` write in place.** `prepare(n)` gives at most `writable()` bytes of a
   fresh unit of transmission, a TCP segment, a TLS record. The encoder writes there once. `commit(k)`
   with `k` at most what was prepared seals and queues it; `commit(0)` discards it. One prepare is
-  open at a time. A false `commit` means nothing was sent and the bytes are not accepted; the
-  layer later raises a `Writable` retry hint; readiness is checked again at the retry.
+  open at a time. The prepared span belongs to the application from `prepare` until `commit`
+  (any count) or `release`, and stays writable across a `close`, an `abort`, a received reset or
+  a time-out in between. A false `commit` means nothing was sent and the bytes are not accepted.
+  When the layer refused to send, it later raises a `Writable` retry hint and readiness is checked
+  again at the retry; when the connection left the sendable state since the `prepare`, the commit
+  drops the prepared unit, counts it, and raises no hint: the events say why.
 - **Events are edges, state is level.** `events()` inspects undrained flags. The owning stack's
   `poll_event()` takes a snapshot and clears those flags before returning the connection to the
   caller. `process`, `flush` and timer advancement never clear undrained events. `unread()`,
@@ -303,11 +314,18 @@ enum class State : std::uint8_t { Closed, SynSent, SynReceived, Established, Fin
 enum class ConnectError : std::uint8_t { TableFull, NoPort, Unplaceable, NoRoute };
 enum class ListenError : std::uint8_t { InUse, TableFull };
 
-class ReadView;   // models stream::IsReadView over a connection's chain; an iterator yields one span per node
+template <device::IsPacket Packet>
+class ReadView;   // models stream::IsReadView over a connection's chain; an iterator yields one span per node;
+                  // a forward_range without view_interface, with disable_sized_range specialised
 
+template <typename Ip>    // the bare `Connection` in the prose is shorthand for Connection<Ip>
 class Connection {
 public:
+    using Packet   = typename Ip::Packet;
     using Sequence = wire::TcpSequence;
+    using View     = ReadView<Packet>;
+
+    explicit Connection(PrivateTag) noexcept;                  // the passkey: only Stack names the private tag
 
     [[nodiscard]] std::uint32_t index() const noexcept;        // stable until release
     [[nodiscard]] State state() const noexcept;
@@ -316,27 +334,29 @@ public:
     [[nodiscard]] stream::Events events() const noexcept;      // undrained flags; inspection does not clear them
     [[nodiscard]] std::uint16_t mss() const noexcept;          // what we send with: min(peer's option, ours)
 
-    [[nodiscard]] ReadView unread() const noexcept;
+    [[nodiscard]] View unread() const noexcept;
     void consume(std::size_t count) noexcept;                  // count <= unread().size(), asserted
     [[nodiscard]] bool peer_closed() const noexcept;
 
     [[nodiscard]] std::size_t writable() const noexcept;       // min(mss, max(0, peer window - in flight)); 0 unless
                                                                // Established or CloseWait with no prepare open
-    [[nodiscard]] std::optional<std::span<std::byte>> prepare(std::size_t count) noexcept;   // at most writable()
+    [[nodiscard]] std::optional<std::span<std::byte>> prepare(std::size_t count) noexcept;   // at most writable();
+                                                               // the span is the caller's until commit or release
     [[nodiscard]] bool commit(std::size_t count) noexcept;     // seals and queues; false: not sent, bytes not accepted
     [[nodiscard]] std::size_t send(std::span<const std::byte> bytes) noexcept;   // stream::send(*this, bytes)
     [[nodiscard]] Sequence committed() const noexcept;         // the sequence after the last committed byte
     [[nodiscard]] Sequence acknowledged() const noexcept;      // snd_una: everything before it reached the peer
     [[nodiscard]] std::size_t unacknowledged() const noexcept; // committed() - acknowledged()
 
-    void close() noexcept;    // FIN after what was committed; no more sends
-    void abort() noexcept;    // RST now; Closed raised
-    void release() noexcept;  // the slot is free; aborts first if not Closed
+    void close() noexcept;    // FIN after what was committed; no more sends; an open prepare stays the caller's
+    void abort() noexcept;    // RST now; Closed raised; an open prepare stays the caller's
+    void release() noexcept;  // the slot is free; aborts first if not Closed; drops an open prepare
 };
 
+template <typename Ip>
 struct ConnectionEvent {
-    Connection* connection;    // non-null; valid until release(), as for any connection handle
-    stream::Events events;     // snapshot removed from the pending list by poll_event()
+    Connection<Ip>* connection = nullptr;  // non-null; valid until release(), as for any connection handle
+    stream::Events events{};               // snapshot removed from the pending list by poll_event()
 };
 
 struct TcpConfig {
@@ -347,28 +367,32 @@ struct TcpConfig {
     std::uint16_t ephemeral_first = 32768; // connect's local ports, inclusive
     std::uint16_t ephemeral_last  = 60999;
     core::Duration retry_initial  = std::chrono::seconds{1};        // SYN, SYN-ACK, FIN: doubles per try
-    std::uint8_t retries          = 5;                              // then TimedOut
+    std::uint8_t retries          = 5;                              // retransmissions after the first send; then TimedOut
     core::Duration unresolved_retry = std::chrono::milliseconds{10}; // a SYN waiting for ARP; not a try
 };
 
-template <typename Ip>    // net::Ipv4<Device>; constrained on the members used
+template <typename Ip>    // net::Ipv4<Device>; constrained on the members used (IsIp)
 class Stack {
 public:
-    using Device = typename Ip::Device;
-    using Packet = typename Ip::Packet;
+    using Device         = typename Ip::Device;
+    using Packet         = typename Ip::Packet;
+    using ConnectionType = Connection<Ip>;
+    using EventType      = ConnectionEvent<Ip>;
+    using Sequence       = wire::TcpSequence;
 
     Stack(Ip& ip, loop::TimerWheel& wheel, const TcpConfig& config);   // validates and throws; allocates everything; sends nothing
     // neither copyable nor movable
 
     void process(std::span<net::Datagram<Packet>> segments, core::TimePoint now) noexcept;   // every packet moved out or released
-    [[nodiscard]] std::optional<ConnectionEvent> poll_event() noexcept;  // takes and clears one pending notification
+    [[nodiscard]] std::optional<EventType> poll_event() noexcept;  // takes and clears one pending notification
     void flush(core::TimePoint now) noexcept;               // pending ACKs and window updates as pure ACKs
 
     [[nodiscard]] std::expected<void, ListenError> listen(std::uint16_t port) noexcept;
     void unlisten(std::uint16_t port) noexcept;             // connections already open stay open
-    [[nodiscard]] std::expected<Connection*, ConnectError> connect(Endpoint peer, core::TimePoint now) noexcept;
-                                                            // never null on success; the SYN is in the ring
-    [[nodiscard]] Connection& connection(std::uint32_t index) noexcept;   // the runtime's slots key on this
+    [[nodiscard]] std::expected<ConnectionType*, ConnectError> connect(Endpoint peer, core::TimePoint now) noexcept;
+                                                            // never null on success: a SynSent slot the caller owns,
+                                                            // its SYN queued or waiting for ARP on the timer
+    [[nodiscard]] ConnectionType& connection(std::uint32_t index) noexcept;   // the runtime's slots key on this
     [[nodiscard]] std::size_t capacity() const noexcept;
     [[nodiscard]] std::uint16_t mss() const noexcept;       // ours: max_l4_size() - 20
     [[nodiscard]] const TcpCounters& counters() const noexcept;
@@ -385,11 +409,18 @@ changes nothing.
 ### Configuration
 
 The constructor throws `std::invalid_argument` for: zero `connections`, `listeners`,
-`receive_segments` or `receive_pool`; an ephemeral range that is empty or contains port 0; a
-non-positive duration; zero `retries`. Every shard gets the same config. At construction the stack
-allocates the connections in a `std::deque<Connection>` (a `Connection` embeds a `loop::Timer` and
-is immovable), the node pool as one `std::vector`, the flow table, the listener table and the free
-lists, and never again. The per-shard random engine for initial sequence numbers is seeded from
+`receive_segments` or `receive_pool`; more than 2^30 `connections`, so every index fits 32 bits; an
+ephemeral range that is empty or contains port 0; a non-positive duration; zero `retries`; a retry
+schedule that cannot fit, `retries` of 63 or more or a `retry_initial` larger than a quarter of
+`core::Duration`'s range shifted right by `retries`, so neither the doubling nor `now + delay` can
+overflow; and an MTU that leaves no room for a TCP header. Every shard gets the same config. At
+construction the stack allocates the connections in a `std::deque<ConnectionType>` (a `Connection`
+embeds a `loop::Timer` and is immovable, and a deque never moves an element), each built with
+`emplace_back(PrivateTag{})`: a public constructor taking a private tag only `Stack` can name, the
+passkey idiom `fabric::Port` uses, since `std::make_unique<T[]>` and `emplace_back` construct
+through code that is not a friend. Each slot's stack pointer, index and timer trampoline are set
+there. The node pool is one `std::vector`, with 32-bit indices and the sentinel `detail::no_node`;
+the flow table, the listener table and the free list are sized there too, and nothing grows again. The per-shard random engine for initial sequence numbers is seeded from
 `std::random_device` here, the one cold-path use of it.
 
 ### Storage per connection
@@ -465,6 +496,12 @@ For every synchronized state:
    by one, `PeerClosed` is raised, an ACK is pending. `Established` moves to `CloseWait`,
    `FinWait1` to `Closing`, `FinWait2` to `Closed` with `Closed` raised.
 
+**The terminal ACK goes before `Closed`.** When the segment that ends a close needs an ACK from us,
+as the FIN does in `FinWait2`, the ACK is queued before `Closed` is raised. If IP refuses it, the
+connection keeps its state with the ACK pending, `flush` retries it, and `Closed` follows only once
+it has left, so an owner that releases on `Closed` never takes the last ACK with it. A duplicate FIN
+is acknowledged again without advancing `rcv_nxt` twice.
+
 A segment for a connection in `Closed`, still indexed because not yet released, is answered with
 RST and counted `dropped_closed`.
 
@@ -516,9 +553,11 @@ its window. It does not consult the transmit ring or promise allocation success.
 
 `prepare(count)` allocates from `ip.allocate()`, appends `min(count, writable())` bytes and returns
 them. Nothing allocates when `writable()` is zero. A second `prepare` before `commit` is a
-programming error, asserted.
+programming error, asserted. The prepared packet belongs to the application from `prepare` until
+`commit` (any count) or `release`: `close`, `abort`, a received RST and a time-out leave it, so the
+span `prepare` returned never points into a packet back in the pool.
 
-Allocation failure also registers a deferred `Writable` retry hint. A refused prepare or commit
+Allocation failure counts `allocation_failures` and registers a deferred `Writable` retry hint. A refused prepare or commit
 never spins inside the brick; the next `process`, including an empty one, raises at most one hint
 per marked connection. The hint permits a retry, not a promise that the pool or NIC is available.
 
@@ -528,8 +567,11 @@ acknowledgement `rcv_nxt`, flags ACK and PSH, our window, checksum zero, and cal
 clears the pending ACK since it rode along, counts `data_segments_sent`, and returns true.
 `Refused` or `Unresolved` releases the packet, leaves every number as it was, counts
 `send_refused` or `send_unresolved`, marks the connection for a `Writable` at the next `process`,
-and returns false. `commit(0)` releases the packet and sends nothing. A commit is one segment: two
-commits are two segments on the wire whatever their size, which is the "never coalesces" rule.
+and returns false. `commit(0)` releases the packet and sends nothing. A commit on a connection that
+left `Established` and `CloseWait` since its `prepare` drops the packet, counts `commits_refused` for
+a nonzero count, raises no hint and returns false (true for a count of zero): the events already say
+why. A commit is one segment: two commits are two segments on the wire whatever their size, which is
+the "never coalesces" rule.
 
 `send(bytes)` is `stream::send`: prepare, copy, commit, repeated while bytes remain and `prepare`
 gives something; it returns the bytes accepted. A zero result can mean no progress, not just a
@@ -538,10 +580,11 @@ ownership passed to the local transmit ring; it does not mean the frame has reac
 
 `close()` in `Established` moves to `FinWait1`, in `CloseWait` to `LastAck`, and sends a FIN with
 sequence `snd_nxt`, ACK set, then advances `snd_nxt` by one and arms the timer. In any other state
-it does nothing. A refused FIN stays pending on the timer's first fire.
+it does nothing. A refused FIN stays pending on the timer's first fire. An open prepare stays the
+application's; its commit is refused.
 
 `abort()` sends a RST with sequence `snd_nxt`, cancels the timer, moves to `Closed`, raises
-`Closed`. `release()` calls `abort` unless already `Closed`, returns the chain's nodes and their
+`Closed`, and leaves an open prepare to the application. `release()` calls `abort` unless already `Closed`, returns the chain's nodes and their
 packets, discards an open prepare, removes the tuple from the flow table, clears the flags, and
 puts the slot on the free list. A released connection appears on no list.
 
@@ -588,12 +631,16 @@ never manufacture extra duplicate ACKs without corresponding received segments t
 ### The timer
 
 One `loop::Timer` per connection; `fire` casts back to the connection and calls the stack through
-the connection's pointer. The deadline is `retry_initial` doubled per try. On fire: `SynSent`
-re-sends SYN, `SynReceived` SYN-ACK, `FinWait1`, `Closing` and `LastAck` FIN. After `retries`
-tries the connection moves to `Closed`, `TimedOut` is raised, and a `SynReceived` one that nobody
-owns is freed. A SYN or SYN-ACK that `ip.send` refuses as `Unresolved` arms the timer at
-`unresolved_retry` instead and does not count a try, so the first connect through a gateway whose
-MAC arrives from another shard waits for the ARP round trip and little more.
+the connection's pointer. The deadline is the stack's stamp plus `retry_initial` doubled per try.
+On fire: `SynSent` re-sends SYN, `SynReceived` SYN-ACK, `FinWait1`, `Closing` and `LastAck` FIN.
+`retries = 5` means five retransmissions after the initial control send, at 1, 3, 7, 15 and 31
+seconds with the defaults, then a timeout at 63 seconds, when a sixth would be due: the connection
+moves to `Closed`, `TimedOut` is raised, and a `SynReceived` one that nobody owns is freed. A control
+segment that `ip.send` refuses as `Unresolved` arms the timer at `unresolved_retry` instead and does
+not count a try, so the first connect through a gateway whose MAC arrives from another shard waits
+for the ARP round trip and little more. A connect whose next hop never answers therefore polls
+without timing out on its own; the owner gives up with `abort`, `release` or, in the runtime, a
+deadline. A wheel advanced once past several deadlines fires the timer once; tests step the clock.
 
 ### Ownership boundaries
 
@@ -651,7 +698,8 @@ no tombstones. The key is the received orientation: remote address, remote port,
 twelve bytes with padding. The base hash is one function per stack, chosen at construction: when the
 device's `steering()` is enabled with `types.ipv4_tcp`, the Toeplitz hash of the received tuple
 with the device's key, which is what the card put in `rx().rss_hash`; a segment without the hash
-gets it computed. Otherwise a multiplicative hash over the key. `connect` uses the base hash it
+gets it computed (`device::flow_hash` of the received tuple). Otherwise FNV-1a over the eight
+network-order bytes of the key; key equality compares the fields. `connect` uses the base hash it
 already computed while choosing the port. Every insert, lookup and backward-shift deletion uses
 the same table-bucket rule: apply the 32-bit avalanche finalizer below, then mask with table
 capacity minus one. Store the mixed hash with the entry so deletion can recover its home bucket.
@@ -683,23 +731,32 @@ Outbound: `connect` walks the ephemeral range from a per-shard cursor, skipping 
 tuples already in the table, and takes the first port for which
 `device::queue_for(steering, {our address, peer address, port, peer port, Tcp})` with the tuple in
 received orientation equals `ip.queue().index()`. With Q queues that is Q tries on average. When
-`steering().enabled` is false, any free port does. When RSS is enabled but `types.ipv4_tcp` is
-false and `types.ipv4` true, the queue depends on the addresses alone: computed once, and if it is
-not ours `connect` fails `Unplaceable` rather than opening a connection whose packets would land
-elsewhere. The cursor wrapping back to its start without a match is `NoPort`. A peer with no route
-is `NoRoute`, checked by asking the IP brick before the slot is taken. The SYN leaves at once; an
+`steering().enabled` is false every reply lands on queue 0: any free port does on queue 0, and a
+connect on any other queue fails `Unplaceable`, since no port can bring its replies there. When RSS
+is enabled but `types.ipv4_tcp` is false and `types.ipv4` true, the queue depends on the addresses
+alone: computed once, and if it is not ours `connect` fails `Unplaceable` rather than opening a
+connection whose packets would land elsewhere. The cursor wrapping back to its start without a match is `NoPort`. A peer with no route
+is `NoRoute`, checked with `ip.next_hop(peer)` before the slot is taken. The SYN leaves at once; an
 `Unresolved` SYN is the timer's case above.
 
 ## ARP across shards
 
 The IP base left it here. Every shard forwards each `ArpResolution` in `ip.resolved()` to every
 sibling after `process`, and a sibling applies it with `ip.learn(address, mac, now)` on its own
-thread, which reports nothing, so shards never echo each other. A hand-written multi-queue program
-owns the channel; one `loop::Inbox` per loop and a `Work` node carrying the resolution is the
-obvious one and what the docs show. The runtime: `ShardContext` gains `siblings()`, a span of the
-other contexts' pointers that `Runtime` sets before `start`, and `TcpStack::on_receive` pushes one
-`Work` per resolution per sibling through the inboxes, allocated on that cold path and freed on
-arrival. Forward each `ip.resolved()` list once per `ip.process`, not repeatedly on empty ticks.
+thread, which reports nothing, so shards never echo each other. On a multi-queue device every shard
+shares one address and the reply to a request a sibling sent lands on queue 0, whose brick never
+asked; `net::Ipv4Config::accept_unsolicited_replies`, off by default, lets that brick learn a reply
+addressed to our address from a plausible sender and report it in `resolved()`. `runtime::TcpStack`
+sets it on its copy of the config when the device has more than one queue; a hand-written
+multi-queue program sets it itself. That program owns the channel; one `loop::Inbox` per loop and a
+`Work` node carrying the resolution is the obvious one and what the docs show. The runtime:
+`ShardContext` gains `siblings()`, a span of the other contexts' pointers that `Runtime` sets before
+`start`, and a typed ARP sink of `wire` values, and `TcpStack::on_receive` posts one
+`detail::ArpForwardWork` per resolution per sibling with the guarded `post_control`, allocated with
+`std::nothrow` on that cold path. An accepted node runs once on the target and frees itself; a node
+a finished sibling rejects is freed by the sender and counted in `forwards_rejected()`; a failed
+allocation is counted in `forwards_dropped()`. Forward each `ip.resolved()` list once per
+`ip.process`, not repeatedly on empty ticks.
 
 ## Counters
 
@@ -710,7 +767,9 @@ arrival. Forward each `ip.resolved()` list once per `ip.process`, not repeatedly
 | Segments | `segments_received`, `data_segments_sent`, `pure_acks_sent`, `control_segments_sent` (SYN, SYN-ACK, FIN), `resets_sent`, `retransmits`, `window_updates` |
 | Connections | `connections_opened`, `connections_accepted`, `connections_closed`, `connections_reset`, `connections_timed_out`, `handshakes_failed` |
 | Drops | `dropped_bad_header`, `dropped_bad_checksum`, `dropped_no_connection`, `dropped_closed`, `dropped_unexpected`, `dropped_duplicate`, `dropped_out_of_order`, `dropped_out_of_window`, `dropped_no_slot`, `dropped_no_node`, `dropped_table_full` |
-| Send | `send_refused`, `send_unresolved` |
+| Send | `send_refused`, `send_unresolved`, `commits_refused` (a commit after the connection left the sendable states), `allocation_failures` (a `prepare` the pool could not serve) |
+
+`runtime::TcpStack` adds `forwards_dropped()` and `forwards_rejected()` for the ARP forwards.
 
 ## Error handling
 
@@ -754,8 +813,10 @@ constructing the shards and before `start`.
 `runtime::Streams<Stack>`, one per shard, constructed over a `tcp::Stack` and the context. Per
 connection index it keeps one slot: a parked operation pointer for each of readable, writable,
 acked, connected and closed, an `inplace_stop_source`, a `loop::Timer` for the deadline and the
-threshold the readable or writable waiter asked for. Per listener it keeps the parked accept and an
-intrusive list of accepted connections nobody has taken yet, populated when it drains `Accepted`.
+threshold the readable or writable waiter asked for. Per listener it keeps the parked accept and a
+backlog of accepted connections nobody has taken yet, populated when it drains `Accepted`: a fixed
+ring of `config.connections` indices allocated in the constructor and never grown, which live
+connections, bounded by the table, cannot overfill.
 
 `wake(now)`, called from both hooks, drains `tcp.poll_event()` and, per snapshot flag, pushes
 the matching parked operation onto the run queue: one `loop::Work` push per operation, never a call into a task from
@@ -794,6 +855,14 @@ timer senders do today, and on the slot's own source.
 One parked operation per kind per connection, asserted. Errors are in the value channel; the
 stopped channel carries cancellation, deadlines and shutdown.
 
+A sender completes inline from `start` when its level is already met or its operation is already
+stopped, and otherwise on the run queue after a wake: its attributes name the shard's scheduler as
+the completion scheduler and answer `asynchronous_affine | inline_completion`, not the timer
+senders' plain `asynchronous_affine`. The level read at start includes a terminal event raised but
+not yet drained: `closed()` and `close()` on a `Closed` connection with no recorded terminal consult
+`events()` (`TimedOut`, then `Reset`, then a normal `Closed`) before reporting success, so a
+retransmit timer that times the connection out inside `run_once` is reported as `TimedOut`.
+
 `runtime::Stream<Stack>` is a move-only owner of a connection: it exposes the stream members and
 the senders above as members, and its destructor calls `release`, so a task that returns for any
 reason, including unwinding on stop, frees the slot.
@@ -812,11 +881,13 @@ program composing its own stack writes its own `IsStack`, as the Ethernet echo d
 
 ## The hand-written loop
 
-What `docs/architecture/tcp.md` and the example lead with: server and client in one loop.
+What `docs/architecture/tcp.md` and `examples/tcp_echo` lead with: an echo server and its client in one
+loop. `examples/tcp_echo` takes the role from its arguments; this sketch runs both halves.
 
 ```cpp
 using Port  = aloe::ethdev::Port;
 using Ip    = aloe::net::Ipv4<Port>;
+using Tcp   = aloe::tcp::Stack<Ip>;
 using Clock = aloe::core::Clock;
 
 aloe::ethdev::Port port{{.name = "net_tap0", .queues = 1}};
@@ -824,11 +895,12 @@ aloe::loop::ShardCounters counters;
 aloe::loop::ShardQueue<Port> queue{port, 0, 512, counters};
 aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, Clock::now()};
 Ip ip{queue, {.address = {10, 78, 0, 2}, .prefix = 24, .gateway = {{10, 78, 0, 1}}}};
-aloe::tcp::Stack<Ip> tcp{ip, wheel, {.connections = 1024, .receive_segments = 32}};
+Tcp tcp{ip, wheel, {.connections = 1024, .receive_segments = 32}};
 std::vector<Port::Packet> burst(64);
+const std::span<const std::byte> hello = std::as_bytes(std::span{std::string_view{"hello\n"}});
 
-std::ignore = tcp.listen(7);                                                // the server half
-auto session = tcp.connect({.address = {10, 78, 0, 1}, .port = 7}, Clock::now());   // the client half
+std::ignore = tcp.listen(7);                                                        // the server half
+std::ignore = tcp.connect({.address = {10, 78, 0, 1}, .port = 7}, Clock::now());   // the client half
 
 for (;;) {
     const auto now             = Clock::now();
@@ -837,25 +909,23 @@ for (;;) {
     tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);
     std::ignore = wheel.advance(now);  // timer events join receive events before the drain
 
-    while (auto event = tcp.poll_event()) {
-        aloe::tcp::Connection& c = *event->connection;
+    while (const auto event = tcp.poll_event()) {
+        Tcp::ConnectionType& c            = *event->connection;
         const aloe::stream::Events events = event->events;
         if (events.connected()) {
-            auto out = c.prepare(hello.size());
-            std::ranges::copy(hello, out->begin());
-            std::ignore = c.commit(out->size());
+            std::ignore = c.send(hello);                                    // the copying convenience
         }
         if (events.readable() || events.writable()) {
             while (!c.unread().empty()) {
                 const std::span<const std::byte> chunk = c.unread().front();
-                auto out = c.prepare(chunk.size());
+                const auto out                         = c.prepare(chunk.size());
                 if (!out) break;                                            // resume on Writable
                 std::ranges::copy(chunk.first(out->size()), out->begin());  // the echo's own copy
-                if (!c.commit(out->size())) break;
+                if (!c.commit(out->size())) break;                          // refused: still unread, retry on the hint
                 c.consume(out->size());
             }
         }
-        if (events.peer_closed() && c.unread().empty()) c.close();
+        if (c.peer_closed() && c.unread().empty() && c.state() == aloe::tcp::State::CloseWait) c.close();
         if (events.closed() || events.reset() || events.timed_out()) c.release();
     }
 
@@ -864,10 +934,12 @@ for (;;) {
 }
 ```
 
-And the same echo as tasks:
+And the same echo as tasks, `examples/tcp_echo_tasks`:
 
 ```cpp
-aloe::runtime::task<void> echo(aloe::runtime::Stream<Tcp> stream) {
+using Stack = aloe::runtime::TcpStack<aloe::ethdev::Port>;
+
+aloe::runtime::task<void> echo(Stack::StreamType stream) {
     for (;;) {
         const auto readable = co_await stream.readable(1);
         if (!readable) break;
@@ -877,17 +949,22 @@ aloe::runtime::task<void> echo(aloe::runtime::Stream<Tcp> stream) {
             stream.consume(chunk.size());
         }
     }
-    co_await stream.close();
+    std::ignore = co_await stream.close();
 }
 
-aloe::runtime::task<void> serve(aloe::runtime::Streams<Tcp>& streams, aloe::runtime::Scheduler scheduler) {
+aloe::runtime::task<void> serve(Stack::StreamsType* streams, aloe::runtime::Scheduler scheduler) {
     for (;;) {
-        auto stream = co_await streams.accept(7);
+        auto stream = co_await streams->accept(7);
         if (!stream) break;
         scheduler.spawn(echo(std::move(*stream)));
     }
 }
 ```
+
+The task echo awaits `send(chunk)` before it consumes, because the sender copies from `chunk` until
+every byte is committed; the consume then extends the window after the segment left, which costs a
+window update at the flush per echoed segment under the window rule above. An echo that wants the
+reopening to ride on its data writes prepare, copy, consume, commit through the handle.
 
 ## Testing
 
@@ -941,7 +1018,8 @@ stamp, not the previous one. A refused send parks until a retry hint instead of 
 positive `writable()`. ARP forwarding occurs once per received resolution list. A stack with
 neither optional hook keeps its existing behavior; hooks are independently optional.
 
-`tests/unit_tests/common/runtime/threads/test_tcp_steering.cpp`, the one the `tsan` preset is for:
+`tests/unit_tests/common/runtime/test_tcp_runtime.cpp` and `test_tcp_steering.cpp`, the latter the
+one the `tsan` preset is for:
 a four-shard runtime of `TcpStack` serving the task echo, a client runtime on a second port
 opening connections to it, each reply stamped with the serving shard's index and matching
 `queue_for`; and a connect from shard 3 through a gateway whose MAC only shard 0 learned.
@@ -949,9 +1027,11 @@ opening connections to it, each reply stamped with the serving shard's index and
 ### Integration
 
 `tests/integration_tests/tcp/test_tcp_ring.cpp`, `Aloe.Tests.Integration.Tcp.Ring`: the brick
-over `net_ring`, which loops a queue's transmit into its receive. A connect to our own address and
-listening port completes as two connections in one table, and the echo runs over them through
-real mbufs: headroom for 54 bytes, offsets, `set_tx`, no root.
+over `net_ring`, which loops a queue's transmit into its receive. A scripted `frames::TcpPeer` at
+another IP address drives the brick through real mbufs, as `test_net_ring.cpp` does for UDP:
+headroom for 54 bytes, offsets, `set_tx`, software checksums, no root. A connect to our own address
+is not used, since the IP brick drops our own source address as martian; the two-real-brick echo is
+covered on the fabric.
 
 ### Manual
 
@@ -969,7 +1049,8 @@ checksum is software on our side and checked by the kernel.
 `examples/tcp_echo/tcp_echo.cpp`, `Aloe.Examples.TcpEcho`: the hand-written loop above on one
 queue of a DPDK port, `tcp_echo <port> <address/prefix> [gateway] (--listen <port> | --connect
 <host:port>) [-- EAL arguments]`, counters on interrupt. `examples/tcp_echo_tasks/`: the same over
-`Runtime` and `TcpStack` on every queue of the port.
+`Runtime` and `TcpStack` on every queue of the port. Both are built in every preset; they need root
+and a tap device or a card to run, so the run is a local gate like the tap suite.
 
 ## Documentation
 
@@ -1014,8 +1095,8 @@ queue of a DPDK port, `tcp_echo <port> <address/prefix> [gateway] (--listen <por
   never by the next packet. Removal precedes delivery, so the handler may release the connection
   or cause a new notification. Two runtime wake passes must not enqueue one operation twice.
 - **Threaded tests under tsan** take time; the steering test keeps connections in the tens.
-- **A `std::deque<Connection>`** keeps immovable connections at stable addresses; the plan may
-  choose `std::unique_ptr<Connection[]>` with a default constructor instead.
+- **A `std::deque<Connection>`** keeps immovable connections at stable addresses; chosen, with the
+  passkey constructor, over `std::unique_ptr<Connection[]>`.
 
 ## Out of scope
 
@@ -1023,8 +1104,15 @@ Deferred, and written into the docs as such: retransmission of data, out-of-orde
 SACK, window scaling, timestamps, delayed ACK, zero-window probes, keepalive, TIME_WAIT,
 congestion control and pre-built headers (phase 2); flow rules per connection and software
 steering between shards (fallbacks, with the device API they need); UDP with multicast and the
-tick-to-send benchmark (the rest of phase 1); ICMP errors; IPv6; urgent data; SYN cookies; RFC
-6528 initial sequence numbers; path MTU discovery. Nagle never: no coalescing is the design.
+tick-to-send benchmark (the rest of phase 1); ICMP errors; IPv6; urgent data; path MTU discovery.
+Hardening against hostile peers, recorded with its cost and left for full TCP: SYN cookies (a SYN
+flood fills the fixed table until the half-open connections time out), RFC 6528 initial sequence
+numbers (ISNs come from a per-shard `std::mt19937` seeded from `std::random_device`), RFC 5961
+challenge ACKs (a RST anywhere in the window is accepted), a keyed table hash (the software FNV-1a
+base hash is unkeyed; chosen 4-tuples lengthen a probe, bounded by the fixed table), and ARP-reply
+rate limiting (with `accept_unsolicited_replies` on, a reply flood churns the cache and allocates one
+forward per sibling per learned reply until the allocation fails). Nagle never: no coalescing is the
+design.
 
 Also deferred: concurrent RX/TX halves for one connection; choosing a synchronization mechanism;
 delegated transmission allowances; maintenance-core execution; asymmetric memory fences;
@@ -1036,16 +1124,52 @@ before adding data retransmission; this prototype's transmit ownership is not a 
 
 ## Open questions
 
-- Whether `Connection` storage is a `std::deque` or a `std::unique_ptr<Connection[]>`.
-- Whether `Events` is a class with named queries or an `enum class` with bitwise operators and a
-  `has`; the spec writes the class.
-- Whether `ReadView` is declared a `std::ranges::view` formally or only satisfies
-  `forward_range`.
-- The peer's MSS without an option: 536 per RFC 1122, as here.
-- Whether the multi-queue hand-written forwarding of resolutions deserves a small helper in `loop`
-  once the example shows it twice.
-- The class name `Stack` for the brick against the runtime's `TcpStack`; both read well in their
-  namespaces, and renaming is mechanical.
+Resolved by the implementation:
+
+- ~~Whether `Connection` storage is a `std::deque` or a `std::unique_ptr<Connection[]>`.~~ A
+  `std::deque<ConnectionType>`, with the passkey constructor.
+- ~~Whether `Events` is a class with named queries or an `enum class` with bitwise operators and a
+  `has`.~~ The class, as written here, with `from_raw` and an initializer-list constructor.
+- ~~Whether `ReadView` is declared a `std::ranges::view` formally or only satisfies
+  `forward_range`.~~ A lightweight `forward_range` without `view_interface`, never a `sized_range`.
+- ~~The peer's MSS without an option.~~ 536 per RFC 1122, `tcp::default_peer_mss`.
+- ~~The class name `Stack` for the brick against the runtime's `TcpStack`.~~ Kept; both read well
+  in their namespaces.
+
+Still open:
+
+- Whether the multi-queue hand-written forwarding of resolutions deserves a small helper in `loop`;
+  neither example forwards, since `tcp_echo` runs on one queue and `tcp_echo_tasks` uses the runtime's.
+- Whether the window update after every edge-moving `consume` should wait for a threshold (receiver
+  silly-window avoidance, RFC 1122 section 4.2.3.3): an echo that sends before it consumes pays one
+  pure ACK per segment.
+
+## Decisions made during implementation
+
+Where the implementation departs from or adds to the text above, by the controller's rulings:
+
+- **Unsolicited ARP replies.** `net::Ipv4Config::accept_unsolicited_replies` exists so queue 0 can
+  learn what a sibling solicited; `runtime::TcpStack` sets it on multi-queue devices and a
+  hand-written multi-queue program sets it itself (see "ARP across shards").
+- **Steering off on a nonzero queue is `Unplaceable`.** The placement section's earlier "any free
+  port does" held only for queue 0: with steering off every reply lands there.
+- **Counters added.** `TcpCounters::commits_refused` and `allocation_failures`, and
+  `runtime::TcpStack::forwards_rejected()` beside `forwards_dropped()`; each drop or failure still
+  increments exactly one counter.
+- **The retry schedule is validated** against overflow: `retries >= 63` or a `retry_initial` too large
+  to double `retries` times throws.
+- **The prepared packet is the application's** from `prepare` to `commit` or `release`; `close`,
+  `abort`, a RST and a time-out leave it, and the late `commit` is refused and counted.
+- **Read views are never sized ranges** (`!std::ranges::sized_range` in `IsReadView`;
+  `disable_sized_range` on `ReadView`), which also rules out random-access read views for now.
+- **Stream senders may complete inline** and say so (`asynchronous_affine | inline_completion`);
+  `closed()` and `close()` read undrained terminal events on a `Closed` connection.
+- **A listener's backlog is a fixed ring** of `config.connections` entries allocated up front.
+- **An unresolved next hop never times a connect out** on its own: the 10 ms poll spends no try.
+- **Hardening stays out** (SYN cookies, RFC 6528 ISNs, RFC 5961 challenge ACKs, a keyed table hash,
+  ARP-reply rate limiting), recorded under "Out of scope" with what each costs meanwhile.
+- **The ring integration test** uses a scripted peer at another address, not a connect to ourselves.
+- **The examples keep their own argument parsing**, duplicated, because each is read on its own.
 
 ## Work order
 

@@ -5,8 +5,8 @@ addresses, the header layouts, the protocol numbers and the checksums, grouped b
 no devices and no state. Everything about IPv4 sits under `wire/ipv4/`, everything about Ethernet under
 `wire/ethernet/`, TCP under `wire/tcp/`, and IPv6 and UDP get a directory each when they arrive. It depends on nothing. Everything
 is reached through the umbrella `#include <aloe/wire>` (`export/aloe/wire`), and targets link
-`Aloe::Common::Wire`. The [device layer](device.md) speaks in its addresses; the [net](net.md) bricks read
-and write its formats.
+`Aloe::Common::Wire`. The [device layer](device.md) speaks in its addresses; the [net](net.md) and [tcp](tcp.md)
+bricks read and write its formats.
 
 | Directory   | Target                  | Holds                                                                                    |
 |-------------|-------------------------|------------------------------------------------------------------------------------------|
