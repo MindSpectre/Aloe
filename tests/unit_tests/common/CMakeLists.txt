@@ -4,6 +4,7 @@ add_subdirectory(loop)
 add_subdirectory(runtime)
 add_subdirectory(net)
 add_subdirectory(stream)
+add_subdirectory(tcp)
 
 ##############################################################################
 # Test Core: version, and the umbrella header seen from two translation units

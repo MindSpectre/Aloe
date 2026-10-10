@@ -1,0 +1,14 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe tcp module: the minimal TCP brick over the IP brick and a timer
+ * wheel, its connection table, its retained-packet storage and the connection as a zero-copy
+ * stream. Names no execution model and no logger. Consumers link Aloe::Common::Tcp and write
+ * `#include <aloe/tcp>`.
+ */
+
+#include <flow_table.hpp>
+#include <read_view.hpp>
+#include <tcp_config.hpp>
+#include <tcp_counters.hpp>
+#include <tcp_node_pool.hpp>
