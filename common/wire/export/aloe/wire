@@ -17,3 +17,6 @@
 #include <ipv4_protocol.hpp>
 #include <ipv4_subnet.hpp>
 #include <mac_address.hpp>
+#include <tcp_header.hpp>
+#include <tcp_options.hpp>
+#include <tcp_sequence.hpp>
