@@ -22,6 +22,7 @@ namespace {
 
     static_assert(aloe::stream::IsReadView<View>);
     static_assert(std::ranges::forward_range<View>);
+    static_assert(!std::ranges::sized_range<View>, "size() counts bytes, not chunks");
 
     class TcpBuffers : public ::testing::Test {
     protected:
@@ -69,8 +70,7 @@ TEST_F(TcpBuffers, RetainsPacketsAndIteratesSpans) {
     EXPECT_EQ(starts[2], pool.node(*c).packet.data().data() + 60);
     // The pattern helper seeds byte i with offset + i, so the byte at index 54 of a seed-54 packet is 108.
     EXPECT_EQ(std::to_integer<int>(view.front()[0]), 108) << "the first payload byte, not the first packet byte";
-    EXPECT_EQ(std::ranges::distance(view.begin(), view.end()), 3)
-        << "chunks; distance(view) would use size(), which counts bytes";
+    EXPECT_EQ(std::ranges::distance(view), 3) << "iteration counts chunks; size() counts bytes";
     auto it = view.begin();
     ++it;
     EXPECT_EQ((*it).size(), 5U);

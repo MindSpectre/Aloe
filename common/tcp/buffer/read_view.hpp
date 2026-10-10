@@ -1,8 +1,10 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <ranges>
 #include <span>
 
 #include <packet.hpp>
@@ -17,6 +19,12 @@ namespace aloe::tcp {
      * view is a pair of indices and a count, copied freely, and is invalidated by `consume` and by
      * the next `process`. The pool pointer is mutable because the packet concept offers `data()`
      * only on a non-const packet; the bytes handed out are const.
+     *
+     * Invariant, kept by whoever builds the view: `bytes` equals the sum of the lengths of the
+     * chain that starts at `head`, and `head` is `no_node` only when `bytes` is zero. Iteration
+     * follows the chain to its end and ignores `bytes` except to treat zero as empty. The
+     * constructor asserts the invariant in debug builds. The view is deliberately not a
+     * `std::ranges::sized_range`: `size()` counts bytes, not chunks.
      */
     template <device::IsPacket Packet>
     class ReadView {
@@ -66,6 +74,15 @@ namespace aloe::tcp {
             : pool_{&pool},
               head_{head},
               bytes_{bytes} {
+            assert(bytes == 0 || head != detail::no_node);
+#ifndef NDEBUG
+            std::size_t total = 0;
+            for (std::uint32_t index = bytes == 0 ? detail::no_node : head; index != detail::no_node;
+                 index               = pool.node(index).next) {
+                total += pool.node(index).length;
+            }
+            assert(total == bytes);
+#endif
         }
 
         [[nodiscard]] std::size_t size() const noexcept {
@@ -95,3 +112,7 @@ namespace aloe::tcp {
     };
 
 }  // namespace aloe::tcp
+
+/// `size()` counts bytes, so the range library must not take it for the chunk count.
+template <aloe::device::IsPacket Packet>
+inline constexpr bool std::ranges::disable_sized_range<aloe::tcp::ReadView<Packet>> = true;
