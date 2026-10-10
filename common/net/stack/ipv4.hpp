@@ -41,6 +41,9 @@ namespace aloe::net {
         core::Duration arp_reachable             = std::chrono::seconds{60};
         core::Duration arp_expire                = std::chrono::seconds{120};
         core::Duration arp_request_interval      = std::chrono::seconds{1};
+        /// A multi-queue device's shards share one address, so the shard whose queue receives a reply a sibling
+        /// solicited learns it in order to forward it. Off by default (RFC 826 merge rule).
+        bool accept_unsolicited_replies          = false;
     };
 
     struct SendRequest {
@@ -103,9 +106,10 @@ namespace aloe::net {
      * is synchronised, blocks, throws after construction, logs, reads a clock, or allocates after
      * construction except packets.
      */
-    template <device::IsDevice Device>
+    template <device::IsDevice DeviceT>
     class Ipv4 {
     public:
+        using Device = DeviceT;
         using Packet = typename Device::Packet;
 
         static constexpr std::size_t headers_size = wire::EthernetHeader::size + wire::Ipv4Header::size;
@@ -189,15 +193,12 @@ namespace aloe::net {
             } else if (request.destination.is_multicast()) {
                 next_mac = request.destination.multicast_mac();
             } else {
-                wire::Ipv4Address next_hop = request.destination;
-                if (!subnet_.contains(next_hop)) {
-                    if (!config_.gateway.has_value()) {
-                        ++counters_.send_no_route;
-                        return std::unexpected{SendError::NoRoute};
-                    }
-                    next_hop = *config_.gateway;
+                const std::optional<wire::Ipv4Address> hop = next_hop(request.destination);
+                if (!hop) {
+                    ++counters_.send_no_route;
+                    return std::unexpected{SendError::NoRoute};
                 }
-                const std::optional<wire::MacAddress> mac = resolve(next_hop, now);
+                const std::optional<wire::MacAddress> mac = resolve(*hop, now);
                 if (!mac) {
                     ++counters_.send_unresolved;
                     return std::unexpected{SendError::Unresolved};
@@ -245,11 +246,11 @@ namespace aloe::net {
 
         /// The next hop's MAC from the cache, or nothing with a request on its way: how a program pre-resolves its
         /// router.
-        [[nodiscard]] std::optional<wire::MacAddress> resolve(const wire::Ipv4Address next_hop,
+        [[nodiscard]] std::optional<wire::MacAddress> resolve(const wire::Ipv4Address hop,
                                                               const core::TimePoint now) noexcept {
-            const ArpCache::Lookup found = arp_.lookup(next_hop, now);
+            const ArpCache::Lookup found = arp_.lookup(hop, now);
             if (found.send_request) {
-                request_arp(next_hop, found.mac);
+                request_arp(hop, found.mac);
             }
             return found.mac;
         }
@@ -257,6 +258,29 @@ namespace aloe::net {
         /// A static entry, or a resolution another shard learned. Appends nothing to `resolved()`.
         void learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
             arp_.learn(address, mac, now);
+        }
+
+        /// The shard queue the brick was built over: a transport reads its index, steering, ring and device there.
+        [[nodiscard]] loop::ShardQueue<Device>& queue() noexcept {
+            return *queue_;
+        }
+
+        [[nodiscard]] const loop::ShardQueue<Device>& queue() const noexcept {
+            return *queue_;
+        }
+
+        /**
+         * @brief Where a unicast datagram to `destination` would be sent: the destination itself on the
+         * subnet, the gateway off it, or nothing when there is none.
+         *
+         * A route question with no side effect: no ARP lookup, no request, no counter. `send` decides
+         * the same way. Broadcast and multicast destinations are not routed and answer with themselves.
+         */
+        [[nodiscard]] std::optional<wire::Ipv4Address> next_hop(const wire::Ipv4Address destination) const noexcept {
+            if (is_broadcast(destination) || destination.is_multicast() || subnet_.contains(destination)) {
+                return destination;
+            }
+            return config_.gateway;
         }
 
         [[nodiscard]] wire::Ipv4Address address() const noexcept {
@@ -410,7 +434,12 @@ namespace aloe::net {
             }
             ++counters_.arp_replies_received;
             if (!arp_.contains(arp->sender_ip)) {
-                ++counters_.dropped_arp_unsolicited;  // never asked: nothing on the segment fills the cache
+                // Never asked: nothing on the segment fills the cache, unless a sibling shard asked for our address.
+                if (config_.accept_unsolicited_replies && arp->target_ip == config_.address && plausible_sender(*arp)) {
+                    learn_from_wire(arp->sender_ip, arp->sender_mac, now);
+                } else {
+                    ++counters_.dropped_arp_unsolicited;
+                }
                 return;
             }
             if (plausible_sender(*arp)) {

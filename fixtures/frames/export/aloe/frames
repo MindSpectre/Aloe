@@ -10,3 +10,5 @@
 
 #include <frames.hpp>
 #include <net_frames.hpp>
+#include <tcp_frames.hpp>
+#include <tcp_peer.hpp>

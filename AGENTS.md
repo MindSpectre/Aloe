@@ -9,8 +9,9 @@ from the bricks that writes the loop for you and offers senders and receivers
 foundation (`core`, with `execution` and `log` beside it), the protocol formats
 (`wire`), the device layer (the packet and device concepts and the DPDK backend `ethdev`), the
 fixtures (`fabric`, an in-memory device backend, and `frames`, for tests), the loop bricks (`loop`), the shard
-runtime (`runtime`) and the IP base (`net`: Ethernet, ARP, IPv4 and ICMP echo, the first protocol
-brick). The stack is built in phases: shard runtime, minimal TCP, full TCP, TLS, HTTP/1.1 with WebSocket.
+runtime (`runtime`), the IP base (`net`: Ethernet, ARP, IPv4 and ICMP echo, the first protocol
+brick), the stream contract (`stream`) and minimal TCP (`tcp`), with its senders in the runtime. The stack
+is built in phases: shard runtime, minimal TCP, full TCP, TLS, HTTP/1.1 with WebSocket.
 
 ## Build and test
 
@@ -39,7 +40,7 @@ ctest --preset debug -L unit     # or: integration, functional
 
 | Path                                                                       | Contents                                                                                                                                                                                                   |
 |----------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `common/<module>/`                                                         | Stack and foundation modules. `core` holds the small things every module links, with no dependencies (version, clock aliases, header-only helpers); `execution` is the one header that names stdexec and `log` the one that names quill, both linked on demand; `wire` (addresses, headers and checksums grouped by protocol: `ethernet/`, `ipv4/`, `arp/`, `icmp/`; values only, no state); `device` (concepts, no DPDK), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime; built on `loop`, no DPDK), `net` (the IP base: the ARP cache and the `Ipv4<Device>` brick over `wire`'s formats; built on `loop` and `device`, no `execution`, no `log`, no DPDK). |
+| `common/<module>/`                                                         | Stack and foundation modules. `core` holds the small things every module links, with no dependencies (version, clock aliases, header-only helpers); `execution` is the one header that names stdexec and `log` the one that names quill, both linked on demand; `wire` (addresses, headers and checksums grouped by protocol: `ethernet/`, `ipv4/`, `arp/`, `icmp/`, `tcp/`; values only, no state); `device` (concepts, no DPDK), `ethdev` (DPDK backend, the only module that links DPDK), `loop` (the bricks: device queue, timer wheel, work node, run queue, inbox, counters; no stdexec, no DPDK), `runtime` (shards, scheduler, scope, task, runtime, the stream senders and the ready-made `TcpStack`; built on `loop`, no DPDK), `net` (the IP base: the ARP cache and the `Ipv4<Device>` brick over `wire`'s formats; built on `loop` and `device`, no `execution`, no `log`, no DPDK), `stream` (the zero-copy stream concepts, events and errors; header-only, links `core` only), `tcp` (the minimal TCP brick `tcp::Stack<Ip>` over `net`, its flow table and held-packet pool; no `execution`, no `log`, no DPDK). |
 | `fixtures/<module>/`                                                       | What Aloe ships for testing code written over the bricks, kept apart from the stack: `fabric` (the in-memory device backend) and `frames` (frame builders and a parser). Built on `common`; nothing in `common` depends on them. |
 | `component/<module>/`                                                      | Protocol modules (HTTP/1.1, HTTP/2, HTTP/3, WebSocket, ...), each an independent unit built on `common`. None exist yet; the directory appears with the first. |
 | `<module>/export/aloe/<module>`                                            | Umbrella header, no extension. Consumers write `#include <aloe/<module>>`.                                                                                                                                 |
@@ -82,7 +83,7 @@ basenames are unique across modules: `packet.hpp` is the concept,
   namespaces, parameters, attributes, error handling, include order.
 - **Namespaces.** Every module gets a namespace named after it: `aloe::core`,
   `aloe::execution`, `aloe::log`, `aloe::wire`, `aloe::device`, `aloe::fabric`, `aloe::frames`, `aloe::ethdev`, `aloe::loop`,
-  `aloe::runtime`, `aloe::net`. Nothing is
+  `aloe::runtime`, `aloe::net`, `aloe::stream`, `aloe::tcp`. Nothing is
   declared directly in `aloe`. Another module's names are qualified with its
   namespace (`wire::MacAddress` inside `aloe::fabric`), never pulled in with
   `using namespace`. Test helpers live in `aloe::testing`.
@@ -156,6 +157,28 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - The fabric never refuses a transmit and refuses frames shorter than an Ethernet header. A test that
   needs a refused send wraps the port in a device whose `transmit` returns 0; a test of a short frame
   builds the packet on the port's own pool and calls the brick directly.
+- `ShardQueue::transmit` flushes once when its ring is full before it refuses, so a refusing device alone
+  does not refuse the next send. A test that needs one gives the queue a one-slot ring, fills it with a
+  packet the device will not take, then sends (`aloe::testing::TcpRefusingFixture::refuse`).
+- clang-tidy's `modernize-make-unique` flags `new T[n]`, and `std::make_unique<T[]>` and
+  `std::deque::emplace_back` construct through code that is not a friend, so a private constructor does not
+  work. A type only one class may create takes a passkey instead: a public constructor whose parameter is a
+  private tag type only that class names, as `tcp::Connection` (built by `tcp::Stack` in a `std::deque`,
+  which never moves an element) and `fabric::Port` do.
+- A member function of a class template that is declared but never defined fails only once something
+  instantiates it, at link time. Define every function a template member reaches (`tcp::Stack::process`
+  reaches the whole receive path) in the change that first instantiates it.
+- `frames::Checksums::Wrong` corrupts both checksums in `ipv4_frame` but only the TCP checksum in
+  `tcp_frame`: the IPv4 header stays right, so the segment reaches TCP and counts as a bad TCP checksum
+  instead of being dropped by IP.
+- A view whose member `size()` counts bytes, not elements, must specialise `std::ranges::disable_sized_range`,
+  or `std::views::take`, `std::ranges::distance` and `std::ranges::to` trust the byte count as an element
+  count and walk past the end. `stream::IsReadView` rejects any sized range, so a read view must have
+  forward, not random-access, iterators.
+- A `loop::TimerWheel` advanced once past several deadlines fires a re-arming timer once, not once per
+  deadline it passed: the re-armed deadline is computed from the new stamp. A test of a retry schedule steps
+  the clock, at most one retry interval per `advance`, and checks each deadline, or it sees one retry where a
+  real loop sees several.
 
 ## Documentation
 

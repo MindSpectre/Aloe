@@ -1,8 +1,10 @@
 #include <aloe/frames>
 #include <aloe/net>
 #include <aloe/wire>
+#include <array>
 #include <chrono>
 #include <cstddef>
+#include <span>
 #include <tuple>
 #include <vector>
 
@@ -140,6 +142,40 @@ TEST_P(NetArp, AnUnsolicitedReplyIsDroppedAndTeachesNothing) {
     EXPECT_TRUE(ip_.resolved().empty());
     EXPECT_FALSE(ip_.resolve(stranger, now_).has_value()) << "nothing was learned";
     EXPECT_EQ(harness_received().size(), 1) << "so a request goes out";
+}
+
+TEST_P(NetArp, WithAcceptUnsolicitedRepliesAReplyAddressedToUsIsLearned) {
+    // A sibling shard asked; its reply landed on this queue. The shared address makes it ours to learn and forward.
+    aloe::net::Ipv4Config config      = aloe::testing::stack_config();
+    config.accept_unsolicited_replies = true;
+    Ipv4 accepting{queue_, config};
+    const auto process_one = [&](const std::vector<std::byte>& frame) {
+        auto packet = harness_.allocate(0);
+        ASSERT_TRUE(packet.has_value());
+        ASSERT_TRUE(aloe::frames::fill(*packet, frame));
+        std::array<Packet, 1> out{std::move(*packet)};
+        ASSERT_EQ(harness_.transmit(0, out), 1);
+        const std::size_t count = port_.receive(0, burst_);
+        accepting.process(std::span<Packet>{burst_}.first(count), now_);
+    };
+
+    process_one(
+        aloe::frames::arp_frame(aloe::frames::arp_reply(stranger_mac, stranger, stack_mac, stack_ip), stack_mac));
+    EXPECT_EQ(accepting.counters().dropped_arp_unsolicited, 0);
+    EXPECT_EQ(accepting.counters().arp_replies_received, 1);
+    EXPECT_EQ(accepting.counters().resolutions, 1);
+    ASSERT_EQ(accepting.resolved().size(), 1);
+    EXPECT_EQ(accepting.resolved()[0].address, stranger);
+    EXPECT_EQ(accepting.resolved()[0].mac, stranger_mac);
+    EXPECT_EQ(accepting.resolve(stranger, now_), stranger_mac);
+    EXPECT_TRUE(harness_received().empty()) << "learned, so no request goes out";
+
+    // A reply addressed to another host is still not ours to learn.
+    process_one(aloe::frames::arp_frame(
+        aloe::frames::arp_reply(harness_mac, harness_ip, stack_mac, aloe::wire::Ipv4Address{10, 0, 0, 99}), stack_mac));
+    EXPECT_EQ(accepting.counters().dropped_arp_unsolicited, 1);
+    EXPECT_TRUE(accepting.resolved().empty());
+    EXPECT_EQ(accepting.counters().resolutions, 1);
 }
 
 TEST_P(NetArp, AFrameClaimingOurOwnAddressIsAConflict) {

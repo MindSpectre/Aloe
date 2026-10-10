@@ -63,6 +63,44 @@ target_link_libraries(${RUNTIME}.Task INTERFACE
 ##############################################################################
 
 ##############################################################################
+# The stream owners, wait slots and senders over the TCP brick
+##############################################################################
+add_library(${RUNTIME}.Stream INTERFACE
+        stream/stream_wait.hpp
+        stream/streams.hpp
+        stream/stream_senders.hpp
+        stream/stream_handle.hpp
+)
+target_include_directories(${RUNTIME}.Stream INTERFACE
+        stream/
+)
+target_link_libraries(${RUNTIME}.Stream INTERFACE
+        ${RUNTIME}.Scheduler
+        Aloe::Common::Tcp
+        Aloe::Common::Stream
+        Aloe::Common::Net
+)
+##############################################################################
+
+##############################################################################
+# The ready-made TCP stack and the ARP forwarding between shards
+##############################################################################
+add_library(${RUNTIME}.Stack INTERFACE
+        stack/arp_forward.hpp
+        stack/tcp_runtime_stack.hpp
+)
+target_include_directories(${RUNTIME}.Stack INTERFACE
+        stack/
+)
+target_link_libraries(${RUNTIME}.Stack INTERFACE
+        ${RUNTIME}.Stream
+        ${RUNTIME}.Context
+        Aloe::Common::Tcp
+        Aloe::Common::Net
+)
+##############################################################################
+
+##############################################################################
 # The shard: one device queue, the stack, and the tick
 ##############################################################################
 add_library(${RUNTIME}.Shard INTERFACE
@@ -108,6 +146,8 @@ add_combined_library(${RUNTIME}
         ${RUNTIME}.Context
         ${RUNTIME}.Scheduler
         ${RUNTIME}.Task
+        ${RUNTIME}.Stream
+        ${RUNTIME}.Stack
         ${RUNTIME}.Shard
         ${RUNTIME}.Runtime
         Aloe::Common::Loop

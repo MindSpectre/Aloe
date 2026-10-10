@@ -36,8 +36,6 @@ namespace aloe::net {
      * once it is `reachable` old, and asks for one for an incomplete or absent address, at most one
      * per `request_interval` per entry.
      */
-    // TODO: Issue#5 - research replacing this table with abseil's flat_hash_set once #6's connection
-    // table decides whether abseil enters the project: reserved capacity, inserts capped at it.
     class ArpCache {
     public:
         static constexpr std::size_t probe_window = 8;

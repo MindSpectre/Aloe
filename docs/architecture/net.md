@@ -21,6 +21,14 @@ here names the asynchronous model, logs, or reads a clock.
   returns a `SendError` and hands the packet back exactly as it was. `resolve(next_hop, now)` and
   `learn(address, mac, now)` are the two ways into the ARP cache from outside. Nothing here blocks,
   throws after construction, or allocates anything but packets after construction.
+  **Transport access:** `Device` is the template parameter, `queue()` is the shard queue the brick was built
+  over (its index, steering, ring and device), and `next_hop(destination)` answers the route question with no
+  side effect: the destination on the subnet, the gateway off it, nothing with no gateway. `send` decides
+  through the same call, and a transport asks it before committing resources, so a connect to an unroutable
+  peer takes no slot. `Ipv4Config::accept_unsolicited_replies` (off by default, the RFC 826 merge rule) lets
+  the shard whose queue receives a reply that a sibling shard solicited learn it and report it in `resolved()`
+  for forwarding, since a multi-queue device's shards share one address; only a reply addressed to our
+  address from a plausible sender is accepted.
 - **`aloe::net::Datagram<Packet>`** -- one received datagram for a transport: the whole frame as a packet
   the transport moves out to keep, the two addresses, the protocol, the header offsets, the L4 length from
   the IPv4 total length, and the device's L4 checksum verdict. `l4()` is the segment.
@@ -64,16 +72,15 @@ while (running) {
 }
 ```
 
-With transports, from the next steps of phase 1, the same loop gains one line per transport and nothing
-else. The transports are templated on the IP type below them and transmit through it:
+With transports the same loop gains one line per transport and nothing else. The transports are templated on
+the IP type below them and transmit through it; TCP exists (see the [tcp page](tcp.md)), UDP comes next:
 
 ```cpp
 aloe::tcp::Stack<aloe::net::Ipv4<aloe::ethdev::Port>> tcp{ip, wheel, tcp_config};
-aloe::udp::Stack<aloe::net::Ipv4<aloe::ethdev::Port>> udp{ip, udp_config};
 
 ip.process(std::span{burst}.first(received), now);
 tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);
-udp.process(ip.received(aloe::wire::Ipv4Protocol::Udp), now);
+// udp.process(ip.received(aloe::wire::Ipv4Protocol::Udp), now);   // once UDP lands
 ```
 
 A transport sends by appending its segment to a packet from `allocate()`, with the checksum field zero,
@@ -102,12 +109,12 @@ leak, all for startup and the multi-shard case: `send` fails `Unresolved` while 
 caller retries, which TCP's SYN and retransmit absorb; `resolved()` reports every mapping learned from the
 wire; `learn` seeds the cache with a static entry or another shard's resolution and reports nothing, so
 shards never echo each other. ARP frames carry no IP header, so a card puts them on its default queue,
-queue 0 on both backends; the loop that owns that queue forwards resolutions to the other shards, which
-arrives with connection placement in phase 1. A request from another host for a third party refreshes
-an entry we already hold and never creates one, so a router's gratuitous ARP after a failover takes effect
-at once; a sender that cannot be a host (a zero, multicast or broadcast address) is answered when it asks for
-our address and never learned, which keeps RFC 5227 probes working. A request from a group MAC is dropped as
-martian instead, since the reply would go to a group.
+queue 0 on both backends; the loop that owns that queue forwards resolutions to the other shards. A
+request from another host for a third party refreshes an entry we already hold and never creates one, so a
+router's gratuitous ARP after a failover takes effect at once; a sender that cannot be a host (a zero,
+multicast or broadcast address) is answered when it asks for our address and never learned, which keeps
+RFC 5227 probes working. A request from a group MAC is dropped as martian instead, since the reply would go
+to a group.
 
 **Aging without a timer.** The cache keeps the stamp of each entry's last confirmation and compares it
 with the stamp the caller passes. Fresh entries are used as they are; stale ones are still used while one
@@ -124,7 +131,7 @@ capacity is a power of two of at least eight.
 
 **The echo reply never consults the cache.** It is built in the request's packet and goes back to the
 frame's source MAC: the last hop, which is the right next hop back whether the pinger is on the subnet or
-behind a router. That is what makes `ping` work on any shard before cross-shard ARP exists.
+behind a router. That is what makes `ping` work on any shard without cross-shard ARP.
 
 **Checksums in one place.** `send` and the echo reply share one function: the IPv4 header checksum and,
 when asked, the L4 checksum, filled by the device when `capabilities()` offers it and in software when
@@ -142,7 +149,19 @@ left to every transport to check.
 multicast, loopback or 255.255.255.255, and not the subnet's network or broadcast address when the prefix is
 30 or less (a /31 or /32 has neither). The gateway must be another such host on the same subnet.
 
-**Deferred.** Forwarding resolutions between shards and flow rules come with TCP's placement; multicast
-reception with UDP; ICMP errors with phase 2. Fragments are dropped and counted, never reassembled. IPv4
-options are accepted on receive, ignored, and never sent. The ARP table carries a `TODO` to research
-abseil's `flat_hash_set` once the connection table decides whether abseil enters the project.
+**Resolutions cross shards through the loop.** On a multi-queue device every shard has the same address, so
+the gateway's reply to a request shard 2 sent arrives on queue 0, whose brick never asked. Every shard's
+brick on such a device sets `accept_unsolicited_replies`, so queue 0 learns the reply and reports it in
+`resolved()`, and the loop that owns queue 0 hands each resolution to every other shard, which calls
+`learn(address, mac, now)` on its own thread. `learn` reports nothing, so a forwarded resolution is never
+forwarded back. The runtime's `TcpStack` does all of this (see the [runtime page](runtime.md)); it sets the
+flag itself when its queue's device has more than one queue. A hand-written multi-queue program sets the
+flag in the `Ipv4Config` it gives every shard and owns the channel: one `loop::Inbox` per loop, and a
+`loop::Work` node carrying the address and the MAC, pushed to every other loop's inbox after each
+`process` that reported something and run there by a call to `learn`. Each `resolved()` list is forwarded
+once, after the `process` that filled it, never again on a pass that received nothing.
+
+**Deferred.** Flow rules come with later placement work; multicast reception with UDP; ICMP errors with
+phase 2. Fragments are dropped and counted, never reassembled. IPv4 options are accepted on receive, ignored,
+and never sent. ARP replies are not rate-limited, which matters once `accept_unsolicited_replies` is on: a
+reply flood churns the cache. The ARP table stays Aloe's own fixed table; abseil does not enter the project.

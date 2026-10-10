@@ -3,7 +3,8 @@
 /**
  * Public umbrella for the Aloe runtime module: the loop written for you. Shards and the runtime
  * that launches one per queue, the shard context, the scheduler with its senders, the counting
- * scope and the shard task. Built on the loop module, whose umbrella this includes.
+ * scope, the shard task, the stream owners with their senders over the TCP brick, and the ready-made
+ * TCP stack with the ARP forwarding between shards. Built on the loop module, whose umbrella this includes.
  * Consumers link Aloe::Common::Runtime and write `#include <aloe/runtime>`.
  */
 
@@ -14,4 +15,6 @@
 #include <shard.hpp>
 #include <shard_context.hpp>
 #include <shard_task.hpp>
+#include <streams.hpp>
 #include <task_scope.hpp>
+#include <tcp_runtime_stack.hpp>
