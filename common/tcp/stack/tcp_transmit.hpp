@@ -138,4 +138,37 @@ namespace aloe::tcp {
         return std::min<std::size_t>(c.mss(), usable);
     }
 
+    /// Advances the chain's front by `count` bytes, freeing packets as they empty; a reopened edge queues an update.
+    template <typename Ip>
+    void Stack<Ip>::consume(ConnectionType& c, const std::size_t count) noexcept {
+        assert(count <= c.unread_bytes_ && "consume past unread()");
+        std::size_t remaining = count;
+        while (remaining > 0) {
+            typename detail::TcpNodePool<Packet>::Node& node  = pool_.node(c.chain_head_);
+            const std::size_t taken                           = std::min<std::size_t>(remaining, node.length);
+            node.offset                                       = static_cast<std::uint16_t>(node.offset + taken);
+            node.length                                       = static_cast<std::uint16_t>(node.length - taken);
+            remaining                                        -= taken;
+            c.unread_bytes_                                  -= taken;
+            if (node.length == 0) {
+                const std::uint32_t next = node.next;
+                pool_.release(c.chain_head_);
+                c.chain_head_ = next;
+                if (next == detail::no_node) {
+                    c.chain_tail_ = detail::no_node;
+                }
+                --c.chain_count_;
+            }
+        }
+        const bool receiving =
+            c.state_ == State::Established || c.state_ == State::FinWait1 || c.state_ == State::FinWait2;
+        if (!receiving) {
+            return;  // the peer sends no more data, or the connection is closed: no offer to make
+        }
+        const Sequence candidate = c.rcv_nxt_ + (byte_budget_ - static_cast<std::uint32_t>(c.unread_bytes_));
+        if (candidate.after(c.rcv_adv_) && c.chain_count_ < config_.receive_segments) {
+            queue_ack(c);  // an ordinary window update, including the reopening of a zero window
+        }
+    }
+
 }  // namespace aloe::tcp

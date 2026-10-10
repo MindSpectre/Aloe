@@ -6,6 +6,8 @@ add_unit_test(${UNIT_TESTING_TARGET}.Tcp
         test_tcp_buffers.cpp
         test_tcp_handshake.cpp
         test_tcp_events.cpp
+        test_tcp_data.cpp
+        test_tcp_window.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Tcp
         PRIVATE
