@@ -44,13 +44,29 @@ namespace aloe::runtime {
         { stack.on_receive(burst) } -> std::same_as<void>;
     };
 
+    namespace detail {
+
+        /// Optional hooks of a stack, detected independently; a stack with neither keeps the old tick.
+        template <typename S>
+        concept HasOnTick = requires(S& stack, core::TimePoint now) {
+            { stack.on_tick(now) } -> std::same_as<void>;
+        };
+
+        template <typename S>
+        concept HasOnFlush = requires(S& stack, core::TimePoint now) {
+            { stack.on_flush(now) } -> std::same_as<void>;
+        };
+
+    }  // namespace detail
+
     /**
      * @brief One shard: a context, one device queue and the stack, with the loop.
      *
-     * One tick, `step(now)`: receive a burst, hand it to the stack, `run_once`, flush the transmit
-     * ring. Packet work goes before timers and tasks so a reply leaves in the tick its request
-     * arrived. `run()` loops `step(clock::now())` until the context is drained, then flushes once
-     * more and drops what the device still refuses. Tests call `step` with stamps of their choosing.
+     * One tick, `step(now)`: set the stamp, receive a burst, hand it to the stack, the optional
+     * `on_tick`, an early flush, `run_once`, the optional `on_flush`, the final flush. Packet work goes
+     * before timers and tasks so a reply leaves in the tick its request arrived. `run()` loops
+     * `step(clock::now())` until `try_finish()` closes the context, then flushes once more and drops
+     * what the device still refuses. Tests call `step` with stamps of their choosing.
      */
     template <device::IsDevice Device, typename Stack>
         requires IsStack<Stack, Device>
@@ -79,9 +95,17 @@ namespace aloe::runtime {
         Shard& operator=(Shard&&)      = delete;
         ~Shard()                       = default;
 
-        /// One tick. Returns whether anything was received, run, fired or sent.
+        /**
+         * One tick, in the order the TCP tick needs: the stamp is set before any callback; receive and
+         * `on_receive`; `on_tick` (events raised by packets drained, retry hints published); an early
+         * flush so control segments and immediate ACKs leave; `run_once` (inbox, timers, one chain of
+         * tasks); `on_flush` (events raised by timers and tasks drained, remaining ordinary ACKs
+         * emitted); the final flush. Work queued while the chain runs waits for the next step.
+         * Returns whether anything was received, run, fired or sent.
+         */
         bool step(const core::TimePoint now) noexcept {
             const ShardContext::Current current{context_};
+            context_.set_now(now);
             bool busy                  = false;
             const std::size_t received = queue_.receive(burst_);
             if (received > 0) {
@@ -95,7 +119,14 @@ namespace aloe::runtime {
                 }
                 busy = true;
             }
+            if constexpr (detail::HasOnTick<Stack>) {
+                stack_.on_tick(now);
+            }
+            busy = queue_.flush() > 0 || busy;
             busy = context_.run_once(now) || busy;
+            if constexpr (detail::HasOnFlush<Stack>) {
+                stack_.on_flush(now);
+            }
             busy = queue_.flush() > 0 || busy;
             ++context_.counters().ticks;
             if (!busy) {
@@ -104,10 +135,10 @@ namespace aloe::runtime {
             return busy;
         }
 
-        /// Ticks until the context is drained. Returns with the transmit ring empty.
+        /// Ticks until the context is drained and has closed control admission. Returns with the ring empty.
         void run() noexcept {
             std::uint32_t idle = 0;
-            while (!context_.drained()) {
+            while (!context_.try_finish()) {
                 if (step(core::Clock::now())) {
                     idle = 0;
                 } else if (config_.idle == IdlePolicy::Yield && ++idle >= config_.yield_after) {

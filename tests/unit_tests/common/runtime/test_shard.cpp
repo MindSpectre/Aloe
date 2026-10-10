@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -116,6 +117,137 @@ namespace {
         co_await scheduler.schedule_after(10s);
     }
 
+    /// A work node that counts its runs.
+    struct Counted : aloe::loop::Work {
+        Counted() noexcept
+            : aloe::loop::Work{&Counted::run_it} {
+        }
+
+        static void run_it(aloe::loop::Work& work) noexcept {
+            ++static_cast<Counted&>(work).runs;
+        }
+
+        int runs = 0;
+    };
+
+    /**
+     * A stack that records what the shard calls, in order, with the stamps it sees; `on_tick` queues work.
+     * The ready work queues `follow_up` once, when it is set, to show that work queued by the chain waits.
+     */
+    class HookStack {
+    public:
+        using Packet = aloe::fabric::Packet;
+
+        struct Ready : aloe::loop::Work {
+            explicit Ready(HookStack* owner) noexcept
+                : aloe::loop::Work{&Ready::run_it},
+                  stack{owner} {
+            }
+
+            static void run_it(aloe::loop::Work& work) noexcept {
+                auto& self = static_cast<Ready&>(work);
+                self.stack->order.emplace_back("ready");
+                self.stack->pending_at_ready = self.stack->queue_->pending();
+                self.stack->transmit_one();
+                if (aloe::loop::Work* const next = std::exchange(self.stack->follow_up, nullptr); next != nullptr) {
+                    self.stack->context_->ready().push(*next);
+                }
+            }
+
+            HookStack* stack = nullptr;
+        };
+
+        HookStack(aloe::runtime::ShardContext& context, aloe::loop::ShardQueue<aloe::fabric::Port>& queue) noexcept
+            : context_{&context},
+              queue_{&queue},
+              ready_{this} {
+        }
+
+        void on_receive(std::span<Packet> burst) noexcept {
+            order.emplace_back("receive");
+            stamps.push_back(context_->now());
+            received += burst.size();
+        }
+
+        void on_tick(const aloe::core::TimePoint now) noexcept {
+            order.emplace_back("tick");
+            stamps.push_back(now);
+            transmit_one();                  // leaves at the early flush, before tasks run
+            context_->ready().push(ready_);  // runs inside run_once, this step
+        }
+
+        void on_flush(const aloe::core::TimePoint now) noexcept {
+            order.emplace_back("flush");
+            stamps.push_back(now);
+            pending_at_flush = queue_->pending();  // the ready work's frame is still in the ring
+        }
+
+        void transmit_one() noexcept {
+            auto packet = queue_->allocate();
+            if (packet && aloe::frames::fill(
+                              *packet,
+                              aloe::frames::ethernet_frame(
+                                  client, server, aloe::frames::ethertype_experimental, aloe::frames::pattern(20)))) {
+                std::ignore = queue_->transmit(std::move(*packet));
+            }
+        }
+
+        std::vector<std::string> order;
+        std::vector<aloe::core::TimePoint> stamps;
+        std::size_t received         = 0;
+        std::size_t pending_at_ready = 99;
+        std::size_t pending_at_flush = 99;
+        aloe::loop::Work* follow_up  = nullptr;
+
+    private:
+        aloe::runtime::ShardContext* context_              = nullptr;
+        aloe::loop::ShardQueue<aloe::fabric::Port>* queue_ = nullptr;
+        Ready ready_;
+    };
+
+    class TickOnly {
+    public:
+        using Packet = aloe::fabric::Packet;
+
+        TickOnly(aloe::runtime::ShardContext& /*context*/,
+                 aloe::loop::ShardQueue<aloe::fabric::Port>& /*queue*/) noexcept {
+        }
+
+        void on_receive(std::span<Packet> /*burst*/) noexcept {
+        }
+
+        void on_tick(aloe::core::TimePoint /*now*/) noexcept {
+            ++ticks;
+        }
+
+        int ticks = 0;
+    };
+
+    class FlushOnly {
+    public:
+        using Packet = aloe::fabric::Packet;
+
+        FlushOnly(aloe::runtime::ShardContext& /*context*/,
+                  aloe::loop::ShardQueue<aloe::fabric::Port>& /*queue*/) noexcept {
+        }
+
+        void on_receive(std::span<Packet> /*burst*/) noexcept {
+        }
+
+        void on_flush(aloe::core::TimePoint /*now*/) noexcept {
+            ++flushes;
+        }
+
+        int flushes = 0;
+    };
+
+    static_assert(aloe::runtime::IsStack<HookStack, aloe::fabric::Port>);
+    static_assert(aloe::runtime::IsStack<TickOnly, aloe::fabric::Port>);
+    static_assert(aloe::runtime::IsStack<FlushOnly, aloe::fabric::Port>);
+    static_assert(aloe::runtime::detail::HasOnTick<HookStack> && aloe::runtime::detail::HasOnFlush<HookStack>);
+    static_assert(aloe::runtime::detail::HasOnTick<TickOnly> && !aloe::runtime::detail::HasOnFlush<TickOnly>);
+    static_assert(!aloe::runtime::detail::HasOnTick<FlushOnly> && aloe::runtime::detail::HasOnFlush<FlushOnly>);
+
 }  // namespace
 
 TEST_F(ShardTest, TheEchoRepliesInTheTickTheFrameArrived) {
@@ -218,4 +350,52 @@ TEST_F(ShardTest, AnEmptyStepIsIdle) {
     EXPECT_EQ(shard.context().counters().ticks, 1);
     EXPECT_EQ(shard.context().counters().idle_ticks, 1);
     EXPECT_EQ(shard.config().idle, aloe::runtime::IdlePolicy::Yield);
+}
+
+TEST_F(ShardTest, TickHooksSeeCurrentStampAndRunInOrder) {
+    aloe::runtime::Shard<aloe::fabric::Port, HookStack> shard{config_, server_, 0, start};
+    send(client_,
+         aloe::frames::ethernet_frame(server, client, aloe::frames::ethertype_experimental, aloe::frames::pattern(30)));
+    EXPECT_TRUE(shard.step(start + 7ms));
+    EXPECT_EQ(shard.stack().order, (std::vector<std::string>{"receive", "tick", "ready", "flush"}));
+    EXPECT_EQ(shard.stack().stamps, (std::vector<TimePoint>{start + 7ms, start + 7ms, start + 7ms}))
+        << "on_receive sees the step's stamp through the context, before run_once";
+    EXPECT_EQ(shard.stack().received, 1U);
+    EXPECT_EQ(shard.stack().pending_at_ready, 0U) << "what on_tick queued left at the early flush";
+    EXPECT_EQ(shard.stack().pending_at_flush, 1U) << "what the ready work queued is still in the ring at on_flush";
+    EXPECT_EQ(shard.queue().pending(), 0U) << "and leaves at the final flush";
+    EXPECT_EQ(drain(client_).size(), 2U);
+}
+
+TEST_F(ShardTest, EmptyReceiveTicksStillRunBothHooks) {
+    aloe::runtime::Shard<aloe::fabric::Port, HookStack> shard{config_, server_, 0, start};
+    EXPECT_TRUE(shard.step(start + 1ms)) << "the hook sent something";
+    EXPECT_EQ(shard.stack().order, (std::vector<std::string>{"tick", "ready", "flush"}));
+    EXPECT_EQ(shard.context().now(), start + 1ms);
+}
+
+TEST_F(ShardTest, WorkQueuedByReadyWorkWaitsForTheNextStep) {
+    aloe::runtime::Shard<aloe::fabric::Port, HookStack> shard{config_, server_, 0, start};
+    Counted second;
+    shard.stack().follow_up = &second;
+    std::ignore             = shard.step(start + 1ms);
+    EXPECT_EQ(shard.stack().follow_up, nullptr) << "the ready work queued the second item";
+    EXPECT_EQ(second.runs, 0) << "queued while the chain ran: it waits for the next step";
+    EXPECT_EQ(shard.context().counters().work_run, 1U);
+    std::ignore = shard.step(start + 2ms);
+    EXPECT_EQ(second.runs, 1) << "one chain per step, never a recursive drain";
+    EXPECT_EQ(shard.context().counters().work_run, 3U) << "the second item and the next step's ready work";
+}
+
+TEST_F(ShardTest, OptionalHooksAreIndependent) {
+    aloe::runtime::Shard<aloe::fabric::Port, TickOnly> ticking{config_, server_, 0, start};
+    aloe::runtime::Shard<aloe::fabric::Port, FlushOnly> flushing{config_, server_, 0, start};
+    aloe::runtime::Shard<aloe::fabric::Port, aloe::testing::EchoStack<aloe::fabric::Port>> neither{
+        config_, server_, 0, start};
+    std::ignore = ticking.step(start);
+    std::ignore = flushing.step(start);
+    EXPECT_FALSE(neither.step(start)) << "unchanged: an empty step is idle";
+    EXPECT_EQ(ticking.stack().ticks, 1);
+    EXPECT_EQ(flushing.stack().flushes, 1);
+    EXPECT_TRUE(ticking.context().siblings().empty()) << "a standalone shard has no siblings";
 }
