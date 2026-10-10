@@ -35,6 +35,7 @@ namespace aloe::tcp {
 
         std::uint64_t send_refused    = 0;
         std::uint64_t send_unresolved = 0;
+        std::uint64_t commits_refused = 0;  ///< A commit after the connection left Established and CloseWait.
 
         friend constexpr bool operator==(const TcpCounters&, const TcpCounters&) noexcept = default;
     };

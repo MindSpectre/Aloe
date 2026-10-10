@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <aloe/frames>
 #include <aloe/stream>
 #include <aloe/tcp>
@@ -24,6 +25,25 @@ namespace {
                              ::testing::Values(aloe::fabric::EmulatedOffloads::None,
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
+
+    using TcpSend         = aloe::testing::TcpFixture;
+    using TcpSendRefusing = aloe::testing::TcpRefusingFixture;
+
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpSend,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpSendRefusing,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+
+    [[nodiscard]] std::vector<std::byte> payload_of(const aloe::frames::ParsedFrame& frame) {
+        const auto bytes = aloe::frames::tcp_payload(frame);
+        return {bytes.begin(), bytes.end()};
+    }
 
     [[nodiscard]] std::vector<std::byte> text(const char* s) {
         std::vector<std::byte> out;
@@ -222,4 +242,221 @@ TEST_P(TcpReceive, SharedPoolExhaustionNeverAdvancesRcvNxt) {
     receive(other.data(text("x")));
     EXPECT_EQ(second->unread().size(), 1U);
     EXPECT_EQ(tcp_->counters().dropped_no_node, 1U);
+}
+
+TEST_P(TcpSend, PrepareCommitWritesInPlace) {
+    auto* c = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence first = c->committed();
+    EXPECT_EQ(c->writable(), aloe::testing::tcp_fabric_mss) << "min(mss, the peer's 65535)";
+    const auto out = c->prepare(5);
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(out->size(), 5U);
+    EXPECT_EQ(c->writable(), 0U) << "a prepare is open";
+    std::ranges::copy(text("hello"), out->begin());
+    (*out)[0] = static_cast<std::byte>('j');  // written after prepare, before commit: the span is the packet
+    ASSERT_TRUE(c->commit(5));
+    EXPECT_EQ(c->committed(), first + 5U);
+    EXPECT_EQ(c->unacknowledged(), 5U);
+    EXPECT_EQ(c->writable(), aloe::testing::tcp_fabric_mss);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->flags, (TcpFlags{TcpFlag::Psh, TcpFlag::Ack}));
+    EXPECT_EQ(frames[0].tcp->sequence, first);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, peer_.snd_nxt());
+    EXPECT_EQ(frames[0].tcp->window, aloe::testing::tcp_fabric_budget);
+    EXPECT_EQ(payload_of(frames[0]), text("jello"));
+    EXPECT_EQ(aloe::frames::l4_checksum_residue(*frames[0].ipv4, frames[0].l4), 0U)
+        << (offloads() ? "completed by the device" : "computed in software");
+    EXPECT_EQ(tcp_->counters().data_segments_sent, 1U);
+    EXPECT_TRUE(collect().empty()) << "no pure ACK follows data that carried it";
+}
+
+TEST_P(TcpSend, TwoCommitsAreTwoSegments) {
+    auto* c = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence first = c->committed();
+    EXPECT_EQ(c->send(text("ab")), 2U);
+    EXPECT_EQ(c->send(text("cd")), 2U);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 2U);
+    EXPECT_EQ(payload_of(frames[0]), text("ab"));
+    EXPECT_EQ(payload_of(frames[1]), text("cd"));
+    EXPECT_EQ(frames[0].tcp->sequence, first);
+    EXPECT_EQ(frames[1].tcp->sequence, first + 2U);
+    EXPECT_EQ(tcp_->counters().data_segments_sent, 2U);
+}
+
+TEST_P(TcpSend, ClampedByPeerMssAndWindow) {
+    peer_.spec().mss    = 536;
+    peer_.spec().window = 100;
+    auto* c             = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->mss(), 536U);
+    EXPECT_EQ(c->writable(), 100U) << "the peer's window, smaller than its MSS";
+    const auto out = c->prepare(2000);
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(out->size(), 100U);
+    ASSERT_TRUE(c->commit(0));
+    EXPECT_EQ(c->send(aloe::frames::pattern(300)), 100U) << "the window, then prepare gives nothing";
+    EXPECT_EQ(c->writable(), 0U);
+    auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(payload_of(frames[0]).size(), 100U);
+    peer_.see(frames[0]);
+    receive(peer_.ack());
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.acked());
+    EXPECT_TRUE(event->events.writable());
+    EXPECT_EQ(c->writable(), 100U);
+    EXPECT_EQ(c->acknowledged(), c->committed());
+    peer_.spec().window = 65535;
+    receive(peer_.ack());
+    EXPECT_EQ(c->writable(), 536U) << "now the MSS";
+}
+
+TEST_P(TcpSend, PeerWindowShrinkBelowInFlight) {
+    peer_.spec().window = 1000;
+    auto* c             = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->send(aloe::frames::pattern(600)), 600U);
+    auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    peer_.spec().window = 500;
+    receive(peer_.ack());  // acknowledges nothing new, shrinks the window below what is in flight
+    EXPECT_EQ(c->writable(), 0U) << "clamped, not wrapped";
+    EXPECT_EQ(tcp_->pending_events(), 0U) << "no Writable: nothing increased";
+    peer_.see(frames[0]);
+    receive(peer_.ack());  // acknowledges the 600 with window 500
+    EXPECT_EQ(c->writable(), 500U);
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.writable());
+}
+
+TEST_P(TcpSend, CommitZeroCancelsAndEmptySendPreparesNothing) {
+    auto* c = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence before = c->committed();
+    ASSERT_TRUE(c->prepare(10).has_value());
+    EXPECT_TRUE(c->commit(0));
+    EXPECT_EQ(c->committed(), before);
+    EXPECT_EQ(c->writable(), aloe::testing::tcp_fabric_mss);
+    EXPECT_EQ(c->send({}), 0U);
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(tcp_->counters().data_segments_sent, 0U);
+    EXPECT_EQ(tcp_->pending_events(), 0U) << "no hint for a cancelled preparation";
+}
+
+TEST_P(TcpSend, CommitAfterAbortIsRefusedAndCounted) {
+    auto* c = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence before = c->committed();
+    const auto out           = c->prepare(5);
+    ASSERT_TRUE(out.has_value());
+    c->abort();  // left the sendable state with the preparation open: the stack dropped it
+    EXPECT_FALSE(c->commit(5));
+    EXPECT_EQ(c->committed(), before);
+    EXPECT_EQ(tcp_->counters().commits_refused, 1U);
+    EXPECT_EQ(tcp_->counters().data_segments_sent, 0U);
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "the RST only";
+    EXPECT_TRUE(aloe::testing::is_flags(frames[0], {TcpFlag::Rst, TcpFlag::Ack}));
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_EQ(event->events, aloe::stream::Events{aloe::stream::Event::Closed}) << "no retry hint";
+    advance(0ms);
+    EXPECT_FALSE(poll().has_value());
+}
+
+TEST_P(TcpSend, AckProgressRaisesWritableFromZeroAndAcrossAPositiveValue) {
+    peer_.spec().window = 100;
+    auto* c             = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(c->writable(), 0U);
+    const TcpSequence start = frames[0].tcp->sequence;
+    receive(peer_.segment({TcpFlag::Ack}, {}, peer_.snd_nxt(), start + 40U));
+    auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.acked());
+    EXPECT_TRUE(event->events.writable()) << "from zero";
+    EXPECT_EQ(c->writable(), 40U);
+    EXPECT_EQ(c->acknowledged(), start + 40U);
+    EXPECT_EQ(c->unacknowledged(), 60U);
+    receive(peer_.segment({TcpFlag::Ack}, {}, peer_.snd_nxt(), start + 100U));
+    event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.writable()) << "from forty to a hundred";
+    EXPECT_EQ(c->writable(), 100U);
+    receive(peer_.segment({TcpFlag::Ack}, {}, peer_.snd_nxt(), start + 100U));
+    EXPECT_EQ(tcp_->pending_events(), 0U) << "a duplicate ACK increases nothing";
+    receive(peer_.segment({TcpFlag::Ack}, {}, peer_.snd_nxt(), start + 200U));
+    EXPECT_EQ(tcp_->counters().dropped_unexpected, 1U) << "acknowledges what was never sent";
+    EXPECT_EQ(collect_queued().size(), 1U) << "and is answered with an ACK";
+}
+
+TEST_P(TcpSendRefusing, RefusalPreservesNumbersAndRaisesOneHint) {
+    auto* c = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence sequence = c->committed();
+    const std::size_t eligible = c->writable();
+    refuse();
+    const auto out = c->prepare(5);
+    ASSERT_TRUE(out.has_value());
+    std::ranges::copy(text("hello"), out->begin());
+    EXPECT_FALSE(c->commit(5));
+    EXPECT_EQ(c->committed(), sequence);
+    EXPECT_EQ(c->unacknowledged(), 0U);
+    EXPECT_EQ(c->writable(), eligible) << "eligibility is unchanged; the device is the problem";
+    EXPECT_EQ(tcp_->counters().send_refused, 1U);
+    EXPECT_EQ(tcp_->counters().data_segments_sent, 0U);
+    EXPECT_EQ(tcp_->pending_events(), 0U) << "the hint is deferred to the next process";
+    advance(0ms);
+    auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_EQ(event->events, aloe::stream::Events{aloe::stream::Event::Writable});
+    advance(0ms);
+    EXPECT_FALSE(poll().has_value()) << "one hint per refusal";
+    allow();
+    EXPECT_EQ(c->send(text("hello")), 5U);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->sequence, sequence) << "the refused segment's number was never spent";
+}
+
+TEST_P(TcpSendRefusing, AllocationFailureRaisesAHintAndRetainsNothing) {
+    auto* c = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    device.fail_allocations = 1;
+    EXPECT_FALSE(c->prepare(5).has_value());
+    EXPECT_EQ(c->writable(), aloe::testing::tcp_fabric_mss) << "no prepare is open";
+    advance(0ms);
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.writable());
+    EXPECT_TRUE(c->prepare(5).has_value()) << "the next allocation succeeds";
+    EXPECT_TRUE(c->commit(0));
+}
+
+TEST_P(TcpSendRefusing, PartialHelperSendStopsAtTheRefusal) {
+    auto* c = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence sequence = c->committed();
+    // The ring holds one packet; the device refuses the second flush.
+    EXPECT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    refuse();
+    EXPECT_EQ(c->send(aloe::frames::pattern(3000)), 0U)
+        << "the first segment of this send is refused: nothing accepted";
+    EXPECT_EQ(c->committed(), sequence + 100U);
+    allow();
+    EXPECT_EQ(c->send(aloe::frames::pattern(3000)), 3000U);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 4U) << "100, 1460, 1460, 80";
+    EXPECT_EQ(payload_of(frames[1]).size(), 1460U);
+    EXPECT_EQ(payload_of(frames[3]).size(), 80U);
+    EXPECT_EQ(frames[3].tcp->sequence, sequence + 100U + 2920U);
 }

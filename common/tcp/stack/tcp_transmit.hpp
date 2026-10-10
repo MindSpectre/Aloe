@@ -171,4 +171,75 @@ namespace aloe::tcp {
         }
     }
 
+    /**
+     * A span of `min(count, writable())` bytes inside a fresh packet, which the connection holds until `commit`.
+     * Nothing, without allocating, for a count of zero or nothing writable; an allocation failure marks a retry
+     * hint and retains nothing.
+     */
+    template <typename Ip>
+    std::optional<std::span<std::byte>> Stack<Ip>::prepare(ConnectionType& c, const std::size_t count) noexcept {
+        assert(!c.prepared_ && "one prepare at a time: commit first");
+        if (count == 0) {
+            return std::nullopt;
+        }
+        const std::size_t room = writable(c);
+        if (room == 0) {
+            return std::nullopt;  // nothing allocates when nothing is writable
+        }
+        const std::size_t size       = std::min(count, room);
+        std::optional<Packet> packet = ip_->allocate();
+        if (!packet) {
+            mark_retry(c);  // the pool may have packets by the next process
+            return std::nullopt;
+        }
+        const std::optional<std::span<std::byte>> span = packet->append(size);
+        if (!span) {
+            mark_retry(c);  // cannot happen: size is at most the MSS and a packet holds a whole frame
+            return std::nullopt;
+        }
+        c.prepared_      = std::move(*packet);  // the span points into the block, which does not move
+        c.prepared_size_ = size;
+        return span;
+    }
+
+    /**
+     * One PSH+ACK segment of the first `count` prepared bytes; `commit(0)` discards the preparation. A refusal
+     * returns the packet to the pool, leaves every number as it was, marks a retry hint and returns false. A
+     * connection that left Established and CloseWait since the prepare (its preparation already dropped by
+     * `set_closed`) refuses the commit with no hint: the events say why.
+     */
+    template <typename Ip>
+    bool Stack<Ip>::commit(ConnectionType& c, const std::size_t count) noexcept {
+        const bool sendable = c.state_ == State::Established || c.state_ == State::CloseWait;
+        if (!c.prepared_) {
+            assert(!sendable && "commit without a prepare");
+            if (count == 0) {
+                return true;  // nothing left to discard
+            }
+            ++counters_.commits_refused;
+            return false;
+        }
+        assert(count <= c.prepared_size_ && "commit more than was prepared");
+        Packet packet = std::move(*c.prepared_);
+        c.prepared_.reset();
+        const std::size_t prepared = c.prepared_size_;
+        c.prepared_size_           = 0;
+        if (count == 0) {
+            return true;  // discarded: `packet` goes back to the pool; nothing was refused
+        }
+        if (!sendable) {
+            ++counters_.commits_refused;  // closed since the prepare: no hint, the events say why
+            return false;
+        }
+        packet.trim_back(prepared - count);
+        if (!send_segment(
+                c, std::move(packet), c.snd_nxt_, wire::TcpFlags{wire::TcpFlag::Ack, wire::TcpFlag::Psh}, false)) {
+            mark_retry(c);  // send_segment counted the refusal
+            return false;
+        }
+        c.snd_nxt_ = c.snd_nxt_ + static_cast<std::uint32_t>(count);
+        ++counters_.data_segments_sent;
+        return true;
+    }
+
 }  // namespace aloe::tcp
