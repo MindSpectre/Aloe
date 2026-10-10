@@ -9,7 +9,7 @@
 #include <rss.hpp>
 #include <tcp_stack.hpp>
 
-// The control path of tcp::Stack: events, slots, the port choice, the retransmit timer, abort and release.
+// The control path of tcp::Stack: events, slots, the port choice, the retransmit timer, close, abort and release.
 namespace aloe::tcp {
 
     template <typename Ip>
@@ -193,6 +193,32 @@ namespace aloe::tcp {
         if (c.finish_pending_ && !c.ack_pending_) {
             finish(c);
         }
+    }
+
+    /// FIN after what was committed: Established moves to FinWait1, CloseWait to LastAck; elsewhere nothing. An open
+    /// preparation stays the application's: its next commit refuses it, as the connection left the sendable states.
+    template <typename Ip>
+    void Stack<Ip>::close(ConnectionType& c) noexcept {
+        switch (c.state_) {
+            case State::Established:
+                c.state_ = State::FinWait1;
+                break;
+            case State::CloseWait:
+                c.state_ = State::LastAck;
+                break;
+            default:
+                return;
+        }
+        c.fin_sequence_ = c.snd_nxt_;
+        c.fin_sent_     = true;
+        const auto sent = send_control(c, wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, c.fin_sequence_);
+        if (sent) {
+            ++counters_.control_segments_sent;
+        }
+        c.snd_nxt_         = c.snd_nxt_ + 1;  // the FIN takes its number whether or not it left: the timer resends it
+        c.tries_           = 0;
+        c.unresolved_wait_ = !sent && sent.error() == net::SendError::Unresolved;
+        arm_retry(c);
     }
 
     template <typename Ip>
