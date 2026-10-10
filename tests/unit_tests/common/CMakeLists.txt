@@ -3,6 +3,7 @@ add_subdirectory(device)
 add_subdirectory(loop)
 add_subdirectory(runtime)
 add_subdirectory(net)
+add_subdirectory(stream)
 
 ##############################################################################
 # Test Core: version, and the umbrella header seen from two translation units
