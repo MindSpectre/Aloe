@@ -98,6 +98,7 @@ namespace aloe::frames {
         std::optional<wire::ArpPacket> arp;
         std::optional<wire::Ipv4Header> ipv4;
         std::optional<wire::IcmpHeader> icmp;
+        std::optional<wire::TcpHeader> tcp;
         std::vector<std::byte> ipv4_header;  ///< The header bytes, for a checksum assertion.
         std::vector<std::byte> l4;           ///< The segment or message: total length less the header, no padding.
     };
@@ -128,6 +129,9 @@ namespace aloe::frames {
         parsed.l4.assign(l4.begin(), l4.end());
         if (parsed.ipv4->protocol == wire::Ipv4Protocol::Icmp) {
             parsed.icmp = wire::IcmpHeader::parse(l4);
+        }
+        if (parsed.ipv4->protocol == wire::Ipv4Protocol::Tcp) {
+            parsed.tcp = wire::TcpHeader::parse(l4);
         }
         return parsed;
     }

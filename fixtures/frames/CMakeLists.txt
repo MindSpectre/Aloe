@@ -6,6 +6,8 @@ set(FRAMES ${FIXTURES}.Frames)
 add_library(${FRAMES}.Builders INTERFACE
         frames/frames.hpp
         frames/net_frames.hpp
+        frames/tcp_frames.hpp
+        frames/tcp_peer.hpp
 )
 target_include_directories(${FRAMES}.Builders INTERFACE
         frames/

@@ -11,7 +11,7 @@ depends on `common/`; nothing in `common/` depends on a fixture. Targets are nam
 
 Aloe's own tests use both. Anyone testing a loop written over `Ipv4<Device>` or `ShardQueue<Device>` needs the
 same two things: a device that runs with no root, no hugepages and no network card, and a way to make frames
-and read the replies. The roadmap adds a scripted TCP peer here in phase 1. Helpers that only make sense
+and read the replies; for TCP, a scripted peer drives the brick one segment at a time. Helpers that only make sense
 inside Aloe's own test binaries, such as the EAL as a gtest environment, stay in `tests/shared/`.
 
 ## Key types in `frames`
@@ -24,6 +24,18 @@ inside Aloe's own test binaries, such as the EAL as a gtest environment, stay in
 - **`aloe::frames::parse_frame(bytes)`** -- a transmitted frame taken apart into a **`ParsedFrame`**: the
   Ethernet header, and the ARP packet, IPv4 header, ICMP header and L4 bytes where present. Nothing for a frame
   shorter than an Ethernet header. `l4_checksum_residue` checks a TCP or UDP checksum.
+- **`aloe::frames::TcpSpec`**, **`tcp_frame(spec, payload)`**, **`tcp_segment(spec, payload)`**,
+  **`tcp_payload(parsed)`** -- a TCP segment over IPv4 over Ethernet as bytes, with the MSS option when
+  `spec.mss` is set and the checksum mode of `Checksums` (`Wrong` corrupts the TCP checksum only, so the IPv4
+  header stays right). `tcp_segment` gives the bytes after the IPv4 header; `tcp_payload` the bytes after the
+  TCP header of a parsed frame. `ParsedFrame::tcp` is the parsed TCP header, when the frame carries one.
+- **`aloe::frames::TcpPeer`** -- the other end of a connection, scripted by the test. Built from a `TcpSpec`
+  in the peer's outbound orientation and its initial sequence number. `syn()`, `syn_ack(seen)`, `ack()`,
+  `ack(seen)`, `data(bytes)`, `fin()` and `rst()` each return one frame with the right numbers and advance the
+  peer's sequence; `segment(flags, payload, sequence, acknowledgement, with_mss)` builds any segment at explicit
+  numbers without changing state, for duplicates and gaps; `rewind(count)` moves the peer's sequence back to
+  script a retransmission. `see(frame)` observes a frame the stack transmitted and never replies: it advances
+  `rcv_nxt()`, `snd_una()`, `stack_window()` and `stack_mss()`, and on a SYN without ACK adopts its ports.
 - **`aloe::frames::fill(packet, bytes)`**, **`bytes_of(packet)`** -- bytes into and out of a packet of any
   backend. `flow_of(spec)` gives the `device::FlowTuple` a card would hash.
 
@@ -45,6 +57,10 @@ std::ignore = aloe::frames::fill(*packet, request);
 // transmit it, run the code under test, receive on `peer`, then:
 // const auto reply = aloe::frames::parse_frame(aloe::frames::bytes_of(received));
 ```
+
+A TCP test reads like a packetdrill script, one segment at a time. It feeds `peer.see` each frame the stack
+transmits and injects what the peer sends: `peer.syn()`, then `see` the stack's SYN-ACK, then `peer.ack()`. The
+peer never replies on its own, so every segment on the wire is one the test wrote down.
 
 ## Design notes
 
