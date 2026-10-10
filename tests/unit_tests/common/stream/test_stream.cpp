@@ -3,7 +3,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <forward_list>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <utility>
 #include <vector>
@@ -19,7 +21,8 @@ namespace {
     /// A read view over a fixed set of chunks: the shape the concept wants, with the byte count separate.
     class ChunkView {
     public:
-        using Chunks   = std::vector<std::span<const std::byte>>;
+        // A forward_list: its iterators cannot subtract, so opting out of the member size() leaves no sized_range.
+        using Chunks   = std::forward_list<std::span<const std::byte>>;
         using iterator = Chunks::const_iterator;
 
         explicit ChunkView(Chunks chunks)
@@ -49,6 +52,14 @@ namespace {
         Chunks chunks_;
         std::size_t bytes_ = 0;
     };
+
+}  // namespace
+
+// ChunkView::size() counts bytes, so the range library must not treat it as a sized range.
+template <>
+inline constexpr bool std::ranges::disable_sized_range<ChunkView> = true;
+
+namespace {
 
     /// A stream whose prepare gives at most `segment` bytes and whose commit can be told to refuse.
     class StubStream {
@@ -115,6 +126,10 @@ namespace {
     };
 
     static_assert(aloe::stream::IsReadView<ChunkView>);
+    static_assert(std::ranges::forward_range<std::vector<std::span<const std::byte>>> &&
+                      std::ranges::sized_range<std::vector<std::span<const std::byte>>> &&
+                      !aloe::stream::IsReadView<std::vector<std::span<const std::byte>>>,
+                  "a sized range of chunks is not a read view: its size() would be the chunk count");
     static_assert(aloe::stream::IsStream<StubStream>);
     static_assert(!aloe::stream::IsReadView<std::vector<std::byte>>, "a byte range is not a view of chunks");
     static_assert(!aloe::stream::IsStream<ChunkView>);

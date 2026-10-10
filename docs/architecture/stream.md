@@ -10,7 +10,9 @@ link `Aloe::Common::Stream`. It depends on [`core`](core.md) only: no [`executio
 ## Key types
 
 - **`aloe::stream::IsReadView<V>`** -- a forward range of `std::span<const std::byte>` chunks, each a span
-  into the layer's own storage, with `size()` counting bytes (not chunks), `empty()` and `front()`.
+  into the layer's own storage, with `size()` counting bytes (not chunks), `empty()` and `front()`. A read view is never a
+  `std::ranges::sized_range`, whose `size()` is the chunk count: a view with a member `size()` opts out
+  through `std::ranges::disable_sized_range`, and the concept rejects one that does not.
 - **`aloe::stream::IsStream<S>`** -- the zero-copy stream: `index()`, `events()`, `unread()` (an
   `IsReadView`), `consume(n)`, `peer_closed()`, `writable()`, `prepare(n)`, `commit(n)`, `close()`,
   `abort()` and `release()`.

@@ -17,10 +17,12 @@ namespace aloe::stream {
      * @brief A view over the unread bytes of a stream: a forward range of chunks, each a span into
      * the layer's own storage, with `size()` counting bytes, not chunks.
      */
+    // A read view's size() counts bytes, so it must never be a sized_range (whose size() is the chunk
+    // count): a view with a member size() opts out through std::ranges::disable_sized_range.
     template <typename V>
     concept IsReadView =
-        std::ranges::forward_range<V> && std::same_as<std::ranges::range_value_t<V>, std::span<const std::byte>> &&
-        requires(const V& view) {
+        std::ranges::forward_range<V> && !std::ranges::sized_range<V> &&
+        std::same_as<std::ranges::range_value_t<V>, std::span<const std::byte>> && requires(const V& view) {
             { view.size() } -> std::same_as<std::size_t>;
             { view.empty() } -> std::same_as<bool>;
             { view.front() } -> std::same_as<std::span<const std::byte>>;
