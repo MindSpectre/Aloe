@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <span>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -43,6 +44,15 @@ namespace {
     [[nodiscard]] std::vector<std::byte> payload_of(const aloe::frames::ParsedFrame& frame) {
         const auto bytes = aloe::frames::tcp_payload(frame);
         return {bytes.begin(), bytes.end()};
+    }
+
+    /// The packets the port's queue-0 pool can still supply: drawn out, counted, and returned.
+    [[nodiscard]] std::size_t free_packets(aloe::fabric::Port& port) {
+        std::vector<aloe::fabric::Packet> taken;
+        for (auto packet = port.allocate(0); packet.has_value(); packet = port.allocate(0)) {
+            taken.push_back(std::move(*packet));
+        }
+        return taken.size();
     }
 
     [[nodiscard]] std::vector<std::byte> text(const char* s) {
@@ -352,10 +362,12 @@ TEST_P(TcpSend, CommitZeroCancelsAndEmptySendPreparesNothing) {
 TEST_P(TcpSend, CommitAfterAbortIsRefusedAndCounted) {
     auto* c = open_active(peer_);
     ASSERT_NE(c, nullptr);
-    const TcpSequence before = c->committed();
-    const auto out           = c->prepare(5);
+    const std::size_t initial = free_packets(port);
+    const TcpSequence before  = c->committed();
+    const auto out            = c->prepare(5);
     ASSERT_TRUE(out.has_value());
-    c->abort();  // left the sendable state with the preparation open: the stack dropped it
+    c->abort();  // left the sendable state with the preparation open: the application still owns the span
+    std::ranges::fill(*out, std::byte{0x5a});  // still valid memory: the packet was not returned to the pool
     EXPECT_FALSE(c->commit(5));
     EXPECT_EQ(c->committed(), before);
     EXPECT_EQ(tcp_->counters().commits_refused, 1U);
@@ -368,6 +380,33 @@ TEST_P(TcpSend, CommitAfterAbortIsRefusedAndCounted) {
     EXPECT_EQ(event->events, aloe::stream::Events{aloe::stream::Event::Closed}) << "no retry hint";
     advance(0ms);
     EXPECT_FALSE(poll().has_value());
+    c->release();
+    EXPECT_EQ(free_packets(port), initial) << "the refused preparation went back to the pool";
+}
+
+TEST_P(TcpSend, CommitZeroAfterAbortDiscardsAndReleaseLeaksNothing) {
+    auto* c = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    const std::size_t initial = free_packets(port);
+    const auto out            = c->prepare(5);
+    ASSERT_TRUE(out.has_value());
+    c->abort();
+    std::ranges::fill(*out, std::byte{0x5a});
+    EXPECT_TRUE(c->commit(0)) << "a discard is not a refusal";
+    EXPECT_EQ(tcp_->counters().commits_refused, 0U);
+    std::ignore = collect();
+    c->release();
+    EXPECT_EQ(free_packets(port), initial);
+}
+
+TEST_P(TcpSend, ReleaseWithAPreparationOpenLeaksNothing) {
+    auto* c = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    const std::size_t initial = free_packets(port);
+    ASSERT_TRUE(c->prepare(5).has_value());
+    c->release();  // aborts, then frees the slot and the preparation with it
+    std::ignore = collect();
+    EXPECT_EQ(free_packets(port), initial);
 }
 
 TEST_P(TcpSend, AckProgressRaisesWritableFromZeroAndAcrossAPositiveValue) {
@@ -433,6 +472,7 @@ TEST_P(TcpSendRefusing, AllocationFailureRaisesAHintAndRetainsNothing) {
     ASSERT_NE(c, nullptr);
     device.fail_allocations = 1;
     EXPECT_FALSE(c->prepare(5).has_value());
+    EXPECT_EQ(tcp_->counters().allocation_failures, 1U);
     EXPECT_EQ(c->writable(), aloe::testing::tcp_fabric_mss) << "no prepare is open";
     advance(0ms);
     const auto event = poll();

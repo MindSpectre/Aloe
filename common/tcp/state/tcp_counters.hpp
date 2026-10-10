@@ -33,9 +33,11 @@ namespace aloe::tcp {
         std::uint64_t dropped_no_node       = 0;
         std::uint64_t dropped_table_full    = 0;
 
-        std::uint64_t send_refused    = 0;
-        std::uint64_t send_unresolved = 0;
-        std::uint64_t commits_refused = 0;  ///< A commit after the connection left Established and CloseWait.
+        std::uint64_t send_refused        = 0;
+        std::uint64_t send_unresolved     = 0;
+        std::uint64_t commits_refused     = 0;  ///< A commit after the connection left Established and CloseWait.
+        /// A packet the pool could not supply for a prepare; the retry hint says when to try again.
+        std::uint64_t allocation_failures = 0;
 
         friend constexpr bool operator==(const TcpCounters&, const TcpCounters&) noexcept = default;
     };

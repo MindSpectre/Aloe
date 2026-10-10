@@ -167,7 +167,8 @@ namespace aloe::tcp {
         raise(c, stream::Event::TimedOut);
     }
 
-    /// Closed, with nothing armed, pending or prepared. Held segments stay until release.
+    /// Closed, with nothing armed or pending. Held segments stay until release, and so does an open preparation:
+    /// the application may still write into its span, and the next commit refuses it.
     template <typename Ip>
     void Stack<Ip>::set_closed(ConnectionType& c) noexcept {
         c.state_ = State::Closed;
@@ -177,8 +178,6 @@ namespace aloe::tcp {
         c.ack_pending_    = false;
         c.finish_pending_ = false;
         retries_.remove(c);
-        c.prepared_.reset();
-        c.prepared_size_ = 0;
     }
 
     template <typename Ip>
@@ -201,8 +200,6 @@ namespace aloe::tcp {
         if (c.state_ == State::Closed) {
             return;
         }
-        c.prepared_.reset();
-        c.prepared_size_ = 0;
         if (send_control(c, wire::TcpFlags{wire::TcpFlag::Rst, wire::TcpFlag::Ack}, c.snd_nxt_)) {
             ++counters_.resets_sent;
         }
