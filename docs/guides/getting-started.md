@@ -116,22 +116,32 @@ ctest --preset debug
 
 `ctest --preset <name> -L unit`, `-L integration` or `-L functional` restricts the run to
 one label. The integration tests start DPDK with no hugepages, no PCI scan and one virtual
-device, so they need neither root nor a network card.
+device, so they need neither root nor a network card. `Aloe.Tests.Integration.Tcp.Ring` is one:
+the TCP brick over DPDK's ring driver on real mbufs, with a scripted peer at another address,
+software checksums and no root.
 
 Tests under `tests/manual_tests/` carry the label `manual` and need privileges or hardware.
 Every test preset excludes that label, so they never run unasked; run the binary by hand. The
-three there today drive DPDK's tap driver against the kernel and need `CAP_NET_ADMIN`:
+four there today drive DPDK's tap driver against the kernel and need `CAP_NET_ADMIN`:
 
 ```bash
 cmake --build --preset debug
 sudo ./build/debug/tests/manual_tests/ethdev/Aloe.Tests.Manual.Ethdev.Tap
 sudo ./build/debug/tests/manual_tests/runtime/Aloe.Tests.Manual.Runtime.Tap
 sudo ./build/debug/tests/manual_tests/net/Aloe.Tests.Manual.Net.Tap          # the kernel pings the IP base
+sudo ./build/debug/tests/manual_tests/tcp/Aloe.Tests.Manual.Tcp.Tap          # the kernel talks TCP to the brick and the runtime
 ```
 
 The net test gives the tap's kernel end an address itself and pings through the kernel's own stack, so it
 needs `CAP_NET_RAW` as well. `examples/ping_responder` is the same loop as a program you can `ping` from a
 shell.
+
+The TCP suite needs DPDK's tap driver, which every Aloe build links, and root. It creates the interface
+`aloe-tcp`, puts the kernel at 10.78.0.1/24 and Aloe at 10.78.0.2/24, and gives the kernel end its address
+itself, as `ip addr add 10.78.0.1/24 dev aloe-tcp` and `ip link set aloe-tcp up` would. Port 7 carries an
+echo in four scenarios: a kernel client against the brick and against the runtime, and the brick and the
+runtime as clients of a kernel listener. Without root every case is skipped. To watch the traffic while it
+runs, `sudo tcpdump -ni aloe-tcp tcp` in another shell; the interface goes away when the suite exits.
 
 ## Formatting and the pre-commit hook
 
