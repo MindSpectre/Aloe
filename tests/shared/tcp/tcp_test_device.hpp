@@ -74,7 +74,7 @@ namespace aloe::testing {
         }
 
     private:
-        fabric::Port* port_;
+        fabric::Port* port_ = nullptr;
     };
 
     static_assert(device::IsDevice<TcpTestDevice>);

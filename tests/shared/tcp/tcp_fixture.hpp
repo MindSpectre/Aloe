@@ -106,7 +106,7 @@ namespace aloe::testing {
         }
 
     protected:
-        fabric::Port* harness_;
+        fabric::Port* harness_ = nullptr;
         loop::ShardCounters counters_;
         loop::ShardQueue<Device> queue_;
         Ipv4 ip_;

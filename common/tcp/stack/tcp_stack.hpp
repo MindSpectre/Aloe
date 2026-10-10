@@ -225,6 +225,12 @@ namespace aloe::tcp {
         if (config.retries == 0) {
             throw std::invalid_argument{"TcpConfig: retries must be positive"};
         }
+        // Bounds the longest delay, retry_initial * 2^retries, and the whole schedule, retry_initial * (2^(retries+1) -
+        // 1), to a quarter of core::Duration's range, so neither arm_retry's shift nor now + delay can overflow.
+        if (config.retries >= 63 ||
+            config.retry_initial.count() > (core::Duration::max().count() / 4) >> config.retries) {
+            throw std::invalid_argument{"TcpConfig: retry_initial doubled retries times must fit core::Duration"};
+        }
         if (max_l4_size <= wire::TcpHeader::size) {
             throw std::invalid_argument{"TcpConfig: the MTU leaves no room for a TCP segment"};
         }

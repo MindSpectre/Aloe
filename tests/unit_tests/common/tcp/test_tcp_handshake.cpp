@@ -365,6 +365,11 @@ TEST_P(TcpHandshake, ConfigValidation) {
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.retry_initial = std::chrono::seconds{0}}}),
                  std::invalid_argument);
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.retries = 0}}), std::invalid_argument);
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.retries = 40}}), std::invalid_argument)
+        << "the doubled delay would overflow core::Duration";
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.retry_initial = std::chrono::hours{24 * 365 * 100}}}),
+                 std::invalid_argument)
+        << "five doublings of a century overflow core::Duration";
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.unresolved_retry = std::chrono::milliseconds{-1}}}),
                  std::invalid_argument);
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.connections = std::size_t{1} << 31U}}), std::invalid_argument);
