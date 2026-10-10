@@ -4,6 +4,7 @@
 #include <aloe/net>
 #include <aloe/wire>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -126,6 +127,8 @@ namespace {
                              ::testing::Values(aloe::fabric::EmulatedOffloads::None,
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
+
+    static_assert(std::same_as<aloe::net::Ipv4<aloe::fabric::Port>::Device, aloe::fabric::Port>);
 
 }  // namespace
 
@@ -295,4 +298,24 @@ TEST_P(NetSend, ARefusedSendReturnsThePacketExactlyAsBuilt) {
     EXPECT_EQ(ip.counters().send_refused, 1);
     EXPECT_EQ(ip.counters().datagrams_sent, 1);
     queue.discard();  // the ring still holds the first packet; the pool outlives it only if we drop it here
+}
+
+TEST_P(NetSend, QueueIdentityAndDeviceAlias) {
+    EXPECT_EQ(&ip_.queue(), &queue_);
+    const Ipv4& read_only = ip_;
+    EXPECT_EQ(&read_only.queue(), &queue_);
+    EXPECT_EQ(ip_.queue().index(), 0U);
+}
+
+TEST_P(NetSend, RouteQueryHasNoSideEffects) {
+    EXPECT_EQ(ip_.next_hop(harness_ip), harness_ip) << "on the subnet: the destination itself";
+    EXPECT_EQ(ip_.next_hop(far_ip), gateway_ip) << "off the subnet: the gateway";
+    const Ipv4 without_gateway{
+        queue_, {.address = stack_ip, .prefix = 24}
+    };
+    EXPECT_FALSE(without_gateway.next_hop(far_ip).has_value());
+    EXPECT_EQ(without_gateway.next_hop(harness_ip), harness_ip);
+    EXPECT_EQ(queue_.pending(), 0U) << "querying is not resolving: no ARP request was queued";
+    EXPECT_EQ(ip_.counters().arp_requests_sent, 0U);
+    EXPECT_EQ(ip_.counters().send_no_route, 0U);
 }

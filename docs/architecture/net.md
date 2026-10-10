@@ -21,6 +21,14 @@ here names the asynchronous model, logs, or reads a clock.
   returns a `SendError` and hands the packet back exactly as it was. `resolve(next_hop, now)` and
   `learn(address, mac, now)` are the two ways into the ARP cache from outside. Nothing here blocks,
   throws after construction, or allocates anything but packets after construction.
+  **Transport access:** `Device` is the template parameter, `queue()` is the shard queue the brick was built
+  over (its index, steering, ring and device), and `next_hop(destination)` answers the route question with no
+  side effect: the destination on the subnet, the gateway off it, nothing with no gateway. `send` decides
+  through the same call, and a transport asks it before committing resources, so a connect to an unroutable
+  peer takes no slot. `Ipv4Config::accept_unsolicited_replies` (off by default, the RFC 826 merge rule) lets
+  the shard whose queue receives a reply that a sibling shard solicited learn it and report it in `resolved()`
+  for forwarding, since a multi-queue device's shards share one address; only a reply addressed to our
+  address from a plausible sender is accepted.
 - **`aloe::net::Datagram<Packet>`** -- one received datagram for a transport: the whole frame as a packet
   the transport moves out to keep, the two addresses, the protocol, the header offsets, the L4 length from
   the IPv4 total length, and the device's L4 checksum verdict. `l4()` is the segment.
