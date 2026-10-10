@@ -112,7 +112,7 @@ per packet.
   they are destroyed in the reverse order, and the destructor removes the ARP sink before any of them goes.
   On a device with more than one queue it copies the IP config and sets `accept_unsolicited_replies`, so
   queue 0 learns the replies its siblings solicited. `forwards_dropped()` counts the forwards that could
-  not be allocated.
+  not be allocated and `forwards_rejected()` those a finished sibling refused.
 - **Its tick.** `on_receive(burst)` runs IP then TCP at the context's stamp, then one forwarding pass over
   `ip.resolved()`. `on_tick(now)` runs an empty TCP `process`, which publishes retry hints, then the wake
   pass. `on_flush(now)` runs the wake pass again, for the events timers and tasks raised, then TCP's
@@ -122,8 +122,8 @@ per packet.
   `ip.learn(address, mac, now)` on its own thread and reports nothing, so shards never echo each other. One
   forward is one `detail::ArpForwardWork` node per sibling, allocated with `std::nothrow` on that cold path
   and posted with `post_control`. An accepted node runs once on the target, delivers through `deliver_arp`
-  and frees itself; a rejected node, whose target has already finished, is freed by the sender at once; a
-  node that cannot be allocated is counted in `forwards_dropped()` and the sibling resolves the address
+  and frees itself; a rejected node, whose target has already finished, is freed by the sender at once and
+  counted in `forwards_rejected()`; a node that cannot be allocated is counted in `forwards_dropped()` and the sibling resolves the address
   itself when it needs it.
 
 ## Usage

@@ -242,7 +242,8 @@ TEST(TcpSteering, GatewayKnownOnlyByQueueZero) {
     EXPECT_TRUE(connected.load());
     EXPECT_GE(server.shard(queues - 1).stack().tcp().counters().send_unresolved, 1U) << "the first SYN waited for ARP";
     EXPECT_EQ(server.shard(0).stack().ip().counters().resolutions, 1U) << "queue 0 learned the gateway from the wire";
-    EXPECT_GE(server.counters(queues - 1).inbox_received, 1U) << "shard 3 learned it from shard 0";
+    EXPECT_GE(server.counters(queues - 1).inbox_received, 3U)
+        << "shard 3 learned the gateway from shard 0: its spawn, its stop and at least one forward";
 }
 
 TEST(TcpSteering, StopRacesArpForward) {
@@ -250,8 +251,9 @@ TEST(TcpSteering, StopRacesArpForward) {
     // to the three siblings while the stop closes them. Every forward is accepted and run by a sibling, rejected
     // and freed by shard 0, or never allocated and counted: the counters on both sides account for every one,
     // ASan sees no leak and TSan no race between post_control and the final drain.
-    std::uint64_t attempted = 0;
-    std::uint64_t accepted  = 0;
+    std::uint64_t attempted      = 0;
+    std::uint64_t accepted       = 0;
+    std::uint64_t total_rejected = 0;
     for (int round = 0; round < 20; ++round) {
         aloe::fabric::Fabric fabric;
         auto& server_port = fabric.add_port({.mac = server_mac, .queues = queues, .pool_size = 128});
@@ -286,22 +288,30 @@ TEST(TcpSteering, StopRacesArpForward) {
         replies.join();
         server.stop();
         server.join();
-        const std::uint64_t learned = server.shard(0).stack().ip().counters().resolutions;
-        const std::uint64_t dropped = server.shard(0).stack().forwards_dropped();
+        // Each round builds a fresh runtime, so every counter read here is that round's.
+        const std::uint64_t learned  = server.shard(0).stack().ip().counters().resolutions;
+        const std::uint64_t dropped  = server.shard(0).stack().forwards_dropped();
+        const std::uint64_t rejected = server.shard(0).stack().forwards_rejected();
         EXPECT_EQ(server.counters(0).inbox_received, 1U) << "shard 0 receives its stop and no forward";
+        std::uint64_t taken_this_round = 0;
         for (std::uint16_t index = 1; index < queues; ++index) {
             EXPECT_EQ(server.shard(index).stack().ip().counters().resolutions, 0U) << "ARP lands on queue 0 only";
             EXPECT_EQ(server.shard(index).stack().forwards_dropped(), 0U);
+            EXPECT_EQ(server.shard(index).stack().forwards_rejected(), 0U);
             // A node a sibling accepted went through its inbox and ran before it drained; its stop is the extra one.
             const std::uint64_t taken = server.counters(index).inbox_received - 1;
             EXPECT_LE(taken, learned) << "shard " << index << " ran a forward nobody sent";
-            accepted += taken;
+            taken_this_round += taken;
         }
         EXPECT_EQ(dropped, 0U);
-        attempted += learned * (queues - 1U);
+        EXPECT_EQ(taken_this_round + rejected + dropped, learned * (queues - 1U))
+            << "round " << round << ": every forward was accepted and run, rejected and freed, or never allocated";
+        attempted      += learned * (queues - 1U);
+        accepted       += taken_this_round;
+        total_rejected += rejected;
     }
     EXPECT_GT(attempted, 0U) << "the race needs forwards in flight";
-    EXPECT_LE(accepted, attempted);
     ::testing::Test::RecordProperty("forwards_attempted", std::to_string(attempted));
-    ::testing::Test::RecordProperty("forwards_rejected", std::to_string(attempted - accepted));
+    ::testing::Test::RecordProperty("forwards_accepted", std::to_string(accepted));
+    ::testing::Test::RecordProperty("forwards_rejected", std::to_string(total_rejected));
 }

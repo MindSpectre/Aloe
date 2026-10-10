@@ -85,8 +85,10 @@ namespace aloe::runtime {
             ip_.process(burst, now);
             tcp_.process(ip_.received(wire::Ipv4Protocol::Tcp), now);
             for (const net::ArpResolution& resolution : ip_.resolved()) {
-                forwards_dropped_ +=
+                const detail::ForwardOutcome outcome =
                     detail::forward_resolution(context_->siblings(), resolution.address, resolution.mac);
+                forwards_dropped_  += outcome.dropped;
+                forwards_rejected_ += outcome.rejected;
             }
         }
 
@@ -113,6 +115,10 @@ namespace aloe::runtime {
         [[nodiscard]] std::uint64_t forwards_dropped() const noexcept {
             return forwards_dropped_;
         }
+        /// Forwards a finished sibling refused, freed by this shard; read on the shard or after it stopped.
+        [[nodiscard]] std::uint64_t forwards_rejected() const noexcept {
+            return forwards_rejected_;
+        }
 
     private:
         static void learn(void* object,
@@ -126,7 +132,8 @@ namespace aloe::runtime {
         Ip ip_;                ///< Declared first: destroyed last.
         Tcp tcp_;              ///< Over `ip_` and the context's wheel.
         StreamsType streams_;  ///< Over `tcp_`: destroyed first.
-        std::uint64_t forwards_dropped_ = 0;
+        std::uint64_t forwards_dropped_  = 0;
+        std::uint64_t forwards_rejected_ = 0;
     };
 
 }  // namespace aloe::runtime

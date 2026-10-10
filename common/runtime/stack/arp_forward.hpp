@@ -38,22 +38,29 @@ namespace aloe::runtime::detail {
         wire::MacAddress mac{};
     };
 
-    /// One node per sibling. Returns how many could not be allocated; a rejected post frees its node here.
-    [[nodiscard]] inline std::size_t forward_resolution(const std::span<ShardContext* const> siblings,
-                                                        const wire::Ipv4Address address,
-                                                        const wire::MacAddress mac) noexcept {
-        std::size_t dropped = 0;
+    /// What one forwarding pass could not deliver: nodes never allocated, and nodes a finished sibling refused.
+    struct ForwardOutcome {
+        std::size_t dropped  = 0;  ///< Allocation failed; nothing was posted.
+        std::size_t rejected = 0;  ///< `post_control` refused; the node was freed here.
+    };
+
+    /// One node per sibling. Counts the nodes that could not be allocated and the rejected posts, freed here.
+    [[nodiscard]] inline ForwardOutcome forward_resolution(const std::span<ShardContext* const> siblings,
+                                                           const wire::Ipv4Address address,
+                                                           const wire::MacAddress mac) noexcept {
+        ForwardOutcome outcome{};
         for (ShardContext* sibling : siblings) {
             auto* work = new (std::nothrow) ArpForwardWork{*sibling, address, mac};
             if (work == nullptr) {
-                ++dropped;
+                ++outcome.dropped;
                 continue;
             }
             if (!sibling->post_control(*work)) {
                 delete work;  // that shard has finished: nothing reads its inbox
+                ++outcome.rejected;
             }
         }
-        return dropped;
+        return outcome;
     }
 
 }  // namespace aloe::runtime::detail
