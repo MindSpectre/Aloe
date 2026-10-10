@@ -30,16 +30,18 @@ readers, writers and balancers on pinned cores keeps them and gives each one a q
   by a flow rule, exact 4-tuple to queue. A server with many connections is placed by the card's
   receive-side scaling hash, and for outbound connections the local port is chosen so the hash lands on the
   wanted shard. Software steering between shards is the last resort.
-- **A shard may be two cores, one per direction.** TCP is designed as a receive half and a transmit half.
-  The receive half is the only writer of acknowledgement, window and round-trip state; the transmit half is
-  the only writer of the send buffer and owns the retransmit timer; they exchange a small record. On one
-  core that is two calls in sequence. On two cores it is a seqlock or a ring, and each half transmits on
-  its own queue. The first implementation runs both halves in one loop. The split is a composition, not a
-  redesign, and that is a phase 1 design requirement.
+- **A future shard may favor one direction on two cores.** A gateway may give TX the shortest path
+  and place maintenance beside RX; a feed handler may favor RX and place maintenance beside TX.
+  Minimal TCP runs receive, transmit and maintenance on one owning thread per connection. Phase 1
+  establishes their state ownership and explicit interactions so a later design can evaluate these
+  compositions. Concurrent execution needs a publication, feedback, resource and teardown contract;
+  substituting a seqlock or ring for a record is not sufficient. Protocol feedback still needs timely
+  service to keep the favored direction progressing. The choice of synchronization and maintenance
+  placement follows measurement and is not part of the minimal TCP implementation.
 
 Status: the single-core shard exists, as the rule the [loop bricks](loop.md) follow and as the
-[runtime](runtime.md)'s `Shard`. Flow rules, the two halves and a connection's owning shard arrive with TCP
-in phase 1.
+[runtime](runtime.md)'s `Shard`. TCP's ownership boundaries and connection placement arrive in phase 1.
+Flow rules and concurrent execution of one connection's halves remain deferred.
 
 ## Two products
 
