@@ -102,6 +102,30 @@ per packet.
   deadline and released through `Streams` or its handle, never through the brick directly, so the wait slot
   is cleaned in the same call that frees the connection.
 
+### The ready-made TCP stack
+
+- **`aloe::runtime::TcpStack<Device>`** -- the IP brick, the TCP brick and the stream owner composed for one
+  shard, with the tick glue; it models `IsStack` with both hooks. It is constructed by the shard from the
+  context, the queue, a `net::Ipv4Config` and a `tcp::TcpConfig`, and names its parts `Ip`
+  (`net::Ipv4<Device>`), `Tcp` (`tcp::Stack<Ip>`), `StreamsType` (`Streams<Tcp>`) and `StreamType`
+  (`Stream<Tcp>`); `ip()`, `tcp()` and `streams()` reach them. The members are declared IP, TCP, Streams, so
+  they are destroyed in the reverse order, and the destructor removes the ARP sink before any of them goes.
+  On a device with more than one queue it copies the IP config and sets `accept_unsolicited_replies`, so
+  queue 0 learns the replies its siblings solicited. `forwards_dropped()` counts the forwards that could
+  not be allocated.
+- **Its tick.** `on_receive(burst)` runs IP then TCP at the context's stamp, then one forwarding pass over
+  `ip.resolved()`. `on_tick(now)` runs an empty TCP `process`, which publishes retry hints, then the wake
+  pass. `on_flush(now)` runs the wake pass again, for the events timers and tasks raised, then TCP's
+  `flush`. A program that wants another composition writes its own `IsStack` over the same bricks.
+- **ARP forwarding.** Each resolution in `ip.resolved()` goes to every sibling once, after the `process`
+  that reported it; an empty tick forwards nothing. The sibling applies it through its ARP sink, which calls
+  `ip.learn(address, mac, now)` on its own thread and reports nothing, so shards never echo each other. One
+  forward is one `detail::ArpForwardWork` node per sibling, allocated with `std::nothrow` on that cold path
+  and posted with `post_control`. An accepted node runs once on the target, delivers through `deliver_arp`
+  and frees itself; a rejected node, whose target has already finished, is freed by the sender at once; a
+  node that cannot be allocated is counted in `forwards_dropped()` and the sibling resolves the address
+  itself when it needs it.
+
 ## Usage
 
 The whole of a stack that answers Ethernet frames, as `examples/ethernet_echo/ethernet_echo.cpp` has it:
@@ -145,6 +169,41 @@ runtime.spawn(0, heartbeat(runtime.scheduler(0)));  // from any thread: hops to 
 runtime.stop();                                     // every task parked on a timer completes stopped
 runtime.join();
 ```
+
+A TCP echo server over `TcpStack`, one task per connection, on every queue of a port:
+
+```cpp
+using Stack = aloe::runtime::TcpStack<aloe::ethdev::Port>;
+
+aloe::runtime::task<void> echo(Stack::StreamType stream) {
+    while (co_await stream.readable(1)) {
+        const auto chunk = stream.unread().front();
+        if (!co_await stream.send(chunk)) {
+            co_return;
+        }
+        stream.consume(chunk.size());
+    }
+    std::ignore = co_await stream.close();
+}
+
+aloe::runtime::task<void> serve(Stack::StreamsType* streams, aloe::runtime::Scheduler scheduler) {
+    while (auto stream = co_await streams->accept(7)) {
+        scheduler.spawn(echo(std::move(*stream)));
+    }
+}
+
+aloe::runtime::Runtime<aloe::ethdev::Port, Stack> runtime{
+    {.shard = {}, .threads = {}, .thread_hook = aloe::ethdev::register_thread}, port,
+    aloe::net::Ipv4Config{.address = {10, 0, 0, 2}, .prefix = 24, .gateway = aloe::wire::Ipv4Address{10, 0, 0, 1}},
+    aloe::tcp::TcpConfig{}};
+runtime.start();
+for (std::uint16_t index = 0; index < runtime.shard_count(); ++index) {
+    runtime.spawn(index, serve(&runtime.shard(index).stack().streams(), runtime.scheduler(index)));
+}
+```
+
+`runtime.shard(index)` is read here before the shard has run anything that touches its streams; the task
+itself runs on the shard. A task awaits only its own shard's senders.
 
 ## Threading contract
 
@@ -251,6 +310,12 @@ share one mutex: a post that wins the lock before the final check leaves the inb
 fails and the node runs; a post that loses finds admission closed and keeps the node. `drained()` stays a
 query, so nothing else can close a context by looking at it. The mutex is on the cold path only; packets,
 timers, tasks and the scheduler's `schedule()` never take it.
+
+**A forward node is owned by exactly one side.** A resolution is sent to a sibling in a node allocated for
+it. Either the target accepts the node and runs it, and the run frees it, or the target has closed admission,
+`post_control` returns false, and the sender frees it on the spot. No node is posted to an inbox nobody will
+read, and stop racing a burst of forwards leaks nothing. The allocation is `std::nothrow` because it runs
+inside `on_receive`, which must not throw; a failed one costs the sibling one ARP round trip later.
 
 **Logging behind an alias.** Shards log only on cold paths, through [`log`](log.md)'s quill alias: a shard
 starting and draining, a task failing, a hook or pin failing. Nothing logs inside a tick.

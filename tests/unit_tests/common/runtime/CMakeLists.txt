@@ -9,6 +9,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Runtime
         test_shard_task.cpp
         test_streams.cpp
         test_task_scope.cpp
+        test_tcp_runtime.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Runtime
         PRIVATE
@@ -33,11 +34,17 @@ target_link_libraries(${UNIT_TESTING_TARGET}.Runtime
 add_unit_test(${UNIT_TESTING_TARGET}.Runtime.Threads
         test_cross_shard.cpp
         test_steering.cpp
+        test_tcp_steering.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Runtime.Threads
         PRIVATE
         Aloe::Common::Runtime
+        Aloe::Common::Tcp
+        Aloe::Common::Net
         Aloe::Fixtures::Fabric
+        Aloe::Fixtures::Frames
+        ${SHARED_TESTING_TARGET}.Net
+        ${SHARED_TESTING_TARGET}.Tcp
         ${SHARED_TESTING_TARGET}.Device
         ${SHARED_TESTING_TARGET}.Runtime
         ${SHARED_TESTING_TARGET}.Log

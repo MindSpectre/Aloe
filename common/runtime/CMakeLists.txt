@@ -83,6 +83,24 @@ target_link_libraries(${RUNTIME}.Stream INTERFACE
 ##############################################################################
 
 ##############################################################################
+# The ready-made TCP stack and the ARP forwarding between shards
+##############################################################################
+add_library(${RUNTIME}.Stack INTERFACE
+        stack/arp_forward.hpp
+        stack/tcp_runtime_stack.hpp
+)
+target_include_directories(${RUNTIME}.Stack INTERFACE
+        stack/
+)
+target_link_libraries(${RUNTIME}.Stack INTERFACE
+        ${RUNTIME}.Stream
+        ${RUNTIME}.Context
+        Aloe::Common::Tcp
+        Aloe::Common::Net
+)
+##############################################################################
+
+##############################################################################
 # The shard: one device queue, the stack, and the tick
 ##############################################################################
 add_library(${RUNTIME}.Shard INTERFACE
@@ -129,6 +147,7 @@ add_combined_library(${RUNTIME}
         ${RUNTIME}.Scheduler
         ${RUNTIME}.Task
         ${RUNTIME}.Stream
+        ${RUNTIME}.Stack
         ${RUNTIME}.Shard
         ${RUNTIME}.Runtime
         Aloe::Common::Loop
