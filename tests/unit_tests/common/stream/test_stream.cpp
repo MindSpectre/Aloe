@@ -53,7 +53,8 @@ namespace {
     /// A stream whose prepare gives at most `segment` bytes and whose commit can be told to refuse.
     class StubStream {
     public:
-        std::size_t segment              = 3;
+        std::size_t surplus = 0;  ///< Bytes prepare hands out beyond what was asked: a misbehaving backend.
+        std::size_t segment = 3;
         std::size_t refuse_commit_number = 0;  ///< 1-based; 0 never refuses.
         std::size_t null_prepare_after   = 0;  ///< Prepares after this many succeed return nothing; 0 means never.
         std::vector<std::size_t> prepared_sizes;
@@ -82,7 +83,7 @@ namespace {
             if (count == 0 || (null_prepare_after != 0 && prepared_sizes.size() >= null_prepare_after)) {
                 return std::nullopt;
             }
-            const std::size_t size = std::min(count, segment);
+            const std::size_t size = std::min(count, segment) + surplus;
             prepared_sizes.push_back(size);
             buffer_.assign(size, std::byte{0});
             return std::span<std::byte>{buffer_};
@@ -173,6 +174,16 @@ TEST(StreamSend, EmptyInputMakesNoPrepare) {
     StubStream stub;
     EXPECT_EQ(aloe::stream::send(stub, {}), 0U);
     EXPECT_TRUE(stub.prepared_sizes.empty());
+}
+
+TEST(StreamSend, ClampsToTheRemainderWhenPrepareOverDelivers) {
+    StubStream stub;
+    stub.segment     = 10;
+    stub.surplus     = 4;
+    const auto bytes = five();
+    EXPECT_EQ(aloe::stream::send(stub, bytes), 5U);
+    EXPECT_EQ(stub.committed_sizes, (std::vector<std::size_t>{5}));
+    EXPECT_EQ(stub.wire, bytes);
 }
 
 TEST(StreamSend, DoesNotCoalesceCalls) {

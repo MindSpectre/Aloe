@@ -59,7 +59,7 @@ return value does not cover.
 
 - `unread()` is a view, invalidated by `consume` and by the next `process`. A chunk's bytes stay put until
   they are consumed or released.
-- `prepare`/`commit` write in place, one prepare at a time. A false `commit` means the bytes were not
+- `prepare`/`commit` write in place, one prepare at a time; `prepare(n)` returns at most `n` bytes. A false `commit` means the bytes were not
   accepted and ownership of them stays with the caller; a `Writable` hint follows.
 - Events are edges and state is level. `unread()`, `writable()` and `peer_closed()` are levels. Only
   `poll_event()` and `release()` clear flags.
@@ -72,5 +72,5 @@ return value does not cover.
 ## In the runtime
 
 The runtime maps its senders onto these events: a sender completes when the event it waits for is raised,
-and carries an `Error` in the value channel when the stream ends another way. The mapping is written up
-when the runtime wraps the stream (Task 11 of the minimal TCP plan).
+and carries an `Error` in the value channel when the stream ends another way. The mapping is described
+when the runtime wraps a stream in senders.

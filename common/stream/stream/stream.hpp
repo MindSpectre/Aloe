@@ -32,6 +32,7 @@ namespace aloe::stream {
      * Reading is a view and `consume`; writing is `prepare` into the layer's next unit of
      * transmission and `commit`. Events are edges inspected through `events()` and drained by the
      * owning stack's `poll_event()`; `unread()`, `writable()` and `peer_closed()` are levels.
+     * `prepare(n)` returns at most `n` bytes.
      */
     template <typename S>
     concept IsStream = requires(S& stream, const S& const_stream, std::size_t count) {
@@ -67,7 +68,7 @@ namespace aloe::stream {
                 std::ignore = stream.commit(0);  // nothing to write there: discard the preparation
                 break;
             }
-            const std::size_t count = room->size();
+            const std::size_t count = std::min(room->size(), bytes.size() - accepted);
             std::ranges::copy(bytes.subspan(accepted, count), room->begin());
             if (!stream.commit(count)) {
                 break;
