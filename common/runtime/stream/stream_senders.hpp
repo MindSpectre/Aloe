@@ -146,7 +146,20 @@ namespace aloe::runtime::detail {
                 return WaitOutcome{.error = *error};
             }
             if (c.state() == tcp::State::Closed) {
-                return WaitOutcome{};  // closed before Streams saw the event: the wake pass will find no wait
+                // Closed with no terminal recorded: the terminal event is raised and not yet drained, as when a
+                // retransmit timer times out inside run_once and the chain that runs next starts this sender.
+                // Read it from the undrained flags, mapped as the wake pass maps it for a Closed wait.
+                const stream::Events pending = c.events();
+                if (pending.timed_out()) {
+                    return WaitOutcome{.error = stream::Error::TimedOut};
+                }
+                if (pending.reset()) {
+                    return WaitOutcome{.error = stream::Error::Reset};  // a handed-over stream is past Connected
+                }
+                if (pending.closed()) {
+                    return WaitOutcome{};
+                }
+                // Nothing pending: every path to Closed raises a terminal event, so the next wake delivers it.
             }
             return std::nullopt;
         }
@@ -459,6 +472,23 @@ namespace aloe::runtime::detail {
         }
     };
 
+    /// Attributes of a stream sender: it completes on its shard, asynchronously when it parks, and inline from
+    /// `start` when the level is already met or the operation is already stopped.
+    struct StreamSenderAttributes {
+        ShardContext* context = nullptr;
+
+        template <typename Tag>
+        [[nodiscard]] Scheduler query(execution::ex::get_completion_scheduler_t<Tag> /*tag*/) const noexcept {
+            return Scheduler{*context};
+        }
+
+        template <typename Tag>
+        [[nodiscard]] static constexpr auto query(execution::get_completion_behavior_t<Tag> /*tag*/) noexcept {
+            return execution::completion_behavior::asynchronous_affine |
+                   execution::completion_behavior::inline_completion;
+        }
+    };
+
     template <typename Stack, typename Policy>
     struct StreamSender {
         using sender_concept = execution::ex::sender_t;
@@ -476,8 +506,8 @@ namespace aloe::runtime::detail {
             return WaitOperation<Stack, Receiver, Policy>{owner, std::move(receiver), policy, index, threshold};
         }
 
-        [[nodiscard]] ShardSenderAttributes get_env() const noexcept {
-            return ShardSenderAttributes{&owner->context()};
+        [[nodiscard]] StreamSenderAttributes get_env() const noexcept {
+            return StreamSenderAttributes{&owner->context()};
         }
     };
 

@@ -9,6 +9,7 @@
 #include <aloe/wire>
 #include <array>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -178,6 +179,16 @@ namespace {
         }
     };
 
+    // A stream sender completes on its shard, and may complete inline from start: affine, never "always async".
+    using ReadableSender = decltype(std::declval<Stream&>().readable(1));
+    using Behavior =
+        decltype(ex::env_of_t<ReadableSender>::query(aloe::execution::get_completion_behavior_t<ex::set_value_t>{}));
+    static_assert(aloe::execution::completion_behavior::is_affine(Behavior{}));
+    static_assert(!aloe::execution::completion_behavior::is_always_asynchronous(Behavior{}));
+    static_assert(std::same_as<Behavior,
+                               decltype(aloe::execution::completion_behavior::asynchronous_affine |
+                                        aloe::execution::completion_behavior::inline_completion)>);
+
 }  // namespace
 
 TEST_F(StreamsTest, ImmediateStateBeforeParking) {
@@ -263,6 +274,27 @@ TEST_F(StreamsTest, EverySenderValueAndError) {
     receive(other.fin());
     EXPECT_EQ(run_step(), 1U) << "closed() completes";
     EXPECT_TRUE(parked.value.has_value() && parked.value->has_value()) << "a normal close is not an error";
+}
+
+TEST_F(StreamsTest, ClosedSeesUndrainedTimeout) {
+    Stream stream = accept_one(peer_);
+    ASSERT_TRUE(stream.valid());
+    std::ignore = on_the_wire();
+    stream.connection().close();  // a FIN the peer never acknowledges
+    // The retransmit timer runs on the shard's wheel: tries until TimedOut inside run_once, with no wake after.
+    for (int second = 0; second < 128 && stream.state() != aloe::tcp::State::Closed; ++second) {
+        now_ += 1s;
+        tcp_.process({}, now_);
+        std::ignore = context_.run_once(now_);
+        std::ignore = on_the_wire();
+    }
+    ASSERT_EQ(stream.state(), aloe::tcp::State::Closed);
+    ASSERT_TRUE(stream.events().timed_out()) << "raised and not yet drained";
+    Slot<Done> closed;
+    auto closed_op = ex::connect(stream.closed(), closed.receiver());
+    ex::start(closed_op);
+    EXPECT_EQ(closed.completions, 1);
+    EXPECT_EQ(closed.value, Done{std::unexpected{Error::TimedOut}}) << "a timeout, not a normal close";
 }
 
 TEST_F(StreamsTest, ResetCompletesWaitersWithErrors) {

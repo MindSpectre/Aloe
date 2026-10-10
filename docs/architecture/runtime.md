@@ -190,7 +190,11 @@ A sender checks the level when it starts: data already unread, credit already op
 already seen completes it inline, without parking and without a run-queue push. Otherwise it parks. `wake`
 runs after each phase that may raise events, drains the events and, for each flag, takes the parked wait of
 the matching kind, saves its outcome on the node and pushes it onto the run queue. The completion runs inside
-`run_once`. No receiver is ever called from a wake pass, and processing a later burst never consumes an
+`run_once`. A sender's attributes say so: it completes on its shard's scheduler, and it may complete inline
+from `start`, so it answers `asynchronous_affine | inline_completion`, not the timer senders' plain
+`asynchronous_affine`. A level read at start also covers a terminal event raised but not yet drained: a
+`closed()` started right after a retransmit timer timed the connection out inside `run_once` reports
+`TimedOut`, not a normal close. No receiver is ever called from a wake pass, and processing a later burst never consumes an
 event: the drained flags become outcomes saved on nodes, and the levels are read again when a wait starts.
 
 Values travel in the value channel as `std::expected<T, stream::Error>`. Cancellation, deadlines and scope
