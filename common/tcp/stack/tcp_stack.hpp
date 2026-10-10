@@ -160,10 +160,9 @@ namespace aloe::tcp {
         void ack_now(ConnectionType& c) noexcept;
         void mark_retry(ConnectionType& c) noexcept;
         [[nodiscard]] std::size_t writable(const ConnectionType& c) const noexcept;
-        [[nodiscard]] std::optional<std::span<std::byte>> prepare(ConnectionType& c,
-                                                                  std::size_t count) noexcept;  // Task 8
-        [[nodiscard]] bool commit(ConnectionType& c, std::size_t count) noexcept;               // Task 8
-        void consume(ConnectionType& c, std::size_t count) noexcept;                            // Task 7
+        [[nodiscard]] std::optional<std::span<std::byte>> prepare(ConnectionType& c, std::size_t count) noexcept;
+        [[nodiscard]] bool commit(ConnectionType& c, std::size_t count) noexcept;
+        void consume(ConnectionType& c, std::size_t count) noexcept;
 
         // tcp_control.hpp
         void raise(ConnectionType& c, stream::Event event) noexcept;
@@ -180,7 +179,7 @@ namespace aloe::tcp {
         void set_closed(ConnectionType& c) noexcept;
         void finish(ConnectionType& c) noexcept;
         void maybe_finish(ConnectionType& c) noexcept;
-        void close(ConnectionType& c) noexcept;  // Task 9
+        void close(ConnectionType& c) noexcept;
         void abort(ConnectionType& c) noexcept;
         void release(ConnectionType& c) noexcept;
 

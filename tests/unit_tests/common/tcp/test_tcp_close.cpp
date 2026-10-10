@@ -192,6 +192,23 @@ TEST_P(TcpClose, DuplicateFin) {
     EXPECT_EQ(tcp_->pending_events(), 1U);
 }
 
+TEST_P(TcpClose, SecondFinAfterTheFirstIsDropped) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.fin());
+    const auto first = collect();
+    ASSERT_EQ(first.size(), 1U);
+    ASSERT_EQ(c->state(), State::CloseWait);
+    const auto unexpected = tcp_->counters().dropped_unexpected;
+    receive(peer_.fin());  // a new FIN at rcv_nxt: sequence space the peer never offered
+    EXPECT_EQ(tcp_->counters().dropped_unexpected, unexpected + 1U);
+    const auto again = collect_queued();
+    ASSERT_EQ(again.size(), 1U) << "acknowledged at once";
+    EXPECT_EQ(again[0].tcp->flags, TcpFlags{TcpFlag::Ack}) << "a pure ACK";
+    EXPECT_EQ(again[0].tcp->acknowledgement, first[0].tcp->acknowledgement) << "rcv_nxt did not move";
+    EXPECT_EQ(c->state(), State::CloseWait);
+}
+
 TEST_P(TcpClose, FinRetransmitKeepsItsSequenceThenTimesOut) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
@@ -292,6 +309,25 @@ TEST_P(TcpClose, ReleaseOfAnOpenConnectionResetsAndFreesWithNoEvent) {
     advance(70000ms);
     EXPECT_EQ(tcp_->pending_events(), 0U) << "a released connection raises nothing, ever";
     EXPECT_TRUE(collect().empty());
+}
+
+TEST_P(TcpClose, ReleaseTwiceIsRejected) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    c->release();
+    ASSERT_EQ(tcp_->table_size(), 0U);
+    std::ignore = collect();
+    // A debug build asserts in a forked child; a release build ignores the second call.
+    EXPECT_DEBUG_DEATH(c->release(), "release of a free slot");
+    EXPECT_EQ(tcp_->table_size(), 0U);
+    aloe::frames::TcpPeer first{aloe::testing::peer_spec(aloe::testing::tcp_peer_port + 1), TcpSequence{5000U}};
+    aloe::frames::TcpPeer second{aloe::testing::peer_spec(aloe::testing::tcp_peer_port + 2), TcpSequence{6000U}};
+    auto* a = open_passive(first);
+    ASSERT_NE(a, nullptr);
+    auto* b = open_passive(second);
+    ASSERT_NE(b, nullptr);
+    EXPECT_NE(a->index(), b->index()) << "the freed slot was pushed once, so two opens get two slots";
+    EXPECT_EQ(tcp_->table_size(), 2U);
 }
 
 TEST_P(TcpCloseRefusing, FinalAckSurvivesRefusalAndClosedWaitsForIt) {

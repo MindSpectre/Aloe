@@ -94,6 +94,7 @@ namespace aloe::tcp {
         }
 
         [[nodiscard]] std::span<const std::byte> front() const noexcept {
+            assert(!empty() && "front of an empty view");
             return *begin();
         }
 

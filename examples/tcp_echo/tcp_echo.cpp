@@ -248,10 +248,10 @@ int main(int argc, char** argv) {
                         echoed += chunk.size();
                     }
                     c.consume(c.unread().size());
-                    if (echoed >= greeting.size() || c.peer_closed()) {
-                        c.close();  // a no-op once closing
-                    }
                 }
+            }
+            if (arguments->connect && (echoed >= greeting.size() || c.peer_closed())) {
+                c.close();  // a FIN alone raises only PeerClosed; a no-op once closing
             }
             if (arguments->listen && c.peer_closed() && c.unread().empty() &&
                 c.state() == aloe::tcp::State::CloseWait) {

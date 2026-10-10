@@ -344,6 +344,11 @@ namespace aloe::tcp {
 
         // 5. FIN, in order: its sequence is rcv_nxt after the payload.
         if (header.flags.has(wire::TcpFlag::Fin)) {
+            if (c.state_ == State::CloseWait || c.state_ == State::Closing || c.state_ == State::LastAck) {
+                ++counters_.dropped_unexpected;  // a second FIN: the peer's sequence space ended at the first
+                ack_now(c);
+                return;
+            }
             receive_fin(c);
         }
     }

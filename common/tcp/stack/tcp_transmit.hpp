@@ -195,8 +195,10 @@ namespace aloe::tcp {
             return std::nullopt;
         }
         const std::optional<std::span<std::byte>> span = packet->append(size);
+        assert(span && "size is at most the MSS and a packet holds a whole frame");
         if (!span) {
-            mark_retry(c);  // cannot happen: size is at most the MSS and a packet holds a whole frame
+            ++counters_.allocation_failures;  // unreachable by construction; counted in a release build
+            mark_retry(c);
             return std::nullopt;
         }
         c.prepared_      = std::move(*packet);  // the span points into the block, which does not move

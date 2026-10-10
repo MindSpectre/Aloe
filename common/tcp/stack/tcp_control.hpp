@@ -45,10 +45,14 @@ namespace aloe::tcp {
 
     template <typename Ip>
     void Stack<Ip>::free_slot(ConnectionType& c) noexcept {
-        wheel_->cancel(c.timer_);
-        if (c.indexed_) {
-            std::ignore = table_.erase(c.key_, c.base_hash_);
+        // Every live connection is indexed by connect or passive_open; a free slot is not, and pushing its index
+        // again would hand one slot to two opens. A release build ignores the second call.
+        assert(c.indexed_ && "release of a free slot");
+        if (!c.indexed_) {
+            return;
         }
+        wheel_->cancel(c.timer_);
+        std::ignore = table_.erase(c.key_, c.base_hash_);
         return_chain(c);
         c.prepared_.reset();
         events_.remove(c);

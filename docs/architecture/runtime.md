@@ -207,7 +207,9 @@ itself runs on the shard. A task awaits only its own shard's senders. The echo a
 consumes, because the sender copies from `chunk` until every byte is committed; the consume then moves the
 window's edge after the segment has left, which costs one window update per echoed segment at the flush. An
 echo that wants the reopening to ride on its data writes through the handle's synchronous members instead:
-`prepare`, copy, `consume`, `commit`. `examples/tcp_echo_tasks` is this server, with the client beside it.
+`prepare`, copy, `consume`, `commit`. That order lets the reopened window ride on the data segment at the price
+of losing the consumed bytes if the commit is refused, which is why `tcp.md` commits before it consumes.
+`examples/tcp_echo_tasks` is this server, with the client beside it.
 
 ## Threading contract
 
