@@ -110,7 +110,7 @@ namespace aloe::net {
     class Ipv4 {
     public:
         using Device = DeviceT;
-        using Packet = typename Device::Packet;
+        using Packet = Device::Packet;
 
         static constexpr std::size_t headers_size = wire::EthernetHeader::size + wire::Ipv4Header::size;
 
@@ -248,11 +248,11 @@ namespace aloe::net {
         /// router.
         [[nodiscard]] std::optional<wire::MacAddress> resolve(const wire::Ipv4Address hop,
                                                               const core::TimePoint now) noexcept {
-            const ArpCache::Lookup found = arp_.lookup(hop, now);
-            if (found.send_request) {
-                request_arp(hop, found.mac);
+            const auto [mac, send_request] = arp_.lookup(hop, now);
+            if (send_request) {
+                request_arp(hop, mac);
             }
-            return found.mac;
+            return mac;
         }
 
         /// A static entry, or a resolution another shard learned. Appends nothing to `resolved()`.
@@ -574,7 +574,7 @@ namespace aloe::net {
          * the pseudo-header sum for the device to finish, or the full checksum in software, with UDP's zero written as
          * 0xffff. The IPv4 checksum is left for the device or written in software the same way.
          */
-        [[nodiscard]] device::TxMetadata finish_checksums(std::span<std::byte> frame,
+        [[nodiscard]] device::TxMetadata finish_checksums(const std::span<std::byte> frame,
                                                           const wire::Ipv4Header& header,
                                                           const device::L4Checksum l4) noexcept {
             device::TxMetadata tx{.l2_length          = static_cast<std::uint8_t>(wire::EthernetHeader::size),

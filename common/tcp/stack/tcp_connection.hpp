@@ -30,7 +30,7 @@ namespace aloe::tcp {
     template <typename Ip>
     class Connection {
     public:
-        using Packet   = typename Ip::Packet;
+        using Packet   = Ip::Packet;
         using Sequence = wire::TcpSequence;
         using View     = ReadView<Packet>;
 

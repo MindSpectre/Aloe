@@ -77,8 +77,8 @@ namespace aloe::tcp {
         // A full table has no empty slot to stop at, so the scan also stops after one lap.
         for (std::size_t scanned = 1; scanned < entries_.size() && entries_[next].used; ++scanned) {
             // An entry moves back into the hole only if the hole is not before its home on the probe path.
-            const std::uint32_t its_home = home(entries_[next].mixed);
-            if (distance(its_home, hole) < distance(its_home, next)) {
+            if (const std::uint32_t its_home = home(entries_[next].mixed);
+                distance(its_home, hole) < distance(its_home, next)) {
                 entries_[hole] = entries_[next];
                 hole           = next;
             }

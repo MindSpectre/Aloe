@@ -27,9 +27,6 @@ add_library(${TCP}.Stack INTERFACE
         stack/tcp_fwd.hpp
         stack/tcp_connection.hpp
         stack/tcp_stack.hpp
-        stack/tcp_control.hpp
-        stack/tcp_receive.hpp
-        stack/tcp_transmit.hpp
 )
 target_include_directories(${TCP}.Stack INTERFACE
         state/
