@@ -217,7 +217,7 @@ every send failure increments exactly one counter.
 |             | `dropped_table_full`    | SYNs to a listener with no free connection slot.                                                |
 | Send        | `send_refused`          | Segments IP or the queue refused; the numbers stay as they were.                               |
 |             | `send_unresolved`       | Segments that waited for ARP.                                                                   |
-|             | `commits_refused`       | Commits after the connection left `Established` and `CloseWait`; the prepared packet is dropped. |
+|             | `commits_refused`       | Commits after the connection left `Established` and `CloseWait`, or whose count the peer's window no longer covers; the prepared packet is dropped. |
 |             | `allocation_failures`   | `prepare` calls the packet pool could not serve; the retry hint says when to try again.         |
 
 The runtime's `TcpStack` adds two counters of its own, `forwards_dropped()` and `forwards_rejected()`, for
@@ -261,6 +261,12 @@ before the byte window closes. A segment that arrives when either cap is reached
 accepted, the peer's retransmission recovers it, and the offered window is never taken back. The edge is
 extended only while a packet slot is free, so a connection at its cap stops offering more.
 
+**The peer's window comes from current acknowledgements.** `writable()` is `min(mss, snd_wnd - in flight)`.
+The window is updated by RFC 793's rule, a newer sequence or the same one with a newer acknowledgement, and
+only from a segment whose acknowledgement is at or past `snd_una`, so a stale or forged acknowledgement
+cannot rewrite it. `commit` checks the credit again, because a peer may have retracted its right edge since
+the prepare; RFC 1122 asks the sender to cope with that by not sending into it.
+
 **ACKs wait, with exceptions.** An ordinary acknowledgement of in-order data is queued and sent by `flush`,
 unless a data segment leaving first carries it, so a request answered in the same tick costs one segment.
 It goes at once for every second full-sized segment, for anything that cannot be accepted (a duplicate, a
@@ -272,8 +278,10 @@ the connection is closing on. A refused immediate ACK stays queued for the next 
 `connect` is the caller's at once. From `prepare` to `commit` (with any count, zero discards) or `release`,
 the prepared packet is the application's: a `close`, `abort`, received RST or time-out in between leaves the
 span writable, and the commit that follows drops the packet, returns false, counts `commits_refused` and
-raises no retry hint, since the events already say why. After `Closed`, `Reset` or `TimedOut` the held segments stay readable until
-`release`, the owner's last call, which aborts a connection that is still open and frees the slot.
+raises no retry hint, since the events already say why. A commit the peer's window no longer covers, because
+the peer retracted its right edge since the prepare, is refused the same way but with a retry hint: prepare
+again for what `writable()` allows. After `Closed`, `Reset` or `TimedOut` the held segments stay readable
+until `release`, the owner's last call, which aborts a connection that is still open and frees the slot.
 
 **The table hashes on its own; placement chooses ports.** The flow table mixes a base hash into its own
 bucket hash. When the card hashes IPv4 TCP tuples the base hash is the card's RSS hash, so a received segment
@@ -295,8 +303,9 @@ the runtime, a deadline.
 
 **The terminal ACK goes before `Closed`.** When the last segment of a close needs an ACK from us, the ACK is
 queued before `Closed` is raised. If IP refuses it, the connection keeps its state, `flush` retries the ACK,
-and `Closed` follows only once it has left. A duplicate FIN is acknowledged again without advancing the
-receive sequence twice.
+and `Closed` follows the first ACK that leaves, whether `flush` sent it or a duplicate prompted it. A duplicate
+FIN is acknowledged again without advancing the receive sequence twice; data after the peer's FIN is dropped,
+counted as `dropped_unexpected` and acknowledged.
 
 **Hot paths are bounded.** Every operation after construction is `noexcept` and allocates nothing but packets
 from IP's pool. Events go through one function; the event, ACK and retry lists are intrusive in the

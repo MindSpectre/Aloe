@@ -299,7 +299,7 @@ namespace aloe::tcp {
                 }
                 return;
             }
-            switch (ConnectionType& c = connections_[*found]; c.state_) {
+            switch (ConnectionType& conn = connections_[*found]; conn.state_) {
                 case State::Closed:  // still indexed because not released
                     ++counters_.dropped_closed;
                     if (!header->flags.has(wire::TcpFlag::Rst)) {
@@ -307,10 +307,10 @@ namespace aloe::tcp {
                     }
                     return;
                 case State::SynSent:
-                    receive_syn_sent(c, datagram, segment);
+                    receive_syn_sent(conn, datagram, segment);
                     return;
                 default:
-                    receive_synchronized(c, datagram, segment);
+                    receive_synchronized(conn, datagram, segment);
                     return;
             }
         }
@@ -352,37 +352,37 @@ namespace aloe::tcp {
                 ++counters_.dropped_table_full;
                 return;
             }
-            ConnectionType& c = connections_[*slot];
-            c.local_          = Endpoint{.address = ip_->address(), .port = segment.header.destination_port};
-            c.remote_         = Endpoint{.address = datagram.source, .port = segment.header.source_port};
-            c.key_            = key;
-            c.base_hash_      = segment.base_hash;
+            ConnectionType& conn = connections_[*slot];
+            conn.local_          = Endpoint{.address = ip_->address(), .port = segment.header.destination_port};
+            conn.remote_         = Endpoint{.address = datagram.source, .port = segment.header.source_port};
+            conn.key_            = key;
+            conn.base_hash_      = segment.base_hash;
             [[maybe_unused]] const bool inserted = table_.insert(key, *slot, segment.base_hash);
             assert(inserted && "the lookup just missed");
-            c.indexed_      = true;
-            c.state_        = State::SynReceived;
-            c.owned_        = false;
-            c.rcv_nxt_      = segment.header.sequence + 1;
-            c.rcv_adv_      = c.rcv_nxt_ + byte_budget_;  // the initial offer, carried by the SYN-ACK
-            c.peer_mss_     = segment.mss.value_or(default_peer_mss);
-            c.snd_wnd_      = segment.header.window;
-            c.wl1_          = segment.header.sequence;
-            c.wl2_          = Sequence{};
-            c.iss_          = draw_isn();
-            c.snd_nxt_      = c.iss_ + 1;
-            c.snd_una_      = c.iss_;
-            const auto sent = send_control(c, wire::TcpFlags{wire::TcpFlag::Syn, wire::TcpFlag::Ack}, c.iss_);
+            conn.indexed_   = true;
+            conn.state_     = State::SynReceived;
+            conn.owned_     = false;
+            conn.rcv_nxt_   = segment.header.sequence + 1;
+            conn.rcv_adv_   = conn.rcv_nxt_ + byte_budget_;  // the initial offer, carried by the SYN-ACK
+            conn.peer_mss_  = segment.mss.value_or(default_peer_mss);
+            conn.snd_wnd_   = segment.header.window;
+            conn.wl1_       = segment.header.sequence;
+            conn.wl2_       = Sequence{};
+            conn.iss_       = draw_isn();
+            conn.snd_nxt_   = conn.iss_ + 1;
+            conn.snd_una_   = conn.iss_;
+            const auto sent = send_control(conn, wire::TcpFlags{wire::TcpFlag::Syn, wire::TcpFlag::Ack}, conn.iss_);
             if (sent) {
                 ++counters_.control_segments_sent;
             }
-            c.tries_           = 0;
-            c.unresolved_wait_ = !sent && sent.error() == net::SendError::Unresolved;
-            arm_retry(c);
+            conn.tries_           = 0;
+            conn.unresolved_wait_ = !sent && sent.error() == net::SendError::Unresolved;
+            arm_retry(conn);
         }
 
-        void receive_syn_sent(ConnectionType& c, Datagram& datagram, Segment segment) noexcept {
+        void receive_syn_sent(ConnectionType& conn, Datagram& datagram, Segment segment) noexcept {
             const wire::TcpHeader& header = segment.header;
-            if (header.flags.has(wire::TcpFlag::Ack) && header.acknowledgement != c.snd_nxt_) {
+            if (header.flags.has(wire::TcpFlag::Ack) && header.acknowledgement != conn.snd_nxt_) {
                 ++counters_.dropped_unexpected;  // not an answer to our SYN
                 return;
             }
@@ -392,82 +392,83 @@ namespace aloe::tcp {
                     return;
                 }
                 ++counters_.connections_reset;
-                set_closed(c);
-                raise(c, stream::Event::Reset);
+                set_closed(conn);
+                raise(conn, stream::Event::Reset);
                 return;
             }
             if (!header.flags.has(wire::TcpFlag::Syn) || !header.flags.has(wire::TcpFlag::Ack)) {
                 ++counters_.dropped_unexpected;  // a simultaneous open is out of scope
                 return;
             }
-            c.snd_una_  = header.acknowledgement;
-            c.rcv_nxt_  = header.sequence + 1;
-            c.rcv_adv_  = c.rcv_nxt_ + byte_budget_;  // the initial offer, carried by our ACK or the first data segment
-            c.peer_mss_ = segment.mss.value_or(default_peer_mss);
-            c.snd_wnd_  = header.window;
-            c.wl1_      = header.sequence;
-            c.wl2_      = header.acknowledgement;
-            c.state_    = State::Established;
-            wheel_->cancel(c.timer_);
-            c.tries_           = 0;
-            c.unresolved_wait_ = false;
+            conn.snd_una_ = header.acknowledgement;
+            conn.rcv_nxt_ = header.sequence + 1;
+            conn.rcv_adv_ =
+                conn.rcv_nxt_ + byte_budget_;  // the initial offer, carried by our ACK or the first data segment
+            conn.peer_mss_ = segment.mss.value_or(default_peer_mss);
+            conn.snd_wnd_  = header.window;
+            conn.wl1_      = header.sequence;
+            conn.wl2_      = header.acknowledgement;
+            conn.state_    = State::Established;
+            wheel_->cancel(conn.timer_);
+            conn.tries_           = 0;
+            conn.unresolved_wait_ = false;
             ++counters_.connections_opened;
-            queue_ack(c);  // deferred: a commit on the Connected event completes the handshake with data
-            raise(c, stream::Event::Connected);
+            queue_ack(conn);  // deferred: a commit on the Connected event completes the handshake with data
+            raise(conn, stream::Event::Connected);
             if (segment.payload_length > 0 || header.flags.has(wire::TcpFlag::Fin)) {
-                segment.header.sequence = c.rcv_nxt_;
+                segment.header.sequence = conn.rcv_nxt_;
                 segment.header.flags    = wire::TcpFlags::from_raw(
                     static_cast<std::uint8_t>(header.flags.raw() & ~std::to_underlying(wire::TcpFlag::Syn)));
-                receive_synchronized(c, datagram, segment);
+                receive_synchronized(conn, datagram, segment);
             }
         }
 
-        void receive_synchronized(ConnectionType& c, Datagram& datagram, Segment segment) noexcept {
+        void receive_synchronized(ConnectionType& conn, Datagram& datagram, Segment segment) noexcept {
             wire::TcpHeader& header = segment.header;
             const bool rst          = header.flags.has(wire::TcpFlag::Rst);
 
             // 1. Sequence check against [rcv_nxt, rcv_adv): trim an old prefix, drop the rest with an immediate ACK.
-            const std::uint32_t window = c.rcv_adv_.value - c.rcv_nxt_.value;
+            const std::uint32_t window = conn.rcv_adv_.value - conn.rcv_nxt_.value;
             const std::uint32_t length = segment.length();
             Sequence sequence          = header.sequence;
             const Sequence end         = sequence + length;
             if (length == 0) {
-                const bool acceptable =
-                    window == 0 ? sequence == c.rcv_nxt_ : !sequence.before(c.rcv_nxt_) && sequence.before(c.rcv_adv_);
+                const bool acceptable = window == 0 ? sequence == conn.rcv_nxt_
+                                                    : !sequence.before(conn.rcv_nxt_) && sequence.before(conn.rcv_adv_);
                 if (!acceptable) {
                     ++counters_.dropped_out_of_window;
                     if (!rst) {
-                        ack_now(c);
+                        ack_now(conn);
                     }
                     return;
                 }
             } else {
-                if (!end.after(c.rcv_nxt_)) {  // entirely before rcv_nxt
-                    if (c.state_ == State::SynReceived && header.flags.has(wire::TcpFlag::Syn) &&
+                if (!end.after(conn.rcv_nxt_)) {  // entirely before rcv_nxt
+                    if (conn.state_ == State::SynReceived && header.flags.has(wire::TcpFlag::Syn) &&
                         !header.flags.has(wire::TcpFlag::Ack)) {
-                        if (send_control(c, wire::TcpFlags{wire::TcpFlag::Syn, wire::TcpFlag::Ack}, c.iss_)) {
+                        if (send_control(conn, wire::TcpFlags{wire::TcpFlag::Syn, wire::TcpFlag::Ack}, conn.iss_)) {
                             ++counters_.control_segments_sent;  // a duplicate SYN: the SYN-ACK again
                         }
                         return;
                     }
                     ++counters_.dropped_duplicate;
                     if (!rst) {
-                        ack_now(c);
+                        ack_now(conn);
                     }
                     return;
                 }
-                if (sequence.after(c.rcv_nxt_)) {  // a gap before it
+                if (sequence.after(conn.rcv_nxt_)) {  // a gap before it
                     ++counters_.dropped_out_of_order;
-                    if (!c.recovery_end_ || end.after(*c.recovery_end_)) {
-                        c.recovery_end_ = end;
+                    if (!conn.recovery_end_ || end.after(*conn.recovery_end_)) {
+                        conn.recovery_end_ = end;
                     }
                     if (!rst) {
-                        ack_now(c);
+                        ack_now(conn);
                     }
                     return;
                 }
-                if (sequence.before(c.rcv_nxt_)) {  // overlap: the old prefix is already ours
-                    std::uint32_t trim = c.rcv_nxt_.value - sequence.value;
+                if (sequence.before(conn.rcv_nxt_)) {  // overlap: the old prefix is already ours
+                    std::uint32_t trim = conn.rcv_nxt_.value - sequence.value;
                     if (header.flags.has(wire::TcpFlag::Syn)) {
                         header.flags = wire::TcpFlags::from_raw(
                             static_cast<std::uint8_t>(header.flags.raw() & ~std::to_underlying(wire::TcpFlag::Syn)));
@@ -476,13 +477,13 @@ namespace aloe::tcp {
                     assert(trim <= segment.payload_length);
                     segment.payload_offset = static_cast<std::uint16_t>(segment.payload_offset + trim);
                     segment.payload_length = static_cast<std::uint16_t>(segment.payload_length - trim);
-                    sequence               = c.rcv_nxt_;
+                    sequence               = conn.rcv_nxt_;
                     header.sequence        = sequence;
                 }
-                if (window == 0 || end.after(c.rcv_adv_)) {
+                if (window == 0 || end.after(conn.rcv_adv_)) {
                     ++counters_.dropped_out_of_window;
                     if (!rst) {
-                        ack_now(c);
+                        ack_now(conn);
                     }
                     return;
                 }
@@ -490,14 +491,14 @@ namespace aloe::tcp {
 
             // 2. RST.
             if (rst) {
-                if (c.state_ == State::SynReceived && !c.owned_) {
+                if (conn.state_ == State::SynReceived && !conn.owned_) {
                     ++counters_.handshakes_failed;
-                    free_slot(c);
+                    free_slot(conn);
                     return;
                 }
                 ++counters_.connections_reset;
-                set_closed(c);
-                raise(c, stream::Event::Reset);
+                set_closed(conn);
+                raise(conn, stream::Event::Reset);
                 return;
             }
             if (header.flags.has(wire::TcpFlag::Syn)) {
@@ -511,84 +512,85 @@ namespace aloe::tcp {
                 return;
             }
             const Sequence ack = header.acknowledgement;
-            if (c.state_ == State::SynReceived) {
-                if (ack != c.snd_nxt_) {
+            if (conn.state_ == State::SynReceived) {
+                if (ack != conn.snd_nxt_) {
                     ++counters_.dropped_unexpected;
                     return;
                 }
-                c.snd_una_ = ack;
-                c.state_   = State::Established;
-                c.owned_   = true;
-                wheel_->cancel(c.timer_);
-                c.tries_           = 0;
-                c.unresolved_wait_ = false;
+                conn.snd_una_ = ack;
+                conn.state_   = State::Established;
+                conn.owned_   = true;
+                wheel_->cancel(conn.timer_);
+                conn.tries_           = 0;
+                conn.unresolved_wait_ = false;
                 ++counters_.connections_accepted;
-                raise(c, stream::Event::Accepted);
+                raise(conn, stream::Event::Accepted);
                 // The same segment may carry data or a FIN: keep going.
             }
-            if (ack.after(c.snd_nxt_)) {
+            if (ack.after(conn.snd_nxt_)) {
                 ++counters_.dropped_unexpected;  // acknowledges what was never sent
-                ack_now(c);
+                ack_now(conn);
                 return;
             }
-            const std::size_t writable_before = writable(c);
-            if (ack.after(c.snd_una_)) {
-                c.snd_una_ = ack;
-                raise(c, stream::Event::Acked);
-                if (c.fin_sent_ && ack == c.snd_nxt_) {  // our FIN is acknowledged
-                    switch (c.state_) {
+            const std::size_t writable_before = writable(conn);
+            if (ack.after(conn.snd_una_)) {
+                conn.snd_una_ = ack;
+                raise(conn, stream::Event::Acked);
+                if (conn.fin_sent_ && ack == conn.snd_nxt_) {  // our FIN is acknowledged
+                    switch (conn.state_) {
                         case State::FinWait1:
-                            c.state_ = State::FinWait2;
-                            wheel_->cancel(c.timer_);
+                            conn.state_ = State::FinWait2;
+                            wheel_->cancel(conn.timer_);
                             break;
                         case State::Closing:
                         case State::LastAck:
-                            wheel_->cancel(c.timer_);
-                            c.finish_pending_ = true;
+                            wheel_->cancel(conn.timer_);
+                            conn.finish_pending_ = true;
                             break;
                         default:
                             break;
                     }
                 }
             }
-            update_peer_window(c, header);
-            if (writable(c) > writable_before) {
-                raise(c, stream::Event::Writable);
+            // RFC 793 updates the window only when SND.UNA <= SEG.ACK <= SND.NXT: a stale ACK carries a stale window.
+            if (!ack.before(conn.snd_una_)) {
+                update_peer_window(conn, header);
             }
-            maybe_finish(c);
-            if (c.state_ == State::Closed) {
+            if (writable(conn) > writable_before) {
+                raise(conn, stream::Event::Writable);
+            }
+            maybe_finish(conn);
+            if (conn.state_ == State::Closed) {
                 return;
             }
 
             // 4. Payload.
             if (segment.payload_length > 0) {
-                const bool receiving =
-                    c.state_ == State::Established || c.state_ == State::FinWait1 || c.state_ == State::FinWait2;
-                if (!receiving) {
-                    ++counters_.dropped_unexpected;  // data after the peer's FIN
-                    ack_now(c);
+                if (conn.peer_closed_) {  // the peer's sequence space ended at its FIN, whatever state we are in
+                    ++counters_.dropped_unexpected;
+                    ack_now(conn);
                     return;
                 }
-                if (!accept_payload(c, datagram, segment)) {
-                    ack_now(c);  // reports the last accepted byte; the FIN behind refused data is not consumed
+                if (!accept_payload(conn, datagram, segment)) {
+                    ack_now(conn);  // reports the last accepted byte; the FIN behind refused data is not consumed
                     return;
                 }
-                apply_ack_policy(c, segment.payload_length);
+                apply_ack_policy(conn, segment.payload_length);
             }
 
             // 5. FIN, in order: its sequence is rcv_nxt after the payload.
             if (header.flags.has(wire::TcpFlag::Fin)) {
-                if (c.state_ == State::CloseWait || c.state_ == State::Closing || c.state_ == State::LastAck) {
+                if (conn.state_ == State::CloseWait || conn.state_ == State::Closing || conn.state_ == State::LastAck) {
                     ++counters_.dropped_unexpected;  // a second FIN: the peer's sequence space ended at the first
-                    ack_now(c);
+                    ack_now(conn);
                     return;
                 }
-                receive_fin(c);
+                receive_fin(conn);
             }
         }
 
-        [[nodiscard]] bool accept_payload(ConnectionType& c, Datagram& datagram, const Segment& segment) noexcept {
-            if (c.chain_count_ >= config_.receive_segments) {
+        [[nodiscard]] bool accept_payload(ConnectionType& conn, Datagram& datagram, const Segment& segment) noexcept {
+            if (conn.chain_count_ >= config_.receive_segments) {
                 ++counters_.dropped_no_slot;
                 return false;
             }
@@ -601,71 +603,70 @@ namespace aloe::tcp {
             const std::optional<std::uint32_t> node =
                 pool_.acquire(std::move(datagram.packet), offset, segment.payload_length);
             assert(node.has_value() && "a node was available");
-            if (c.chain_tail_ == detail::no_node) {
-                c.chain_head_ = *node;
+            if (conn.chain_tail_ == detail::no_node) {
+                conn.chain_head_ = *node;
             } else {
-                pool_.node(c.chain_tail_).next = *node;
+                pool_.node(conn.chain_tail_).next = *node;
             }
-            c.chain_tail_ = *node;
-            ++c.chain_count_;
-            c.rcv_nxt_       = c.rcv_nxt_ + segment.payload_length;
-            c.unread_bytes_ += segment.payload_length;
-            raise(c, stream::Event::Readable);
+            conn.chain_tail_ = *node;
+            ++conn.chain_count_;
+            conn.rcv_nxt_       = conn.rcv_nxt_ + segment.payload_length;
+            conn.unread_bytes_ += segment.payload_length;
+            raise(conn, stream::Event::Readable);
             return true;
         }
 
         /// RFC 5681: ordinary in-order data waits for flush; recovery, and every second full-sized segment, do not.
-        void apply_ack_policy(ConnectionType& c, const std::size_t accepted) noexcept {
-            if (c.recovery_end_) {
-                ack_now(c);
-                if (!c.rcv_nxt_.before(*c.recovery_end_)) {
-                    c.recovery_end_.reset();
+        void apply_ack_policy(ConnectionType& conn, const std::size_t accepted) noexcept {
+            if (conn.recovery_end_) {
+                ack_now(conn);
+                if (!conn.rcv_nxt_.before(*conn.recovery_end_)) {
+                    conn.recovery_end_.reset();
                 }
                 return;
             }
             if (accepted >= mss_) {
-                if (c.full_segments_since_ack_ < 2) {
-                    ++c.full_segments_since_ack_;
+                if (conn.full_segments_since_ack_ < 2) {
+                    ++conn.full_segments_since_ack_;
                 }
-                if (c.full_segments_since_ack_ >= 2) {
-                    ack_now(c);  // a success resets the count; a refusal leaves it saturated at two
+                if (conn.full_segments_since_ack_ >= 2) {
+                    ack_now(conn);  // a success resets the count; a refusal leaves it saturated at two
                     return;
                 }
             }
-            queue_ack(c);
+            queue_ack(conn);
         }
 
-        void receive_fin(ConnectionType& c) noexcept {
-            c.rcv_nxt_     = c.rcv_nxt_ + 1;
-            c.peer_closed_ = true;
-            raise(c, stream::Event::PeerClosed);
-            switch (c.state_) {
+        void receive_fin(ConnectionType& conn) noexcept {
+            conn.rcv_nxt_     = conn.rcv_nxt_ + 1;
+            conn.peer_closed_ = true;
+            raise(conn, stream::Event::PeerClosed);
+            switch (conn.state_) {
                 case State::Established:
-                    c.state_ = State::CloseWait;
-                    queue_ack(c);  // the application's close may carry it
+                    conn.state_ = State::CloseWait;
+                    queue_ack(conn);  // the application's close may carry it
                     break;
                 case State::FinWait1:
-                    c.state_ = State::Closing;
-                    ack_now(c);
+                    conn.state_ = State::Closing;
+                    ack_now(conn);
                     break;
                 case State::FinWait2:
-                    c.finish_pending_ = true;
-                    ack_now(c);  // the terminal ACK goes before Closed is published; flush retries a refusal
-                    maybe_finish(c);
+                    conn.finish_pending_ = true;
+                    ack_now(conn);  // the terminal ACK goes before Closed is published; flush retries a refusal
                     break;
                 default:
-                    queue_ack(c);
+                    queue_ack(conn);
                     break;
             }
         }
 
         /// RFC 793's window update rule: a newer segment, or the same one with a newer acknowledgement.
-        static void update_peer_window(ConnectionType& c, const wire::TcpHeader& header) noexcept {
-            if (c.wl1_.before(header.sequence) ||
-                (c.wl1_ == header.sequence && !c.wl2_.after(header.acknowledgement))) {
-                c.snd_wnd_ = header.window;
-                c.wl1_     = header.sequence;
-                c.wl2_     = header.acknowledgement;
+        static void update_peer_window(ConnectionType& conn, const wire::TcpHeader& header) noexcept {
+            if (conn.wl1_.before(header.sequence) ||
+                (conn.wl1_ == header.sequence && !conn.wl2_.after(header.acknowledgement))) {
+                conn.snd_wnd_ = header.window;
+                conn.wl1_     = header.sequence;
+                conn.wl2_     = header.acknowledgement;
             }
         }
 
@@ -716,7 +717,7 @@ namespace aloe::tcp {
          * successful send records the offer and clears the pending ACK; a refusal returns the packet to the
          * pool and leaves every number as it was.
          */
-        [[nodiscard]] std::expected<void, net::SendError> send_segment(ConnectionType& c,
+        [[nodiscard]] std::expected<void, net::SendError> send_segment(ConnectionType& conn,
                                                                        Packet&& packet,
                                                                        const Sequence sequence,
                                                                        const wire::TcpFlags flags,
@@ -729,22 +730,22 @@ namespace aloe::tcp {
                 return std::unexpected{net::SendError::Refused};
             }
             const bool with_ack = flags.has(wire::TcpFlag::Ack);
-            Sequence offer      = c.rcv_adv_;
+            Sequence offer      = conn.rcv_adv_;
             bool extends        = false;
             if (with_ack) {
                 if (const Sequence candidate =
-                        c.rcv_nxt_ + (byte_budget_ - static_cast<std::uint32_t>(c.unread_bytes_));
-                    candidate.after(c.rcv_adv_) && c.chain_count_ < config_.receive_segments) {
+                        conn.rcv_nxt_ + (byte_budget_ - static_cast<std::uint32_t>(conn.unread_bytes_));
+                    candidate.after(conn.rcv_adv_) && conn.chain_count_ < config_.receive_segments) {
                     offer   = candidate;
                     extends = true;
                 }
             }
-            const std::uint16_t window = with_ack ? static_cast<std::uint16_t>(offer.value - c.rcv_nxt_.value)
+            const std::uint16_t window = with_ack ? static_cast<std::uint16_t>(offer.value - conn.rcv_nxt_.value)
                                                   : static_cast<std::uint16_t>(byte_budget_);
-            wire::TcpHeader{.source_port      = c.local_.port,
-                            .destination_port = c.remote_.port,
+            wire::TcpHeader{.source_port      = conn.local_.port,
+                            .destination_port = conn.remote_.port,
                             .sequence         = sequence,
-                            .acknowledgement  = with_ack ? c.rcv_nxt_ : Sequence{},
+                            .acknowledgement  = with_ack ? conn.rcv_nxt_ : Sequence{},
                             .data_offset      = static_cast<std::uint8_t>(header_size),
                             .flags            = flags,
                             .window           = window}
@@ -753,7 +754,7 @@ namespace aloe::tcp {
                 wire::TcpOptions::write_mss(room->subspan(wire::TcpHeader::size), mss_);
             }
             const auto sent = ip_->send(std::move(packet),
-                                        net::SendRequest{.destination = c.remote_.address,
+                                        net::SendRequest{.destination = conn.remote_.address,
                                                          .protocol    = wire::Ipv4Protocol::Tcp,
                                                          .checksum    = device::L4Checksum::Tcp},
                                         now_);
@@ -768,29 +769,29 @@ namespace aloe::tcp {
                 return sent;
             }
             if (with_ack) {
-                c.rcv_adv_ = offer;
+                conn.rcv_adv_ = offer;
                 if (extends) {
                     ++counters_.window_updates;
                 }
-                c.ack_pending_ = false;
-                acks_.remove(c);
-                c.full_segments_since_ack_ = 0;
+                conn.ack_pending_ = false;
+                acks_.remove(conn);
+                conn.full_segments_since_ack_ = 0;
             }
             return {};
         }
 
         [[nodiscard]] std::expected<void, net::SendError>
-        send_control(ConnectionType& c, const wire::TcpFlags flags, const Sequence sequence) noexcept {
+        send_control(ConnectionType& conn, const wire::TcpFlags flags, const Sequence sequence) noexcept {
             std::optional<Packet> packet = ip_->allocate();
             if (!packet) {
                 ++counters_.send_refused;
                 return std::unexpected{net::SendError::Refused};
             }
-            return send_segment(c, std::move(*packet), sequence, flags, flags.has(wire::TcpFlag::Syn));
+            return send_segment(conn, std::move(*packet), sequence, flags, flags.has(wire::TcpFlag::Syn));
         }
 
-        [[nodiscard]] bool send_pure_ack(ConnectionType& c) noexcept {
-            if (send_control(c, wire::TcpFlags{wire::TcpFlag::Ack}, c.snd_nxt_)) {
+        [[nodiscard]] bool send_pure_ack(ConnectionType& conn) noexcept {
+            if (send_control(conn, wire::TcpFlags{wire::TcpFlag::Ack}, conn.snd_nxt_)) {
                 ++counters_.pure_acks_sent;
                 return true;
             }
@@ -798,34 +799,38 @@ namespace aloe::tcp {
         }
 
         /// An ordinary ACK: marked, sent by flush unless a data segment carries it first.
-        void queue_ack(ConnectionType& c) noexcept {
-            c.ack_pending_ = true;
-            if (!acks_.contains(c)) {
-                acks_.push_back(c);
+        void queue_ack(ConnectionType& conn) noexcept {
+            conn.ack_pending_ = true;
+            if (!acks_.contains(conn)) {
+                acks_.push_back(conn);
             }
         }
 
-        /// An immediate ACK: queued through IP before the next segment is processed; a refusal leaves it pending.
-        void ack_now(ConnectionType& c) noexcept {
-            if (!send_pure_ack(c)) {
-                queue_ack(c);
+        /// An immediate ACK: queued through IP before the next segment is processed; a refusal leaves it pending. When
+        /// the close only waited for this ACK, Closed follows it, whichever segment prompted it.
+        void ack_now(ConnectionType& conn) noexcept {
+            if (send_pure_ack(conn)) {
+                maybe_finish(conn);
+            } else {
+                queue_ack(conn);
             }
         }
 
         /// A Writable hint at the next process, at most one per marked connection.
-        void mark_retry(ConnectionType& c) noexcept {
-            if (!retries_.contains(c)) {
-                retries_.push_back(c);
+        void mark_retry(ConnectionType& conn) noexcept {
+            if (!retries_.contains(conn)) {
+                retries_.push_back(conn);
             }
         }
 
-        [[nodiscard]] static std::size_t writable(const ConnectionType& c) noexcept {
-            if (c.prepared_ || (c.state_ != State::Established && c.state_ != State::CloseWait)) {
+        [[nodiscard]] static std::size_t writable(const ConnectionType& conn) noexcept {
+            if (conn.prepared_ || (conn.state_ != State::Established && conn.state_ != State::CloseWait)) {
                 return 0;
             }
-            const std::uint32_t in_flight = c.snd_nxt_.value - c.snd_una_.value;
-            const std::uint32_t usable = c.snd_wnd_ > in_flight ? c.snd_wnd_ - in_flight : 0;  // no unsigned underflow
-            return std::min<std::size_t>(c.mss(), usable);
+            const std::uint32_t in_flight = conn.snd_nxt_.value - conn.snd_una_.value;
+            const std::uint32_t usable =
+                conn.snd_wnd_ > in_flight ? conn.snd_wnd_ - in_flight : 0;  // no unsigned underflow
+            return std::min<std::size_t>(conn.mss(), usable);
         }
 
         /**
@@ -834,12 +839,13 @@ namespace aloe::tcp {
          * without allocating, for a count of zero or nothing writable; an allocation failure counts one
          * `allocation_failures`, marks a retry hint and retains nothing.
          */
-        [[nodiscard]] std::optional<std::span<std::byte>> prepare(ConnectionType& c, const std::size_t count) noexcept {
+        [[nodiscard]] std::optional<std::span<std::byte>> prepare(ConnectionType& conn,
+                                                                  const std::size_t count) noexcept {
             assert(!c.prepared_ && "one prepare at a time: commit first");
             if (count == 0) {
                 return std::nullopt;
             }
-            const std::size_t room = writable(c);
+            const std::size_t room = writable(conn);
             if (room == 0) {
                 return std::nullopt;  // nothing allocates when nothing is writable
             }
@@ -847,18 +853,18 @@ namespace aloe::tcp {
             std::optional<Packet> packet = ip_->allocate();
             if (!packet) {
                 ++counters_.allocation_failures;
-                mark_retry(c);  // the pool may have packets by the next process
+                mark_retry(conn);  // the pool may have packets by the next process
                 return std::nullopt;
             }
             const std::optional<std::span<std::byte>> span = packet->append(size);
             assert(span && "size is at most the MSS and a packet holds a whole frame");
             if (!span) {
                 ++counters_.allocation_failures;  // unreachable by construction; counted in a release build
-                mark_retry(c);
+                mark_retry(conn);
                 return std::nullopt;
             }
-            c.prepared_      = std::move(*packet);  // the span points into the block, which does not move
-            c.prepared_size_ = size;
+            conn.prepared_      = std::move(*packet);  // the span points into the block, which does not move
+            conn.prepared_size_ = size;
             return span;
         }
 
@@ -866,76 +872,86 @@ namespace aloe::tcp {
          * One PSH+ACK segment of the first `count` prepared bytes; `commit(0)` discards the preparation. A refusal
          * returns the packet to the pool, leaves every number as it was, marks a retry hint and returns false. A
          * connection that left Established and CloseWait since the prepare drops the packet and refuses the commit
-         * with no hint: the events say why.
+         * with no hint: the events say why. A peer whose window no longer covers `count`, because it retracted its
+         * right edge since the prepare, refuses the commit with a hint: prepare again for what `writable()` allows.
          */
-        [[nodiscard]] bool commit(ConnectionType& c, const std::size_t count) noexcept {
+        [[nodiscard]] bool commit(ConnectionType& conn, const std::size_t count) noexcept {
             assert(c.prepared_ && "commit without a prepare");
-            if (!c.prepared_) {
+            if (!conn.prepared_) {
                 ++counters_.commits_refused;  // a contract violation, refused in a release build
                 return false;
             }
             assert(count <= c.prepared_size_ && "commit more than was prepared");
-            Packet packet = std::move(*c.prepared_);
-            c.prepared_.reset();
-            const std::size_t prepared = c.prepared_size_;
-            c.prepared_size_           = 0;
+            Packet packet = std::move(*conn.prepared_);
+            conn.prepared_.reset();
+            const std::size_t prepared = conn.prepared_size_;
+            conn.prepared_size_        = 0;
             if (count == 0) {
                 return true;  // discarded: `packet` goes back to the pool; nothing was refused
             }
-            if (c.state_ != State::Established && c.state_ != State::CloseWait) {
+            if (conn.state_ != State::Established && conn.state_ != State::CloseWait) {
                 ++counters_.commits_refused;  // closed since the prepare: no hint, the events say why
                 return false;
             }
-            packet.trim_back(prepared - count);
-            if (!send_segment(
-                    c, std::move(packet), c.snd_nxt_, wire::TcpFlags{wire::TcpFlag::Ack, wire::TcpFlag::Psh}, false)) {
-                mark_retry(c);  // send_segment counted the refusal
+            if (count > writable(conn)) {     // the preparation is released, so this is the credit the peer offers now
+                ++counters_.commits_refused;  // RFC 1122: a sender copes with a shrunk window by not sending into it
+                mark_retry(conn);
                 return false;
             }
-            c.snd_nxt_ = c.snd_nxt_ + static_cast<std::uint32_t>(count);
+            packet.trim_back(prepared - count);
+            if (!send_segment(conn,
+                              std::move(packet),
+                              conn.snd_nxt_,
+                              wire::TcpFlags{wire::TcpFlag::Ack, wire::TcpFlag::Psh},
+                              false)) {
+                mark_retry(conn);  // send_segment counted the refusal
+                return false;
+            }
+            conn.snd_nxt_ = conn.snd_nxt_ + static_cast<std::uint32_t>(count);
             ++counters_.data_segments_sent;
             return true;
         }
 
         /// Advances the chain's front by `count` bytes, freeing packets as they empty; a reopened edge queues an
         /// update.
-        void consume(ConnectionType& c, const std::size_t count) noexcept {
+        void consume(ConnectionType& conn, const std::size_t count) noexcept {
             assert(count <= c.unread_bytes_ && "consume past unread()");
             std::size_t remaining = count;
             while (remaining > 0) {
-                typename detail::TcpNodePool<Packet>::Node& node  = pool_.node(c.chain_head_);
+                typename detail::TcpNodePool<Packet>::Node& node  = pool_.node(conn.chain_head_);
                 const std::size_t taken                           = std::min<std::size_t>(remaining, node.length);
                 node.offset                                       = static_cast<std::uint16_t>(node.offset + taken);
                 node.length                                       = static_cast<std::uint16_t>(node.length - taken);
                 remaining                                        -= taken;
-                c.unread_bytes_                                  -= taken;
+                conn.unread_bytes_                               -= taken;
                 if (node.length == 0) {
                     const std::uint32_t next = node.next;
-                    pool_.release(c.chain_head_);
-                    c.chain_head_ = next;
+                    pool_.release(conn.chain_head_);
+                    conn.chain_head_ = next;
                     if (next == detail::no_node) {
-                        c.chain_tail_ = detail::no_node;
+                        conn.chain_tail_ = detail::no_node;
                     }
-                    --c.chain_count_;
+                    --conn.chain_count_;
                 }
             }
             const bool receiving =
-                c.state_ == State::Established || c.state_ == State::FinWait1 || c.state_ == State::FinWait2;
+                conn.state_ == State::Established || conn.state_ == State::FinWait1 || conn.state_ == State::FinWait2;
             if (!receiving) {
                 return;  // the peer sends no more data, or the connection is closed: no offer to make
             }
-            if (const Sequence candidate = c.rcv_nxt_ + (byte_budget_ - static_cast<std::uint32_t>(c.unread_bytes_));
-                candidate.after(c.rcv_adv_) && c.chain_count_ < config_.receive_segments) {
-                queue_ack(c);  // an ordinary window update, including the reopening of a zero window
+            if (const Sequence candidate =
+                    conn.rcv_nxt_ + (byte_budget_ - static_cast<std::uint32_t>(conn.unread_bytes_));
+                candidate.after(conn.rcv_adv_) && conn.chain_count_ < config_.receive_segments) {
+                queue_ack(conn);  // an ordinary window update, including the reopening of a zero window
             }
         }
 
         // The control path: events, slots, the port choice, the retransmit timer, close, abort and release.
 
-        void raise(ConnectionType& c, const stream::Event event) noexcept {
-            c.events_ |= event;
-            if (!events_.contains(c)) {
-                events_.push_back(c);
+        void raise(ConnectionType& conn, const stream::Event event) noexcept {
+            conn.events_ |= event;
+            if (!events_.contains(conn)) {
+                events_.push_back(conn);
             }
         }
 
@@ -948,34 +964,34 @@ namespace aloe::tcp {
             return index;
         }
 
-        void free_slot(ConnectionType& c) noexcept {
+        void free_slot(ConnectionType& conn) noexcept {
             // Every live connection is indexed by connect or passive_open; a free slot is not, and pushing its index
             // again would hand one slot to two opens. A release build ignores the second call.
             assert(c.indexed_ && "release of a free slot");
-            if (!c.indexed_) {
+            if (!conn.indexed_) {
                 return;
             }
-            wheel_->cancel(c.timer_);
-            std::ignore = table_.erase(c.key_, c.base_hash_);
-            return_chain(c);
-            c.prepared_.reset();
-            events_.remove(c);
-            acks_.remove(c);
-            retries_.remove(c);
-            c.clear();
-            free_.push_back(c.index_);
+            wheel_->cancel(conn.timer_);
+            std::ignore = table_.erase(conn.key_, conn.base_hash_);
+            return_chain(conn);
+            conn.prepared_.reset();
+            events_.remove(conn);
+            acks_.remove(conn);
+            retries_.remove(conn);
+            conn.clear();
+            free_.push_back(conn.index_);
         }
 
-        void return_chain(ConnectionType& c) noexcept {
-            for (std::uint32_t index = c.chain_head_; index != detail::no_node;) {
+        void return_chain(ConnectionType& conn) noexcept {
+            for (std::uint32_t index = conn.chain_head_; index != detail::no_node;) {
                 const std::uint32_t next = pool_.node(index).next;
                 pool_.release(index);
                 index = next;
             }
-            c.chain_head_   = detail::no_node;
-            c.chain_tail_   = detail::no_node;
-            c.chain_count_  = 0;
-            c.unread_bytes_ = 0;
+            conn.chain_head_   = detail::no_node;
+            conn.chain_tail_   = detail::no_node;
+            conn.chain_count_  = 0;
+            conn.unread_bytes_ = 0;
         }
 
         [[nodiscard]] Sequence draw_isn() noexcept {
@@ -1022,15 +1038,16 @@ namespace aloe::tcp {
             return std::unexpected{ConnectError::NoPort};
         }
 
-        void arm_retry(ConnectionType& c) noexcept {
-            const core::Duration delay =
-                c.unresolved_wait_ ? config_.unresolved_retry : config_.retry_initial * (std::int64_t{1} << c.tries_);
-            wheel_->arm(c.timer_, now_ + delay);
+        void arm_retry(ConnectionType& conn) noexcept {
+            const core::Duration delay = conn.unresolved_wait_
+                                             ? config_.unresolved_retry
+                                             : config_.retry_initial * (std::int64_t{1} << conn.tries_);
+            wheel_->arm(conn.timer_, now_ + delay);
         }
 
         /// Called by the wheel with the timer unarmed: a try, or a poll while the next hop is unresolved.
-        void on_timer(ConnectionType& c) noexcept {
-            switch (c.state_) {
+        void on_timer(ConnectionType& conn) noexcept {
+            switch (conn.state_) {
                 case State::SynSent:
                 case State::SynReceived:
                 case State::FinWait1:
@@ -1040,115 +1057,117 @@ namespace aloe::tcp {
                 default:
                     return;  // nothing to retransmit in this state
             }
-            if (!c.unresolved_wait_) {
-                if (c.tries_ >= config_.retries) {
-                    time_out(c);
+            if (!conn.unresolved_wait_) {
+                if (conn.tries_ >= config_.retries) {
+                    time_out(conn);
                     return;
                 }
-                ++c.tries_;
+                ++conn.tries_;
                 ++counters_.retransmits;
             }
-            const auto sent = resend_control(c);
+            const auto sent = resend_control(conn);
             if (sent) {
                 ++counters_.control_segments_sent;
             }
-            c.unresolved_wait_ = !sent && sent.error() == net::SendError::Unresolved;
-            arm_retry(c);
+            conn.unresolved_wait_ = !sent && sent.error() == net::SendError::Unresolved;
+            arm_retry(conn);
         }
 
-        [[nodiscard]] std::expected<void, net::SendError> resend_control(ConnectionType& c) noexcept {
-            switch (c.state_) {
+        [[nodiscard]] std::expected<void, net::SendError> resend_control(ConnectionType& conn) noexcept {
+            switch (conn.state_) {
                 case State::SynSent:
-                    return send_control(c, wire::TcpFlags{wire::TcpFlag::Syn}, c.iss_);
+                    return send_control(conn, wire::TcpFlags{wire::TcpFlag::Syn}, conn.iss_);
                 case State::SynReceived:
-                    return send_control(c, wire::TcpFlags{wire::TcpFlag::Syn, wire::TcpFlag::Ack}, c.iss_);
+                    return send_control(conn, wire::TcpFlags{wire::TcpFlag::Syn, wire::TcpFlag::Ack}, conn.iss_);
                 case State::FinWait1:
                 case State::Closing:
                 case State::LastAck:
-                    return send_control(c, wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, c.fin_sequence_);
+                    return send_control(
+                        conn, wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, conn.fin_sequence_);
                 default:
                     return {};
             }
         }
 
-        void time_out(ConnectionType& c) noexcept {
-            if (!c.owned_) {
+        void time_out(ConnectionType& conn) noexcept {
+            if (!conn.owned_) {
                 ++counters_.handshakes_failed;  // a passive open nobody took: freed silently
-                free_slot(c);
+                free_slot(conn);
                 return;
             }
             ++counters_.connections_timed_out;
-            set_closed(c);
-            raise(c, stream::Event::TimedOut);
+            set_closed(conn);
+            raise(conn, stream::Event::TimedOut);
         }
 
         /// Closed, with nothing armed or pending. Held segments stay until release, and so does an open preparation:
         /// the application may still write into its span, and the next commit refuses it.
-        void set_closed(ConnectionType& c) noexcept {
-            c.state_ = State::Closed;
-            wheel_->cancel(c.timer_);
-            c.unresolved_wait_ = false;
-            acks_.remove(c);
-            c.ack_pending_    = false;
-            c.finish_pending_ = false;
-            retries_.remove(c);
+        void set_closed(ConnectionType& conn) noexcept {
+            conn.state_ = State::Closed;
+            wheel_->cancel(conn.timer_);
+            conn.unresolved_wait_ = false;
+            acks_.remove(conn);
+            conn.ack_pending_    = false;
+            conn.finish_pending_ = false;
+            retries_.remove(conn);
         }
 
-        void finish(ConnectionType& c) noexcept {
-            set_closed(c);
+        void finish(ConnectionType& conn) noexcept {
+            set_closed(conn);
             ++counters_.connections_closed;
-            raise(c, stream::Event::Closed);
+            raise(conn, stream::Event::Closed);
         }
 
         /// The last ACK the peer is owed must be queued before Closed is published; flush retries the rest.
-        void maybe_finish(ConnectionType& c) noexcept {
-            if (c.finish_pending_ && !c.ack_pending_) {
-                finish(c);
+        void maybe_finish(ConnectionType& conn) noexcept {
+            if (conn.finish_pending_ && !conn.ack_pending_) {
+                finish(conn);
             }
         }
 
         /// FIN after what was committed: Established moves to FinWait1, CloseWait to LastAck; elsewhere nothing. An
         /// open preparation stays the application's: its next commit refuses it, as the connection left the sendable
         /// states.
-        void close(ConnectionType& c) noexcept {
-            switch (c.state_) {
+        void close(ConnectionType& conn) noexcept {
+            switch (conn.state_) {
                 case State::Established:
-                    c.state_ = State::FinWait1;
+                    conn.state_ = State::FinWait1;
                     break;
                 case State::CloseWait:
-                    c.state_ = State::LastAck;
+                    conn.state_ = State::LastAck;
                     break;
                 default:
                     return;
             }
-            c.fin_sequence_ = c.snd_nxt_;
-            c.fin_sent_     = true;
-            const auto sent = send_control(c, wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, c.fin_sequence_);
+            conn.fin_sequence_ = conn.snd_nxt_;
+            conn.fin_sent_     = true;
+            const auto sent =
+                send_control(conn, wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, conn.fin_sequence_);
             if (sent) {
                 ++counters_.control_segments_sent;
             }
-            c.snd_nxt_ = c.snd_nxt_ + 1;  // the FIN takes its number whether or not it left: the timer resends it
-            c.tries_   = 0;
-            c.unresolved_wait_ = !sent && sent.error() == net::SendError::Unresolved;
-            arm_retry(c);
+            conn.snd_nxt_ = conn.snd_nxt_ + 1;  // the FIN takes its number whether or not it left: the timer resends it
+            conn.tries_   = 0;
+            conn.unresolved_wait_ = !sent && sent.error() == net::SendError::Unresolved;
+            arm_retry(conn);
         }
 
-        void abort(ConnectionType& c) noexcept {
-            if (c.state_ == State::Closed) {
+        void abort(ConnectionType& conn) noexcept {
+            if (conn.state_ == State::Closed) {
                 return;
             }
-            if (send_control(c, wire::TcpFlags{wire::TcpFlag::Rst, wire::TcpFlag::Ack}, c.snd_nxt_)) {
+            if (send_control(conn, wire::TcpFlags{wire::TcpFlag::Rst, wire::TcpFlag::Ack}, conn.snd_nxt_)) {
                 ++counters_.resets_sent;
             }
-            set_closed(c);
-            raise(c, stream::Event::Closed);
+            set_closed(conn);
+            raise(conn, stream::Event::Closed);
         }
 
-        void release(ConnectionType& c) noexcept {
-            if (c.state_ != State::Closed) {
-                abort(c);
+        void release(ConnectionType& conn) noexcept {
+            if (conn.state_ != State::Closed) {
+                abort(conn);
             }
-            free_slot(c);
+            free_slot(conn);
         }
 
         [[nodiscard]] static TcpConfig validated(const TcpConfig& config, const std::uint16_t max_l4_size) {

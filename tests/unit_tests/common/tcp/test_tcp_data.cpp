@@ -345,6 +345,54 @@ TEST_P(TcpSend, PeerWindowShrinkBelowInFlight) {
     EXPECT_TRUE(event->events.writable());
 }
 
+TEST_P(TcpSend, CommitRefusedWhenTheWindowShrankSinceThePrepare) {
+    auto* c = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence before = c->committed();
+    const auto out           = c->prepare(1000);
+    ASSERT_TRUE(out.has_value());
+    ASSERT_EQ(out->size(), 1000U);
+    peer_.spec().window = 0;
+    receive(peer_.ack());  // the peer retracts its right edge while the preparation is open
+    EXPECT_FALSE(c->commit(1000)) << "RFC 1122: the usable window no longer covers the segment";
+    EXPECT_EQ(c->committed(), before);
+    EXPECT_EQ(tcp_->counters().commits_refused, 1U);
+    EXPECT_EQ(tcp_->counters().data_segments_sent, 0U);
+    EXPECT_TRUE(collect().empty()) << "nothing left for the peer to drop";
+    EXPECT_EQ(c->writable(), 0U);
+    advance(0ms);
+    auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.writable()) << "a retry hint, as after any refused commit";
+    peer_.spec().window = 65535;
+    receive(peer_.ack());
+    event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.writable()) << "the reopened window";
+    EXPECT_EQ(c->send(aloe::frames::pattern(1000)), 1000U);
+}
+
+TEST_P(TcpSend, StaleAckDoesNotRewriteTheWindow) {
+    auto* c = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence old_una = c->acknowledged();
+    EXPECT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    peer_.see(frames[0]);
+    receive(peer_.data(aloe::frames::pattern(10)));  // acknowledges our 100 bytes with data of its own
+    EXPECT_EQ(c->acknowledged(), old_una + 100U);
+    std::ignore              = poll();
+    const std::size_t credit = c->writable();
+    // The next segment in sequence, but its acknowledgement has gone backwards: a broken peer or an injected
+    // segment. RFC 793 updates the window only when SND.UNA <= SEG.ACK.
+    peer_.spec().window      = 0;
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(1), peer_.snd_nxt(), old_una));
+    peer_.spec().window = 65535;
+    EXPECT_EQ(c->unread().size(), 11U) << "the data itself is in sequence: accepted";
+    EXPECT_EQ(c->writable(), credit) << "the stale acknowledgement's window is ignored";
+}
+
 TEST_P(TcpSend, CommitZeroCancelsAndEmptySendPreparesNothing) {
     auto* c = open_active(peer_);
     ASSERT_NE(c, nullptr);

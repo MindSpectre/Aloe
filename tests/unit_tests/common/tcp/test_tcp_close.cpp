@@ -352,3 +352,49 @@ TEST_P(TcpCloseRefusing, FinalAckSurvivesRefusalAndClosedWaitsForIt) {
     EXPECT_EQ(poll()->events, Events{aloe::stream::Event::Closed});
     EXPECT_EQ(tcp_->counters().connections_closed, 1U);
 }
+
+TEST_P(TcpCloseRefusing, DuplicateFinAfterRefusedAckFinishesTheClose) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    c->close();
+    const auto fin = collect_queued();
+    ASSERT_EQ(fin.size(), 1U);
+    receive(peer_.ack(fin[0]));
+    EXPECT_EQ(c->state(), State::FinWait2);
+    std::ignore = poll();
+    refuse();
+    receive(peer_.fin());
+    EXPECT_EQ(c->state(), State::FinWait2) << "the terminal ACK was refused: Closed waits for it";
+    EXPECT_EQ(poll()->events, Events{aloe::stream::Event::PeerClosed});
+    allow();
+    peer_.rewind(1);
+    receive(peer_.fin());  // the peer retransmits its FIN before any flush
+    EXPECT_EQ(tcp_->counters().dropped_duplicate, 1U);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U) << "the duplicate's immediate ACK left without a flush";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, peer_.snd_nxt());
+    EXPECT_EQ(c->state(), State::Closed) << "that ACK was the terminal one";
+    const auto closed = poll();
+    ASSERT_TRUE(closed.has_value()) << "Closed is raised by whichever ACK finally leaves";
+    EXPECT_EQ(closed->events, Events{aloe::stream::Event::Closed});
+    EXPECT_EQ(tcp_->counters().connections_closed, 1U);
+}
+
+TEST_P(TcpCloseRefusing, DataAfterThePeersFinIsDroppedWhileTheTerminalAckWaits) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    c->close();
+    const auto fin = collect_queued();
+    ASSERT_EQ(fin.size(), 1U);
+    receive(peer_.ack(fin[0]));
+    EXPECT_EQ(c->state(), State::FinWait2);
+    std::ignore = poll();
+    refuse();
+    receive(peer_.fin());
+    EXPECT_EQ(poll()->events, Events{aloe::stream::Event::PeerClosed});
+    receive(peer_.data(text("late")));  // the peer's sequence space ended at its FIN
+    EXPECT_EQ(c->unread().size(), 0U) << "nothing is readable after the peer's FIN";
+    EXPECT_EQ(tcp_->counters().dropped_unexpected, 1U);
+    EXPECT_FALSE(poll().has_value()) << "no Readable";
+    EXPECT_EQ(c->state(), State::FinWait2) << "still waiting for the terminal ACK to leave";
+}
