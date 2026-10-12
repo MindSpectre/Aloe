@@ -8,22 +8,15 @@
 #include <utility>
 
 #include <stream_events.hpp>
-#include <stream_wait.hpp>
+#include <stream_policies.hpp>
+#include <streams.hpp>
 #include <tcp_config.hpp>
 
 namespace aloe::runtime {
 
-    template <typename Stack>
-    class Streams;
-
     namespace detail {
         template <typename Stack, typename Policy>
         struct StreamSender;
-        struct ReadablePolicy;
-        struct WritablePolicy;
-        struct AckedPolicy;
-        struct ClosedPolicy;
-        struct SendPolicy;
     }  // namespace detail
 
     /**
@@ -37,9 +30,9 @@ namespace aloe::runtime {
     template <typename Stack>
     class Stream {
     public:
-        using ConnectionType = typename Stack::ConnectionType;
-        using Sequence       = typename Stack::Sequence;
-        using View           = typename ConnectionType::View;
+        using ConnectionType = Stack::ConnectionType;
+        using Sequence       = Stack::Sequence;
+        using View           = ConnectionType::View;
 
         Stream() noexcept = default;
 

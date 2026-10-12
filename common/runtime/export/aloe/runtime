@@ -15,6 +15,10 @@
 #include <shard.hpp>
 #include <shard_context.hpp>
 #include <shard_task.hpp>
+#include <stream_handle.hpp>
+#include <stream_policies.hpp>
+#include <stream_senders.hpp>
+#include <stream_wait.hpp>
 #include <streams.hpp>
 #include <task_scope.hpp>
 #include <tcp_runtime_stack.hpp>

@@ -79,6 +79,11 @@ basenames are unique across modules: `packet.hpp` is the concept,
   GCC 16 crashes inside stdexec.
 - **Public headers define no macros.** Implementation details go in a nested
   `detail` namespace.
+- **One class, one place.** A class's members are defined in its body, or in its
+  one `.cpp`. One class's definitions are never spread over several headers, and
+  no header is included after another's namespace closes to finish it; a class
+  that outgrows its file is split into classes with responsibilities of their
+  own, each in its own file.
 - **Style.** `codestyle.md` covers what `.clang-format` does not: naming,
   namespaces, parameters, attributes, error handling, include order.
 - **Namespaces.** Every module gets a namespace named after it: `aloe::core`,

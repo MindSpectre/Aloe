@@ -9,11 +9,11 @@
 #include <deque>
 #include <expected>
 #include <optional>
-#include <utility>
 #include <vector>
 
 #include <shard_context.hpp>
 #include <stream_events.hpp>
+#include <stream_policies.hpp>
 #include <stream_wait.hpp>
 #include <tcp_config.hpp>
 #include <timer_wheel.hpp>
@@ -26,8 +26,6 @@ namespace aloe::runtime {
     namespace detail {
         template <typename Stack, typename Policy>
         struct StreamSender;
-        struct ConnectPolicy;
-        struct AcceptPolicy;
     }  // namespace detail
 
     /**
@@ -45,9 +43,9 @@ namespace aloe::runtime {
     template <typename Stack>
     class Streams {
     public:
-        using ConnectionType = typename Stack::ConnectionType;
+        using ConnectionType = Stack::ConnectionType;
         using StreamType     = Stream<Stack>;
-        using Sequence       = typename Stack::Sequence;
+        using Sequence       = Stack::Sequence;
 
         Streams(Stack& stack, ShardContext& shard)
             : tcp_{&stack},
@@ -113,7 +111,10 @@ namespace aloe::runtime {
             tcp_->connection(index).release();
         }
 
-        [[nodiscard]] detail::StreamSender<Stack, detail::AcceptPolicy> accept(std::uint16_t port) noexcept;
+        /// The next accepted connection on `port`: from the backlog at once, else parked on the listener.
+        [[nodiscard]] detail::StreamSender<Stack, detail::AcceptPolicy> accept(const std::uint16_t port) noexcept {
+            return {this, port, 0, detail::AcceptPolicy{.port = port}};
+        }
         /// Ends a listener this object created: its parked accept completes stopped, every connection in its backlog
         /// is released, which resets it, the brick stops listening, and the record is free for another port. A
         /// handshake still in flight completes and is released on arrival, as for any port nobody listens on.
@@ -135,15 +136,22 @@ namespace aloe::runtime {
             }
             last.port = 0;
         }
-        [[nodiscard]] detail::StreamSender<Stack, detail::ConnectPolicy> connect(tcp::Endpoint peer) noexcept;
+        /// A connection to `peer`: opened on start, handed over on Connected.
+        [[nodiscard]] detail::StreamSender<Stack, detail::ConnectPolicy> connect(const tcp::Endpoint peer) noexcept {
+            return {this, 0, 0, detail::ConnectPolicy{.peer = peer}};
+        }
         /// The same, cancelled at `deadline` if the connection is not established by then.
-        [[nodiscard]] detail::StreamSender<Stack, detail::ConnectPolicy> connect(tcp::Endpoint peer,
-                                                                                 core::TimePoint deadline) noexcept;
+        [[nodiscard]] detail::StreamSender<Stack, detail::ConnectPolicy>
+        connect(const tcp::Endpoint peer, const core::TimePoint deadline) noexcept {
+            const detail::ConnectPolicy policy{.peer = peer, .deadline = deadline};
+            return {this, 0, 0, policy};
+        }
 
         [[nodiscard]] Stack& tcp() noexcept {
             return *tcp_;
         }
         [[nodiscard]] ShardContext& context() noexcept {
+            core::force_non_const(this);
             return *context_;
         }
 
@@ -161,7 +169,7 @@ namespace aloe::runtime {
         }
 
         /// Detaches from the kind pointer and pushes onto the run queue; stays on the active list until it runs.
-        void queue(detail::StreamWait& wait, const detail::WaitOutcome outcome) noexcept {
+        void queue(detail::StreamWait& wait, const detail::WaitOutcome& outcome) noexcept {
             if (wait.kind == detail::WaitKind::Accept) {
                 if (Listener* listener = find_listener(static_cast<std::uint16_t>(wait.index))) {
                     if (listener->accept == &wait) {
@@ -415,6 +423,3 @@ namespace aloe::runtime {
     };
 
 }  // namespace aloe::runtime
-
-#include <stream_handle.hpp>
-#include <stream_senders.hpp>

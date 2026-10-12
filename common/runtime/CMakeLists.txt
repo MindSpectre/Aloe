@@ -67,6 +67,7 @@ target_link_libraries(${RUNTIME}.Task INTERFACE
 ##############################################################################
 add_library(${RUNTIME}.Stream INTERFACE
         stream/stream_wait.hpp
+        stream/stream_policies.hpp
         stream/streams.hpp
         stream/stream_senders.hpp
         stream/stream_handle.hpp

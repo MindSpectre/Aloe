@@ -475,19 +475,26 @@ constexpr auto process(this Self&& self) {
 object. This avoids clang-tidy `bugprone-use-after-move` false positives that occur with
 `std::forward<Self>(self).member_`, and is semantically cleaner for member access.
 
-### Out-of-line Template Implementations
+### One Class, One Place
 
-For heavy template implementations, split the bodies into a `.inl` file placed in a
-`detail/` (or `source/`) subdirectory next to the header. Include it at the bottom of the matching `.hpp`, inside the
-same namespace context:
+A class's member functions are defined in the class body or, for a non-template class with a source file, in
+that one `.cpp`. One class's definitions are never spread over several headers, by code path or otherwise, and
+no header is included after another's namespace closes, `.inl` or `.hpp`, to finish what the class above needs:
+headers include what they use at the top, in an order with no cycle, and the umbrella lists every one of them.
+The reader of a class sees every member in one place; a class too big for that is split into classes with
+responsibilities of their own, each in its own file.
 
 ```cpp
-// connection.hpp
-namespace aloe::net {
-    // ... class declarations ...
-}  // namespace aloe::net
+// Good: every member of the template defined in its body, in tcp_stack.hpp
+template <typename Ip>
+class Stack {
+public:
+    void process(std::span<Datagram> segments, core::TimePoint now) noexcept { /* ... */ }
+};
 
-#include "detail/connection.inl"
+// Bad: tcp_receive.hpp, tcp_transmit.hpp and tcp_control.hpp each defining members of Stack<Ip>
+template <typename Ip>
+void Stack<Ip>::process(std::span<Datagram> segments, core::TimePoint now) noexcept { /* ... */ }
 ```
 
 ## Lambda Captures
