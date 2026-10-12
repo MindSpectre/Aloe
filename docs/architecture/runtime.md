@@ -84,10 +84,11 @@ per packet.
   the shard's context with every slot allocated there: one wait slot per connection, and one listener record
   per listener of the stack's config, each with a backlog ring as long as the connection table. `wake(now)`
   drains the brick's `poll_event()` and, per flag, detaches the matching parked wait and pushes it onto the
-  run queue. `accept(port)` and `connect(peer)` return senders that complete with a `Stream`. `cancel(index)`
-  requests the slot's stop source and aborts the connection; `deadline(index, when)` arms the slot's one
-  timer, whose fire is `cancel`; `release(index)` is the owner's last call. `tcp()` and `context()` reach what
-  it was built over.
+  run queue. `accept(port)` and `connect(peer)` return senders that complete with a `Stream`;
+  `connect(peer, deadline)` is the same connect, cancelled at `deadline` unless established by then, and the
+  hand-over disarms it. `cancel(index)` requests the slot's stop source and aborts the connection;
+  `deadline(index, when)` arms the slot's one timer, whose fire is `cancel`; `release(index)` is the owner's
+  last call. `tcp()` and `context()` reach what it was built over.
 - **`aloe::runtime::Stream<Stack>`** -- a move-only owner of one connection. The synchronous members
   (`unread`, `consume`, `peer_closed`, `writable()`, `prepare`, `commit`, `committed`, `acknowledged`,
   `unacknowledged`, `events`, `state`, `local`, `remote`, `mss`) forward to the brick's connection. The

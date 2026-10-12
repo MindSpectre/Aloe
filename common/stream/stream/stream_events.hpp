@@ -17,6 +17,7 @@ namespace aloe::stream {
         Closed     = 1U << 6U,  ///< Both directions are done, or `abort()` was called.
         Reset      = 1U << 7U,  ///< The peer sent RST.
         TimedOut   = 1U << 8U,  ///< A control retransmit ran out of tries.
+        Unresolved = 1U << 9U,  ///< The next hop never answered ARP: a control segment ran out of polls.
     };
 
     /// A set of Event with one query per member.
@@ -67,6 +68,9 @@ namespace aloe::stream {
         [[nodiscard]] constexpr bool timed_out() const noexcept {
             return has(Event::TimedOut);
         }
+        [[nodiscard]] constexpr bool unresolved() const noexcept {
+            return has(Event::Unresolved);
+        }
 
         [[nodiscard]] constexpr bool any() const noexcept {
             return raw_ != 0;
@@ -95,6 +99,7 @@ namespace aloe::stream {
     enum class Error : std::uint8_t {
         Reset,        ///< The peer sent RST.
         TimedOut,     ///< A control retransmit ran out of tries.
+        Unresolved,   ///< The next hop never answered ARP.
         PeerClosed,   ///< The peer closed before the requested bytes arrived.
         Refused,      ///< An active open was reset, or a listener was in use.
         Unplaceable,  ///< No local port makes the card deliver the flow to this shard.

@@ -19,10 +19,10 @@ link `Aloe::Common::Stream`. It depends on [`core`](core.md) only: no [`executio
   `IsReadView`), `consume(n)`, `peer_closed()`, `writable()`, `prepare(n)`, `commit(n)`, `close()`,
   `abort()` and `release()`.
 - **`aloe::stream::Event`** -- `Connected`, `Accepted`, `Readable`, `Writable`, `Acked`, `PeerClosed`,
-  `Closed`, `Reset`, `TimedOut`; each an edge, raised when its condition becomes true.
+  `Closed`, `Reset`, `TimedOut`, `Unresolved`; each an edge, raised when its condition becomes true.
 - **`aloe::stream::Events`** -- a set of `Event` with one query per member (`connected()`, `readable()`,
   ...), `has`, `any`, `raw`, `from_raw`, `operator|=` and `==`.
-- **`aloe::stream::Error`** -- why an operation did not succeed: `Reset`, `TimedOut`, `PeerClosed`,
+- **`aloe::stream::Error`** -- why an operation did not succeed: `Reset`, `TimedOut`, `Unresolved`, `PeerClosed`,
   `Refused`, `Unplaceable`, `TableFull`, `NoPort`, `NoRoute`, `Closed`.
 - **`aloe::stream::send(stream, bytes)`** -- prepare, copy, commit, per segment; returns the accepted prefix.
 
@@ -87,14 +87,15 @@ shutdown complete a sender through the stopped channel.
 
 | Sender            | Value                         | Completes with                                                                 |
 |-------------------|-------------------------------|--------------------------------------------------------------------------------|
-| `readable(n)`     | `expected<size_t, Error>`     | the unread bytes once at least `n`; `PeerClosed` if the FIN came first with fewer; `Reset`, `TimedOut` |
-| `writable(n)`     | `expected<size_t, Error>`     | the credit once `writable() >= n` (`n` at most the MSS); `Closed`, `Reset`, `TimedOut` |
+| `readable(n)`     | `expected<size_t, Error>`     | the unread bytes once at least `n`; `PeerClosed` if the FIN came first with fewer; `Reset`, `TimedOut`, `Unresolved` |
+| `writable(n)`     | `expected<size_t, Error>`     | the credit once `writable() >= n` (`n` at most the MSS); `Closed`, `Reset`, `TimedOut`, `Unresolved` |
 | `acked(sequence)` | `expected<void, Error>`       | success once `acknowledged()` reaches `sequence`; the terminal error otherwise   |
-| `closed()`        | `expected<void, Error>`       | success on a normal close; `Reset`, `TimedOut`                                  |
+| `closed()`        | `expected<void, Error>`       | success on a normal close; `Reset`, `TimedOut`, `Unresolved`                    |
 | `send(bytes)`     | `expected<size_t, Error>`     | every byte committed, parking between segments; the terminal error otherwise    |
 | `close()`         | `expected<void, Error>`       | the brick's `close`, then as `closed()`                                         |
 | `accept(port)`    | `expected<Stream, Error>`     | the next accepted connection, from the backlog first; `TableFull`, or `Refused` when the port is listened to outside the runtime |
-| `connect(peer)`   | `expected<Stream, Error>`     | the connection once established; `Refused` on a reset before that; `TimedOut`, `TableFull`, `NoPort`, `Unplaceable`, `NoRoute` |
+| `connect(peer)`   | `expected<Stream, Error>`     | the connection once established; `Refused` on a reset before that; `TimedOut`, `Unresolved` when the next hop never answers ARP, `TableFull`, `NoPort`, `Unplaceable`, `NoRoute` |
+| `connect(peer, deadline)` | `expected<Stream, Error>` | the same, stopped at `deadline` unless established by then; the deadline ends with the hand-over |
 
 The handle's `send(bytes)` and `close()` are senders; the brick's synchronous ones are reached through
 `connection()`, which models `IsStream`. The handle does not model `IsStream`, by design.

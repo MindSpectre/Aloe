@@ -588,3 +588,60 @@ TEST_F(StreamsTest, SendRefusalParksUntilRetryHint) {
     ASSERT_FALSE(frames.empty());
     EXPECT_EQ(aloe::frames::tcp_payload(frames.back()).size(), 5U);
 }
+
+TEST_F(StreamsTest, ConnectDeadlineStopsAnUnansweredSyn) {
+    Slot<Opened> opened;
+    auto op = ex::connect(
+        streams_.connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port}, now_ + 5ms),
+        opened.receiver());
+    ex::start(op);
+    EXPECT_EQ(opened.completions, 0) << "parked on Connected";
+    EXPECT_EQ(on_the_wire().size(), 1U) << "the SYN";
+    EXPECT_EQ(context_.timers().pending(), 2U) << "the SYN's retransmit timer and the deadline";
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(run_step(), 0U);
+    }
+    EXPECT_EQ(run_step(), 1U) << "the deadline fired inside run_once and the completion ran next";
+    EXPECT_TRUE(opened.stopped);
+    EXPECT_EQ(tcp_.table_size(), 0U) << "the half-open connection was released by the operation";
+    EXPECT_TRUE(on_the_wire().empty()) << "a SYN-SENT abort sends no RST";
+    EXPECT_EQ(context_.timers().pending(), 0U);
+}
+
+TEST_F(StreamsTest, ConnectDeadlineDoesNotOutliveTheHandover) {
+    Slot<Opened> connected;
+    auto op = ex::connect(
+        streams_.connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port}, now_ + 5ms),
+        connected.receiver());
+    ex::start(op);
+    auto frames = on_the_wire();
+    ASSERT_EQ(frames.size(), 1U);
+    receive(peer_.syn_ack(frames[0]));
+    EXPECT_EQ(run_step(), 1U);
+    ASSERT_TRUE(connected.value.has_value() && connected.value->has_value());
+    Stream stream = std::move(**connected.value);
+    EXPECT_EQ(context_.timers().pending(), 0U) << "the connect deadline went with the hand-over";
+    for (int i = 0; i < 8; ++i) {
+        std::ignore = run_step();
+    }
+    EXPECT_EQ(stream.state(), aloe::tcp::State::Established) << "past the old deadline, still open";
+    EXPECT_EQ(tcp_.counters().resets_sent, 0U);
+}
+
+TEST_F(StreamsTest, ConnectToASilentNextHopIsUnresolved) {
+    Slot<Opened> opened;
+    auto op = ex::connect(streams_.connect({.address = aloe::testing::far_ip, .port = 7}), opened.receiver());
+    ex::start(op);
+    EXPECT_EQ(opened.completions, 0) << "the SYN waits for the gateway's MAC";
+    std::size_t ran = 0;
+    for (int step = 0; step < 3100 && ran == 0; ++step) {  // 300 polls at 10 ms, one step per millisecond
+        ran = run_step();
+    }
+    EXPECT_EQ(ran, 1U);
+    ASSERT_TRUE(opened.value.has_value());
+    EXPECT_EQ(opened.value->error(), Error::Unresolved);
+    EXPECT_GE(now_ - start, 3000ms);
+    EXPECT_EQ(tcp_.table_size(), 0U) << "released by the operation";
+    EXPECT_EQ(tcp_.counters().connections_unresolved, 1U);
+    EXPECT_EQ(context_.timers().pending(), 0U);
+}

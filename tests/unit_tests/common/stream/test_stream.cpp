@@ -157,7 +157,10 @@ TEST(StreamEvents, DefaultEmptyNamedQueriesAndRaw) {
     EXPECT_TRUE(some.closed());
     EXPECT_TRUE(some.reset());
     EXPECT_FALSE(some.timed_out());
+    EXPECT_FALSE(some.unresolved());
     EXPECT_EQ(Events::from_raw(1U << 8U), Events{Event::TimedOut});
+    EXPECT_EQ(Events::from_raw(1U << 9U), Events{Event::Unresolved});
+    EXPECT_TRUE(Events{Event::Unresolved}.unresolved());
     EXPECT_TRUE(Events{Event::Connected}.connected());
     EXPECT_TRUE(Events{Event::Accepted}.accepted());
 }
@@ -213,6 +216,6 @@ TEST(StreamSend, DoesNotCoalesceCalls) {
 
 TEST(StreamError, HasEveryValue) {
     EXPECT_NE(Error::Reset, Error::Closed);
-    EXPECT_EQ(static_cast<int>(Error::Closed), 8)
-        << "Reset, TimedOut, PeerClosed, Refused, Unplaceable, TableFull, NoPort, NoRoute, Closed";
+    EXPECT_EQ(static_cast<int>(Error::Closed), 9)
+        << "Reset, TimedOut, Unresolved, PeerClosed, Refused, Unplaceable, TableFull, NoPort, NoRoute, Closed";
 }

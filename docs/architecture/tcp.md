@@ -84,7 +84,8 @@ while (running) {
         if (c.peer_closed() && c.unread().empty() && c.state() == aloe::tcp::State::CloseWait) {
             c.close();
         }
-        if (event->events.closed() || event->events.reset() || event->events.timed_out()) {
+        if (event->events.closed() || event->events.reset() || event->events.timed_out() ||
+            event->events.unresolved()) {
             c.release();
         }
     }
@@ -203,6 +204,7 @@ every send failure increments exactly one counter.
 |             | `connections_closed`    | Normal closes, both FINs acknowledged.                                                          |
 |             | `connections_reset`     | RSTs received on a connection the application owns.                                             |
 |             | `connections_timed_out` | Owned connections whose control retransmits ran out.                                            |
+|             | `connections_unresolved` | Owned connections whose next hop never answered ARP within `unresolved_polls` polls.          |
 |             | `handshakes_failed`     | Passive opens nobody owned yet that were reset or timed out, freed silently.                   |
 | Drops       | `dropped_bad_header`    | Unparseable headers and malformed option lists.                                                 |
 |             | `dropped_bad_checksum`  | A `Bad` verdict, or an `Unknown` one that failed the software check.                            |
@@ -238,6 +240,7 @@ cannot run. Every shard gets the same config.
 | `retry_initial`    | 1 s      | The first control retransmit's delay; it doubles per try.                       | not positive, or too large to double `retries` times within `core::Duration` |
 | `retries`          | 5        | Control retransmits before `TimedOut`.                                          | zero, or 63 and more                           |
 | `unresolved_retry` | 10 ms    | The poll interval while a control segment waits for ARP; not a try.             | not positive                                   |
+| `unresolved_polls` | 300      | Polls before `Unresolved`: 3 s by default, the bound Linux's three ARP probes give. | zero                                        |
 
 The constructor also refuses an MTU that leaves no room for a TCP header. The retry bound keeps the longest
 delay and the whole schedule within a quarter of `core::Duration`'s range, so no arithmetic on the timer path
@@ -280,8 +283,9 @@ the prepared packet is the application's: a `close`, `abort`, received RST or ti
 span writable, and the commit that follows drops the packet, returns false, counts `commits_refused` and
 raises no retry hint, since the events already say why. A commit the peer's window no longer covers, because
 the peer retracted its right edge since the prepare, is refused the same way but with a retry hint: prepare
-again for what `writable()` allows. After `Closed`, `Reset` or `TimedOut` the held segments stay readable
-until `release`, the owner's last call, which aborts a connection that is still open and frees the slot.
+again for what `writable()` allows. After `Closed`, `Reset`, `TimedOut` or `Unresolved` the held segments
+stay readable until `release`, the owner's last call, which aborts a connection that is still open and frees
+the slot.
 
 **The table hashes on its own; placement chooses ports.** The flow table mixes a base hash into its own
 bucket hash. When the card hashes IPv4 TCP tuples the base hash is the card's RSS hash, so a received segment
@@ -297,9 +301,11 @@ every reply lands on queue 0.
 the delay doubling from `retry_initial` each try: with the defaults at 1, 3, 7, 15 and 31 seconds after the first
 send, keeping their sequence numbers, and the connection times out at 63 seconds. A connection the application
 owns raises `TimedOut`. While IP waits for ARP the timer polls every `unresolved_retry` (10 ms by default)
-instead, and those polls are not tries. A known limitation follows: a connect whose next hop never answers
-ARP keeps polling and never times out on its own; the application gives up with `abort` or `release`, or, in
-the runtime, a deadline.
+instead, and those polls are not tries. After `unresolved_polls` of them, 3 seconds by default, the connection
+gives up: a passive open nobody owns is freed silently, an owned connection raises `Unresolved`, a failure of
+its own, as Linux reports a host unreachable rather than a timeout when ARP goes unanswered. `abort` in
+SynSent sends no RST, as RFC 9293's ABORT specifies: the peer holds nothing of ours to take back. In the
+runtime, `connect(peer, deadline)` adds the caller's shorter bound.
 
 **The terminal ACK goes before `Closed`.** When the last segment of a close needs an ACK from us, the ACK is
 queued before `Closed` is raised. If IP refuses it, the connection keeps its state, `flush` retries the ACK,

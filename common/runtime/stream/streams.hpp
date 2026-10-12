@@ -113,6 +113,9 @@ namespace aloe::runtime {
 
         [[nodiscard]] detail::StreamSender<Stack, detail::AcceptPolicy> accept(std::uint16_t port) noexcept;
         [[nodiscard]] detail::StreamSender<Stack, detail::ConnectPolicy> connect(tcp::Endpoint peer) noexcept;
+        /// The same, cancelled at `deadline` if the connection is not established by then.
+        [[nodiscard]] detail::StreamSender<Stack, detail::ConnectPolicy> connect(tcp::Endpoint peer,
+                                                                                 core::TimePoint deadline) noexcept;
 
         [[nodiscard]] Stack& tcp() noexcept {
             return *tcp_;
@@ -332,6 +335,7 @@ namespace aloe::runtime {
                 }
             }
             if (events.connected()) {
+                context_->timers().cancel(slot.deadline);  // a connect deadline ends with the hand-over
                 if (detail::StreamWait* wait = slot.waits[kind_index(detail::WaitKind::Connected)]) {
                     queue(*wait, {.value = c.index()});
                 }
@@ -364,6 +368,8 @@ namespace aloe::runtime {
                 terminal = stream::Error::Reset;
             } else if (events.timed_out()) {
                 terminal = stream::Error::TimedOut;
+            } else if (events.unresolved()) {
+                terminal = stream::Error::Unresolved;
             } else if (events.closed()) {
                 terminal = stream::Error::Closed;
             }

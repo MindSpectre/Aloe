@@ -297,6 +297,87 @@ TEST_P(TcpHandshake, UnresolvedDoesNotSpendRetries) {
     EXPECT_EQ(tcp_->counters().retransmits, 1U);
 }
 
+TEST_P(TcpHandshake, UnresolvedPollsExhaustIntoUnresolved) {
+    // far_ip is behind the gateway, whose MAC nobody ever answers for: the SYN never leaves.
+    const auto connected = tcp_->connect({.address = aloe::testing::far_ip, .port = 7}, now_);
+    ASSERT_TRUE(connected.has_value());
+    std::ignore = collect();  // the ARP request
+    for (int poll = 1; poll < 300; ++poll) {
+        advance(10ms);
+    }
+    EXPECT_EQ((*connected)->state(), aloe::tcp::State::SynSent) << "299 polls: still waiting";
+    EXPECT_EQ(tcp_->counters().send_unresolved, 300U) << "the first send and 299 polls";
+    EXPECT_FALSE(poll().has_value());
+    advance(10ms);  // the 300th poll, three seconds after the first send: the bound Linux's probes give
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.unresolved());
+    EXPECT_FALSE(event->events.timed_out()) << "a different failure from a SYN that left and was ignored";
+    EXPECT_EQ((*connected)->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(wheel_.pending(), 0U);
+    EXPECT_EQ(tcp_->counters().send_unresolved, 301U);
+    EXPECT_EQ(tcp_->counters().connections_unresolved, 1U);
+    EXPECT_EQ(tcp_->counters().connections_timed_out, 0U);
+    EXPECT_EQ(tcp_->counters().retransmits, 0U) << "polls are not tries";
+    EXPECT_EQ(tcp_->counters().control_segments_sent, 0U) << "the SYN never left";
+    EXPECT_EQ(std::ranges::count_if(collect(), [](const aloe::frames::ParsedFrame& f) { return f.tcp.has_value(); }), 0)
+        << "ARP requests only: no SYN and no RST";
+    (*connected)->release();
+    EXPECT_EQ(tcp_->table_size(), 0U);
+}
+
+TEST_P(TcpHandshake, UnresolvedSynAckFreesTheUnownedSlotSilently) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    aloe::frames::TcpSpec spec = aloe::testing::peer_spec();
+    spec.source                = aloe::testing::far_ip;  // a SYN from beyond a gateway nobody answers for
+    aloe::frames::TcpPeer far{spec, TcpSequence{5000U}};
+    receive(far.syn());
+    EXPECT_EQ(tcp_->table_size(), 1U);
+    EXPECT_EQ(tcp_->counters().send_unresolved, 1U) << "the SYN-ACK waits for the gateway's MAC";
+    for (int poll = 0; poll < 300; ++poll) {
+        advance(10ms);
+    }
+    EXPECT_FALSE(poll().has_value()) << "nobody owned it: no event";
+    EXPECT_EQ(tcp_->table_size(), 0U) << "the slot was freed";
+    EXPECT_EQ(tcp_->counters().handshakes_failed, 1U);
+    EXPECT_EQ(tcp_->counters().connections_unresolved, 0U);
+    EXPECT_EQ(wheel_.pending(), 0U);
+}
+
+TEST_P(TcpHandshake, UnresolvedFinClosesAnEstablishedConnection) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    advance(121s);  // past arp_expire: the harness's MAC is forgotten and nobody answers for it again
+    c->close();
+    EXPECT_EQ(c->state(), aloe::tcp::State::FinWait1);
+    EXPECT_EQ(tcp_->counters().send_unresolved, 1U) << "the FIN waits for ARP";
+    for (int poll = 0; poll < 300; ++poll) {
+        advance(10ms);
+    }
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.unresolved());
+    EXPECT_EQ(c->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(tcp_->counters().connections_unresolved, 1U);
+    EXPECT_EQ(tcp_->counters().connections_closed, 0U) << "not a normal close";
+    EXPECT_EQ(wheel_.pending(), 0U);
+}
+
+TEST_P(TcpHandshake, AbortInSynSentSendsNoReset) {
+    const auto connected =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port}, now_);
+    ASSERT_TRUE(connected.has_value());
+    ASSERT_EQ(collect().size(), 1U) << "the SYN";
+    (*connected)->abort();
+    EXPECT_EQ((*connected)->state(), aloe::tcp::State::Closed);
+    EXPECT_TRUE(collect().empty()) << "RFC 9293's ABORT in SYN-SENT: nothing to take back, so no RST";
+    EXPECT_EQ(tcp_->counters().resets_sent, 0U);
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.closed());
+    EXPECT_EQ(wheel_.pending(), 0U);
+}
+
 TEST_P(TcpHandshake, NoRouteTakesNoSlot) {
     Ipv4 bare{
         queue_, {.address = aloe::testing::stack_ip, .prefix = 24}
@@ -372,6 +453,7 @@ TEST_P(TcpHandshake, ConfigValidation) {
         << "five doublings of a century overflow core::Duration";
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.unresolved_retry = std::chrono::milliseconds{-1}}}),
                  std::invalid_argument);
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.unresolved_polls = 0}}), std::invalid_argument);
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.connections = std::size_t{1} << 31U}}), std::invalid_argument);
     const Tcp capped{ip_, wheel_, Config{.receive_segments = 1000}};
     EXPECT_EQ(capped.byte_budget(), 65535U) << "the byte budget never passes the wire window";

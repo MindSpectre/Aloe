@@ -14,12 +14,13 @@ namespace aloe::tcp {
         std::uint64_t retransmits           = 0;  ///< Timer-driven control retransmits.
         std::uint64_t window_updates        = 0;  ///< Segments that extended the advertised edge.
 
-        std::uint64_t connections_opened    = 0;  ///< Active opens that reached ESTABLISHED.
-        std::uint64_t connections_accepted  = 0;
-        std::uint64_t connections_closed    = 0;  ///< Normal closes, both FINs acknowledged.
-        std::uint64_t connections_reset     = 0;  ///< RST received on a connection we own.
-        std::uint64_t connections_timed_out = 0;
-        std::uint64_t handshakes_failed     = 0;  ///< A passive open nobody owned yet was reset or timed out.
+        std::uint64_t connections_opened     = 0;  ///< Active opens that reached ESTABLISHED.
+        std::uint64_t connections_accepted   = 0;
+        std::uint64_t connections_closed     = 0;  ///< Normal closes, both FINs acknowledged.
+        std::uint64_t connections_reset      = 0;  ///< RST received on a connection we own.
+        std::uint64_t connections_timed_out  = 0;
+        std::uint64_t connections_unresolved = 0;  ///< Owned connections whose next hop never answered ARP.
+        std::uint64_t handshakes_failed      = 0;  ///< A passive open nobody owned yet was reset or timed out.
 
         std::uint64_t dropped_bad_header    = 0;
         std::uint64_t dropped_bad_checksum  = 0;

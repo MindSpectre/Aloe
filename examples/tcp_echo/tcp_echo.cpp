@@ -257,7 +257,7 @@ int main(int argc, char** argv) {
                 c.state() == aloe::tcp::State::CloseWait) {
                 c.close();  // everything the peer sent went back: our FIN follows it
             }
-            if (events.closed() || events.reset() || events.timed_out()) {
+            if (events.closed() || events.reset() || events.timed_out() || events.unresolved()) {
                 c.release();
                 if (arguments->connect) {
                     interrupted.store(true);  // the client's one session is over

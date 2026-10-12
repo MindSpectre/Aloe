@@ -841,7 +841,7 @@ namespace aloe::tcp {
          */
         [[nodiscard]] std::optional<std::span<std::byte>> prepare(ConnectionType& conn,
                                                                   const std::size_t count) noexcept {
-            assert(!c.prepared_ && "one prepare at a time: commit first");
+            assert(!conn.prepared_ && "one prepare at a time: commit first");
             if (count == 0) {
                 return std::nullopt;
             }
@@ -876,12 +876,12 @@ namespace aloe::tcp {
          * right edge since the prepare, refuses the commit with a hint: prepare again for what `writable()` allows.
          */
         [[nodiscard]] bool commit(ConnectionType& conn, const std::size_t count) noexcept {
-            assert(c.prepared_ && "commit without a prepare");
+            assert(conn.prepared_ && "commit without a prepare");
             if (!conn.prepared_) {
                 ++counters_.commits_refused;  // a contract violation, refused in a release build
                 return false;
             }
-            assert(count <= c.prepared_size_ && "commit more than was prepared");
+            assert(count <= conn.prepared_size_ && "commit more than was prepared");
             Packet packet = std::move(*conn.prepared_);
             conn.prepared_.reset();
             const std::size_t prepared = conn.prepared_size_;
@@ -915,7 +915,7 @@ namespace aloe::tcp {
         /// Advances the chain's front by `count` bytes, freeing packets as they empty; a reopened edge queues an
         /// update.
         void consume(ConnectionType& conn, const std::size_t count) noexcept {
-            assert(count <= c.unread_bytes_ && "consume past unread()");
+            assert(count <= conn.unread_bytes_ && "consume past unread()");
             std::size_t remaining = count;
             while (remaining > 0) {
                 typename detail::TcpNodePool<Packet>::Node& node  = pool_.node(conn.chain_head_);
@@ -967,7 +967,7 @@ namespace aloe::tcp {
         void free_slot(ConnectionType& conn) noexcept {
             // Every live connection is indexed by connect or passive_open; a free slot is not, and pushing its index
             // again would hand one slot to two opens. A release build ignores the second call.
-            assert(c.indexed_ && "release of a free slot");
+            assert(conn.indexed_ && "release of a free slot");
             if (!conn.indexed_) {
                 return;
             }
@@ -1070,6 +1070,12 @@ namespace aloe::tcp {
                 ++counters_.control_segments_sent;
             }
             conn.unresolved_wait_ = !sent && sent.error() == net::SendError::Unresolved;
+            if (!conn.unresolved_wait_) {
+                conn.unresolved_polls_ = 0;
+            } else if (++conn.unresolved_polls_ >= config_.unresolved_polls) {
+                fail_unresolved(conn);  // the bound Linux's ARP probes give: the next hop is not going to answer
+                return;
+            }
             arm_retry(conn);
         }
 
@@ -1100,12 +1106,25 @@ namespace aloe::tcp {
             raise(conn, stream::Event::TimedOut);
         }
 
+        /// The next hop never answered ARP: a failure of its own, told apart from a segment that left and was ignored.
+        void fail_unresolved(ConnectionType& conn) noexcept {
+            if (!conn.owned_) {
+                ++counters_.handshakes_failed;  // a passive open nobody took: freed silently
+                free_slot(conn);
+                return;
+            }
+            ++counters_.connections_unresolved;
+            set_closed(conn);
+            raise(conn, stream::Event::Unresolved);
+        }
+
         /// Closed, with nothing armed or pending. Held segments stay until release, and so does an open preparation:
         /// the application may still write into its span, and the next commit refuses it.
         void set_closed(ConnectionType& conn) noexcept {
             conn.state_ = State::Closed;
             wheel_->cancel(conn.timer_);
-            conn.unresolved_wait_ = false;
+            conn.unresolved_wait_  = false;
+            conn.unresolved_polls_ = 0;
             acks_.remove(conn);
             conn.ack_pending_    = false;
             conn.finish_pending_ = false;
@@ -1156,7 +1175,9 @@ namespace aloe::tcp {
             if (conn.state_ == State::Closed) {
                 return;
             }
-            if (send_control(conn, wire::TcpFlags{wire::TcpFlag::Rst, wire::TcpFlag::Ack}, conn.snd_nxt_)) {
+            // RFC 9293's ABORT in SYN-SENT: the peer holds nothing of ours to take back, so no RST leaves.
+            if (conn.state_ != State::SynSent &&
+                send_control(conn, wire::TcpFlags{wire::TcpFlag::Rst, wire::TcpFlag::Ack}, conn.snd_nxt_)) {
                 ++counters_.resets_sent;
             }
             set_closed(conn);
@@ -1187,6 +1208,9 @@ namespace aloe::tcp {
             }
             if (config.retries == 0) {
                 throw std::invalid_argument{"TcpConfig: retries must be positive"};
+            }
+            if (config.unresolved_polls == 0) {
+                throw std::invalid_argument{"TcpConfig: unresolved_polls must be positive"};
             }
             // Bounds the longest delay, retry_initial * 2^retries, and the whole schedule, retry_initial *
             // (2^(retries+1) - 1), to a quarter of core::Duration's range, so neither arm_retry's shift nor now + delay

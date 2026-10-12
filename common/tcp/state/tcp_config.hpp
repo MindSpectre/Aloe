@@ -54,6 +54,7 @@ namespace aloe::tcp {
         core::Duration retry_initial    = std::chrono::seconds{1};        ///< SYN, SYN-ACK, FIN: doubles per try.
         std::uint8_t retries            = 5;                              ///< Retransmissions before TimedOut.
         core::Duration unresolved_retry = std::chrono::milliseconds{10};  ///< A SYN waiting for ARP; not a try.
+        std::uint16_t unresolved_polls  = 300;  ///< Polls before Unresolved: 3 s by default, Linux's ARP bound.
     };
 
 }  // namespace aloe::tcp

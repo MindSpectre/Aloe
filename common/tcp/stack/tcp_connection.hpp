@@ -166,16 +166,17 @@ namespace aloe::tcp {
             iss_                     = {};
             snd_nxt_                 = {};
             prepared_.reset();
-            prepared_size_   = 0;
-            fin_sent_        = false;
-            fin_sequence_    = {};
-            snd_una_         = {};
-            snd_wnd_         = 0;
-            peer_mss_        = default_peer_mss;
-            wl1_             = {};
-            wl2_             = {};
-            tries_           = 0;
-            unresolved_wait_ = false;
+            prepared_size_    = 0;
+            fin_sent_         = false;
+            fin_sequence_     = {};
+            snd_una_          = {};
+            snd_wnd_          = 0;
+            peer_mss_         = default_peer_mss;
+            wl1_              = {};
+            wl2_              = {};
+            tries_            = 0;
+            unresolved_wait_  = false;
+            unresolved_polls_ = 0;
         }
 
         // Identity and ownership.
@@ -227,6 +228,7 @@ namespace aloe::tcp {
         TimerNode timer_;
         std::uint8_t tries_   = 0;
         bool unresolved_wait_ = false;  ///< The last control send waited for ARP; the next fire is a poll, not a try.
+        std::uint16_t unresolved_polls_ = 0;  ///< Polls since the last send that left; the config bounds them.
     };
 
     /// One notification from `poll_event`: the connection and the flags taken from it.

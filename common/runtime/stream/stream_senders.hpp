@@ -153,6 +153,9 @@ namespace aloe::runtime::detail {
                 if (pending.timed_out()) {
                     return WaitOutcome{.error = stream::Error::TimedOut};
                 }
+                if (pending.unresolved()) {
+                    return WaitOutcome{.error = stream::Error::Unresolved};
+                }
                 if (pending.reset()) {
                     return WaitOutcome{.error = stream::Error::Reset};  // a handed-over stream is past Connected
                 }
@@ -248,6 +251,7 @@ namespace aloe::runtime::detail {
         static constexpr WaitKind kind = WaitKind::Connected;
 
         tcp::Endpoint peer{};
+        std::optional<core::TimePoint> deadline{};  ///< Arms the slot's timer once the connection has a slot.
         bool opened = false;  ///< A SynSent connection this operation owns until it hands it over.
 
         template <typename Op>
@@ -259,6 +263,9 @@ namespace aloe::runtime::detail {
             }
             op.index = (*connected)->index();
             opened   = true;
+            if (deadline) {
+                op.owner->deadline(op.index, *deadline);  // the slot's timer; its fire is cancel
+            }
             return std::nullopt;
         }
 
@@ -523,6 +530,13 @@ namespace aloe::runtime {
     template <typename Stack>
     detail::StreamSender<Stack, detail::ConnectPolicy> Streams<Stack>::connect(const tcp::Endpoint peer) noexcept {
         return {this, 0, 0, detail::ConnectPolicy{.peer = peer}};
+    }
+
+    template <typename Stack>
+    detail::StreamSender<Stack, detail::ConnectPolicy>
+    Streams<Stack>::connect(const tcp::Endpoint peer, const core::TimePoint deadline) noexcept {
+        const detail::ConnectPolicy policy{.peer = peer, .deadline = deadline};
+        return {this, 0, 0, policy};
     }
 
 }  // namespace aloe::runtime
