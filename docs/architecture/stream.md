@@ -97,5 +97,8 @@ shutdown complete a sender through the stopped channel.
 | `connect(peer)`   | `expected<Stream, Error>`     | the connection once established; `Refused` on a reset before that; `TimedOut`, `Unresolved` when the next hop never answers ARP, `TableFull`, `NoPort`, `Unplaceable`, `NoRoute` |
 | `connect(peer, deadline)` | `expected<Stream, Error>` | the same, stopped at `deadline` unless established by then; the deadline ends with the hand-over |
 
+`Streams::unlisten(port)` is a listener's end: a parked `accept(port)` completes stopped, every connection in
+the backlog is released with a RST to its peer, and a later `accept(port)` listens afresh.
+
 The handle's `send(bytes)` and `close()` are senders; the brick's synchronous ones are reached through
 `connection()`, which models `IsStream`. The handle does not model `IsStream`, by design.

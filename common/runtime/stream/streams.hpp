@@ -39,6 +39,8 @@ namespace aloe::runtime {
      * wait and pushes it onto the run queue; it never calls a receiver. `cancel` requests the slot's
      * stop source and aborts; `deadline` arms the slot's timer, whose fire is `cancel`; `release` stops
      * every active wait, clears the slot, rebuilds its stop source and releases the brick's connection.
+     * `unlisten` ends a listener: its parked accept completes stopped, its backlog is released, its record
+     * freed.
      */
     template <typename Stack>
     class Streams {
@@ -112,6 +114,27 @@ namespace aloe::runtime {
         }
 
         [[nodiscard]] detail::StreamSender<Stack, detail::AcceptPolicy> accept(std::uint16_t port) noexcept;
+        /// Ends a listener this object created: its parked accept completes stopped, every connection in its backlog
+        /// is released, which resets it, the brick stops listening, and the record is free for another port. A
+        /// handshake still in flight completes and is released on arrival, as for any port nobody listens on.
+        void unlisten(const std::uint16_t port) noexcept {
+            Listener* listener = find_listener(port);
+            if (listener == nullptr) {
+                return;  // not ours: a port listened to outside Streams stays as it is
+            }
+            if (detail::StreamWait* wait = listener->accept) {
+                queue(*wait, detail::WaitOutcome{.stopped = true});  // detaches it from the listener
+            }
+            while (const auto index = take_backlog(port)) {
+                release(*index);
+            }
+            tcp_->unlisten(port);
+            Listener& last = listeners_[--listener_count_];
+            if (listener != &last) {
+                std::swap(*listener, last);  // both records keep their backlog storage
+            }
+            last.port = 0;
+        }
         [[nodiscard]] detail::StreamSender<Stack, detail::ConnectPolicy> connect(tcp::Endpoint peer) noexcept;
         /// The same, cancelled at `deadline` if the connection is not established by then.
         [[nodiscard]] detail::StreamSender<Stack, detail::ConnectPolicy> connect(tcp::Endpoint peer,

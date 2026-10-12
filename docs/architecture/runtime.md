@@ -88,7 +88,9 @@ per packet.
   `connect(peer, deadline)` is the same connect, cancelled at `deadline` unless established by then, and the
   hand-over disarms it. `cancel(index)` requests the slot's stop source and aborts the connection;
   `deadline(index, when)` arms the slot's one timer, whose fire is `cancel`; `release(index)` is the owner's
-  last call. `tcp()` and `context()` reach what it was built over.
+  last call. `unlisten(port)` ends a listener `Streams` created: a parked `accept` completes stopped, each
+  backlog connection is released, which resets it, the record is free for another port, and a handshake still
+  in flight is released when it completes. `tcp()` and `context()` reach what it was built over.
 - **`aloe::runtime::Stream<Stack>`** -- a move-only owner of one connection. The synchronous members
   (`unread`, `consume`, `peer_closed`, `writable()`, `prepare`, `commit`, `committed`, `acknowledged`,
   `unacknowledged`, `events`, `state`, `local`, `remote`, `mss`) forward to the brick's connection. The

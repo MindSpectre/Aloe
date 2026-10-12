@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <aloe/execution>
 #include <aloe/fabric>
 #include <aloe/frames>
@@ -644,4 +645,100 @@ TEST_F(StreamsTest, ConnectToASilentNextHopIsUnresolved) {
     EXPECT_EQ(tcp_.table_size(), 0U) << "released by the operation";
     EXPECT_EQ(tcp_.counters().connections_unresolved, 1U);
     EXPECT_EQ(context_.timers().pending(), 0U);
+}
+
+TEST_F(StreamsTest, UnlistenStopsTheParkedAcceptAndFreesThePort) {
+    streams_.unlisten(aloe::testing::tcp_listen_port);  // nothing listens yet: a no-op
+    Slot<Opened> parked;
+    auto op = ex::connect(streams_.accept(aloe::testing::tcp_listen_port), parked.receiver());
+    ex::start(op);
+    EXPECT_TRUE(tcp_.listening(aloe::testing::tcp_listen_port));
+    streams_.unlisten(aloe::testing::tcp_listen_port);
+    EXPECT_FALSE(tcp_.listening(aloe::testing::tcp_listen_port)) << "the brick stopped listening at once";
+    EXPECT_EQ(parked.completions, 0) << "the completion runs from the run queue, not inside unlisten";
+    EXPECT_EQ(run_step(), 1U);
+    EXPECT_TRUE(parked.stopped);
+    receive(peer_.syn());
+    EXPECT_EQ(tcp_.counters().dropped_no_connection, 1U) << "a SYN to the port is answered with RST now";
+    EXPECT_EQ(tcp_.table_size(), 0U);
+    Slot<Opened> again;
+    auto again_op = ex::connect(streams_.accept(aloe::testing::tcp_listen_port), again.receiver());
+    ex::start(again_op);
+    EXPECT_EQ(again.completions, 0) << "listening afresh, parked";
+    EXPECT_TRUE(tcp_.listening(aloe::testing::tcp_listen_port));
+    streams_.unlisten(aloe::testing::tcp_listen_port);
+    EXPECT_EQ(run_step(), 1U);
+    EXPECT_TRUE(again.stopped);
+}
+
+TEST_F(StreamsTest, UnlistenReleasesTheBacklogWithReset) {
+    Slot<Opened> first;
+    auto first_op = ex::connect(streams_.accept(aloe::testing::tcp_listen_port), first.receiver());
+    ex::start(first_op);          // creates the listener
+    first.source.request_stop();  // cancelled: the listener stays, so the handshakes below fill its backlog
+    EXPECT_EQ(run_step(), 1U);
+    EXPECT_TRUE(first.stopped);
+    std::vector<aloe::frames::TcpPeer> peers;
+    for (std::uint16_t port = 40000; port < 40002; ++port) {
+        peers.emplace_back(aloe::testing::peer_spec(port), TcpSequence{1000U});
+    }
+    for (auto& peer : peers) {
+        receive(peer.syn());
+        auto frames = on_the_wire();
+        ASSERT_EQ(frames.size(), 1U);
+        peer.see(frames[0]);
+        receive(peer.ack());
+    }
+    EXPECT_EQ(tcp_.table_size(), 2U) << "accepted and taken by nobody: two slots held";
+    streams_.unlisten(aloe::testing::tcp_listen_port);
+    EXPECT_EQ(tcp_.table_size(), 0U) << "the backlog went back to the brick";
+    EXPECT_EQ(tcp_.counters().resets_sent, 2U) << "each peer learns its connection is gone";
+    const auto frames = on_the_wire();
+    EXPECT_EQ(std::ranges::count_if(
+                  frames, [](const aloe::frames::ParsedFrame& f) { return f.tcp && f.tcp->flags.has(TcpFlag::Rst); }),
+              2);
+    EXPECT_EQ(run_step(), 0U) << "nothing was parked";
+}
+
+TEST_F(StreamsTest, UnlistenFreesTheListenerRecord) {
+    Tcp small{ip_, context_.timers(), {.listeners = 1}};
+    Streams small_streams{small, context_};
+    Slot<Opened> seven;
+    auto seven_op = ex::connect(small_streams.accept(7), seven.receiver());
+    ex::start(seven_op);
+    Slot<Opened> eight;
+    auto eight_op = ex::connect(small_streams.accept(8), eight.receiver());
+    ex::start(eight_op);
+    ASSERT_TRUE(eight.value.has_value());
+    EXPECT_EQ(eight.value->error(), Error::TableFull) << "one record, taken by port 7";
+    small_streams.unlisten(7);
+    EXPECT_EQ(run_step(), 1U);
+    EXPECT_TRUE(seven.stopped);
+    Slot<Opened> eight_again;
+    auto eight_again_op = ex::connect(small_streams.accept(8), eight_again.receiver());
+    ex::start(eight_again_op);
+    EXPECT_EQ(eight_again.completions, 0) << "the record unlisten freed serves port 8";
+    EXPECT_TRUE(small.listening(8));
+    small_streams.unlisten(8);
+    EXPECT_EQ(run_step(), 1U);
+    EXPECT_TRUE(eight_again.stopped);
+}
+
+TEST_F(StreamsTest, HandshakeInFlightAtUnlistenIsReleasedOnArrival) {
+    Slot<Opened> parked;
+    auto op = ex::connect(streams_.accept(aloe::testing::tcp_listen_port), parked.receiver());
+    ex::start(op);
+    receive(peer_.syn());
+    auto frames = on_the_wire();
+    ASSERT_EQ(frames.size(), 1U) << "the SYN-ACK: a handshake in flight";
+    EXPECT_EQ(tcp_.table_size(), 1U);
+    streams_.unlisten(aloe::testing::tcp_listen_port);
+    EXPECT_EQ(run_step(), 1U);
+    EXPECT_TRUE(parked.stopped);
+    EXPECT_EQ(tcp_.table_size(), 1U) << "the brick keeps a handshake already in flight";
+    peer_.see(frames[0]);
+    receive(peer_.ack());  // Accepted is raised for a port nobody listens on any more
+    EXPECT_EQ(tcp_.table_size(), 0U) << "released on arrival";
+    EXPECT_EQ(tcp_.counters().resets_sent, 1U);
+    EXPECT_EQ(tcp_.counters().connections_accepted, 1U);
 }
