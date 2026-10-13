@@ -264,6 +264,16 @@ before the byte window closes. A segment that arrives when either cap is reached
 accepted, the peer's retransmission recovers it, and the offered window is never taken back. The edge is
 extended only while a packet slot is free, so a connection at its cap stops offering more.
 
+**What a loss-free fabric guarantees in this phase.** Between two Aloe peers a drop is final: nothing
+retransmits data until phase 2, so the receiver acknowledges what it kept, the sender never resends the rest,
+and everything after the gap is out of order for good. No segment is dropped while two conditions hold: a
+connection never has more than `receive_segments` segments in flight towards it, which full-size segments
+guarantee because the byte window is that many MSS, and the shard's `receive_pool` covers the packets its
+connections hold at once, `connections * receive_segments` in the worst case. Small segments break the first
+condition: a sender can fill the slots while byte credit remains, and the window cannot retract to say so. A
+Linux peer recovers through its own retransmission and the counters record the drops; between two Aloe peers
+the connection stalls, and the counters are the only witness.
+
 **The peer's window comes from current acknowledgements.** `writable()` is `min(mss, snd_wnd - in flight)`.
 The window is updated by RFC 793's rule, a newer sequence or the same one with a newer acknowledgement, and
 only from a segment whose acknowledgement is at or past `snd_una`, so a stale or forged acknowledgement

@@ -48,8 +48,10 @@ device API it needs.
 
 Done when an echo client and server written as a hand-written loop over the bricks, with no coroutine and
 no sender on the data path, interoperate with the Linux kernel stack over a tap device; the same echo
-written as runtime tasks does too; and the simulation tests pass on a loss-free fabric. The simulation tests
-pass; the tap suite and the examples build and wait for a run on a machine with root.
+written as runtime tasks does too; and the simulation tests pass on a loss-free fabric within the resource
+envelope the TCP page states: at most `receive_segments` segments in flight to a connection, and a pool sized
+for the connections that hold data at once. Outside it a drop between two Aloe peers is final until phase 2.
+The simulation tests pass; the tap suite and the examples build and wait for a run on a machine with root.
 
 ## 2. Full TCP
 

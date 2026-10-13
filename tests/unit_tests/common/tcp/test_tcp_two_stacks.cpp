@@ -1,10 +1,7 @@
 #include <algorithm>
 #include <aloe/fabric>
 #include <aloe/frames>
-#include <aloe/loop>
-#include <aloe/net>
 #include <aloe/tcp>
-#include <aloe/wire>
 #include <chrono>
 #include <cstddef>
 #include <span>
@@ -21,6 +18,7 @@ namespace {
     using namespace std::chrono_literals;
     using Ipv4      = aloe::net::Ipv4<aloe::fabric::Port>;
     using Tcp       = aloe::tcp::Stack<Ipv4>;
+    using Config    = aloe::tcp::TcpConfig;
     using TimePoint = aloe::core::TimePoint;
 
     constexpr aloe::wire::MacAddress server_mac{0x02, 0, 0, 0, 0, 0x0a};
@@ -31,11 +29,11 @@ namespace {
 
     /// One brick with its loop state: what a program writes once per shard.
     struct Brick {
-        Brick(aloe::fabric::Port& port, const aloe::wire::Ipv4Address address)
+        Brick(aloe::fabric::Port& port, const aloe::wire::Ipv4Address address, const Config& config)
             : queue{
                   port, 0, 64, counters
         },
-              ip{queue, {.address = address, .prefix = 24}}, tcp{ip, wheel, {}} {
+              ip{queue, {.address = address, .prefix = 24}}, tcp{ip, wheel, config} {
         }
 
         aloe::loop::ShardCounters counters;
@@ -61,18 +59,77 @@ namespace {
 
     class TcpTwoStacks : public ::testing::TestWithParam<aloe::fabric::EmulatedOffloads> {
     protected:
+        explicit TcpTwoStacks(const Config& server_config = {})
+            : server_{server_port_, server_ip, server_config} {
+        }
+
         aloe::fabric::Fabric fabric_;
         aloe::fabric::Port& server_port_ =
             fabric_.add_port({.mac = server_mac, .pool_size = 256, .offloads = GetParam()});
         aloe::fabric::Port& client_port_ =
             fabric_.add_port({.mac = client_mac, .pool_size = 256, .offloads = GetParam()});
-        Brick server_{server_port_, server_ip};
-        Brick client_{client_port_, client_ip};
+        Brick server_;
+        Brick client_{client_port_, client_ip, {}};
         TimePoint now_{};
+
+        /// Learns both MACs, listens, connects, and ticks until both ends are Established. Null on failure.
+        [[nodiscard]] Tcp::ConnectionType* establish(Tcp::ConnectionType*& client) {
+            server_.ip.learn(client_ip, client_mac, now_);
+            client_.ip.learn(server_ip, server_mac, now_);
+            if (!server_.tcp.listen(7).has_value()) {
+                return nullptr;
+            }
+            const auto session = client_.tcp.connect({.address = server_ip, .port = 7}, now_);
+            if (!session.has_value()) {
+                return nullptr;
+            }
+            client                      = *session;
+            Tcp::ConnectionType* server = nullptr;
+            for (int tick = 0; tick < 10 && (server == nullptr || client->state() != aloe::tcp::State::Established);
+                 ++tick) {
+                now_ += 1ms;
+                server_.receive(now_);
+                while (const auto event = server_.tcp.poll_event()) {
+                    if (event->events.accepted()) {
+                        server = event->connection;
+                    }
+                }
+                server_.flush(now_);
+                client_.receive(now_);
+                while (client_.tcp.poll_event()) {}
+                client_.flush(now_);
+            }
+            return client->state() == aloe::tcp::State::Established ? server : nullptr;
+        }
+
+        /// The client's segments cross to the server, which drains its events without consuming; its ACKs cross back.
+        void exchange() {
+            client_.flush(now_);
+            now_ += 1ms;
+            server_.receive(now_);
+            while (server_.tcp.poll_event()) {}
+            server_.flush(now_);
+            now_ += 1ms;
+            client_.receive(now_);
+            while (client_.tcp.poll_event()) {}
+        }
+    };
+
+    /// The server holds four packets per connection: small segments reach that cap long before the byte window closes.
+    class TcpTwoStacksFourSlots : public TcpTwoStacks {
+    protected:
+        TcpTwoStacksFourSlots()
+            : TcpTwoStacks({.receive_segments = 4}) {
+        }
     };
 
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpTwoStacks,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpTwoStacksFourSlots,
                              ::testing::Values(aloe::fabric::EmulatedOffloads::None,
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
@@ -170,4 +227,56 @@ TEST_P(TcpTwoStacks, EchoAcrossMssAndClose) {
     EXPECT_EQ(sc.dropped_no_slot + sc.dropped_no_node, 0U);
     EXPECT_EQ(server_.tcp.table_size() + client_.tcp.table_size(), 0U);
     EXPECT_EQ(server_.wheel.pending() + client_.wheel.pending(), 0U);
+}
+
+// The phase-1 reliability envelope the TCP page states: within it a loss-free fabric means no loss; beyond it a
+// drop between two Aloe peers is final, since nothing retransmits data until phase 2.
+
+TEST_P(TcpTwoStacksFourSlots, SmallSegmentsWithinTheSlotsLoseNothing) {
+    Tcp::ConnectionType* c = nullptr;
+    Tcp::ConnectionType* s = establish(c);
+    ASSERT_NE(s, nullptr);
+    EXPECT_EQ(server_.tcp.byte_budget(), 4U * 1460U) << "the byte window offers four MSS";
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(c->send(aloe::frames::pattern(1)), 1U) << "one byte per segment: send never coalesces";
+    }
+    exchange();
+    EXPECT_EQ(s->unread().size(), 4U) << "four segments, four slots";
+    EXPECT_EQ(server_.tcp.counters().dropped_no_slot, 0U);
+    EXPECT_EQ(c->acknowledged(), c->committed()) << "everything within the slots is acknowledged";
+    s->consume(4);
+    exchange();
+    EXPECT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    exchange();
+    EXPECT_EQ(s->unread().size(), 1U) << "slots freed by consume take segments again";
+    EXPECT_EQ(server_.tcp.counters().dropped_no_slot, 0U);
+    c->release();
+    s->release();
+}
+
+TEST_P(TcpTwoStacksFourSlots, SmallSegmentsBeyondTheSlotsAreDroppedForGood) {
+    Tcp::ConnectionType* c = nullptr;
+    Tcp::ConnectionType* s = establish(c);
+    ASSERT_NE(s, nullptr);
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_EQ(c->send(aloe::frames::pattern(1)), 1U) << "the byte window still has credit for the fifth";
+    }
+    exchange();
+    EXPECT_EQ(s->unread().size(), 4U) << "the fifth found no slot";
+    EXPECT_EQ(server_.tcp.counters().dropped_no_slot, 1U);
+    EXPECT_EQ(c->unacknowledged(), 1U) << "the server acknowledged what it kept";
+    for (int tick = 0; tick < 100; ++tick) {
+        exchange();
+    }
+    EXPECT_EQ(client_.tcp.counters().retransmits, 0U) << "data is never retransmitted in this phase";
+    EXPECT_EQ(c->unacknowledged(), 1U) << "and so the gap stays";
+    s->consume(4);
+    exchange();  // the window update reopens the slots
+    EXPECT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    exchange();
+    EXPECT_TRUE(s->unread().empty()) << "everything after the gap is out of order for good";
+    EXPECT_EQ(server_.tcp.counters().dropped_out_of_order, 1U);
+    EXPECT_EQ(c->unacknowledged(), 2U);
+    c->release();
+    s->release();
 }
