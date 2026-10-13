@@ -85,6 +85,12 @@ attributes answer `asynchronous_affine | inline_completion`. Every value is a
 `std::expected<T, Error>`: an error is a value, not an exception. Cancellation, a deadline and the scope's
 shutdown complete a sender through the stopped channel.
 
+The wrappers are written over `tcp::Stack` today: `Streams` owns the brick, and the handle exposes TCP's
+state, endpoints, MSS and sequence numbers beside the contract's members, so a type that models only
+`IsStream` cannot yet be waited on through them. The waiting itself reads only levels the contract defines.
+Making the wrappers generic over the contract, with connect, accept and `acked` as TCP's extension, is the
+first task of the TLS phase, when a second implementation exists to validate the boundary.
+
 | Sender            | Value                         | Completes with                                                                 |
 |-------------------|-------------------------------|--------------------------------------------------------------------------------|
 | `readable(n)`     | `expected<size_t, Error>`     | the unread bytes once at least `n`; `PeerClosed` if the FIN came first with fewer; `Reset`, `TimedOut`, `Unresolved` |

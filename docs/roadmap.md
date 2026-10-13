@@ -68,8 +68,10 @@ throughput and latency hold up against Linux under netem, and a soak run shows n
 
 TLS 1.3 client and server over OpenSSL, bound to the Aloe stream so records move without copies. TLS is a
 stream layer with the same shape as the layers below it: a brick with `process`, `events`, `send` and
-`flush`, and senders over it in the runtime. The record layer runs on the connection's core; NIC TLS
-offload through DPDK's security API is the later option.
+`flush`, and senders over it in the runtime. Its first task makes the runtime's stream wrappers generic over
+`stream::IsStream`, with `tls::Stream` as the second implementation that validates the boundary; until then
+they are written over `tcp::Stack`. The record layer runs on the connection's core; NIC TLS offload through
+DPDK's security API is the later option.
 
 Done when TLS echo interoperates with the `openssl` command-line tools and a public HTTPS endpoint, with
 handshake and per-record latency measured.
