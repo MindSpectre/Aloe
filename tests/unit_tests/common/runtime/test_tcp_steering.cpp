@@ -68,8 +68,14 @@ namespace {
         std::ignore = co_await stream.close();
     }
 
-    aloe::runtime::task<void>
-    serve(Stack::StreamsType* streams, aloe::runtime::Scheduler scheduler, const std::uint16_t index) {
+    /// Counts itself in `listening` just before its first `accept`: the sender creates the listener synchronously on
+    /// this shard thread, before the shard processes another frame, so once every shard is counted a SYN on any
+    /// queue finds its listener.
+    aloe::runtime::task<void> serve(Stack::StreamsType* streams,
+                                    aloe::runtime::Scheduler scheduler,
+                                    const std::uint16_t index,
+                                    std::atomic<int>* listening) {
+        listening->fetch_add(1, std::memory_order_release);
         for (;;) {
             auto stream = co_await streams->accept(7);
             if (!stream) {
@@ -150,9 +156,12 @@ TEST(TcpSteering, AllConnectionsStayOnTheirShard) {
     client_runtime.shard(0).stack().ip().learn(server_ip, server_mac, std::chrono::steady_clock::now());
     server.start();
     client_runtime.start();
+    std::atomic<int> listening{0};
     for (std::uint16_t index = 0; index < queues; ++index) {
-        server.spawn(index, serve(&server.shard(index).stack().streams(), server.scheduler(index), index));
+        server.spawn(index, serve(&server.shard(index).stack().streams(), server.scheduler(index), index, &listening));
     }
+    ASSERT_TRUE(eventually([&] { return listening.load(std::memory_order_acquire) == queues; }))
+        << "every shard listens before the first SYN";
     client_runtime.spawn(0, client(&client_runtime.shard(0).stack().streams(), &server_port.steering(), &done, &wrong));
     EXPECT_TRUE(eventually([&] { return done.load() == connections || wrong.load() >= 100; }));
     client_runtime.stop();
