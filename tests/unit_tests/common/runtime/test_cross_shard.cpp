@@ -7,9 +7,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <latch>
+#include <memory>
 #include <optional>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <echo_stack.hpp>
 #include <gtest/gtest.h>
@@ -154,4 +157,76 @@ TEST(CrossShard, HopsBetweenTwoShardsThroughTheirInboxes) {
         EXPECT_EQ(runtime.counters(shard).inbox_received, 1 + 2 * rounds) << "shard " << shard;
         EXPECT_EQ(runtime.counters(shard).work_run, 1 + 2 * rounds) << "shard " << shard;
     }
+}
+
+// A producer posts control work to a running shard until the shard closes admission; every accepted node runs
+// exactly once, every rejected node stays with the producer, and nothing is posted to an abandoned inbox.
+TEST(ControlPost, AcceptedNodesRunOnceAndRejectedNodesStayWithTheProducer) {
+    constexpr int total = 10000;
+    aloe::fabric::Fabric fabric;
+    auto& port = fabric.add_port({.mac = server, .queues = 1, .pool_size = 16});
+    aloe::runtime::Shard<aloe::fabric::Port, aloe::testing::EchoStack<aloe::fabric::Port>> shard{
+        {.idle = aloe::runtime::IdlePolicy::Yield, .yield_after = 1},
+        port, 0, std::chrono::steady_clock::now()
+    };
+
+    struct Node : aloe::loop::Work {
+        explicit Node(std::atomic<int>* counter) noexcept
+            : aloe::loop::Work{&Node::run_it},
+              ran{counter} {
+        }
+
+        static void run_it(aloe::loop::Work& work) noexcept {
+            static_cast<Node&>(work).ran->fetch_add(1);
+        }
+
+        std::atomic<int>* ran = nullptr;
+    };
+
+    struct Stop : aloe::loop::Work {
+        explicit Stop(aloe::runtime::ShardContext* owner) noexcept
+            : aloe::loop::Work{&Stop::run_it},
+              context{owner} {
+        }
+
+        static void run_it(aloe::loop::Work& work) noexcept {
+            static_cast<Stop&>(work).context->request_stop();
+        }
+
+        aloe::runtime::ShardContext* context = nullptr;
+    };
+
+    // Declared before the runner, so every node outlives the thread that may run it.
+    std::atomic<int> ran{0};
+    Stop stop{&shard.context()};
+    std::vector<std::unique_ptr<Node>> nodes;
+    nodes.reserve(total);
+    int accepted = 0;
+    int rejected = 0;
+    std::latch go{2};
+    std::jthread runner{[&] {
+        go.arrive_and_wait();
+        shard.run();
+    }};
+    go.arrive_and_wait();
+    for (int i = 0; i < total; ++i) {
+        nodes.push_back(std::make_unique<Node>(&ran));
+        if (shard.context().post_control(*nodes.back())) {
+            ++accepted;
+        } else {
+            ++rejected;
+        }
+        if (i == 100) {
+            ASSERT_TRUE(shard.context().post_control(stop)) << "nothing closes admission before the stop runs";
+        }
+        if (i % 50 == 0) {
+            std::this_thread::yield();
+        }
+    }
+    runner.join();
+    EXPECT_EQ(ran.load(), accepted) << "every accepted node ran exactly once";
+    EXPECT_EQ(accepted + rejected, total) << "every node was either accepted or kept by the producer";
+    EXPECT_LE(accepted, total);
+    EXPECT_GT(accepted, 100) << "the 101 nodes posted before the stop were all accepted";
+    EXPECT_FALSE(shard.context().post_control(*nodes.front())) << "closed for good";
 }

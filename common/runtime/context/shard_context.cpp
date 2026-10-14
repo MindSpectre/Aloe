@@ -1,4 +1,6 @@
 #include <cstddef>
+#include <mutex>
+#include <span>
 
 #include <shard_context.hpp>
 
@@ -50,6 +52,37 @@ namespace aloe::runtime {
     void ShardContext::request_stop() noexcept {
         stopping_ = true;
         scope_.request_stop();
+    }
+
+    void ShardContext::set_siblings(const std::span<ShardContext* const> siblings) {
+        siblings_.assign(siblings.begin(), siblings.end());
+    }
+
+    bool ShardContext::post_control(loop::Work& work) noexcept {
+        const std::lock_guard lock{control_mutex_};
+        if (control_closed_) {
+            return false;
+        }
+        inbox_.push(work);
+        return true;
+    }
+
+    bool ShardContext::try_finish() noexcept {
+        if (!stopping_) {
+            return false;
+        }
+        const std::lock_guard lock{control_mutex_};
+        if (!drained()) {
+            return false;
+        }
+        control_closed_ = true;
+        return true;
+    }
+
+    void ShardContext::deliver_arp(const wire::Ipv4Address address, const wire::MacAddress mac) noexcept {
+        if (arp_sink_.learn != nullptr) {
+            arp_sink_.learn(arp_sink_.object, address, mac, now_);
+        }
     }
 
 }  // namespace aloe::runtime

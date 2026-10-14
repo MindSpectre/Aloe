@@ -93,3 +93,24 @@ target_link_libraries(${SHARED_TESTING_TARGET}.Net INTERFACE
         ${TEST_LIBS}
 )
 ##############################################################################
+
+##############################################################################
+# The TCP brick over a fabric, with a scripted peer: the harness fixture
+##############################################################################
+add_library(${SHARED_TESTING_TARGET}.Tcp INTERFACE
+        tcp/tcp_fixture.hpp
+        tcp/tcp_test_device.hpp
+)
+target_include_directories(${SHARED_TESTING_TARGET}.Tcp INTERFACE
+        tcp/
+)
+target_link_libraries(${SHARED_TESTING_TARGET}.Tcp INTERFACE
+        Aloe::Common::Tcp
+        Aloe::Common::Net
+        Aloe::Common::Loop
+        Aloe::Fixtures::Fabric
+        Aloe::Fixtures::Frames
+        ${SHARED_TESTING_TARGET}.Net
+        ${TEST_LIBS}
+)
+##############################################################################

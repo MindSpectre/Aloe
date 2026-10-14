@@ -53,12 +53,14 @@ namespace aloe::runtime {
      * @brief N shards over an N-queue device, one thread each.
      *
      * `start` launches the threads and returns once every one has run its hook; a hook that throws
-     * or a CPU that cannot be pinned stops what already started and throws. `stop` posts a stop into
-     * every inbox, from any thread, idempotent; shards then drain and their threads end. `join`
-     * waits. The destructor does both. `scheduler(i)` works from any thread, `spawn(i, sender)` hops
-     * to shard i and spawns there. `shard(i)` and `counters(i)` are for the shard's own thread or
-     * for after `join`. A `start()` that throws leaves the runtime stopped; it cannot be started
-     * again, destroy it.
+     * or a CPU that cannot be pinned stops what already started and throws; the failed thread drains
+     * the control posts it already accepted and closes admission first. Every context knows its
+     * siblings before `start`. `stop` posts a stop to every shard through `post_control`, from any
+     * thread, idempotent; a shard that already finished rejects it and the runtime keeps the node.
+     * Shards then drain and their threads end. `join` waits. The destructor does both. `scheduler(i)`
+     * works from any thread, `spawn(i, sender)` hops to shard i and spawns there. `shard(i)` and
+     * `counters(i)` are for the shard's own thread or for after `join`. A `start()` that throws leaves
+     * the runtime stopped; it cannot be started again, destroy it.
      */
     template <device::IsDevice Device, typename Stack>
         requires IsStack<Stack, Device>
@@ -83,6 +85,21 @@ namespace aloe::runtime {
             for (std::uint16_t queue = 0; queue < queues; ++queue) {
                 shards_.push_back(std::make_unique<ShardType>(config.shard, device, queue, start, stack_args...));
                 stops_.push_back(std::make_unique<StopWork>(shards_.back()->context()));
+            }
+            std::vector<ShardContext*> contexts;
+            contexts.reserve(queues);
+            for (const auto& shard : shards_) {
+                contexts.push_back(&shard->context());
+            }
+            for (std::size_t index = 0; index < shards_.size(); ++index) {
+                std::vector<ShardContext*> others;
+                others.reserve(queues - 1U);
+                for (std::size_t other = 0; other < contexts.size(); ++other) {
+                    if (other != index) {
+                        others.push_back(contexts[other]);
+                    }
+                }
+                shards_[index]->context().set_siblings(others);
             }
         }
 
@@ -112,6 +129,7 @@ namespace aloe::runtime {
                         prepare_thread(index);
                         promise.set_value();
                     } catch (...) {
+                        close_control(index);
                         promise.set_exception(std::current_exception());
                         return;
                     }
@@ -172,7 +190,8 @@ namespace aloe::runtime {
             }
             log().template info<"stop requested for {} shards">(shards_.size());
             for (std::unique_ptr<StopWork>& pending : stops_) {  // not `stop`: GCC's -Wshadow sees the member function
-                pending->context->inbox().push(*pending);
+                // Rejected: that shard already finished and closed admission; the node stays ours.
+                std::ignore = pending->context->post_control(*pending);
             }
         }
 
@@ -273,6 +292,17 @@ namespace aloe::runtime {
             }
             shards_[index]->context().logger().template info<"shard {} starting as {} on cpu {}">(
                 index, name, options.cpu ? static_cast<int>(*options.cpu) : -1);
+        }
+
+        /// A thread whose hook failed never enters `run()`: it drains the control posts a sibling may already have
+        /// made and closes admission, so no allocated node is left in an inbox nobody reads. No device polling.
+        void close_control(const std::uint16_t index) noexcept {
+            ShardContext& context = shards_[index]->context();
+            const ShardContext::Current current{context};
+            context.request_stop();
+            while (!context.try_finish()) {
+                std::ignore = context.run_once(core::Clock::now());
+            }
         }
 
         /// The runtime's cold-path logger: the first shard's, which is the module's.

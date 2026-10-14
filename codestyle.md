@@ -46,7 +46,7 @@ server.on_request([]([[maybe_unused]] const Request& req) {
 | Variables            | snake_case                | `table_name`, `result_count`  |
 | Member variables     | snake_case + trailing `_` | `table_name_`, `distinct_`    |
 | Template type params | PascalCase                | `T`, `ValueType`, `ColumnsTp` |
-| Namespaces           | lowercase                 | `aloe::net::tcp`              |
+| Namespaces           | lowercase                 | `aloe::tcp`                   |
 | Enum values          | PascalCase                | `LogLevel::Warning`           |
 | Macros               | SCREAMING_SNAKE           | `ENABLE_LOGGING`              |
 | Files                | snake_case                | `query_compiler.hpp`          |
@@ -475,19 +475,26 @@ constexpr auto process(this Self&& self) {
 object. This avoids clang-tidy `bugprone-use-after-move` false positives that occur with
 `std::forward<Self>(self).member_`, and is semantically cleaner for member access.
 
-### Out-of-line Template Implementations
+### One Class, One Place
 
-For heavy template implementations, split the bodies into a `.inl` file placed in a
-`detail/` (or `source/`) subdirectory next to the header. Include it at the bottom of the matching `.hpp`, inside the
-same namespace context:
+A class's member functions are defined in the class body or, for a non-template class with a source file, in
+that one `.cpp`. One class's definitions are never spread over several headers, by code path or otherwise, and
+no header is included after another's namespace closes, `.inl` or `.hpp`, to finish what the class above needs:
+headers include what they use at the top, in an order with no cycle, and the umbrella lists every one of them.
+The reader of a class sees every member in one place; a class too big for that is split into classes with
+responsibilities of their own, each in its own file.
 
 ```cpp
-// connection.hpp
-namespace aloe::net {
-    // ... class declarations ...
-}  // namespace aloe::net
+// Good: every member of the template defined in its body, in tcp_stack.hpp
+template <typename Ip>
+class Stack {
+public:
+    void process(std::span<Datagram> segments, core::TimePoint now) noexcept { /* ... */ }
+};
 
-#include "detail/connection.inl"
+// Bad: tcp_receive.hpp, tcp_transmit.hpp and tcp_control.hpp each defining members of Stack<Ip>
+template <typename Ip>
+void Stack<Ip>::process(std::span<Datagram> segments, core::TimePoint now) noexcept { /* ... */ }
 ```
 
 ## Lambda Captures
@@ -567,7 +574,8 @@ Consumers include the whole module via `#include <aloe/<module>>`:
 ### Which Namespace
 
 Every module gets a namespace named after it: `aloe::core`, `aloe::execution`, `aloe::log`, `aloe::wire`,
-`aloe::device`, `aloe::fabric`, `aloe::ethdev`. A name says which module it comes from, so `aloe::execution::ex::just`, `aloe::wire::MacAddress`
+`aloe::device`, `aloe::fabric`, `aloe::frames`, `aloe::ethdev`, `aloe::loop`, `aloe::runtime`, `aloe::net`,
+`aloe::stream`, `aloe::tcp`. A name says which module it comes from, so `aloe::execution::ex::just`, `aloe::wire::MacAddress`
 and `aloe::fabric::Port` need no lookup to place. Nothing is declared directly in `aloe`.
 
 Code in one module names another module's vocabulary through the module namespace, never through a
@@ -580,7 +588,7 @@ Use the C++17 one-line nested form. Never nest with separate braces.
 
 ```cpp
 namespace aloe::net { ... }            // Good
-namespace aloe::net::tcp { ... }       // Good
+namespace aloe::tcp { ... }            // Good
 
 // Avoid:
 // namespace aloe { namespace net { ... } }

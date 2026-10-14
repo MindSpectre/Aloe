@@ -3,10 +3,10 @@
 The wire module (`common/wire/`) is what Aloe knows about each protocol as values and formats: the
 addresses, the header layouts, the protocol numbers and the checksums, grouped by protocol, with no packets,
 no devices and no state. Everything about IPv4 sits under `wire/ipv4/`, everything about Ethernet under
-`wire/ethernet/`, and IPv6, UDP and TCP get a directory each when they arrive. It depends on nothing. Everything
+`wire/ethernet/`, TCP under `wire/tcp/`, and IPv6 and UDP get a directory each when they arrive. It depends on nothing. Everything
 is reached through the umbrella `#include <aloe/wire>` (`export/aloe/wire`), and targets link
-`Aloe::Common::Wire`. The [device layer](device.md) speaks in its addresses; the [net](net.md) bricks read
-and write its formats.
+`Aloe::Common::Wire`. The [device layer](device.md) speaks in its addresses; the [net](net.md) and [tcp](tcp.md)
+bricks read and write its formats.
 
 | Directory   | Target                  | Holds                                                                                    |
 |-------------|-------------------------|------------------------------------------------------------------------------------------|
@@ -15,6 +15,7 @@ and write its formats.
 | `ipv4/`     | `Aloe.Common.Wire.Ipv4` | `Ipv4Address` and its multicast MAC; `Ipv4Subnet`; `Ipv4Protocol`; `Ipv4Header`; the header checksum and the pseudo-header sum. |
 | `arp/`      | `Aloe.Common.Wire.Arp`  | `ArpPacket`, `ArpOperation`, for Ethernet over IPv4.                                     |
 | `icmp/`     | `Aloe.Common.Wire.Icmp` | `IcmpHeader`, `IcmpType`.                                                                |
+| `tcp/`      | `Aloe.Common.Wire.Tcp`  | `TcpSequence`, `TcpFlag`, `TcpFlags`, `TcpHeader`, `TcpOptions`.                         |
 
 ## Key types
 
@@ -28,6 +29,10 @@ and write its formats.
   byte still representable.
 - **The headers** -- `EthernetHeader`, `ArpPacket`, `Ipv4Header`, `IcmpHeader`, each with a static
   `parse(bytes)` returning `std::optional`, a const `write(out)`, and its length as `size`, all `constexpr`.
+- **`aloe::wire::TcpSequence`**, **`TcpFlag`**/**`TcpFlags`**, **`TcpHeader`**, **`TcpOptions`** -- `TcpSequence`
+  is a sequence number with serial arithmetic (`a - b` is the wrapped signed distance, `before`, `after`);
+  `TcpFlags` is the flag byte as a set; `TcpHeader` keeps the data offset in bytes and leaves the options to
+  `TcpOptions`, which reads the MSS only and reports a malformed list so the brick can drop the segment.
 - **`aloe::wire::internet_checksum`** and friends -- the Internet checksum; in `ipv4/`, the IPv4 header
   checksum and the pseudo-header sum that transmit checksum offload starts from.
 - **`aloe::wire::load_be16`**, **`store_be16`**, and the 32-bit pair -- network byte order over spans.

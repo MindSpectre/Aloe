@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <optional>
 #include <span>
@@ -200,4 +201,79 @@ TEST_F(RuntimeTest, AFrameIsAnsweredByTheShardItsHashSelects) {
         return false;
     }));
     EXPECT_EQ(aloe::testing::stamp_of(*reply), expected);
+}
+
+TEST_F(RuntimeTest, SiblingsExcludeSelfAndAreBoundBeforeStart) {
+    EchoRuntime runtime{config_, server_};
+    for (std::uint16_t index = 0; index < queues; ++index) {
+        const auto siblings = runtime.shard(index).context().siblings();
+        EXPECT_EQ(siblings.size(), static_cast<std::size_t>(queues - 1));
+        for (const aloe::runtime::ShardContext* sibling : siblings) {
+            EXPECT_NE(sibling, &runtime.shard(index).context());
+        }
+    }
+}
+
+TEST_F(RuntimeTest, AFailedHookClosesControlOnEveryShardWithoutDeadlock) {
+    std::atomic<int> hook_calls{0};
+    config_.thread_hook = [&hook_calls] {
+        if (++hook_calls == 2) {
+            throw std::runtime_error{"second hook fails"};
+        }
+    };
+    EchoRuntime runtime{config_, server_};
+    EXPECT_THROW(runtime.start(), aloe::runtime::RuntimeError);
+    struct Never : aloe::loop::Work {
+        Never() noexcept
+            : aloe::loop::Work{[](aloe::loop::Work& /*work*/) noexcept {}} {
+        }
+    } never;
+    for (std::uint16_t index = 0; index < queues; ++index) {
+        EXPECT_FALSE(runtime.shard(index).context().post_control(never)) << "shard " << index << " closed admission";
+    }
+}
+
+// Shard 0 finishes on a stop the test posts, before the runtime's stop: the runtime's node for it is rejected, stays
+// owned by the runtime (ASan sees no double free and no leak) and never reaches shard 0's inbox.
+TEST_F(RuntimeTest, StopAfterAShardFinishedKeepsItsNode) {
+    struct Stopper : aloe::loop::Work {
+        Stopper() noexcept
+            : aloe::loop::Work{
+                  [](aloe::loop::Work& /*work*/) noexcept { aloe::runtime::ShardContext::current()->request_stop(); }} {
+        }
+    };
+    struct Probe : aloe::loop::Work {
+        Probe() noexcept
+            : aloe::loop::Work{[](aloe::loop::Work& /*work*/) noexcept {}} {
+        }
+    };
+    // Declared before the runtime, so the nodes outlive every shard that may run them.
+    Stopper stopper;
+    std::deque<Probe> probes;
+    std::uint64_t accepted = 0;
+    EchoRuntime runtime{config_, server_};
+    runtime.start();
+    ASSERT_TRUE(runtime.shard(0).context().post_control(stopper));
+    ++accepted;
+    ASSERT_TRUE(eventually([&] {
+        if (runtime.shard(0).context().post_control(probes.emplace_back())) {
+            ++accepted;
+            return false;
+        }
+        return true;
+    })) << "shard 0 closed admission after the test's stop";
+
+    runtime.stop();
+    runtime.join();
+    EXPECT_EQ(runtime.counters(0).inbox_received, accepted)
+        << "the runtime's stop for the finished shard was rejected, not pushed";
+    for (std::uint16_t index = 1; index < queues; ++index) {
+        EXPECT_EQ(runtime.counters(index).inbox_received, 1U) << "shard " << index << " received the runtime's stop";
+    }
+
+    runtime.stop();  // idempotent, and every context is closed: the owned nodes are retained, nothing is pushed
+    for (std::uint16_t index = 0; index < queues; ++index) {
+        EXPECT_EQ(runtime.counters(index).inbox_received, index == 0 ? accepted : 1U) << "shard " << index;
+        EXPECT_FALSE(runtime.shard(index).context().post_control(stopper)) << "shard " << index << " is closed";
+    }
 }

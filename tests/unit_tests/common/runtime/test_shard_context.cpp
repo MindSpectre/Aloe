@@ -1,4 +1,5 @@
 #include <aloe/runtime>
+#include <aloe/wire>
 #include <chrono>
 #include <vector>
 
@@ -133,4 +134,84 @@ TEST_F(ShardContextTest, AnArmedTimerDoesNotHoldTheShardOpen) {
     context_.request_stop();
     EXPECT_TRUE(context_.drained()) << "a timer with no task behind it belongs to the stack and dies with it";
     context_.timers().cancel(later);
+}
+
+namespace {
+
+    struct Counting : aloe::loop::Work {
+        Counting() noexcept
+            : aloe::loop::Work{&Counting::run_it} {
+        }
+
+        static void run_it(aloe::loop::Work& work) noexcept {
+            ++static_cast<Counting&>(work).runs;
+        }
+
+        int runs = 0;
+    };
+
+}  // namespace
+
+TEST_F(ShardContextTest, SetNowRecordsTheStampWithoutRunningAnything) {
+    Counting work;
+    context_.ready().push(work);
+    context_.set_now(start + 5ms);
+    EXPECT_EQ(context_.now(), start + 5ms);
+    EXPECT_EQ(work.runs, 0);
+    EXPECT_EQ(context_.counters().work_run, 0U);
+    EXPECT_TRUE(context_.run_once(start + 5ms)) << "the queued node is still there";
+    EXPECT_EQ(work.runs, 1);
+}
+
+TEST_F(ShardContextTest, ControlPostAcceptedBeforeDrainOrRejectedAfterClosure) {
+    Counting first;
+    Counting second;
+    EXPECT_FALSE(context_.try_finish()) << "no stop requested: nothing to finish, no lock taken";
+    EXPECT_TRUE(context_.post_control(first));
+    EXPECT_FALSE(context_.drained());
+    EXPECT_TRUE(context_.run_once(start));
+    EXPECT_EQ(first.runs, 1);
+    {
+        const aloe::runtime::ShardContext::Current current{context_};
+        context_.request_stop();
+    }
+    EXPECT_TRUE(context_.post_control(second)) << "stop requested but not yet finished: still accepted";
+    EXPECT_FALSE(context_.try_finish()) << "the accepted node keeps the context open";
+    EXPECT_TRUE(context_.run_once(start));
+    EXPECT_EQ(second.runs, 1);
+    EXPECT_TRUE(context_.try_finish());
+    Counting late;
+    EXPECT_FALSE(context_.post_control(late)) << "closed: the node stays the caller's";
+    EXPECT_EQ(late.runs, 0);
+    EXPECT_FALSE(context_.run_once(start));
+    EXPECT_EQ(late.runs, 0) << "nothing reached the inbox";
+}
+
+TEST_F(ShardContextTest, ArpSinkDeliversOnTheOwnerWithTheStamp) {
+    struct Learned {
+        aloe::wire::Ipv4Address address{};
+        aloe::wire::MacAddress mac{};
+        TimePoint at{};
+        int calls = 0;
+    } learned{};
+    context_.set_arp_sink({.object = &learned,
+                           .learn  = [](void* object,
+                                        const aloe::wire::Ipv4Address address,
+                                        const aloe::wire::MacAddress mac,
+                                        const TimePoint now) noexcept {
+                               auto& self   = *static_cast<Learned*>(object);
+                               self.address = address;
+                               self.mac     = mac;
+                               self.at      = now;
+                               ++self.calls;
+                           }});
+    context_.set_now(start + 3ms);
+    context_.deliver_arp({10, 0, 0, 254}, {0x02, 0, 0, 0, 0, 0xfe});
+    EXPECT_EQ(learned.calls, 1);
+    EXPECT_EQ(learned.address, (aloe::wire::Ipv4Address{10, 0, 0, 254}));
+    EXPECT_EQ(learned.mac, (aloe::wire::MacAddress{0x02, 0, 0, 0, 0, 0xfe}));
+    EXPECT_EQ(learned.at, start + 3ms);
+    context_.set_arp_sink({});
+    context_.deliver_arp({10, 0, 0, 1}, {});
+    EXPECT_EQ(learned.calls, 1) << "no sink: discarded";
 }

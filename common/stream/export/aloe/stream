@@ -1,0 +1,10 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe stream module: the zero-copy stream contract every protocol
+ * layer offers, as concepts, the event and error vocabulary, and the convenience `send`.
+ * Names no execution model. Consumers link Aloe::Common::Stream and write `#include <aloe/stream>`.
+ */
+
+#include <stream.hpp>
+#include <stream_events.hpp>

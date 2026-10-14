@@ -77,6 +77,22 @@ target_link_libraries(${WIRE}.Icmp INTERFACE
 ##############################################################################
 
 ##############################################################################
+# TCP: sequence arithmetic, the header and the options the brick reads
+##############################################################################
+add_library(${WIRE}.Tcp INTERFACE
+        tcp/tcp_sequence.hpp
+        tcp/tcp_header.hpp
+        tcp/tcp_options.hpp
+)
+target_include_directories(${WIRE}.Tcp INTERFACE
+        tcp/
+)
+target_link_libraries(${WIRE}.Tcp INTERFACE
+        ${WIRE}.Bytes
+)
+##############################################################################
+
+##############################################################################
 # Wire exported library
 ##############################################################################
 add_combined_library(${WIRE}
@@ -90,6 +106,7 @@ add_combined_library(${WIRE}
         ${WIRE}.Ipv4
         ${WIRE}.Arp
         ${WIRE}.Icmp
+        ${WIRE}.Tcp
 )
 
 add_library(Aloe::Common::Wire ALIAS ${WIRE})

@@ -20,22 +20,38 @@ ThreadSanitizer.
 
 Ethernet, ARP with cache and gateway resolution, IPv4 without fragmentation, ICMP echo, and UDP with
 multicast group membership, which is what a feed handler consumes. The first four exist as the
-[`net`](architecture/net.md) brick. TCP with the handshake in both
-directions, in-order data, FIN and RST, a fixed window and the MSS option, and nothing else, designed as a
-receive half and a transmit half from the start although both run in one loop. A connection table keyed by
-4-tuple with a stable index per connection; placement by flow rules per connection, and by the RSS
-source-port choice for many connections.
+[`net`](architecture/net.md) brick.
 
-The protocol bricks define the stream shape every later layer reuses: `process` a burst, `events` to drain,
-`unread` and `consume`, a non-blocking `send` that reports the bytes it accepted and never coalesces two
-sends into one segment, and `flush`. The connection leaf senders, connect, accept, readable, send and close,
-are a runtime module written over the event list, after the bricks. The runtime's shard gains a per-tick
-hook for a loop's own polling and flushes the ring before the tasks run. The first benchmark target
-measures tick-to-send through the bricks against a raw poll of the device, on the fabric.
+TCP has landed as the [`tcp`](architecture/tcp.md) brick: the handshake in both directions, in-order data
+held as the received packets, FIN and RST, a fixed byte window and the MSS option, and control retransmission
+of SYN, SYN-ACK and FIN on the shard's wheel. Receive, transmit and maintenance run on one owning thread per
+connection, with their state ownership and the interactions between them recorded so a later design can
+place them on two cores. A fixed connection table keyed by 4-tuple gives each connection a stable index;
+inbound placement follows the card's RSS hash and outbound placement the choice of local port. ARP
+resolutions are forwarded between shards.
+
+The [stream](architecture/stream.md) contract every later layer reuses exists: `process` a burst,
+`poll_event` to drain, `unread` and `consume` over the received packets, `prepare` and `commit` into the
+packet that leaves, a convenience `send` that reports the bytes it accepted and never coalesces two sends into
+one segment, and `flush`. The connection senders, accept, connect, readable, writable, acked, send, close and
+closed, are a runtime layer written over the event list, after the bricks, with `runtime::TcpStack` as the
+ready-made shard stack; the shard gained the per-tick hooks they need. `examples/tcp_echo` and
+`examples/tcp_echo_tasks` are the echo in both products.
+
+Phase 1 leaves out, on purpose: retransmission of data, storage of out-of-order segments, TIME_WAIT, and the
+hardening a stack facing hostile peers needs (SYN cookies, RFC 6528 initial sequence numbers, RFC 5961
+challenge ACKs, a keyed table hash, ARP-reply rate limiting). It makes no deployment or latency claim.
+
+Remaining: UDP with multicast, and the first benchmark target, which measures tick-to-send through the
+bricks against a raw poll of the device, on the fabric. Placement by flow rules per connection waits for the
+device API it needs.
 
 Done when an echo client and server written as a hand-written loop over the bricks, with no coroutine and
 no sender on the data path, interoperate with the Linux kernel stack over a tap device; the same echo
-written as runtime tasks does too; and the simulation tests pass on a loss-free fabric.
+written as runtime tasks does too; and the simulation tests pass on a loss-free fabric within the resource
+envelope the TCP page states: at most `receive_segments` segments in flight to a connection, and a pool sized
+for the connections that hold data at once. Outside it a drop between two Aloe peers is final until phase 2.
+The simulation tests and the tap suite pass; the examples build and wait for a run on a machine with root.
 
 ## 2. Full TCP
 
@@ -43,7 +59,9 @@ Retransmission with RTO estimation, out-of-order reassembly, SACK, window scalin
 zero-window probes, keepalive and TIME_WAIT. Pre-built segment headers per connection, so a send patches
 sequence, acknowledgement, timestamp and checksum and posts. Scripted loss, reordering and delay in the
 fabric, which is where they are first needed. Congestion control as a pluggable policy, NewReno first and
-CUBIC second, with optional pacing. The public API freezes as v1 at the end of this phase.
+CUBIC second, with optional pacing. Hardening against hostile peers: SYN cookies, RFC 6528 initial sequence
+numbers, RFC 5961 challenge ACKs, a keyed table hash and ARP-reply rate limiting. The public API freezes as v1
+at the end of this phase.
 
 Done when the simulation suite passes under scripted impairment, packetdrill-style scenario tests pass,
 throughput and latency hold up against Linux under netem, and a soak run shows no leaks.
@@ -52,8 +70,10 @@ throughput and latency hold up against Linux under netem, and a soak run shows n
 
 TLS 1.3 client and server over OpenSSL, bound to the Aloe stream so records move without copies. TLS is a
 stream layer with the same shape as the layers below it: a brick with `process`, `events`, `send` and
-`flush`, and senders over it in the runtime. The record layer runs on the connection's core; NIC TLS
-offload through DPDK's security API is the later option.
+`flush`, and senders over it in the runtime. Its first task makes the runtime's stream wrappers generic over
+`stream::IsStream`, with `tls::Stream` as the second implementation that validates the boundary; until then
+they are written over `tcp::Stack`. The record layer runs on the connection's core; NIC TLS offload through
+DPDK's security API is the later option.
 
 Done when TLS echo interoperates with the `openssl` command-line tools and a public HTTPS endpoint, with
 handshake and per-record latency measured.
@@ -83,8 +103,6 @@ Every phase adds tests at three levels.
 
 ## Open questions
 
-- How errors are reported: the error channel with a small error code, or `std::expected` in the value
-  channel.
 - Congestion control algorithms beyond NewReno and CUBIC, and TLS libraries beyond OpenSSL.
 - When IPv6 arrives.
 - Whether libc++ becomes supported, and whether C++ modules are revisited at the v1 freeze.
@@ -93,3 +111,7 @@ Every phase adds tests at three levels.
   after phase 2.
 - Which clock the loop reads: `steady_clock` today, a TSC clock behind a policy when the benchmark says so.
 - Whether `loop::ShardCounters` splits along the product boundary, or stays one struct both fill.
+
+Resolved in phase 1: errors are reported as `std::expected` in the value channel, and the stopped channel
+carries cancellation only; abseil does not enter the project, since the connection table and the ARP cache
+are fixed open-addressing tables of Aloe's own.
