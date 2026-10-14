@@ -184,6 +184,14 @@ basenames are unique across modules: `packet.hpp` is the concept,
   deadline it passed: the re-armed deadline is computed from the new stamp. A test of a retry schedule steps
   the clock, at most one retry interval per `advance`, and checks each deadline, or it sees one retry where a
   real loop sees several.
+- DPDK's tap driver points an rt-signal at its queue descriptors, so every frame the kernel writes to the tap
+  interrupts some thread of the process. The handler has `SA_RESTART`, which restarts `recv` and `send` but never
+  `poll`: a test thread polling a kernel socket gets `EINTR` and must retry until its deadline, as
+  `readable_by` in `test_tcp_tap.cpp` does.
+- Fedora's firewalld puts the tap's kernel interface in its default zone, which opens only TCP ports 1025-65535.
+  A kernel listener on a lower port never sees the stack's SYN, while connections the kernel opens pass as
+  established traffic, so only the client direction fails. A tap test or example whose kernel end listens
+  uses a port above 1024.
 
 ## Documentation
 

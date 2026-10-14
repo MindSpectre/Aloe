@@ -40,6 +40,9 @@
 //
 //     sudo ./build/debug/tests/manual_tests/tcp/Aloe.Tests.Manual.Tcp.Tap
 //
+// The kernel listens for the client tests, so the host firewall must accept inbound TCP on the tap: Fedora's
+// firewalld puts `aloe-tcp` in its default zone, which opens only ports 1025-65535, hence an echo port above 1024.
+//
 // The kernel's SYN carries SACK-permitted, timestamps and window scale, which the option parser skips; the tap
 // offers no offloads, so every checksum is software on our side and verified by the kernel.
 namespace {
@@ -55,7 +58,7 @@ namespace {
     constexpr aloe::wire::Ipv4Address kernel_ip{10, 78, 0, 1};
     constexpr aloe::wire::Ipv4Address stack_ip{10, 78, 0, 2};
     constexpr aloe::wire::Ipv4Address netmask{255, 255, 255, 0};
-    constexpr std::uint16_t echo_port = 7;
+    constexpr std::uint16_t echo_port = 7007;
     constexpr auto patience           = 5000ms;
 
     const auto* const environment =
@@ -105,10 +108,11 @@ namespace {
         return true;
     }
 
-    /// Reads exactly `out.size()` bytes within `patience`, or returns false.
-    [[nodiscard]] bool recv_all(const int fd, std::span<std::byte> out) {
-        const auto deadline = std::chrono::steady_clock::now() + patience;
-        while (!out.empty()) {
+    /// Waits until `fd` is readable or `deadline` passes; true when readable. The tap driver points an rt-signal at
+    /// its queues, so every frame the kernel writes to the tap interrupts some thread, and `poll` is never restarted
+    /// by `SA_RESTART`: an `EINTR` here is a frame arriving, not a failure.
+    [[nodiscard]] bool readable_by(const int fd, const std::chrono::steady_clock::time_point deadline) {
+        for (;;) {
             const auto left =
                 std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
             if (left <= 0ms) {
@@ -119,7 +123,15 @@ namespace {
             if (ready < 0 && errno == EINTR) {
                 continue;
             }
-            if (ready <= 0) {
+            return ready > 0;
+        }
+    }
+
+    /// Reads exactly `out.size()` bytes within `patience`, or returns false.
+    [[nodiscard]] bool recv_all(const int fd, std::span<std::byte> out) {
+        const auto deadline = std::chrono::steady_clock::now() + patience;
+        while (!out.empty()) {
+            if (!readable_by(fd, deadline)) {
                 return false;
             }
             const ssize_t got = ::recv(fd, out.data(), out.size(), 0);
@@ -137,8 +149,7 @@ namespace {
     /// True when the peer closed: a zero-length read within `patience`.
     [[nodiscard]] bool recv_eof(const int fd) {
         std::array<std::byte, 1> one{};
-        pollfd waiting{.fd = fd, .events = POLLIN, .revents = 0};
-        if (poll(&waiting, 1, static_cast<int>(patience.count())) <= 0) {
+        if (!readable_by(fd, std::chrono::steady_clock::now() + patience)) {
             return false;
         }
         return ::recv(fd, one.data(), one.size(), 0) == 0;
@@ -368,10 +379,8 @@ namespace {
 
     /// A kernel server: accepts one connection, echoes until EOF, then closes.
     void kernel_server_echo(const int listener, std::size_t expected) {
-        pollfd waiting{.fd = listener, .events = POLLIN, .revents = 0};
-        const int ready = poll(&waiting, 1, static_cast<int>(patience.count()));
-        ASSERT_GT(ready, 0) << "no connection from the stack within " << patience.count()
-                            << " ms: " << (ready < 0 ? std::strerror(errno) : "timed out");
+        ASSERT_TRUE(readable_by(listener, std::chrono::steady_clock::now() + patience))
+            << "no connection from the stack within " << patience.count() << " ms";
         const int fd = accept(listener, nullptr, nullptr);
         ASSERT_GE(fd, 0) << std::strerror(errno);
         std::vector<std::byte> buffer(4096);

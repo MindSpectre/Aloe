@@ -138,10 +138,16 @@ shell.
 
 The TCP suite needs DPDK's tap driver, which every Aloe build links, and root. It creates the interface
 `aloe-tcp`, puts the kernel at 10.78.0.1/24 and Aloe at 10.78.0.2/24, and gives the kernel end its address
-itself, as `ip addr add 10.78.0.1/24 dev aloe-tcp` and `ip link set aloe-tcp up` would. Port 7 carries an
+itself, as `ip addr add 10.78.0.1/24 dev aloe-tcp` and `ip link set aloe-tcp up` would. Port 7007 carries an
 echo in four scenarios: a kernel client against the brick and against the runtime, and the brick and the
 runtime as clients of a kernel listener. Without root every case is skipped. To watch the traffic while it
 runs, `sudo tcpdump -ni aloe-tcp tcp` in another shell; the interface goes away when the suite exits.
+
+The client scenarios need the host firewall to let a SYN reach the kernel listener through the tap. Fedora's
+firewalld puts a new interface in its default zone, which opens only TCP ports 1025-65535, so a kernel
+listener on a lower port never sees Aloe's SYN, while connections the kernel opens pass as established
+traffic. Hence the port above 1024; a stricter firewall needs the interface in a trusted zone, as
+`sudo firewall-cmd --zone=trusted --add-interface=aloe-tcp` does while the suite runs.
 
 `examples/tcp_echo` and `examples/tcp_echo_tasks` are the same echo as programs: the first a hand-written loop
 over the bricks on one queue, the second tasks over the runtime on every queue the port opens. Both listen or
@@ -152,14 +158,15 @@ sudo ./build/debug/examples/tcp_echo/Aloe.Examples.TcpEcho net_tap0 10.78.0.2/24
 sudo ip addr add 10.78.0.1/24 dev aloe0 && sudo ip link set aloe0 up      # in another shell, once it runs
 nc 10.78.0.2 7                                                            # type a line, get it back
 
-sudo socat TCP-LISTEN:7,reuseaddr,fork EXEC:cat &                        # a kernel echo server, listening first
-sudo ./build/debug/examples/tcp_echo_tasks/Aloe.Examples.TcpEchoTasks net_tap0 10.78.0.2/24 --connect 10.78.0.1:7 \
+sudo socat TCP-LISTEN:7007,reuseaddr,fork EXEC:cat &                     # a kernel echo server, listening first
+sudo ./build/debug/examples/tcp_echo_tasks/Aloe.Examples.TcpEchoTasks net_tap0 10.78.0.2/24 --connect 10.78.0.1:7007 \
     -- --vdev=net_tap0,iface=aloe0
 sudo ip addr add 10.78.0.1/24 dev aloe0 && sudo ip link set aloe0 up      # in another shell, once it runs
 ```
 
 The tap interface exists only while the program runs, so address it after the program has started. The
-client's SYN waits for ARP until the kernel end answers, so the kernel's listener must already be there. Add a gateway after the address to reach hosts off
+client's SYN waits for ARP until the kernel end answers, so the kernel's listener must already be there, on
+a port the host firewall opens (above 1024 under Fedora's defaults). Add a gateway after the address to reach hosts off
 the subnet, and replace `net_tap0` and the `--vdev` argument with a card's PCI address to run on hardware.
 
 ## Formatting and the pre-commit hook

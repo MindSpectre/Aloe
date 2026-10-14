@@ -179,11 +179,13 @@ tcp_echo <port> <address>/<prefix> [<gateway>] (--listen <port> | --connect <hos
 sudo ./build/debug/examples/tcp_echo/Aloe.Examples.TcpEcho net_tap0 10.78.0.2/24 --listen 7 -- --vdev=net_tap0,iface=aloe0
 ip addr add 10.78.0.1/24 dev aloe0 && ip link set aloe0 up && nc 10.78.0.2 7     # in another shell, as root
 
-sudo ./build/debug/examples/tcp_echo_tasks/Aloe.Examples.TcpEchoTasks net_tap0 10.78.0.2/24 --connect 10.78.0.1:7 \
-    -- --vdev=net_tap0,iface=aloe0                                                 # against a kernel echo server on port 7
+sudo ./build/debug/examples/tcp_echo_tasks/Aloe.Examples.TcpEchoTasks net_tap0 10.78.0.2/24 --connect 10.78.0.1:7007 \
+    -- --vdev=net_tap0,iface=aloe0                                                 # against a kernel echo server on port 7007
 ```
 
-The client sends one line, prints its echo and closes; the server echoes until interrupted.
+The client sends one line, prints its echo and closes; the server echoes until interrupted. The kernel's
+listener needs a port the host firewall opens: Fedora's firewalld opens only 1025-65535 on a new interface
+and rejects the SYN with an ICMP message the stack does not read, so the client retries until it times out.
 
 ## Counters
 
