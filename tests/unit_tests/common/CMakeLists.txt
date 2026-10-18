@@ -25,6 +25,25 @@ target_link_libraries(${UNIT_TESTING_TARGET}.Core.Version
 ##############################################################################
 
 ##############################################################################
+# Test Core: the TSC scale and clock, and the clock the build chose
+##############################################################################
+add_unit_test(${UNIT_TESTING_TARGET}.Core.Clock
+        core/test_tsc_scale.cpp
+        core/test_tsc_clock.cpp
+        core/test_clock.cpp
+)
+target_compile_definitions(${UNIT_TESTING_TARGET}.Core.Clock
+        PRIVATE
+        ALOE_EXPECTED_TSC_CLOCK=$<BOOL:${USE_TSC_CLOCK}>
+)
+target_link_libraries(${UNIT_TESTING_TARGET}.Core.Clock
+        PRIVATE
+        Aloe::Common::Core
+        ${TEST_LIBS}
+)
+##############################################################################
+
+##############################################################################
 # Test Core: discarding and choosing values, and the const and static guards
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Core.Helpers

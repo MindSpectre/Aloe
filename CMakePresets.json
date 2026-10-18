@@ -53,6 +53,7 @@
       "inherits": "release",
       "cacheVariables": {
         "DO_BENCHMARKS": "OFF",
+        "USE_TSC_CLOCK": "OFF",
         "BUILD_EXAMPLES": "OFF",
         "VCPKG_MANIFEST_NO_DEFAULT_FEATURES": "ON"
       },

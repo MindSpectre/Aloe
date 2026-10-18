@@ -9,16 +9,14 @@
 // No runtime and no thread but this one: the loop is the one docs/architecture/net.md leads with. With a
 // gateway given, its MAC is asked for at start, so the first off-subnet send would find it.
 
-#include <aloe/device>
+#include <aloe/core>
 #include <aloe/ethdev>
-#include <aloe/loop>
 #include <aloe/net>
 #include <aloe/wire>
 #include <atomic>
 #include <charconv>
 #include <chrono>
 #include <csignal>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
@@ -101,6 +99,7 @@ int main(int argc, char** argv) {
     }
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
+    aloe::core::calibrate_clock();  // the TSC clock's 100 ms of calibration, or its refusal, before anything starts
 
     aloe::ethdev::Eal eal{arguments->eal};
     aloe::ethdev::Port port{
@@ -117,16 +116,16 @@ int main(int argc, char** argv) {
                  ip.address(),
                  ip.prefix());
     if (ip.gateway()) {
-        std::ignore = ip.resolve(*ip.gateway(), std::chrono::steady_clock::now());  // the request leaves now
+        std::ignore = ip.resolve(*ip.gateway(), aloe::core::Clock::now());  // the request leaves now
         std::ignore = queue.flush();
     }
 
     while (!interrupted.load()) {
-        const auto now             = std::chrono::steady_clock::now();
+        const auto now             = aloe::core::Clock::now();
         const std::size_t received = queue.receive(burst);
-        ip.process(std::span<aloe::ethdev::Packet>{burst}.first(received), now);
-        for (const aloe::net::ArpResolution& resolution : ip.resolved()) {  // a few lines a minute, never per packet
-            std::println("resolved {} at {}", resolution.address, resolution.mac);
+        ip.process(std::span{burst}.first(received), now);
+        for (const auto& [address, mac] : ip.resolved()) {  // a few lines a minute, never per packet
+            std::println("resolved {} at {}", address, mac);
         }
         std::ignore = queue.flush();
     }

@@ -133,9 +133,10 @@ Every phase adds tests at three levels.
 - Whether DPDK is pinned to a long-term-support release instead of the version vcpkg ships.
 - The two-core shard, one core per direction: designed in phase 1, measured against the single-core shard
   after phase 2.
-- Which clock the loop reads: `steady_clock` today, a TSC clock behind a policy when the benchmark says so.
 - Whether `loop::ShardCounters` splits along the product boundary, or stays one struct both fill.
 
 Resolved in phase 1: errors are reported as `std::expected` in the value channel, and the stopped channel
 carries cancellation only; abseil does not enter the project, since the connection table and the ARP cache
-are fixed open-addressing tables of Aloe's own.
+are fixed open-addressing tables of Aloe's own. Resolved before phase 2: the loop reads the TSC. `core::Clock`
+is a calibrated TSC clock by default, and a build option selects `steady_clock` for machines that cannot trust
+the TSC, CI's runners among them; see the [core page](architecture/core.md).

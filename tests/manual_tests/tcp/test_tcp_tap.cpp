@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <aloe/core>
 #include <aloe/ethdev>
 #include <aloe/loop>
 #include <aloe/net>
@@ -209,17 +210,17 @@ namespace {
             Ipv4 ip{
                 queue, {.address = stack_ip, .prefix = 24}
             };
-            aloe::loop::TimerWheel wheel{1ms, std::chrono::steady_clock::now()};
+            aloe::loop::TimerWheel wheel{1ms, aloe::core::Clock::now()};
             Tcp tcp{ip, wheel, {}};
             std::vector<Port::Packet> burst(64);
             std::size_t offered = 0;
             if (listen) {
                 std::ignore = tcp.listen(echo_port);
             } else {
-                std::ignore = tcp.connect({.address = kernel_ip, .port = echo_port}, std::chrono::steady_clock::now());
+                std::ignore = tcp.connect({.address = kernel_ip, .port = echo_port}, aloe::core::Clock::now());
             }
             while (!stop.stop_requested()) {
-                const auto now             = std::chrono::steady_clock::now();
+                const auto now             = aloe::core::Clock::now();
                 const std::size_t received = queue.receive(burst);
                 ip.process(std::span<Port::Packet>{burst}.first(received), now);
                 tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);
@@ -429,6 +430,7 @@ namespace {
             if (geteuid() != 0) {
                 return;
             }
+            aloe::core::calibrate_clock();  // here, where a refusal is an exception, not on a loop's thread
             shared_port().emplace(aloe::ethdev::PortConfig{.name = "net_tap0", .queues = 1, .pool_size = 1024});
             configure_interface(interface, kernel_ip, netmask);
         }

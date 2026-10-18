@@ -61,11 +61,12 @@ aloe::loop::ShardQueue<aloe::ethdev::Port> queue{port, 0, 64, counters};
 aloe::net::Ipv4<aloe::ethdev::Port> ip{queue, {.address = {10, 77, 0, 2}, .prefix = 24, .gateway = {{10, 77, 0, 1}}}};
 std::vector<aloe::ethdev::Packet> burst(64);
 
-std::ignore = ip.resolve(*ip.gateway(), std::chrono::steady_clock::now());  // ask for the router's MAC now
+aloe::core::calibrate_clock();
+std::ignore = ip.resolve(*ip.gateway(), aloe::core::Clock::now());  // ask for the router's MAC now
 std::ignore = queue.flush();
 
 while (running) {
-    const auto now             = std::chrono::steady_clock::now();
+    const auto now             = aloe::core::Clock::now();
     const std::size_t received = queue.receive(burst);
     ip.process(std::span{burst}.first(received), now);   // ARP and ping answered in here; nothing else to do yet
     std::ignore = queue.flush();

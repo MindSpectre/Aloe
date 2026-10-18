@@ -167,7 +167,7 @@ TEST(ControlPost, AcceptedNodesRunOnceAndRejectedNodesStayWithTheProducer) {
     auto& port = fabric.add_port({.mac = server, .queues = 1, .pool_size = 16});
     aloe::runtime::Shard<aloe::fabric::Port, aloe::testing::EchoStack<aloe::fabric::Port>> shard{
         {.idle = aloe::runtime::IdlePolicy::Yield, .yield_after = 1},
-        port, 0, std::chrono::steady_clock::now()
+        port, 0, aloe::core::Clock::now()
     };
 
     struct Node : aloe::loop::Work {

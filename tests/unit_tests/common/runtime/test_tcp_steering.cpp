@@ -151,9 +151,9 @@ TEST(TcpSteering, AllConnectionsStayOnTheirShard) {
           aloe::tcp::TcpConfig{}
     };
     for (std::uint16_t index = 0; index < queues; ++index) {
-        server.shard(index).stack().ip().learn(client_ip, client_mac, std::chrono::steady_clock::now());
+        server.shard(index).stack().ip().learn(client_ip, client_mac, aloe::core::Clock::now());
     }
-    client_runtime.shard(0).stack().ip().learn(server_ip, server_mac, std::chrono::steady_clock::now());
+    client_runtime.shard(0).stack().ip().learn(server_ip, server_mac, aloe::core::Clock::now());
     server.start();
     client_runtime.start();
     std::atomic<int> listening{0};
