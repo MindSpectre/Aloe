@@ -79,6 +79,7 @@ namespace aloe::runtime {
             if (!config.threads.empty() && config.threads.size() != queues) {
                 throw RuntimeError{"one ShardThread per queue, or none"};
             }
+            core::calibrate_clock();  // the TSC's calibration and any refusal happen here, not in a shard's first step
             const core::TimePoint start = core::Clock::now();
             shards_.reserve(queues);
             stops_.reserve(queues);

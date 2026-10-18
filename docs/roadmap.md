@@ -18,8 +18,7 @@ ThreadSanitizer.
 
 ## 1. Minimal TCP
 
-Ethernet, ARP with cache and gateway resolution, IPv4 without fragmentation, ICMP echo, and UDP with
-multicast group membership, which is what a feed handler consumes. The first four exist as the
+Ethernet, ARP with cache and gateway resolution, IPv4 without fragmentation and ICMP echo exist as the
 [`net`](architecture/net.md) brick.
 
 TCP has landed as the [`tcp`](architecture/tcp.md) brick: the handshake in both directions, in-order data
@@ -42,9 +41,9 @@ Phase 1 leaves out, on purpose: retransmission of data, storage of out-of-order 
 hardening a stack facing hostile peers needs (SYN cookies, RFC 6528 initial sequence numbers, RFC 5961
 challenge ACKs, a keyed table hash, ARP-reply rate limiting). It makes no deployment or latency claim.
 
-Remaining: UDP with multicast, and the first benchmark target, which measures tick-to-send through the
-bricks against a raw poll of the device, on the fabric. Placement by flow rules per connection waits for the
-device API it needs.
+Placement by flow rules per connection waits for the device API it needs. The first benchmark opens phase 2
+as its baseline. UDP with multicast group membership, which a feed handler consumes, is off the TCP, TLS and
+WebSocket path this roadmap follows, and waits until after it.
 
 Done when an echo client and server written as a hand-written loop over the bricks, with no coroutine and
 no sender on the data path, interoperate with the Linux kernel stack over a tap device; the same echo
@@ -55,13 +54,37 @@ The simulation tests and the tap suite pass; the examples build and wait for a r
 
 ## 2. Full TCP
 
-Retransmission with RTO estimation, out-of-order reassembly, SACK, window scaling, timestamps, delayed ACK,
-zero-window probes, keepalive and TIME_WAIT. Pre-built segment headers per connection, so a send patches
-sequence, acknowledgement, timestamp and checksum and posts. Scripted loss, reordering and delay in the
-fabric, which is where they are first needed. Congestion control as a pluggable policy, NewReno first and
-CUBIC second, with optional pacing. Hardening against hostile peers: SYN cookies, RFC 6528 initial sequence
-numbers, RFC 5961 challenge ACKs, a keyed table hash and ARP-reply rate limiting. The public API freezes as v1
-at the end of this phase.
+The first deployment is a client: long-lived connections out to trading venues, many of them across the
+internet behind TLS and WebSocket. That sets the order: loss recovery and receive latency before throughput,
+and the hardening a client needs before the hardening a server needs. The RFCs are the specification; where
+they leave a choice, Aloe does what Linux does, and Linux's packetdrill scenarios are the source of the
+scenario tests. The steps, in order:
+
+1. **Baseline benchmark.** Tick-to-send through the bricks against a raw poll of the device, on the fabric,
+   before any step adds work to the hot path. Every later step is measured against it.
+2. **Packet loan and test tools.** A packet the stack must keep after sending is lent to the device and comes
+   back when the device is done with it: TCP sees ownership move and return, never a reference count. The
+   DPDK backend implements the loan with the mbuf's reference count, the fabric by holding the packet. A
+   packet still on loan is never rewritten: as in Linux and lwIP, a retransmit waits until the first copy has
+   left the host. Scripted loss, reordering, delay and duplication in the fabric, and a runner for
+   packetdrill-style scenario scripts. TCP's behaviour does not change in this step.
+3. **Reliable send.** The retransmission queue over lent packets, patched in place when they come back; RTO
+   estimation (RFC 6298); timestamps for RTT measurement and PAWS (RFC 7323); zero-window probes; fast
+   retransmit and NewReno (RFC 5681, RFC 6582) behind a pluggable congestion-control policy. Pre-built segment
+   headers per connection, so a send patches sequence, acknowledgement, timestamp and checksum and posts.
+4. **Receive side.** Out-of-order segments held as the received packets, without copying; SACK blocks
+   (RFC 2018); window scaling (RFC 7323) with a receive pool sized for it; delayed ACK; receiver-side silly
+   window avoidance (RFC 1122).
+5. **Loss recovery with SACK.** RACK-TLP (RFC 8985), what Linux runs by default. Its tail loss probe resends
+   a lost last segment, the end of an order, after about two round trips instead of a full RTO.
+6. **Lifecycle and client hardening.** TIME_WAIT, keepalive, the FIN-WAIT-2 timer, ICMP destination
+   unreachable and path MTU, and the edge cases the phase 1 reviews left open: a RST for a bad ACK in
+   SYN-RECEIVED, refusing a peer MSS of zero, reading the acknowledgement of a segment dropped for the window.
+   RFC 6528 initial sequence numbers, RFC 5961 challenge ACKs and ARP-reply rate limiting. The public API
+   freezes as v1 at the end of this step.
+
+Left for after this phase, because a client does not need them yet: CUBIC and pacing, since orders are small;
+SYN cookies and a keyed flow-table hash, which defend a server that accepts connections from strangers.
 
 Done when the simulation suite passes under scripted impairment, packetdrill-style scenario tests pass,
 throughput and latency hold up against Linux under netem, and a soak run shows no leaks.
@@ -104,14 +127,16 @@ Every phase adds tests at three levels.
 ## Open questions
 
 - Congestion control algorithms beyond NewReno and CUBIC, and TLS libraries beyond OpenSSL.
+- When UDP with multicast returns, after the WebSocket phase or beside it.
 - When IPv6 arrives.
 - Whether libc++ becomes supported, and whether C++ modules are revisited at the v1 freeze.
 - Whether DPDK is pinned to a long-term-support release instead of the version vcpkg ships.
 - The two-core shard, one core per direction: designed in phase 1, measured against the single-core shard
   after phase 2.
-- Which clock the loop reads: `steady_clock` today, a TSC clock behind a policy when the benchmark says so.
 - Whether `loop::ShardCounters` splits along the product boundary, or stays one struct both fill.
 
 Resolved in phase 1: errors are reported as `std::expected` in the value channel, and the stopped channel
 carries cancellation only; abseil does not enter the project, since the connection table and the ARP cache
-are fixed open-addressing tables of Aloe's own.
+are fixed open-addressing tables of Aloe's own. Resolved before phase 2: the loop reads the TSC. `core::Clock`
+is a calibrated TSC clock by default, and a build option selects `steady_clock` for machines that cannot trust
+the TSC, CI's runners among them; see the [core page](architecture/core.md).

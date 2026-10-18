@@ -9,5 +9,7 @@
 #include <clock.hpp>
 #include <fixed_string.hpp>
 #include <guards.hpp>
+#include <tsc_clock.hpp>
+#include <tsc_scale.hpp>
 #include <values.hpp>
 #include <version.hpp>

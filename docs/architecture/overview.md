@@ -102,8 +102,8 @@ drains, and the runtime wraps it in a sender afterwards. The runtime never has a
 lack. The documentation and the examples lead with the bricks.
 
 Status: `loop`, `runtime`, the IP brick `net`, the TCP brick `tcp` and the connection senders over it
-exist; `examples/tcp_echo` and `examples/tcp_echo_tasks` are the same echo in both products. UDP arrives with
-the rest of phase 1.
+exist; `examples/tcp_echo` and `examples/tcp_echo_tasks` are the same echo in both products. UDP waits until
+after the TCP, TLS and WebSocket path.
 
 ## Layers
 
@@ -139,8 +139,8 @@ and every offload has a software fallback. Steering is a pure function of what t
 program can predict which queue any flow lands on.
 
 Status: the device layer, the loop, the IP base and minimal TCP exist, see [device](device.md),
-[loop](loop.md), [net](net.md) and [tcp](tcp.md). UDP arrives with the rest of phase 1, TLS in phase 3,
-HTTP/1.1 and WebSocket in phase 4.
+[loop](loop.md), [net](net.md) and [tcp](tcp.md). Full TCP arrives in phase 2, TLS in phase 3, HTTP/1.1
+and WebSocket in phase 4; UDP waits until after them.
 
 ## Senders and receivers
 

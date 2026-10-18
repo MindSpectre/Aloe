@@ -71,7 +71,8 @@ per packet.
 - **`aloe::runtime::Runtime<Device, Stack>`** -- one shard per device queue, each on its own thread with an
   optional CPU to pin to and a hook that runs first (`ethdev::register_thread` for DPDK). `start`, `stop`
   from any thread, `join`; `scheduler(i)` and `spawn(i, sender)` from any thread; `counters(i)` after `join`.
-  Every context's siblings are bound in the constructor. `stop` posts one owned stop node per shard through
+  Every context's siblings are bound in the constructor, which also calls `core::calibrate_clock()`, so the
+  TSC clock's calibration and any refusal happen there and not in a shard's first step. `stop` posts one owned stop node per shard through
   `post_control`; a shard that already finished rejects it and the runtime keeps the node. A thread whose
   hook fails never polls its device: it requests stop on its context, runs the control posts already
   accepted and closes admission before it reports the failure.

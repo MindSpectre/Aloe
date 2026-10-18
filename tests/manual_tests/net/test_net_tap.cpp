@@ -1,14 +1,12 @@
 #include <algorithm>
+#include <aloe/core>
 #include <aloe/ethdev>
 #include <aloe/frames>
-#include <aloe/loop>
 #include <aloe/net>
-#include <aloe/wire>
 #include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <cstring>
 #include <span>
 #include <stop_token>
@@ -43,7 +41,7 @@ namespace {
     constexpr std::uint16_t identifier = 0xa10e;
     constexpr auto patience            = 2000ms;
 
-    const auto* const environment =
+    [[maybe_unused]] const auto* const environment =
         ::testing::AddGlobalTestEnvironment(new aloe::testing::EalEnvironment{"net_tap0,iface=aloe-ping"});
 
     /// Gives the kernel end of the tap an address and brings it up: `ip addr add` and `ip link set up`, by ioctl.
@@ -104,7 +102,7 @@ namespace {
             };
             std::vector<aloe::ethdev::Packet> burst(64);
             while (!stop.stop_requested()) {
-                const auto now             = std::chrono::steady_clock::now();
+                const auto now             = aloe::core::Clock::now();
                 const std::size_t received = queue.receive(burst);
                 ip.process(std::span<aloe::ethdev::Packet>{burst}.first(received), now);
                 std::ignore = queue.flush();
@@ -144,6 +142,7 @@ TEST(NetTap, TheKernelPingsTheBrick) {
         {.name = "net_tap0", .queues = 1, .pool_size = 512}
     };
     configure_interface(interface, kernel_ip, netmask);
+    aloe::core::calibrate_clock();  // here, where a refusal is an exception, not on the loop's thread
     PingLoop loop{port};
 
     const int fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);

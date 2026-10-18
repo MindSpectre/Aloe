@@ -192,37 +192,37 @@ and rejects the SYN with an ICMP message the stack does not read, so the client 
 `TcpCounters`, one per stack, monotonic, read on the owning thread or after it has stopped. Every drop and
 every send failure increments exactly one counter.
 
-| Group       | Counter                 | Counts                                                                                          |
-|-------------|-------------------------|-------------------------------------------------------------------------------------------------|
-| Segments    | `segments_received`     | Segments handed to `process`.                                                                   |
-|             | `data_segments_sent`    | Committed data segments queued.                                                                 |
-|             | `pure_acks_sent`        | ACKs without data, from `flush` and the immediate-ACK exceptions.                               |
-|             | `control_segments_sent` | SYN, SYN-ACK and FIN, first sends and retransmits alike.                                        |
-|             | `resets_sent`           | RSTs, from `abort`, `release` and the replies to segments with no connection.                   |
-|             | `retransmits`           | Timer-driven control retransmits.                                                               |
-|             | `window_updates`        | Segments that extended the advertised right edge.                                              |
-| Connections | `connections_opened`    | Active opens that reached `Established`.                                                        |
-|             | `connections_accepted`  | Passive opens handed to the application by `Accepted`.                                          |
-|             | `connections_closed`    | Normal closes, both FINs acknowledged.                                                          |
-|             | `connections_reset`     | RSTs received on a connection the application owns.                                             |
-|             | `connections_timed_out` | Owned connections whose control retransmits ran out.                                            |
-|             | `connections_unresolved` | Owned connections whose next hop never answered ARP within `unresolved_polls` polls.          |
-|             | `handshakes_failed`     | Passive opens nobody owned yet that were reset or timed out, freed silently.                   |
-| Drops       | `dropped_bad_header`    | Unparseable headers and malformed option lists.                                                 |
-|             | `dropped_bad_checksum`  | A `Bad` verdict, or an `Unknown` one that failed the software check.                            |
-|             | `dropped_no_connection` | No connection and no listener; answered with RST unless it was one.                             |
-|             | `dropped_closed`        | Segments for a `Closed` connection not yet released; answered with RST.                         |
-|             | `dropped_unexpected`    | Valid segments the state does not admit: a stray answer in `SynSent`, an ACK of unsent data, data after the peer's FIN. |
-|             | `dropped_duplicate`     | Data entirely before `rcv_nxt`.                                                                 |
-|             | `dropped_out_of_order`  | Data starting after `rcv_nxt`, above a gap.                                                     |
-|             | `dropped_out_of_window` | Data reaching past the advertised edge.                                                         |
-|             | `dropped_no_slot`       | Data for a connection already holding `receive_segments` packets.                              |
-|             | `dropped_no_node`       | Data when the shard's `receive_pool` is empty.                                                  |
-|             | `dropped_table_full`    | SYNs to a listener with no free connection slot.                                                |
-| Send        | `send_refused`          | Segments IP or the queue refused; the numbers stay as they were.                               |
-|             | `send_unresolved`       | Segments that waited for ARP.                                                                   |
-|             | `commits_refused`       | Commits after the connection left `Established` and `CloseWait`, or whose count the peer's window no longer covers; the prepared packet is dropped. |
-|             | `allocation_failures`   | `prepare` calls the packet pool could not serve; the retry hint says when to try again.         |
+| Group       | Counter                  | Counts                                                                                                                                              |
+|-------------|--------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------|
+| Segments    | `segments_received`      | Segments handed to `process`.                                                                                                                       |
+|             | `data_segments_sent`     | Committed data segments queued.                                                                                                                     |
+|             | `pure_acks_sent`         | ACKs without data, from `flush` and the immediate-ACK exceptions.                                                                                   |
+|             | `control_segments_sent`  | SYN, SYN-ACK and FIN, first sends and retransmits alike.                                                                                            |
+|             | `resets_sent`            | RSTs, from `abort`, `release` and the replies to segments with no connection.                                                                       |
+|             | `retransmits`            | Timer-driven control retransmits.                                                                                                                   |
+|             | `window_updates`         | Segments that extended the advertised right edge.                                                                                                   |
+| Connections | `connections_opened`     | Active opens that reached `Established`.                                                                                                            |
+|             | `connections_accepted`   | Passive opens handed to the application by `Accepted`.                                                                                              |
+|             | `connections_closed`     | Normal closes, both FINs acknowledged.                                                                                                              |
+|             | `connections_reset`      | RSTs received on a connection the application owns.                                                                                                 |
+|             | `connections_timed_out`  | Owned connections whose control retransmits ran out.                                                                                                |
+|             | `connections_unresolved` | Owned connections whose next hop never answered ARP within `unresolved_polls` polls.                                                                |
+|             | `handshakes_failed`      | Passive opens nobody owned yet that were reset or timed out, freed silently.                                                                        |
+| Drops       | `dropped_bad_header`     | Unparseable headers and malformed option lists.                                                                                                     |
+|             | `dropped_bad_checksum`   | A `Bad` verdict, or an `Unknown` one that failed the software check.                                                                                |
+|             | `dropped_no_connection`  | No connection and no listener; answered with RST unless it was one.                                                                                 |
+|             | `dropped_closed`         | Segments for a `Closed` connection not yet released; answered with RST.                                                                             |
+|             | `dropped_unexpected`     | Valid segments the state does not admit: a stray answer in `SynSent`, an ACK of unsent data, data after the peer's FIN.                             |
+|             | `dropped_duplicate`      | Data entirely before `rcv_nxt`.                                                                                                                     |
+|             | `dropped_out_of_order`   | Data starting after `rcv_nxt`, above a gap.                                                                                                         |
+|             | `dropped_out_of_window`  | Data reaching past the advertised edge.                                                                                                             |
+|             | `dropped_no_slot`        | Data for a connection already holding `receive_segments` packets.                                                                                   |
+|             | `dropped_no_node`        | Data when the shard's `receive_pool` is empty.                                                                                                      |
+|             | `dropped_table_full`     | SYNs to a listener with no free connection slot.                                                                                                    |
+| Send        | `send_refused`           | Segments IP or the queue refused; the numbers stay as they were.                                                                                    |
+|             | `send_unresolved`        | Segments that waited for ARP.                                                                                                                       |
+|             | `commits_refused`        | Commits after the connection left `Established` and `CloseWait`, or whose count the peer's window no longer covers; the prepared packet is dropped. |
+|             | `allocation_failures`    | `prepare` calls the packet pool could not serve; the retry hint says when to try again.                                                             |
 
 The runtime's `TcpStack` adds two counters of its own, `forwards_dropped()` and `forwards_rejected()`, for
 ARP forwards between shards (see the [runtime page](runtime.md)).
@@ -232,17 +232,17 @@ ARP forwards between shards (see the [runtime page](runtime.md)).
 `TcpConfig` is validated by the `Stack` constructor, which throws `std::invalid_argument` for a config it
 cannot run. Every shard gets the same config.
 
-| Field              | Default  | Meaning                                                                         | Rejected when                                  |
-|--------------------|----------|---------------------------------------------------------------------------------|------------------------------------------------|
-| `connections`      | 1024     | Connection slots per shard; the flow table has at least twice as many buckets. | zero, or more than 2^30                        |
-| `listeners`        | 8        | Listening ports per shard.                                                      | zero                                           |
-| `receive_segments` | 32       | Packets one connection may hold; also sizes the byte window, `min(receive_segments * mss, 65535)`. | zero                  |
-| `receive_pool`     | 2048     | Held-packet nodes shared by every connection of the shard.                      | zero                                           |
-| `ephemeral_first`, `ephemeral_last` | 32768, 60999 | `connect`'s local ports, inclusive.                         | empty, or containing port 0                    |
-| `retry_initial`    | 1 s      | The first control retransmit's delay; it doubles per try.                       | not positive, or too large to double `retries` times within `core::Duration` |
-| `retries`          | 5        | Control retransmits before `TimedOut`.                                          | zero, or 63 and more                           |
-| `unresolved_retry` | 10 ms    | The poll interval while a control segment waits for ARP; not a try.             | not positive                                   |
-| `unresolved_polls` | 300      | Polls before `Unresolved`: 3 s by default, the bound Linux's three ARP probes give. | zero                                        |
+| Field                               | Default      | Meaning                                                                                            | Rejected when                                                                |
+|-------------------------------------|--------------|----------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------|
+| `connections`                       | 1024         | Connection slots per shard; the flow table has at least twice as many buckets.                     | zero, or more than 2^30                                                      |
+| `listeners`                         | 8            | Listening ports per shard.                                                                         | zero                                                                         |
+| `receive_segments`                  | 32           | Packets one connection may hold; also sizes the byte window, `min(receive_segments * mss, 65535)`. | zero                                                                         |
+| `receive_pool`                      | 2048         | Held-packet nodes shared by every connection of the shard.                                         | zero                                                                         |
+| `ephemeral_first`, `ephemeral_last` | 32768, 60999 | `connect`'s local ports, inclusive.                                                                | empty, or containing port 0                                                  |
+| `retry_initial`                     | 1 s          | The first control retransmit's delay; it doubles per try.                                          | not positive, or too large to double `retries` times within `core::Duration` |
+| `retries`                           | 5            | Control retransmits before `TimedOut`.                                                             | zero, or 63 and more                                                         |
+| `unresolved_retry`                  | 10 ms        | The poll interval while a control segment waits for ARP; not a try.                                | not positive                                                                 |
+| `unresolved_polls`                  | 300          | Polls before `Unresolved`: 3 s by default, the bound Linux's three ARP probes give.                | zero                                                                         |
 
 The constructor also refuses an MTU that leaves no room for a TCP header. The retry bound keeps the longest
 delay and the whole schedule within a quarter of `core::Duration`'s range, so no arithmetic on the timer path
@@ -348,5 +348,6 @@ flood fills the fixed table until the half-open connections time out; its initia
 per-shard random engine, not RFC 6528's keyed hash; it accepts a RST anywhere in the window, without RFC 5961's
 challenge ACKs; the flow table's software hash is unkeyed, so chosen 4-tuples can lengthen a probe, bounded by
 the fixed table; and on a multi-queue device the IP brick accepts unsolicited ARP replies to our address,
-with no rate limit. Each is a hardening step for full TCP, beside data retransmission, TIME_WAIT and
-out-of-order storage.
+with no rate limit. The initial sequence numbers, the challenge ACKs and the ARP rate limit come with full
+TCP, beside data retransmission, TIME_WAIT and out-of-order storage; SYN cookies and the keyed hash defend a
+server and come after it, since the first deployment is a client.

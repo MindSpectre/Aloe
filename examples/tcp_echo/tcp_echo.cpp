@@ -19,8 +19,6 @@
 #include <algorithm>
 #include <aloe/core>
 #include <aloe/ethdev>
-#include <aloe/loop>
-#include <aloe/net>
 #include <aloe/stream>
 #include <aloe/tcp>
 #include <aloe/wire>
@@ -29,7 +27,6 @@
 #include <chrono>
 #include <csignal>
 #include <cstddef>
-#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <optional>
@@ -47,7 +44,7 @@ namespace {
     using Ipv4 = aloe::net::Ipv4<Port>;
     using Tcp  = aloe::tcp::Stack<Ipv4>;
 
-    std::atomic<bool> interrupted{false};
+    std::atomic interrupted{false};
     static_assert(std::atomic<bool>::is_always_lock_free, "a signal handler may only touch a lock-free atomic");
 
     void on_signal(int /*signal*/) {
@@ -187,6 +184,7 @@ int main(int argc, char** argv) {
     }
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
+    aloe::core::calibrate_clock();  // the TSC clock's 100 ms of calibration, or its refusal, before anything starts
 
     aloe::ethdev::Eal eal{arguments->eal};
     Port port{
@@ -213,8 +211,7 @@ int main(int argc, char** argv) {
                      ip.address(),
                      *arguments->listen);
     } else {
-        const auto session = tcp.connect(*arguments->connect, aloe::core::Clock::now());
-        if (!session) {
+        if (const auto session = tcp.connect(*arguments->connect, aloe::core::Clock::now()); !session) {
             std::println(stderr, "connect failed: {}", to_string(session.error()));
             return EXIT_FAILURE;
         }

@@ -16,12 +16,17 @@ target_include_directories(${CORE}.Version INTERFACE
 ##############################################################################
 
 ##############################################################################
-# Clock: the clock, stamp and interval types the whole stack shares
+# Clock: the clock, stamp and interval types the whole stack shares. The TSC
+# clock by default, the steady clock with USE_TSC_CLOCK=OFF (ALOE_USE_TSC_CLOCK,
+# set build-wide in cmake/features.cmake).
 ##############################################################################
-add_library(${CORE}.Clock INTERFACE
+add_library(${CORE}.Clock STATIC
         clock/clock.hpp
+        clock/tsc_scale.hpp
+        clock/tsc_clock.hpp
+        clock/tsc_clock.cpp
 )
-target_include_directories(${CORE}.Clock INTERFACE
+target_include_directories(${CORE}.Clock PUBLIC
         clock/
 )
 ##############################################################################

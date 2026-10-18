@@ -91,19 +91,19 @@ minutes); subsequent configures reuse the installed tree under
 
 ## Configure and build
 
-| Preset              | Use it for                                                                  |
-|---------------------|-----------------------------------------------------------------------------|
-| `debug`             | Default day-to-day build: tests, benchmarks, examples                       |
-| `release`           | Optimized build with the full feature set                                   |
+| Preset              | Use it for                                                                   |
+|---------------------|------------------------------------------------------------------------------|
+| `debug`             | Default day-to-day build: tests, benchmarks, examples                        |
+| `release`           | Optimized build with the full feature set                                    |
 | `ci`                | What PR CI builds: `release` minus benchmark/example targets and their ports |
-| `gcc-debug`         | Debug build of the project with GCC; clang-tidy does not run                |
-| `asan`              | Debug build instrumented with AddressSanitizer + UndefinedBehaviorSanitizer |
-| `tsan`              | Debug build instrumented with ThreadSanitizer; no benchmarks                |
-| `llvm-coverage`     | Debug build with clang source-based coverage (`llvm-profdata`/`llvm-cov`)   |
-| `gcc-coverage`      | Debug build with gcov-style coverage (matches CLion's CTest coverage view)  |
-| `release-lto`       | Release with link-time optimization                                         |
-| `release-perf`      | Release codegen with frame pointers kept, for `perf record -g` profiling    |
-| `release-instrprof` | Release build instrumented for LLVM profiling-guided hotspot analysis       |
+| `gcc-debug`         | Debug build of the project with GCC; clang-tidy does not run                 |
+| `asan`              | Debug build instrumented with AddressSanitizer + UndefinedBehaviorSanitizer  |
+| `tsan`              | Debug build instrumented with ThreadSanitizer; no benchmarks                 |
+| `llvm-coverage`     | Debug build with clang source-based coverage (`llvm-profdata`/`llvm-cov`)    |
+| `gcc-coverage`      | Debug build with gcov-style coverage (matches CLion's CTest coverage view)   |
+| `release-lto`       | Release with link-time optimization                                          |
+| `release-perf`      | Release codegen with frame pointers kept, for `perf record -g` profiling     |
+| `release-instrprof` | Release build instrumented for LLVM profiling-guided hotspot analysis        |
 
 Each preset has a matching build and test preset of the same name and configures into
 `build/<preset>/`. The canonical sequence for the default `debug` preset:
@@ -204,6 +204,11 @@ Feature toggles live in `cmake/features.cmake` and are set with `-D<NAME>=ON|OFF
 - `BUILD_EXAMPLES` - build the example apps under `examples/`
 - `KEEP_FRAME_POINTERS` - keep frame pointers in Release builds so `perf` call graphs
   resolve; off by default because Release otherwise omits them
+- `USE_TSC_CLOCK` - `core::Clock` reads the x86-64 time-stamp counter; ON by default. A program
+  built with it refuses to start, with an exception that names this option, on a machine whose
+  CPU has no invariant TSC or whose kernel clocksource is not `tsc`, which includes most virtual
+  machines; configure such a machine with OFF to get `std::chrono::steady_clock`. The `ci` preset
+  turns it off, and the tests that read the real TSC skip in such a build
 - `BUILD_DOCS` - generate the Doxygen API site (target `docs`); OFF by default so a normal
   build does not require Doxygen
 
