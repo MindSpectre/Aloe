@@ -73,7 +73,8 @@ while (running) {
 ```
 
 With transports the same loop gains one line per transport and nothing else. The transports are templated on
-the IP type below them and transmit through it; TCP exists (see the [tcp page](tcp.md)), UDP comes next:
+the IP type below them and transmit through it; TCP exists (see the [tcp page](tcp.md)), UDP comes after the
+TCP, TLS and WebSocket path:
 
 ```cpp
 aloe::tcp::Stack<aloe::net::Ipv4<aloe::ethdev::Port>> tcp{ip, wheel, tcp_config};
