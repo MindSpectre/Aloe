@@ -309,9 +309,10 @@ grows with the payload.
   siblings are idle.
 - **The revision.** The `revision` in the table and the result file is the git revision at the last configure,
   not at the build. Reconfigure, `cmake --preset release`, before a recorded run.
-- **The pool size.** Each level 1 configuration leaves a registered lcore whose mempool cache can keep up to 768
-  mbufs. The pools hold 8192 so a whole matrix never runs dry; if one did, `tcp.allocation_failures` would fail
-  the run.
+- **The pool size.** Each level 1 configuration leaves a registered lcore whose mempool cache keeps about 512 to
+  768 mbufs out of reach for the rest of the run, so the 8192-mbuf pools fit roughly a dozen level 1
+  configurations, twice the default matrix's six; a longer `--payload` sweep would need a larger pool. A pool that
+  runs dry fails the run through `tcp.allocation_failures`.
 
 ## Results
 
