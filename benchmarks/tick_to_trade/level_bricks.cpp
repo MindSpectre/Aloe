@@ -218,6 +218,9 @@ namespace aloe::benchmarks {
             const auto fail = [&state](const PeerError error, const std::uint64_t round) {
                 state.fail(std::format("peer, round {}: {}", round, to_string(error)));
             };
+            const auto fail_handshake = [&state](const PeerError error) {
+                state.fail(std::format("peer, handshake: {}", to_string(error)));
+            };
             // Before every call into the peer: a failed run, the loop's constructor or a step, has nothing to answer,
             // and the peer would only spend its deadline waiting.
             const auto failed = [&state] { return state.failed.load(); };
@@ -226,7 +229,7 @@ namespace aloe::benchmarks {
             }
             if (state.config.round == Round::Tick) {
                 if (const auto opened = peer.open_active(); !opened) {
-                    fail(opened.error(), 0);
+                    fail_handshake(opened.error());
                     return;
                 }
                 until([&loop] { return loop.frames_transmitted() >= 1; });  // the SYN-ACK is out
@@ -234,7 +237,7 @@ namespace aloe::benchmarks {
                     return;
                 }
                 if (const auto opened = peer.finish_active_open(); !opened) {
-                    fail(opened.error(), 0);
+                    fail_handshake(opened.error());
                     return;
                 }
                 until([&loop] { return loop.connected(); });
@@ -260,7 +263,7 @@ namespace aloe::benchmarks {
                 return;
             }
             if (const auto opened = peer.answer_passive_open(); !opened) {
-                fail(opened.error(), 0);
+                fail_handshake(opened.error());
                 return;
             }
             // Connected raised, the handshake's ACK out alone in that step's flush.
@@ -269,7 +272,7 @@ namespace aloe::benchmarks {
                 return;
             }
             if (const auto opened = peer.finish_passive_open(); !opened) {
-                fail(opened.error(), 0);
+                fail_handshake(opened.error());
                 return;
             }
             for (std::uint64_t round = 0; round < state.config.total() && !state.stop.load(); ++round) {

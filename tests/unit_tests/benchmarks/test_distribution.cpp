@@ -3,6 +3,7 @@
 #include <numeric>
 #include <random>
 #include <stdexcept>
+#include <tuple>
 #include <vector>
 
 #include <distribution.hpp>

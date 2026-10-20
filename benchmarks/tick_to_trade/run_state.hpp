@@ -83,7 +83,7 @@ namespace aloe::benchmarks {
         Stamps stamps;
         std::atomic<bool> stop{false};  ///< Set by whoever finishes or fails first; every loop polls it.
         std::atomic<bool> failed{false};
-        std::string failure;     ///< Written by the first to fail, before `failed`; read after the join.
+        std::string failure;     ///< Written by the first to fail, after it wins `failed`; read only after the join.
         std::uint64_t sink = 0;  ///< The application's fold, kept so the work is not elided.
 
         /// Every round is out: stops the loops and wakes a thread sleeping on `stop`.

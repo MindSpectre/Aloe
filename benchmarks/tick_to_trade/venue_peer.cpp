@@ -27,7 +27,7 @@ namespace aloe::benchmarks {
 
     }  // namespace
 
-    VenuePeer::VenuePeer(ethdev::Port& port, const PeerConfig& config, const std::span<std::uint64_t> starts)
+    VenuePeer::VenuePeer(ethdev::Port& port, const PeerConfig& config, std::span<std::uint64_t> starts)
         : port_{&port},
           config_{config},
           script_{peer_spec(config), peer_initial_sequence},
@@ -222,7 +222,7 @@ namespace aloe::benchmarks {
                     ? peer.open_active().and_then([&peer] { return peer.finish_active_open(); })
                     : peer.answer_passive_open().and_then([&peer] { return peer.finish_passive_open(); });
             if (!opened) {
-                fail(opened.error(), 0);
+                state.fail(std::format("peer, handshake: {}", to_string(opened.error())));
                 return;
             }
         }

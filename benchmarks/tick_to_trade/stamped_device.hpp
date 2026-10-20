@@ -25,7 +25,7 @@ namespace aloe::benchmarks {
     public:
         using Packet = typename Device::Packet;
 
-        StampedDevice(Device& owner, const std::span<std::uint64_t> stops) noexcept
+        StampedDevice(Device& owner, std::span<std::uint64_t> stops) noexcept
             : device_{&owner},
               stops_{stops} {
         }
@@ -76,12 +76,12 @@ namespace aloe::benchmarks {
             return device_->allocate(queue);
         }
 
-        [[nodiscard]] std::size_t receive(const std::uint16_t queue, const std::span<Packet> out) noexcept {
+        [[nodiscard]] std::size_t receive(const std::uint16_t queue, std::span<Packet> out) noexcept {
             return device_->receive(queue, out);
         }
 
         /// Forwards, then stamps when armed and the device took at least one packet.
-        [[nodiscard]] std::size_t transmit(const std::uint16_t queue, const std::span<Packet> in) noexcept {
+        [[nodiscard]] std::size_t transmit(const std::uint16_t queue, std::span<Packet> in) noexcept {
             const std::size_t accepted = device_->transmit(queue, in);
             if (accepted > 0 && armed_) {
                 stops_[round_] = core::TscClock::get_ticks();

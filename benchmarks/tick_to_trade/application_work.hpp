@@ -24,7 +24,7 @@ namespace aloe::benchmarks {
         return round;
     }
 
-    inline void write_round(const std::span<std::byte> payload, const std::uint64_t round) noexcept {
+    inline void write_round(std::span<std::byte> payload, const std::uint64_t round) noexcept {
         assert(payload.size() >= round_prefix && "a payload opens with the round number");
         for (std::size_t index = 0; index < round_prefix; ++index) {
             payload[index] = static_cast<std::byte>((round >> (8U * index)) & std::uint64_t{0xff});
@@ -53,7 +53,7 @@ namespace aloe::benchmarks {
     }
 
     /// An order: the round number, then each byte its own index, to `order_size`.
-    inline void write_order(const std::span<std::byte> order, const std::uint64_t round) noexcept {
+    inline void write_order(std::span<std::byte> order, const std::uint64_t round) noexcept {
         assert(order.size() == order_size && "an order is order_size bytes");
         write_round(order, round);
         for (std::size_t index = round_prefix; index < order.size(); ++index) {
