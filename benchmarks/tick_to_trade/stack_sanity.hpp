@@ -12,7 +12,8 @@
 namespace aloe::benchmarks {
 
     /// Fails `state` when the stack dropped, refused or starved anything during the run: a benchmark that measured
-    /// garbage must say so instead of reporting it.
+    /// garbage must say so instead of reporting it. Only the wait for ARP is allowed: `send_unresolved` on either
+    /// brick, and `ip.dropped_arp_unsolicited`, which is the IP brick's rule rather than a loss.
     inline void check_stack_counters(RunState& state,
                                      const tcp::TcpCounters& tcp,
                                      const net::Ipv4Counters& ip,
@@ -38,6 +39,9 @@ namespace aloe::benchmarks {
         expect_zero(tcp.commits_refused, "tcp.commits_refused");
         expect_zero(tcp.allocation_failures, "tcp.allocation_failures");
         expect_zero(tcp.retransmits, "tcp.retransmits");
+        expect_zero(ip.transmit_refused, "ip.transmit_refused");
+        expect_zero(ip.dropped_short, "ip.dropped_short");
+        expect_zero(ip.dropped_not_for_us, "ip.dropped_not_for_us");
         expect_zero(ip.dropped_ethertype, "ip.dropped_ethertype");
         expect_zero(ip.dropped_arp_malformed, "ip.dropped_arp_malformed");
         expect_zero(ip.dropped_arp_conflict, "ip.dropped_arp_conflict");
@@ -45,6 +49,7 @@ namespace aloe::benchmarks {
         expect_zero(ip.dropped_bad_checksum, "ip.dropped_bad_checksum");
         expect_zero(ip.dropped_fragment, "ip.dropped_fragment");
         expect_zero(ip.dropped_protocol, "ip.dropped_protocol");
+        expect_zero(ip.dropped_icmp, "ip.dropped_icmp");
         expect_zero(ip.dropped_martian, "ip.dropped_martian");
         expect_zero(ip.dropped_tcp_broadcast, "ip.dropped_tcp_broadcast");
         expect_zero(ip.send_no_route, "ip.send_no_route");

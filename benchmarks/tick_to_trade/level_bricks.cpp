@@ -37,9 +37,8 @@ namespace aloe::benchmarks {
                   ip_{queue_, stack_ip_config(peer_config)},
                   wheel_{std::chrono::milliseconds{1}, core::Clock::now()},
                   tcp_{ip_, wheel_, {}},
-                  gap_ticks_{ticks_for(state.config.gap)},
-                  deadline_ticks_{ticks_for(peer_config.deadline)},
-                  progress_{core::TscClock::get_ticks()} {
+                  deadline_{peer_config.deadline + state.config.gap},  // the gap is silence by design, not a loss
+                  progress_{core::Clock::now()} {
                 if (!arp_on_wire) {
                     ip_.learn(peer_config.peer_ip, peer_config.peer_mac, core::Clock::now());
                 }
@@ -92,7 +91,7 @@ namespace aloe::benchmarks {
                 // The handshake's ACK leaves alone in the flush of the step that connected, as the peer's script
                 // expects; an order in that step would carry it. The first order goes in the next step.
                 if (state_->config.round == Round::Gateway && connection_ != nullptr && !opened) {
-                    stamped = issue_order();
+                    stamped = issue_order(now);
                 }
                 const std::uint64_t t_application = breakdown && stamped ? core::TscClock::get_ticks() : 0;
                 tcp_.flush(now);
@@ -106,12 +105,15 @@ namespace aloe::benchmarks {
                     phases[static_cast<std::size_t>(Phase::Application)][*stamped] = t_application;
                     phases[static_cast<std::size_t>(Phase::TcpFlush)][*stamped]    = t_flush;
                 }
-                // Progress is stamped here, after the flush, so the drain inside the window reads no clock; the
-                // deadline covers only a silent peer.
-                const std::uint64_t ticks = core::TscClock::get_ticks();
+                if (finishing_) {
+                    finishing_ = false;
+                    state_->finish();  // the last order is out: the store and the wake fall outside its window
+                }
+                // The deadline reuses the step's own stamp, so an idle poll reads no clock but the loop's one; it
+                // covers only a silent peer.
                 if (progressed) {
-                    progress_ = ticks;
-                } else if (ticks - progress_ > deadline_ticks_) {
+                    progress_ = now;
+                } else if (now - progress_ > deadline_) {
                     state_->fail("level 0: nothing happened within the deadline");
                 }
             }
@@ -154,23 +156,22 @@ namespace aloe::benchmarks {
                     return std::nullopt;
                 }
                 if (round + 1 == state_->config.total()) {
-                    state_->finish();  // after this step's flush carries the order out
+                    finishing_ = true;  // finished once this step's flush has carried the order out
                 }
                 return round;
             }
 
-            /// The gateway application: one order in flight; the next after its ACK and the gap.
-            [[nodiscard]] std::optional<std::uint64_t> issue_order() {
+            /// The gateway application: one order in flight; the next after its ACK and the gap, both timed by the
+            /// step's stamp `now`.
+            [[nodiscard]] std::optional<std::uint64_t> issue_order(const core::TimePoint now) {
                 if (order_in_flight_ && connection_->acknowledged() == connection_->committed()) {
                     order_in_flight_ = false;
-                    progress_        = core::TscClock::get_ticks();
-                    resume_at_       = progress_ + gap_ticks_;
+                    resume_at_       = now + state_->config.gap;
                     if (next_round_ == state_->config.total()) {
-                        state_->finish();
+                        finishing_ = true;
                     }
                 }
-                if (order_in_flight_ || next_round_ == state_->config.total() ||
-                    core::TscClock::get_ticks() < resume_at_) {
+                if (order_in_flight_ || next_round_ == state_->config.total() || now < resume_at_) {
                     return std::nullopt;
                 }
                 const std::uint64_t round   = next_round_++;
@@ -200,11 +201,11 @@ namespace aloe::benchmarks {
             std::vector<Packet> burst_       = std::vector<Packet>(ethdev::Port::max_burst);
             Tcp::ConnectionType* connection_ = nullptr;
             bool order_in_flight_            = false;
+            bool finishing_                  = false;  ///< The last round is out; `finish` after the flush.
             std::uint64_t next_round_        = 0;
-            std::uint64_t gap_ticks_;
-            std::uint64_t deadline_ticks_;
-            std::uint64_t resume_at_ = 0;
-            std::uint64_t progress_;
+            core::Duration deadline_;
+            core::TimePoint resume_at_ = {};
+            core::TimePoint progress_;
         };
 
         /// Same-core: the peer's side between steps, with the handshake split so the stack can answer each segment.
@@ -217,12 +218,21 @@ namespace aloe::benchmarks {
             const auto fail = [&state](const PeerError error, const std::uint64_t round) {
                 state.fail(std::format("peer, round {}: {}", round, to_string(error)));
             };
+            // Before every call into the peer: a failed run, the loop's constructor or a step, has nothing to answer,
+            // and the peer would only spend its deadline waiting.
+            const auto failed = [&state] { return state.failed.load(); };
+            if (failed()) {
+                return;
+            }
             if (state.config.round == Round::Tick) {
                 if (const auto opened = peer.open_active(); !opened) {
                     fail(opened.error(), 0);
                     return;
                 }
                 until([&loop] { return loop.frames_transmitted() >= 1; });  // the SYN-ACK is out
+                if (failed()) {
+                    return;
+                }
                 if (const auto opened = peer.finish_active_open(); !opened) {
                     fail(opened.error(), 0);
                     return;
@@ -234,8 +244,8 @@ namespace aloe::benchmarks {
                     while (core::TscClock::get_ticks() < resume_at) {}
                     peer.send_tick(round, state.config.payload);
                     until([&device, round] { return device.stamps_taken() > round; });
-                    if (device.stamps_taken() <= round) {
-                        return;  // the order never left, the run failed: there is nothing to await
+                    if (failed()) {
+                        return;
                     }
                     if (const auto seen = peer.await_order(round); !seen) {
                         fail(seen.error(), round);
@@ -246,12 +256,18 @@ namespace aloe::benchmarks {
                 return;
             }
             until([&loop] { return loop.frames_transmitted() >= 1; });  // the SYN is out
+            if (failed()) {
+                return;
+            }
             if (const auto opened = peer.answer_passive_open(); !opened) {
                 fail(opened.error(), 0);
                 return;
             }
             // Connected raised, the handshake's ACK out alone in that step's flush.
             until([&loop] { return loop.connected(); });
+            if (failed()) {
+                return;
+            }
             if (const auto opened = peer.finish_passive_open(); !opened) {
                 fail(opened.error(), 0);
                 return;
@@ -260,8 +276,8 @@ namespace aloe::benchmarks {
                 // The step that takes the last bare ACK issues this order once the gap has passed, so the wait is for
                 // the order itself: with no gap the ACK and the next order share a step.
                 until([&device, round] { return device.stamps_taken() > round; });
-                if (device.stamps_taken() <= round) {
-                    return;  // the order never left, the run failed: there is nothing to await
+                if (failed()) {
+                    return;
                 }
                 if (const auto seen = peer.await_order(round); !seen) {
                     fail(seen.error(), round);

@@ -193,7 +193,8 @@ TEST(VenuePeer, AwaitOrderSkipsPureAcksChecksTheRoundAndTheChecksums) {
     from_stack.flags           = wire::TcpFlags{wire::TcpFlag::Ack};
     from_stack.mss             = std::nullopt;
 
-    stack_sends(frames::tcp_frame(from_stack, {}));  // a pure ACK first, as the 1460 row produces
+    // A pure ACK first: the closed-loop tick round produces none, but the peer skips one as a defence.
+    stack_sends(frames::tcp_frame(from_stack, {}));
     frames::TcpSpec order = from_stack;
     order.flags           = wire::TcpFlags{wire::TcpFlag::Psh, wire::TcpFlag::Ack};
     std::vector<std::byte> bytes(order_size);

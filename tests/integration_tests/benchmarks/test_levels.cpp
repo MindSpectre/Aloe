@@ -36,8 +36,8 @@ namespace {
                 .breakdown = breakdown};
     }
 
-    [[nodiscard]] PeerConfig strict_peer(RingPair& pair) {
-        return {.stack_mac = pair.stack().mac(), .deadline = 2s};
+    [[nodiscard]] PeerConfig strict_peer(RingPair& pair, const aloe::core::Duration deadline = 2s) {
+        return {.stack_mac = pair.stack().mac(), .deadline = deadline};
     }
 
     void expect_closed_loop(const RunState& state, const Stamped& device, const VenuePeer& peer) {
@@ -51,13 +51,16 @@ namespace {
     }
 
     /// Runs level 0 over a fresh pair: inline peer for same-core, a thread otherwise.
-    void run_level0(const RoundConfig& config, const char* name, const bool arp_on_wire = false) {
+    void run_level0(const RoundConfig& config,
+                    const char* name,
+                    const bool arp_on_wire              = false,
+                    const aloe::core::Duration deadline = 2s) {
         RingPair pair{
             {.name = name, .pool_size = 512}
         };
         RunState state{config};
         Stamped device{pair.stack(), state.stamps.stop};
-        const PeerConfig peer_config = strict_peer(pair);
+        const PeerConfig peer_config = strict_peer(pair, deadline);
         VenuePeer peer{pair.peer(), peer_config, state.stamps.start};
         if (config.topology == Topology::SameCore) {
             run_bricks(state, device, peer_config, arp_on_wire, &peer);
@@ -74,6 +77,7 @@ namespace {
         if (config.gap > aloe::core::Duration::zero()) {
             const std::uint64_t gap = ticks_for(config.gap);
             for (std::size_t round = 1; round < state.config.total(); ++round) {
+                EXPECT_GT(state.stamps.start[round], state.stamps.stop[round - 1]) << round;  // no underflow below
                 EXPECT_GE(state.stamps.start[round] - state.stamps.stop[round - 1], gap) << round;
             }
         }
@@ -117,12 +121,28 @@ TEST(Levels, BricksTickCrossCore) {
     run_level0(small(Round::Tick, Level::Bricks, Topology::CrossCore, 256), "lv0-tick-cross");
 }
 
+TEST(Levels, BricksTickCrossCoreGapOutlastsTheDeadline) {
+    RoundConfig config = small(Round::Tick, Level::Bricks, Topology::CrossCore, 64);
+    config.rounds      = 3;
+    config.warmup      = 0;
+    config.gap         = 150ms;
+    run_level0(config, "lv0-gap-dl", false, 100ms);  // the gap is silence by design, not a lost peer
+}
+
 TEST(Levels, BricksTickWithArpOnTheWire) {
     run_level0(small(Round::Tick, Level::Bricks, Topology::CrossCore, 64), "lv0-tick-arp", true);
 }
 
 TEST(Levels, BricksGatewaySameCore) {
     run_level0(small(Round::Gateway, Level::Bricks, Topology::SameCore, order_size, true), "lv0-gw-same");
+}
+
+TEST(Levels, BricksGatewaySameCoreHonoursTheGap) {
+    RoundConfig config = small(Round::Gateway, Level::Bricks, Topology::SameCore, order_size);
+    config.rounds      = 5;
+    config.warmup      = 0;
+    config.gap         = 1ms;
+    run_level0(config, "lv0-gw-gap");
 }
 
 TEST(Levels, BricksGatewayCrossCore) {

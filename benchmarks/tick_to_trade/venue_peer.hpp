@@ -32,7 +32,9 @@ namespace aloe::benchmarks {
 
     struct PeerCounters {
         std::uint64_t orders_seen       = 0;
-        std::uint64_t pure_acks_seen    = 0;  ///< The 1460 row's second-segment ACKs, skipped.
+        /// Pure ACKs skipped while awaiting an order: a defence, since the closed-loop tick round produces none (each
+        /// order carries its tick's ACK); the gateway handshake's own check of its ACK relies on the same test.
+        std::uint64_t pure_acks_seen    = 0;
         std::uint64_t arp_replies_sent  = 0;
         std::uint64_t surplus_freed     = 0;  ///< Stack mbufs the peer had no use for, freed on its own core.
         std::uint64_t unexpected_frames = 0;  ///< Neither TCP nor ARP.
