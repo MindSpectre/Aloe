@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <exception>
+#include <filesystem>
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -12,6 +13,7 @@
 #include <print>
 #include <span>
 #include <string>
+#include <system_error>
 
 #include <benchmark_options.hpp>
 #include <benchmark_run.hpp>
@@ -53,10 +55,16 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
     const std::string path = options->out.empty() ? default_result_name() : options->out;
-    std::ofstream file{path};
-    if (!file) {
+    // Probe that the path is writable before the run, without truncating a result already there and without
+    // leaving a new file behind: a failed run writes no result file.
+    const bool existed     = std::filesystem::exists(path);
+    if (!std::ofstream{path, std::ios::app}) {
         std::println(stderr, "cannot write {}", path);
         return EXIT_FAILURE;
+    }
+    if (!existed) {
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
     }
     try {
         aloe::core::calibrate_clock();
@@ -80,6 +88,11 @@ int main(int argc, char** argv) {
         report.run.revision             = ALOE_BENCHMARK_REVISION;
         report.run.build                = ALOE_BENCHMARK_BUILD_TYPE;
         aloe::benchmarks::print_table(std::cout, report);
+        std::ofstream file{path};
+        if (!file) {
+            std::println(stderr, "cannot write {}", path);
+            return EXIT_FAILURE;
+        }
         aloe::benchmarks::write_json(file, report);
         std::println("results written to {}", path);
         return EXIT_SUCCESS;
