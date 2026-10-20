@@ -154,7 +154,7 @@ TEST(Levels, BricksGatewayCrossCore) {
 namespace {
 
     /// Runs level 1 over a fresh pair with the peer on an unpinned thread; the shard thread is unpinned too.
-    void run_level1(const RoundConfig& config, const char* name) {
+    void run_level1(const RoundConfig& config, const char* name, const bool arp_on_wire = false) {
         RingPair pair{
             {.name = name, .pool_size = 512}
         };
@@ -163,9 +163,13 @@ namespace {
         const PeerConfig peer_config = strict_peer(pair);
         VenuePeer peer{pair.peer(), peer_config, state.stamps.start};
         std::jthread venue{[&peer, &state] { drive_peer(peer, state, true); }};
-        run_runtime(state, device, peer_config, false, std::nullopt);
+        run_runtime(state, device, peer_config, arp_on_wire, std::nullopt);
         venue.join();
         expect_closed_loop(state, device, peer);
+        EXPECT_EQ(peer.counters().arp_replies_sent > 0, arp_on_wire) << "learned unless ARP is on the wire";
+        // As at level 0: no pure ACK follows the handshake, since every order carries the ACK of its tick and a bare
+        // ACK from the venue gets none back.
+        EXPECT_EQ(peer.counters().pure_acks_seen, 0U);
     }
 
 }  // namespace
@@ -176,6 +180,10 @@ TEST(Levels, RuntimeTickCrossCore) {
 
 TEST(Levels, RuntimeTickFullSegment) {
     run_level1(small(Round::Tick, Level::Runtime, Topology::CrossCore, 1460), "lv1-tick-1460");
+}
+
+TEST(Levels, RuntimeTickWithArpOnTheWire) {
+    run_level1(small(Round::Tick, Level::Runtime, Topology::CrossCore, 64), "lv1-tick-arp", true);
 }
 
 TEST(Levels, RuntimeGatewayCrossCore) {

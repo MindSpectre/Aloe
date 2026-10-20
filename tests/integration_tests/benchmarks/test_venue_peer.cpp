@@ -243,7 +243,9 @@ TEST(VenuePeer, AnswersArpRequestsWhileWaiting) {
     ASSERT_TRUE(frames::fill(*packet, request));
     std::array<Packet, 1> burst{std::move(*packet)};
     ASSERT_EQ(pair.stack().transmit(0, burst), 1U);
-    EXPECT_EQ(peer.await_order(0).error(), PeerError::Timeout) << "no order, but the request was answered meanwhile";
+    const auto waited = peer.await_order(0);
+    ASSERT_FALSE(waited.has_value());
+    EXPECT_EQ(waited.error(), PeerError::Timeout) << "no order, but the request was answered meanwhile";
     EXPECT_EQ(peer.counters().arp_replies_sent, 1U);
     std::array<Packet, 4> at_stack{};
     ASSERT_EQ(pair.stack().receive(0, at_stack), 1U);

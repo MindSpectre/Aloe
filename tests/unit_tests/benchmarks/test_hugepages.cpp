@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <string>
 #include <string_view>
@@ -8,6 +10,7 @@
 
 #include <gtest/gtest.h>
 #include <hugepages.hpp>
+#include <unistd.h>
 
 namespace {
 
@@ -108,7 +111,9 @@ TEST(Hugepages, WithoutPrivilegeTheErrorNamesBothRemedies) {
 }
 
 TEST(Hugepages, FileSysfsReadsAndWritesUnderARoot) {
-    const std::filesystem::path root = std::filesystem::temp_directory_path() / "aloe-hugepages-test";
+    // The PID keeps two runs of this binary at once, two presets say, out of each other's directory.
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / std::format("aloe-hugepages-test-{}", getpid());
     std::filesystem::create_directories(root);
     std::ofstream{root / "nr_hugepages"} << "12\n";
     std::ofstream{root / "free_hugepages"} << "5\n";
