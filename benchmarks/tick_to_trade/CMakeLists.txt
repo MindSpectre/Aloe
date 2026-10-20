@@ -5,6 +5,7 @@ set(TICK_TO_TRADE ${BENCHMARKS}.TickToTrade)
 
 add_library(${TICK_TO_TRADE}.Harness STATIC
         ring_pair.cpp
+        benchmark_options.cpp
 )
 target_sources(${TICK_TO_TRADE}.Harness PRIVATE
         round_config.hpp
@@ -14,6 +15,7 @@ target_sources(${TICK_TO_TRADE}.Harness PRIVATE
         stamped_device.hpp
         run_state.hpp
         thread_pinning.hpp
+        benchmark_options.hpp
 )
 target_include_directories(${TICK_TO_TRADE}.Harness PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
