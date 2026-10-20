@@ -249,7 +249,9 @@ namespace aloe::benchmarks {
     Report run_benchmark(const Options& options, const MachineInfo& machine, std::string command) {
         core::calibrate_clock();
         const core::TscScale& scale = core::TscClock::scale();
-        RingPair pair{{.name = options.ring_name}};
+        RingPair pair{
+            {.name = options.ring_name, .pool_size = 8192}
+        };
         // In the gateway round the peer awaits the next order through the stack's gap.
         const PeerConfig peer_config{.stack_mac = pair.stack().mac(),
                                      .deadline  = std::max<core::Duration>(std::chrono::seconds{1}, 2 * options.gap)};

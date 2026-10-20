@@ -225,6 +225,12 @@ namespace aloe::benchmarks {
             }
         }
 
+        if (options.arp_on_wire && options.topology != TopologyChoice::Cross) {
+            return bad("--arp-on-wire",
+                       "cannot be used with --topology same or both: the same-core topology cannot resolve ARP, the "
+                       "inline peer cannot answer a request while the stack waits for the handshake");
+        }
+
         if (eal.empty()) {
             eal = default_eal_arguments(options.stack_core);
         }

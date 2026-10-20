@@ -56,7 +56,7 @@ TEST(BenchmarkOptions, EveryOptionParses) {
                                 "0",           "--payload",   "64,1460",
                                 "--rounds",    "10",          "--warmup",
                                 "2",           "--gap",       "500",
-                                "--topology",  "both",        "--stack-core",
+                                "--topology",  "cross",       "--stack-core",
                                 "none",        "--peer-core", "5",
                                 "--breakdown", "--hop",       "--arp-on-wire",
                                 "--hugepages", "8",           "--keep-hugepages",
@@ -69,7 +69,7 @@ TEST(BenchmarkOptions, EveryOptionParses) {
     EXPECT_EQ(options->measured, 10U);
     EXPECT_EQ(options->warmup, 2U);
     EXPECT_EQ(options->gap, std::chrono::nanoseconds{500});
-    EXPECT_EQ(options->topology, TopologyChoice::Both);
+    EXPECT_EQ(options->topology, TopologyChoice::Cross);
     EXPECT_EQ(options->stack_core, std::nullopt);
     EXPECT_EQ(options->peer_core, 5U);
     EXPECT_TRUE(options->breakdown);
@@ -90,6 +90,12 @@ TEST(BenchmarkOptions, RejectsWhatTheSpecRulesOut) {
     EXPECT_FALSE(parse({"--topology", "sideways"}).has_value());
     EXPECT_FALSE(parse({"--bogus"}).has_value());
     EXPECT_FALSE(parse({"--rounds"}).has_value()) << "a value is missing";
+}
+
+TEST(BenchmarkOptions, RejectsArpOnTheWireWithTheSameCoreTopology) {
+    EXPECT_FALSE(parse({"--arp-on-wire", "--topology", "same"}).has_value());
+    EXPECT_FALSE(parse({"--topology", "both", "--arp-on-wire"}).has_value());
+    EXPECT_TRUE(parse({"--arp-on-wire", "--topology", "cross"}).has_value());
 }
 
 TEST(BenchmarkOptions, DefaultMatrixIsEveryRoundLevelAndPayloadCrossCore) {
