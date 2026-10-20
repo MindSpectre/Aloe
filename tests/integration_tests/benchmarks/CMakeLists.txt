@@ -23,3 +23,15 @@ target_link_libraries(${INTEGRATION_TESTING_TARGET}.Benchmarks.VenuePeer
         ${TEST_LIBS}
 )
 ##############################################################################
+add_integration_test(${INTEGRATION_TESTING_TARGET}.Benchmarks.Levels
+        test_levels.cpp
+)
+target_link_libraries(${INTEGRATION_TESTING_TARGET}.Benchmarks.Levels
+        PRIVATE
+        Aloe::Benchmarks::Harness
+        Aloe::Fixtures::Frames
+        ${SHARED_TESTING_TARGET}.Ethdev
+        ${SHARED_TESTING_TARGET}.Log
+        ${TEST_LIBS}
+)
+##############################################################################

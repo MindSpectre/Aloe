@@ -7,6 +7,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Benchmarks
         test_application_work.cpp
         test_stamped_device.cpp
         test_benchmark_options.cpp
+        test_stack_config.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Benchmarks
         PRIVATE

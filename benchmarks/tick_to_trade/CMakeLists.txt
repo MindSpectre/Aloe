@@ -8,6 +8,7 @@ add_library(${TICK_TO_TRADE}.Harness STATIC
         benchmark_options.cpp
         venue_peer.cpp
         level_floor.cpp
+        level_bricks.cpp
 )
 target_sources(${TICK_TO_TRADE}.Harness PRIVATE
         round_config.hpp
@@ -20,6 +21,8 @@ target_sources(${TICK_TO_TRADE}.Harness PRIVATE
         benchmark_options.hpp
         venue_peer.hpp
         level_floor.hpp
+        stack_sanity.hpp
+        level_bricks.hpp
 )
 target_include_directories(${TICK_TO_TRADE}.Harness PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
