@@ -26,8 +26,10 @@ namespace aloe::benchmarks {
 
     /**
      * The matrix of `options` over one ring pair and one peer thread, the rings drained between configurations, then
-     * the hop when asked. The EAL is running. Throws std::runtime_error with the configuration and the cause on the
-     * first configuration that fails its sanity checks; nothing is written then.
+     * the hop when asked. The EAL is running. The calling thread is pinned to `options.stack_core` first, when there
+     * is one, and stays there. Throws std::runtime_error with the configuration and the cause on the first
+     * configuration that fails its sanity checks, and std::system_error when the stack's core cannot be pinned;
+     * nothing is written then.
      */
     [[nodiscard]] Report run_benchmark(const Options& options, const MachineInfo& machine, std::string command);
 

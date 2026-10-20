@@ -40,7 +40,7 @@ namespace aloe::benchmarks {
          * @brief The peer's thread for the whole run, so DPDK registers one peer thread.
          *
          * Pinned to the peer core, or widened to every CPU when there is none, since it would otherwise inherit the
-         * main lcore's mask and share the stack's core; then registered with DPDK, then running one job at a time.
+         * main thread's mask and share the stack's core; then registered with DPDK, then running one job at a time.
          */
         class PeerWorker {
         public:
@@ -247,6 +247,12 @@ namespace aloe::benchmarks {
     }
 
     Report run_benchmark(const Options& options, const MachineInfo& machine, std::string command) {
+        // The floor, level 0 and the hop's near end run on this thread, which the EAL placed on the main lcore of
+        // `-l`; the result file records `--stack-core`, so the thread moves there. A mempool cache belongs to an
+        // lcore id, not to a CPU, so the move leaves the thread's cache as it was.
+        if (options.stack_core) {
+            pin_current_thread(*options.stack_core);
+        }
         core::calibrate_clock();
         const core::TscScale& scale = core::TscClock::scale();
         RingPair pair{

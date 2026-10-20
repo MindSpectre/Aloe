@@ -159,14 +159,17 @@ file. Its pages are 4 KB, so its numbers are no baseline.
 
 ### Cores
 
-`--stack-core` (default 2) is the stack's core and the EAL's main lcore, through `-l`: the floor and level 0 run
-on the main thread, which the EAL pins there, and level 1 pins its shard there. `--peer-core` (default 3) is the
-venue's. Choose two physical cores whose SMT siblings are idle. `lscpu -e` lists every CPU with its `CORE`, and
-two CPUs with the same `CORE` are siblings; on the author's Ryzen 5 7600X, CPU 2 pairs with 8 and CPU 3 with 9.
-An EAL list of your own after `--` keeps `-l` equal to `--stack-core`.
+`--stack-core` (default 2) is the stack's core and, through the default `-l`, the EAL's main lcore: the floor and
+level 0 run on the main thread, which the run pins there before the first configuration, and level 1 pins its
+shard there. `--peer-core` (default 3) is the venue's. Choose two physical cores whose SMT siblings are idle.
+`lscpu -e` lists every CPU with its `CORE`, and two CPUs with the same `CORE` are siblings; on the author's Ryzen
+5 7600X, CPU 2 pairs with 8 and CPU 3 with 9. An EAL list of your own after `--` keeps `-l` equal to
+`--stack-core`. The run pins the main thread to `--stack-core` itself, so `-l` only decides where the EAL's own
+threads start: the EAL puts its control threads on the allowed CPUs that `-l` does not list, which keeps them off
+the stack's core only when `-l` names it.
 
 `none` suits tests and nothing else. `--peer-core none` leaves the venue's thread and the hop's unpinned: a thread
-spawned after the EAL starts inherits the main lcore's affinity, so they widen their mask to every CPU, or they
+spawned after the EAL starts inherits the main thread's affinity, so they widen their mask to every CPU, or they
 would share the stack's core. `--stack-core none` does not unpin the stack: the default EAL list then says `-l 0`,
 so the main thread, which runs the floor and level 0, is pinned to CPU 0, and level 1's shard thread inherits that
 mask.
