@@ -9,6 +9,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Benchmarks
         test_benchmark_options.cpp
         test_stack_config.cpp
         test_hugepages.cpp
+        test_report.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Benchmarks
         PRIVATE
