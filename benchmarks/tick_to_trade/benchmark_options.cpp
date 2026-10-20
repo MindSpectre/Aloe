@@ -230,7 +230,8 @@ namespace aloe::benchmarks {
         }
         options.eal.push_back(program);
         options.eal.insert(options.eal.end(), eal.begin(), eal.end());
-        options.no_huge = eal_given && std::ranges::find(eal, "--no-huge") != eal.end();
+        options.no_huge =
+            eal_given && std::ranges::any_of(eal, [](const std::string& argument) { return argument == "--no-huge"; });
         return options;
     }
 
