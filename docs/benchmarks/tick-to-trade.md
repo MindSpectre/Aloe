@@ -211,9 +211,12 @@ configurations with `--breakdown`. Each takes a few seconds.
 
 ### The result file
 
-The result goes to `--out`, or to `tick-to-trade-<YYYYMMDD-HHMMSS>.json` in the working directory. The binary
-checks that it can write the path before the run and writes the file only after the whole run passed, so a
-failed run leaves no file behind and an earlier file at the same path as it was. Under `sudo` the file belongs
+The result goes to `--out`, or to `tick-to-trade-<YYYYMMDD-HHMMSS>.json` beside the binary, in
+`build/release/benchmarks/tick_to_trade/` for the `release` preset; the working directory takes it only when the
+binary's own path cannot be read from `/proc/self/exe`. The binary checks that it can write the path before the
+run and writes the file only after the whole run passed, so a failed run leaves no file behind and an earlier file
+at the same path as it was. A write that fails at the end, on a full disk say, prints `cannot write` and removes
+the partial file. Under `sudo` the file belongs
 to root; `chown` it before committing it. Linux's `fs.protected_regular`, which systemd turns on by default,
 keeps even root from reopening a file in `/tmp` that another user owns, so a second `sudo` run onto a file
 already handed over stops with `cannot write`; give every run a new name.

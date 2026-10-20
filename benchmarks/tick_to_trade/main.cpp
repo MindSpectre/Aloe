@@ -40,9 +40,17 @@ namespace {
         return command;
     }
 
-    [[nodiscard]] std::string default_result_name() {
-        const auto now = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
-        return std::format("tick-to-trade-{:%Y%m%d-%H%M%S}.json", now);
+    /// `tick-to-trade-<timestamp>.json` beside the binary, or in the working directory when the binary's path
+    /// cannot be read.
+    [[nodiscard]] std::string default_result_path() {
+        const auto now   = std::chrono::floor<std::chrono::seconds>(std::chrono::system_clock::now());
+        std::string name = std::format("tick-to-trade-{:%Y%m%d-%H%M%S}.json", now);  // moved out when returned
+        std::error_code error;
+        const std::filesystem::path binary = std::filesystem::read_symlink("/proc/self/exe", error);
+        if (error || !binary.has_parent_path()) {
+            return name;
+        }
+        return (binary.parent_path() / name).string();
     }
 
 }  // namespace
@@ -54,7 +62,7 @@ int main(int argc, char** argv) {
         std::println(stderr, "{}", options.error());
         return EXIT_FAILURE;
     }
-    const std::string path = options->out.empty() ? default_result_name() : options->out;
+    const std::string path = options->out.empty() ? default_result_path() : options->out;
     // Probe that the path is writable before the run, without truncating a result already there and without
     // leaving a new file behind: a failed run writes no result file.
     std::error_code probe_error;
@@ -99,6 +107,17 @@ int main(int argc, char** argv) {
             return EXIT_FAILURE;
         }
         aloe::benchmarks::write_json(file, report);
+        file.close();
+        // The state is sticky: it records a failed write and a failed flush at the close, a full disk say.
+        if (!file) {
+            std::println(stderr, "cannot write {}", path);
+            // A partial result is no result. Only a regular file goes: `--out /dev/full` under sudo keeps its device.
+            std::error_code ignored;
+            if (std::filesystem::is_regular_file(path, ignored)) {
+                std::filesystem::remove(path, ignored);
+            }
+            return EXIT_FAILURE;
+        }
         std::println("results written to {}", path);
         return EXIT_SUCCESS;
     } catch (const aloe::benchmarks::HugepageError& error) {

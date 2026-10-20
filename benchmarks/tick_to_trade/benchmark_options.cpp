@@ -91,7 +91,7 @@ namespace aloe::benchmarks {
                "  --arp-on-wire                 resolve the peer by ARP instead of seeding the cache\n"
                "  --hugepages N                 2 MB pages the run needs free (64)\n"
                "  --keep-hugepages              leave pages this process reserved for the next run\n"
-               "  --out FILE                    the result file (tick-to-trade-<timestamp>.json)\n"
+               "  --out FILE                    the result file (tick-to-trade-<timestamp>.json beside the binary)\n"
                "  --                            what follows goes to the EAL verbatim; default: --in-memory "
                "--no-pci --no-telemetry -l <stack core>\n";
     }
