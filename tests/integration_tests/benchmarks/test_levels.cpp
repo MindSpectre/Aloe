@@ -2,17 +2,19 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <thread>
 
 #include <eal_environment.hpp>
 #include <gtest/gtest.h>
 #include <level_bricks.hpp>
+#include <level_runtime.hpp>
 #include <ring_pair.hpp>
 #include <run_state.hpp>
 #include <stamped_device.hpp>
 #include <venue_peer.hpp>
 
-// Level 0 and, from Task 7, level 1 against the scripted venue over the ring pair: the handshake both ways, closed-loop
+// Level 0 and level 1 against the scripted venue over the ring pair: the handshake both ways, closed-loop
 // rounds, the recycled mbufs, the counters at zero. Same-core inline, cross-core on an unpinned thread. No root.
 namespace {
 
@@ -147,4 +149,35 @@ TEST(Levels, BricksGatewaySameCoreHonoursTheGap) {
 
 TEST(Levels, BricksGatewayCrossCore) {
     run_level0(small(Round::Gateway, Level::Bricks, Topology::CrossCore, order_size), "lv0-gw-cross");
+}
+
+namespace {
+
+    /// Runs level 1 over a fresh pair with the peer on an unpinned thread; the shard thread is unpinned too.
+    void run_level1(const RoundConfig& config, const char* name) {
+        RingPair pair{
+            {.name = name, .pool_size = 512}
+        };
+        RunState state{config};
+        Stamped device{pair.stack(), state.stamps.stop};
+        const PeerConfig peer_config = strict_peer(pair);
+        VenuePeer peer{pair.peer(), peer_config, state.stamps.start};
+        std::jthread venue{[&peer, &state] { drive_peer(peer, state, true); }};
+        run_runtime(state, device, peer_config, false, std::nullopt);
+        venue.join();
+        expect_closed_loop(state, device, peer);
+    }
+
+}  // namespace
+
+TEST(Levels, RuntimeTickCrossCore) {
+    run_level1(small(Round::Tick, Level::Runtime, Topology::CrossCore, 64), "lv1-tick");
+}
+
+TEST(Levels, RuntimeTickFullSegment) {
+    run_level1(small(Round::Tick, Level::Runtime, Topology::CrossCore, 1460), "lv1-tick-1460");
+}
+
+TEST(Levels, RuntimeGatewayCrossCore) {
+    run_level1(small(Round::Gateway, Level::Runtime, Topology::CrossCore, order_size), "lv1-gw");
 }
