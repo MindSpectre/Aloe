@@ -12,3 +12,14 @@ target_link_libraries(${INTEGRATION_TESTING_TARGET}.Benchmarks.RingPair
         ${TEST_LIBS}
 )
 ##############################################################################
+add_integration_test(${INTEGRATION_TESTING_TARGET}.Benchmarks.VenuePeer
+        test_venue_peer.cpp
+)
+target_link_libraries(${INTEGRATION_TESTING_TARGET}.Benchmarks.VenuePeer
+        PRIVATE
+        Aloe::Benchmarks::Harness
+        Aloe::Fixtures::Frames
+        ${SHARED_TESTING_TARGET}.Ethdev
+        ${TEST_LIBS}
+)
+##############################################################################

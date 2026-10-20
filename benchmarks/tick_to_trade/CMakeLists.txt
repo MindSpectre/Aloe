@@ -6,6 +6,8 @@ set(TICK_TO_TRADE ${BENCHMARKS}.TickToTrade)
 add_library(${TICK_TO_TRADE}.Harness STATIC
         ring_pair.cpp
         benchmark_options.cpp
+        venue_peer.cpp
+        level_floor.cpp
 )
 target_sources(${TICK_TO_TRADE}.Harness PRIVATE
         round_config.hpp
@@ -16,6 +18,8 @@ target_sources(${TICK_TO_TRADE}.Harness PRIVATE
         run_state.hpp
         thread_pinning.hpp
         benchmark_options.hpp
+        venue_peer.hpp
+        level_floor.hpp
 )
 target_include_directories(${TICK_TO_TRADE}.Harness PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
