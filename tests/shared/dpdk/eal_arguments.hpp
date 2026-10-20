@@ -69,7 +69,7 @@ namespace aloe::testing {
                 "--in-memory",
                 "--no-telemetry",
                 "-m",
-                "64",
+                "128",
                 "-l",
                 "0",
                 "--vdev=" + std::string{vdev}};

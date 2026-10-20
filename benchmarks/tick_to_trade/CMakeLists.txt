@@ -54,3 +54,30 @@ target_link_libraries(${TICK_TO_TRADE}.Harness PUBLIC
 )
 add_library(Aloe::Benchmarks::Harness ALIAS ${TICK_TO_TRADE}.Harness)
 ##############################################################################
+##############################################################################
+# The binary: tick_to_trade [options] [-- <EAL arguments>]
+##############################################################################
+execute_process(
+        COMMAND git rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE TICK_TO_TRADE_REVISION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+)
+if (NOT TICK_TO_TRADE_REVISION)
+    set(TICK_TO_TRADE_REVISION "unknown")
+endif ()
+add_executable(${TICK_TO_TRADE}
+        main.cpp
+)
+target_link_libraries(${TICK_TO_TRADE}
+        PRIVATE
+        ${TICK_TO_TRADE}.Harness
+)
+target_compile_definitions(${TICK_TO_TRADE}
+        PRIVATE
+        ALOE_BENCHMARK_REVISION="${TICK_TO_TRADE_REVISION}"
+        ALOE_BENCHMARK_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+)
+set_target_properties(${TICK_TO_TRADE} PROPERTIES OUTPUT_NAME tick_to_trade)
+##############################################################################
