@@ -10,6 +10,7 @@ add_library(${TICK_TO_TRADE}.Harness STATIC
         level_floor.cpp
         level_bricks.cpp
         level_runtime.cpp
+        hugepages.cpp
 )
 target_sources(${TICK_TO_TRADE}.Harness PRIVATE
         round_config.hpp
@@ -25,6 +26,7 @@ target_sources(${TICK_TO_TRADE}.Harness PRIVATE
         stack_sanity.hpp
         level_bricks.hpp
         level_runtime.hpp
+        hugepages.hpp
 )
 target_include_directories(${TICK_TO_TRADE}.Harness PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
