@@ -365,11 +365,14 @@ leg moved:
 
 The script, Python 3 with the standard library only, matches rows by round, level, topology, payload and
 metric, and prints both files' percentiles with the change of each. By default it gates p50, p90 and p99: a change
-beyond `--threshold` percent, 5 by default, in either direction is marked with `!` and counted. p99.9 and max are
-printed without a mark. They rest on a hundred rounds and on one, and at a resolution of 10 ns a max of 60 ns
-moves 17 % between identical runs; `--tails` gates them too. The script exits 1 when a gated percentile moved or a
-baseline row is missing from the candidate, so a step can gate on it. It prints both machines and builds and
-compares neither: a baseline is only read against a run of the same machine.
+in either direction beyond `--threshold` percent, 5 by default, and beyond `--min-ns` nanoseconds, 20 by default,
+is marked with `!` and counted. The floor in nanoseconds is there because the TSC steps in 10 ns on the author's
+machine: one step alone moves a 30 to 60 ns row, a short breakdown leg say, by 17 to 33 % between identical runs,
+so a row may move by up to two steps unmarked. A zero baseline is flagged when the candidate is above the floor. p99.9
+and max are printed without a mark, because they rest on a hundred rounds and on one; `--tails` gates them too. The
+script exits 1 when a gated percentile moved or a baseline row is missing from the candidate, so a step can gate
+on it. It prints both machines and builds and gates on neither, but a warning line says when the two files differ
+in CPU, in build or in a row's count: a baseline is only read against a run of the same machine.
 
 A same-machine rerun that flags lines at p50 means the machine was not quiet: note which lines rather than raising
 the threshold. p99.9 is read by eye in the history table below, or gated with `--tails` when a step means to move
