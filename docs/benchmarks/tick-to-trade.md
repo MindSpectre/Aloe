@@ -46,8 +46,8 @@ never a mean. A configuration is a round, a level, a topology and a tick payload
 100 000 rounds of each after 10 000 of warm-up. The floor against level 0 is what the stack costs, and level 0
 against level 1 what the runtime adds, each read per percentile, side by side.
 
-The point is the comparison over time. Every step of phase 2 reruns the same command on the same machine and
-records its numbers beside the baseline, as "Tracking regressions" below says, so a regression shows when it
+The point is the comparison over time. Every step of phase 2 reruns the same commands on the same machine and
+records its numbers beside the baseline's, as "Tracking regressions" below says, so a regression shows when it
 lands rather than at deployment.
 
 ### The harness
@@ -165,9 +165,11 @@ venue's. Choose two physical cores whose SMT siblings are idle. `lscpu -e` lists
 two CPUs with the same `CORE` are siblings; on the author's Ryzen 5 7600X, CPU 2 pairs with 8 and CPU 3 with 9.
 An EAL list of your own after `--` keeps `-l` equal to `--stack-core`.
 
-`none` leaves a thread unpinned, which suits tests and nothing else. A thread spawned after the EAL starts
-inherits the main lcore's affinity, so the venue's thread and the hop's widen their mask to every CPU when they
-have no core of their own; otherwise they would share the stack's.
+`none` suits tests and nothing else. `--peer-core none` leaves the venue's thread and the hop's unpinned: a thread
+spawned after the EAL starts inherits the main lcore's affinity, so they widen their mask to every CPU, or they
+would share the stack's core. `--stack-core none` does not unpin the stack: the default EAL list then says `-l 0`,
+so the main thread, which runs the floor and level 0, is pinned to CPU 0, and level 1's shard thread inherits that
+mask.
 
 ### The matrix
 
@@ -185,19 +187,23 @@ have no core of their own; otherwise they would share the stack's.
 - `--breakdown` stamps the phases of level 0, as "Reading the table" below describes.
 - `--hop` measures the bare cache-line hop between the two cores after the matrix.
 - `--arp-on-wire` makes the stack resolve the venue by ARP instead of learning its MAC with `Ipv4::learn` before
-  the run. It is refused with `--topology same` or `both`: on one thread, the inline venue cannot answer an ARP
-  request while it waits for the handshake.
+  the run. It is refused with `--topology same` or `both`: on one thread, the inline venue answers the stack's
+  ARP request while it waits for the next handshake segment, but the stack cannot step to process the reply and
+  send that segment while the venue waits.
 - `--out FILE` names the result file.
 
-### The baseline command
+### The baseline commands
 
 ```bash
-sudo ./build/release/benchmarks/tick_to_trade/tick_to_trade --topology both --breakdown --hop --out /tmp/baseline.json
+sudo ./build/release/benchmarks/tick_to_trade/tick_to_trade --topology both --hop --out /tmp/baseline.json
+sudo ./build/release/benchmarks/tick_to_trade/tick_to_trade --level 0 --breakdown --out /tmp/baseline-breakdown.json
 ```
 
-With the default cores, payloads and counts this is 30 configurations, 25 of tick-to-trade (the floor and
-level 0 in both topologies and level 1 cross-core, five payloads each) and 5 of the gateway round, then the hop.
-The whole matrix takes a few seconds.
+The first is the headline. With the default cores, payloads and counts it is 30 configurations, 25 of
+tick-to-trade (the floor and level 0 in both topologies and level 1 cross-core, five payloads each) and 5 of the
+gateway round, then the hop. It runs without `--breakdown`, because the phase stamps cost level 0 time of their
+own. The second carries the legs: level 0, cross-core, the five tick payloads and the gateway round, six
+configurations with `--breakdown`. Each takes a few seconds.
 
 ### The result file
 
@@ -248,7 +254,9 @@ stamps:
 The gateway round has the last three legs only, because its window opens at the application. A stamp is an
 `lfence` and an `rdtsc`, and it is not free: in a `--breakdown` run, level 0's `round` line carries five more
 stamps in the tick round and two in the gateway round, which on the author's machine add about 40 ns and 20 ns
-at p50. Read level 0 against level 1 from a run without `--breakdown`.
+at p50. So level 0 against level 1 is read from the headline file, recorded without `--breakdown`, and the legs
+from a second file, recorded with `--level 0 --breakdown`, whose `round` lines are not compared with the
+headline's.
 
 `--hop` adds a block `== hop - cross-core ==` with one line, metric `hop`: a cache-line ping-pong between the
 stack's core and the venue's, `--warmup` plus `--rounds` round trips with the warm-up discarded, each halved. It
@@ -308,58 +316,72 @@ The commands, from the repository root:
 
 ```bash
 cmake --preset release && cmake --build --preset release --target Aloe.Benchmarks.TickToTrade
-sudo ./build/release/benchmarks/tick_to_trade/tick_to_trade --topology both --breakdown --hop --out /tmp/baseline.json
-sudo chown "$USER" /tmp/baseline.json
+name="$(date -u +%Y-%m-%d)-$(git rev-parse --short HEAD)-$(hostname)"
+sudo ./build/release/benchmarks/tick_to_trade/tick_to_trade --topology both --hop --out /tmp/baseline.json
+sudo ./build/release/benchmarks/tick_to_trade/tick_to_trade --level 0 --breakdown --out /tmp/baseline-breakdown.json
+sudo chown "$USER" /tmp/baseline.json /tmp/baseline-breakdown.json
 mkdir -p docs/benchmarks/results
-cp /tmp/baseline.json "docs/benchmarks/results/$(date -u +%Y-%m-%d)-$(git rev-parse --short HEAD)-$(hostname).json"
+cp /tmp/baseline.json "docs/benchmarks/results/$name.json"
+cp /tmp/baseline-breakdown.json "docs/benchmarks/results/$name-breakdown.json"
 ```
 
-Then a second run, compared with the first as a check of the regression tooling:
+Then a second headline run, compared with the first as a check of the regression tooling:
 
 ```bash
-sudo ./build/release/benchmarks/tick_to_trade/tick_to_trade --topology both --breakdown --hop --out /tmp/again.json
-./scripts/compare-benchmark.py docs/benchmarks/results/*.json /tmp/again.json
+sudo ./build/release/benchmarks/tick_to_trade/tick_to_trade --topology both --hop --out /tmp/again.json
+./scripts/compare-benchmark.py "docs/benchmarks/results/$name.json" /tmp/again.json
 ```
 
 The rerun's flags at p50 say whether the machine was quiet; the lines it flags there are noted beside the table.
-The recorded command includes `--breakdown`, so its level 0 `round` lines carry the phase stamps; level 0
-against level 1 is read from a run without it.
 
-A result file is named `<date>-<revision>-<hostname>.json`: the UTC date of the run as `YYYY-MM-DD`, the short
-git revision the binary was configured from, and the machine's host name. The files sort by date, and the host
-name keeps a baseline from one machine from being read against another's.
+A headline file is named `<date>-<revision>-<hostname>.json`, and the breakdown file of the same run
+`<date>-<revision>-<hostname>-breakdown.json`: the UTC date of the run as `YYYY-MM-DD`, the short git revision the
+binary was configured from, and the machine's host name. The files sort by date, and the host name keeps a
+baseline from one machine from being read against another's.
 
-Recorded run: pending. The maintainer runs the commands above on a quiet machine and pastes the table here; the
-result file goes beside this page.
+**Recorded run: pending. The maintainer runs the commands above on a quiet machine, commits the two result files
+beside this page, and fills in here:**
+
+- **the headline table;**
+- **the breakdown table;**
+- **the hop line;**
+- **two or three sentences on what they say: the stack's cost at p50 and p99.9, the runtime's overhead, the hop.**
 
 ## Tracking regressions
 
-Every step of phase 2 reruns the baseline command on the same machine and the same cores, commits its result file
-beside the baseline's under `docs/benchmarks/results/`, and compares the two:
+Every step of phase 2 reruns both baseline commands on the same machine and the same cores, and commits both
+result files beside the baseline's under `docs/benchmarks/results/`. A step is gated on its headline file, compared
+with the baseline's headline file; its breakdown file is compared with the baseline's breakdown file to see which
+leg moved:
 
 ```bash
 ./scripts/compare-benchmark.py docs/benchmarks/results/<baseline>.json docs/benchmarks/results/<step>.json
+./scripts/compare-benchmark.py docs/benchmarks/results/<baseline>-breakdown.json \
+    docs/benchmarks/results/<step>-breakdown.json
 ```
 
 The script, Python 3 with the standard library only, matches rows by round, level, topology, payload and
-metric, prints both files' percentiles with the change of each, and flags a change beyond `--threshold` percent,
-5 by default, in either direction. It exits 1 when anything is flagged or a baseline row is missing from the
-candidate, so a step can gate on it. It prints both machines and builds and compares neither: a baseline is only
-read against a run of the same machine.
+metric, and prints both files' percentiles with the change of each. By default it gates p50, p90 and p99: a change
+beyond `--threshold` percent, 5 by default, in either direction is marked with `!` and counted. p99.9 and max are
+printed without a mark. They rest on a hundred rounds and on one, and at a resolution of 10 ns a max of 60 ns
+moves 17 % between identical runs; `--tails` gates them too. The script exits 1 when a gated percentile moved or a
+baseline row is missing from the candidate, so a step can gate on it. It prints both machines and builds and
+compares neither: a baseline is only read against a run of the same machine.
 
-Read the flags with the clock and the machine in mind. Max is one round and flags on almost every rerun. At a
-resolution of 10 ns, a line at 60 ns moves 17 % in one step of the clock. A same-machine rerun that flags lines
-at p50 means the machine was not quiet: note which lines rather than raising the threshold. A change the step's
-added work does not explain gets a `perf record -g` session on the `release-perf` preset, which keeps frame
-pointers, narrowed to the configuration that moved and run on hugepages like any other:
+A same-machine rerun that flags lines at p50 means the machine was not quiet: note which lines rather than raising
+the threshold. p99.9 is read by eye in the history table below, or gated with `--tails` when a step means to move
+the tail. A change the step's added work does not explain gets a `perf record -g` session on the `release-perf`
+preset, which keeps frame pointers, narrowed to the configuration that moved and run on hugepages like any other:
 
 ```bash
 cmake --preset release-perf && cmake --build --preset release-perf --target Aloe.Benchmarks.TickToTrade
-perf record -g ./build/release-perf/benchmarks/tick_to_trade/tick_to_trade --round tick --level 0 --payload 64
+perf record -g -o /tmp/tick-to-trade.perf.data ./build/release-perf/benchmarks/tick_to_trade/tick_to_trade \
+    --round tick --level 0 --payload 64 --out /tmp/tick-to-trade-perf.json
+perf report -i /tmp/tick-to-trade.perf.data
 ```
 
-Each step adds a line here: the date, the revision, the step, and p50 and p99.9 of level 0, cross-core, for the
-tick round at 64 bytes and for the gateway round.
+Each step adds a line here, read from its headline file: the date, the revision, the step, and p50 and p99.9 of
+level 0, cross-core, for the tick round at 64 bytes and for the gateway round.
 
 | Date    | Revision | Step                  | Tick, 64 B, p50 | Tick, 64 B, p99.9 | Gateway, p50 | Gateway, p99.9 |
 |---------|----------|-----------------------|-----------------|-------------------|--------------|----------------|

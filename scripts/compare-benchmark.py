@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Two tick-to-trade result files side by side, with the change of every percentile.
 
-    scripts/compare-benchmark.py baseline.json candidate.json [--threshold PERCENT]
+    scripts/compare-benchmark.py baseline.json candidate.json [--threshold PERCENT] [--tails]
 
-Rows are matched by round, level, topology, payload and metric. The exit status is 1 when any p50, p90, p99,
-p99.9 or max moved by more than the threshold (default 5 percent) in either direction, so a rerun after a phase 2
-step can gate on it; the table is printed either way. Machines and builds are printed, never compared: a baseline
-from one machine is not read against another.
+Rows are matched by round, level, topology, payload and metric. Every percentile is printed with its change. By
+default only p50, p90 and p99 are gated: a change beyond the threshold (default 5 percent) in either direction is
+marked with "!" and counted. p99.9 and max are printed without a mark, because they rest on a hundred rounds and on
+one, and the TSC's step of 10 ns alone moves a 60 ns max by 17 percent between identical runs; --tails gates them
+too. The exit status is 1 when a gated percentile moved or a baseline row is missing from the candidate, so a rerun
+after a phase 2 step can gate on it; the table is printed either way. Machines and builds are printed, never
+compared: a baseline from one machine is not read against another.
 """
 
 import argparse
@@ -14,6 +17,7 @@ import json
 import sys
 
 PERCENTILES = ("p50", "p90", "p99", "p999", "max")
+GATED = ("p50", "p90", "p99")
 KEYS = ("round", "level", "topology", "payload", "metric")
 
 
@@ -52,7 +56,10 @@ def main():
     parser.add_argument("baseline")
     parser.add_argument("candidate")
     parser.add_argument("--threshold", type=float, default=5.0, help="percent of change that flags a row (5)")
+    parser.add_argument("--tails", action="store_true", help="gate p99.9 and max as well as p50, p90 and p99")
     arguments = parser.parse_args()
+    gated = PERCENTILES if arguments.tails else GATED
+    scope = "gated: p50 to max" if arguments.tails else "gated: p50, p90, p99; --tails adds p99.9 and max"
     baseline, candidate = load(arguments.baseline), load(arguments.candidate)
     print(f"baseline:  {describe(baseline)}")
     print(f"candidate: {describe(candidate)}")
@@ -74,6 +81,7 @@ def main():
             else:
                 change = (new - old) * 100.0 / old if old else 0.0
                 shown, moved = f"{change:>+6.1f}", abs(change) > arguments.threshold
+            moved = moved and p in gated
             flagged += moved
             line += f" {old:>10} {new:>10} {shown:>6}{'!' if moved else ' '}"
         print(line)
@@ -86,12 +94,12 @@ def main():
     if flagged or missing:
         parts = []
         if flagged:
-            parts.append(f"{flagged} percentile(s) moved by more than {arguments.threshold}%")
+            parts.append(f"{flagged} percentile(s) moved by more than {arguments.threshold}% ({scope})")
         if missing:
             parts.append(f"{missing} baseline row(s) missing from the candidate")
         print("; ".join(parts))
         return 1
-    print(f"no percentile moved by more than {arguments.threshold}%")
+    print(f"no percentile moved by more than {arguments.threshold}% ({scope})")
     return 0
 
 

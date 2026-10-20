@@ -9,12 +9,22 @@ if (PYTHON3_PROGRAM AND BASH_PROGRAM)
     set(SCENARIO ${CMAKE_CURRENT_SOURCE_DIR}/compare_scenario.sh)
     set(FIXTURES ${CMAKE_CURRENT_SOURCE_DIR}/fixtures)
 
+    # The fixtures differ in p99 (+25 %) and max (+23 %): the default gates p50 to p99, --tails up to max.
     add_test(
             NAME ${FUNCTIONAL_TESTING_TARGET}.Benchmarks.Compare.flags_a_regression
             COMMAND ${BASH_PROGRAM} ${SCENARIO} ${PYTHON3_PROGRAM} ${COMPARE} 1
-            "2 percentile(s) moved by more than 5.0%" ${FIXTURES}/baseline.json ${FIXTURES}/regressed.json
+            "1 percentile(s) moved by more than 5.0%" ${FIXTURES}/baseline.json ${FIXTURES}/regressed.json
     )
     set_tests_properties(${FUNCTIONAL_TESTING_TARGET}.Benchmarks.Compare.flags_a_regression PROPERTIES
+            LABELS "functional"
+    )
+
+    add_test(
+            NAME ${FUNCTIONAL_TESTING_TARGET}.Benchmarks.Compare.flags_the_tails_too
+            COMMAND ${BASH_PROGRAM} ${SCENARIO} ${PYTHON3_PROGRAM} ${COMPARE} 1
+            "2 percentile(s) moved by more than 5.0%" ${FIXTURES}/baseline.json ${FIXTURES}/regressed.json --tails
+    )
+    set_tests_properties(${FUNCTIONAL_TESTING_TARGET}.Benchmarks.Compare.flags_the_tails_too PROPERTIES
             LABELS "functional"
     )
 
