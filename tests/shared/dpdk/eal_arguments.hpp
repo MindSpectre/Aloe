@@ -52,7 +52,7 @@ namespace aloe::testing {
                             "--in-memory",
                             "--no-telemetry",
                             "-m",
-                            "64",
+                            "128",  // the benchmark's two 8192-mbuf pools under --no-huge need more than 64
                             "-l",
                             "0",
                             "--vdev=net_null0"};

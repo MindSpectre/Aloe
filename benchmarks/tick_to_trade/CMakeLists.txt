@@ -54,7 +54,6 @@ target_link_libraries(${TICK_TO_TRADE}.Harness PUBLIC
 )
 add_library(Aloe::Benchmarks::Harness ALIAS ${TICK_TO_TRADE}.Harness)
 ##############################################################################
-##############################################################################
 # The binary: tick_to_trade [options] [-- <EAL arguments>]
 ##############################################################################
 execute_process(

@@ -52,6 +52,12 @@ int main(int argc, char** argv) {
         std::println(stderr, "{}", options.error());
         return EXIT_FAILURE;
     }
+    const std::string path = options->out.empty() ? default_result_name() : options->out;
+    std::ofstream file{path};
+    if (!file) {
+        std::println(stderr, "cannot write {}", path);
+        return EXIT_FAILURE;
+    }
     try {
         aloe::core::calibrate_clock();
         std::optional<aloe::benchmarks::FileHugepageSysfs> sysfs;
@@ -74,12 +80,6 @@ int main(int argc, char** argv) {
         report.run.revision             = ALOE_BENCHMARK_REVISION;
         report.run.build                = ALOE_BENCHMARK_BUILD_TYPE;
         aloe::benchmarks::print_table(std::cout, report);
-        const std::string path = options->out.empty() ? default_result_name() : options->out;
-        std::ofstream file{path};
-        if (!file) {
-            std::println(stderr, "cannot write {}", path);
-            return EXIT_FAILURE;
-        }
         aloe::benchmarks::write_json(file, report);
         std::println("results written to {}", path);
         return EXIT_SUCCESS;
