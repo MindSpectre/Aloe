@@ -12,8 +12,10 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -135,8 +137,41 @@ namespace aloe::benchmarks {
             std::jthread thread_;  ///< Last: it starts once every member it reads is constructed, and joins first.
         };
 
+        /// Follows a refusal of a pair stamped on two cores: the tick round's start, the peer's, against the stack's.
+        constexpr std::string_view tsc_note =
+            "; across cores this means the TSC is not synchronised between the stack's and the peer's core";
+
+        /// The ticks from `begins` to `ends` in every round. Throws std::runtime_error naming the round and the leg
+        /// when an end stamp is missing, or when it does not follow its beginning, then with `note` appended.
+        [[nodiscard]] Distribution leg_ticks(const std::span<const std::uint64_t> begins,
+                                             const std::span<const std::uint64_t> ends,
+                                             const std::string_view leg,
+                                             const std::string_view note) {
+            Distribution ticks{ends.size()};
+            for (std::size_t round = 0; round < ends.size(); ++round) {
+                if (ends[round] == 0) {
+                    throw std::runtime_error{std::format("round {} has no {} stamp", round, leg)};
+                }
+                if (ends[round] <= begins[round]) {
+                    throw std::runtime_error{
+                        std::format("round {}: the {} leg ends before it begins{}", round, leg, note)};
+                }
+                ticks.record(ends[round] - begins[round]);
+            }
+            return ticks;
+        }
+
         [[nodiscard]] std::string core_text(const std::optional<unsigned> core) {
             return core ? std::to_string(*core) : std::string{"none"};
+        }
+
+        /// The configuration as every failure names it: "tick level0 cross-core payload 64".
+        [[nodiscard]] std::string describe(const RoundConfig& config) {
+            return std::format("{} {} {} payload {}",
+                               to_string(config.round),
+                               to_string(config.level),
+                               to_string(config.topology),
+                               config.payload);
         }
 
         [[nodiscard]] RunInfo run_info(const Options& options, const core::TscScale& scale, std::string command) {
@@ -157,6 +192,11 @@ namespace aloe::benchmarks {
 
     std::vector<Row> summarise_round(const RunState& state, const core::TscScale& scale, const RoundConfig& config) {
         const std::size_t total = config.total();
+        assert(state.stamps.start.size() == total && state.stamps.stop.size() == total &&
+               "the stamps were sized for another configuration");
+        // Only the tick round's start is stamped off the stack's core: by the peer, on its own core when cross-core.
+        const std::string_view cross_core_note =
+            config.round == Round::Tick && config.topology == Topology::CrossCore ? tsc_note : "";
         Distribution round_trip{total};
         for (std::size_t round = 0; round < total; ++round) {
             const std::uint64_t start = state.stamps.start[round];
@@ -165,12 +205,8 @@ namespace aloe::benchmarks {
                 throw std::runtime_error{std::format("round {} has no {} stamp", round, start == 0 ? "start" : "stop")};
             }
             if (stop <= start) {
-                throw std::runtime_error{std::format("round {}: the stop stamp precedes the start{}",
-                                                     round,
-                                                     config.topology == Topology::CrossCore
-                                                         ? "; across cores this means the TSC is not synchronised "
-                                                           "between the stack's and the peer's core"
-                                                         : "")};
+                throw std::runtime_error{
+                    std::format("round {}: the stop stamp precedes the start{}", round, cross_core_note)};
             }
             round_trip.record(stop - start);
         }
@@ -195,19 +231,17 @@ namespace aloe::benchmarks {
                 present.emplace_back(std::string{to_string(static_cast<Phase>(index))}, &phase);
             }
         }
+        // Every leg is checked as the round is; only the one that starts at the start can cross cores.
         const std::vector<std::uint64_t>* previous = &state.stamps.start;
+        const auto note_after = [&state, cross_core_note](const std::vector<std::uint64_t>* const begins) {
+            return begins == &state.stamps.start ? cross_core_note : std::string_view{};
+        };
         for (const auto& [name, stamps] : present) {
-            Distribution leg{total};
-            for (std::size_t round = 0; round < total; ++round) {
-                leg.record((*stamps)[round] - (*previous)[round]);
-            }
+            const Distribution leg = leg_ticks(*previous, *stamps, name, note_after(previous));
             rows.push_back(label(name, leg.summarise(scale, config.warmup)));
             previous = stamps;
         }
-        Distribution last{total};
-        for (std::size_t round = 0; round < total; ++round) {
-            last.record(state.stamps.stop[round] - (*previous)[round]);
-        }
+        const Distribution last = leg_ticks(*previous, state.stamps.stop, last_leg, note_after(previous));
         rows.push_back(label(std::string{last_leg}, last.summarise(scale, config.warmup)));
         return rows;
     }
@@ -250,20 +284,29 @@ namespace aloe::benchmarks {
                     run_level(nullptr);
                 } catch (...) {
                     state.fail("the stack's side threw");  // ends the peer's job before its state goes
-                    worker.wait();
+                    try {
+                        worker.wait();
+                    } catch (...) {
+                        // The stack's exception is the one the caller gets; the peer's would only follow from it.
+                    }
                     throw;
                 }
                 worker.wait();
             }
             if (state.failed.load()) {
-                throw std::runtime_error{std::format("{} {} {} payload {}: {}",
-                                                     to_string(config.round),
-                                                     to_string(config.level),
-                                                     to_string(config.topology),
-                                                     config.payload,
-                                                     state.failure)};
+                throw std::runtime_error{std::format("{}: {}", describe(config), state.failure)};
             }
-            for (Row& row : summarise_round(state, scale, config)) {
+            std::vector<Row> rows;
+            try {
+                rows = summarise_round(state, scale, config);
+            } catch (const std::runtime_error& error) {
+                throw std::runtime_error{std::format("{}: {} (stack core {}, peer core {})",
+                                                     describe(config),
+                                                     error.what(),
+                                                     core_text(options.stack_core),
+                                                     core_text(options.peer_core))};
+            }
+            for (Row& row : rows) {
                 report.rows.push_back(std::move(row));
             }
             // After the level returned and its bricks are gone: a level 1 stream's RST and a gateway round's last ACK
