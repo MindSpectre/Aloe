@@ -92,6 +92,38 @@ TEST(BenchmarkOptions, RejectsWhatTheSpecRulesOut) {
     EXPECT_FALSE(parse({"--rounds"}).has_value()) << "a value is missing";
 }
 
+TEST(BenchmarkOptions, NamesAnUnknownOption) {
+    const auto options = parse({"--bogus"});
+    ASSERT_FALSE(options.has_value());
+    EXPECT_EQ(options.error(), "--bogus: unknown option");
+}
+
+TEST(BenchmarkOptions, RejectsAnOptionWhereAValueBelongs) {
+    const auto out = parse({"--out", "--hop"});
+    ASSERT_FALSE(out.has_value()) << "--hop is a forgotten value, not a file name";
+    EXPECT_TRUE(out.error().starts_with("--out: ")) << out.error();
+    const auto rounds = parse({"--rounds", "--warmup", "3"});
+    ASSERT_FALSE(rounds.has_value());
+    EXPECT_TRUE(rounds.error().starts_with("--rounds: ")) << rounds.error();
+    EXPECT_FALSE(parse({"--out", "--"}).has_value()) << "the EAL's separator is no value either";
+}
+
+TEST(BenchmarkOptions, RejectsTheStacksCoreForThePeer) {
+    const auto clash = parse({"--stack-core", "3"});
+    ASSERT_FALSE(clash.has_value()) << "the peer's default core is 3";
+    EXPECT_TRUE(clash.error().starts_with("--peer-core: ")) << clash.error();
+    EXPECT_FALSE(parse({"--stack-core", "5", "--peer-core", "5"}).has_value());
+    EXPECT_TRUE(parse({"--stack-core", "none", "--peer-core", "none"}).has_value()) << "two unpinned threads";
+    EXPECT_TRUE(parse({"--stack-core", "3", "--peer-core", "none"}).has_value());
+}
+
+TEST(BenchmarkOptions, RejectsAMatrixWithNoConfiguration) {
+    const auto empty = parse({"--level", "1", "--topology", "same"});
+    ASSERT_FALSE(empty.has_value()) << "level 1 runs cross-core only";
+    EXPECT_NE(empty.error().find("no configuration"), std::string::npos) << empty.error();
+    EXPECT_TRUE(parse({"--level", "1", "--topology", "both"}).has_value());
+}
+
 TEST(BenchmarkOptions, RejectsArpOnTheWireWithTheSameCoreTopology) {
     EXPECT_FALSE(parse({"--arp-on-wire", "--topology", "same"}).has_value());
     EXPECT_FALSE(parse({"--topology", "both", "--arp-on-wire"}).has_value());

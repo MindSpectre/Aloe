@@ -106,7 +106,8 @@ cmake --build --preset release --target Aloe.Benchmarks.TickToTrade
 
 The command line takes options first, then `--` and the EAL's arguments, which reach the EAL verbatim. Without
 `--` the EAL gets `--in-memory --no-pci --no-telemetry -l <stack core>`, on hugepages. Arguments after `--`
-replace that list whole, so a list of your own repeats what it still wants from it.
+replace that list whole, so a list of your own repeats what it still wants from it. An option that takes a value
+refuses one that starts with `--`, so `--out --hop` stops with a message instead of writing a file named `--hop`.
 
 ### Hugepages
 
@@ -161,9 +162,9 @@ file. Its pages are 4 KB, so its numbers are no baseline.
 
 `--stack-core` (default 2) is the stack's core and, through the default `-l`, the EAL's main lcore: the floor and
 level 0 run on the main thread, which the run pins there before the first configuration, and level 1 pins its
-shard there. `--peer-core` (default 3) is the venue's. Choose two physical cores whose SMT siblings are idle.
-`lscpu -e` lists every CPU with its `CORE`, and two CPUs with the same `CORE` are siblings; on the author's Ryzen
-5 7600X, CPU 2 pairs with 8 and CPU 3 with 9. An EAL list of your own after `--` keeps `-l` equal to
+shard there. `--peer-core` (default 3) is the venue's, and the run refuses the stack's core for it. Choose two
+physical cores whose SMT siblings are idle. `lscpu -e` lists every CPU with its `CORE`, and two CPUs with the same
+`CORE` are siblings; on the author's Ryzen 5 7600X, CPU 2 pairs with 8 and CPU 3 with 9. An EAL list of your own after `--` keeps `-l` equal to
 `--stack-core`. The run pins the main thread to `--stack-core` itself, so `-l` only decides where the EAL's own
 threads start: the EAL puts its control threads on the allowed CPUs that `-l` does not list, which keeps them off
 the stack's core only when `-l` names it.
@@ -185,8 +186,8 @@ mask.
 - `--gap NS` pauses that many nanoseconds between rounds, 0 by default. The deadlines grow with it.
 - `--topology cross|same|both`. `cross`, the default, puts the venue on its own core. `same` runs the venue
   inline on the stack's thread, strictly in turn with the stack, for the floor and level 0; level 1 is a
-  `Runtime`, which owns its thread, so it has no same-core configuration. `both` runs every cross-core
-  configuration and every same-core one.
+  `Runtime`, which owns its thread, so it has no same-core configuration, and `--level 1 --topology same` is
+  refused for leaving nothing to run. `both` runs every cross-core configuration and every same-core one.
 - `--breakdown` stamps the phases of level 0, as "Reading the table" below describes.
 - `--hop` measures the bare cache-line hop between the two cores after the matrix.
 - `--arp-on-wire` makes the stack resolve the venue by ARP instead of learning its MAC with `Ipv4::learn` before

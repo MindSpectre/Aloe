@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <format>
 #include <string_view>
 #include <system_error>
 #include <utility>
@@ -84,7 +85,7 @@ namespace aloe::benchmarks {
                "  --topology cross|same|both    the peer on its own core, or on the stack's thread for the floor "
                "and level 0 (cross)\n"
                "  --stack-core N|none           the stack's core, also the EAL's main lcore (2)\n"
-               "  --peer-core N|none            the peer's core (3)\n"
+               "  --peer-core N|none            the peer's core, not the stack's (3)\n"
                "  --breakdown                   phase stamps at level 0\n"
                "  --hop                         measure the cache-line hop between the two cores\n"
                "  --arp-on-wire                 resolve the peer by ARP instead of seeding the cache\n"
@@ -152,6 +153,9 @@ namespace aloe::benchmarks {
                 return bad(word, "expects a value");
             }
             const std::string_view value{words[++i]};
+            if (value.starts_with("--")) {  // a forgotten value: `--out --hop` would write to a file named `--hop`
+                return bad(word, std::format("expects a value, found the option {}", value));
+            }
             if (word == "--round") {
                 if (value == "tick") {
                     options.rounds = {Round::Tick};
@@ -220,8 +224,10 @@ namespace aloe::benchmarks {
                     return bad(word, "expects an integer");
                 }
                 options.hugepages = *pages;
-            } else {
+            } else if (word == "--out") {
                 options.out = std::string{value};
+            } else {
+                return bad(word, "unknown option");  // in `valued` but not handled here
             }
         }
 
@@ -229,6 +235,15 @@ namespace aloe::benchmarks {
             return bad("--arp-on-wire",
                        "cannot be used with --topology same or both: the same-core topology cannot resolve ARP, the "
                        "inline peer cannot answer a request while the stack waits for the handshake");
+        }
+        if (options.stack_core && options.stack_core == options.peer_core) {
+            return bad("--peer-core",
+                       "cannot be the stack's core; the stack and the venue each spin on a core of their own");
+        }
+        if (configurations(options).empty()) {
+            return bad("--topology same",
+                       "leaves no configuration with --level 1, which runs cross-core only; use --topology cross "
+                       "or both");
         }
 
         if (eal.empty()) {

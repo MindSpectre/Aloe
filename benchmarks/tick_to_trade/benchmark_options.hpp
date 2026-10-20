@@ -41,7 +41,9 @@ namespace aloe::benchmarks {
         std::string ring_name = "tick-to-trade";  ///< The ring pair's name prefix; tests pick their own.
     };
 
-    /// `argv[0]` is the program; options come first, then `--` and the EAL's arguments verbatim.
+    /// `argv[0]` is the program; options come first, then `--` and the EAL's arguments verbatim. The error names the
+    /// option: an unknown one, a missing value or one that starts with `--`, a value out of range, `--arp-on-wire`
+    /// off the cross-core topology, a peer core equal to the stack core, or a matrix with no configuration.
     [[nodiscard]] std::expected<Options, std::string> parse_options(std::span<char*> argv);
 
     [[nodiscard]] std::string usage();
