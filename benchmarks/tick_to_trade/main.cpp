@@ -57,7 +57,12 @@ int main(int argc, char** argv) {
     const std::string path = options->out.empty() ? default_result_name() : options->out;
     // Probe that the path is writable before the run, without truncating a result already there and without
     // leaving a new file behind: a failed run writes no result file.
-    const bool existed     = std::filesystem::exists(path);
+    std::error_code probe_error;
+    const bool existed = std::filesystem::exists(path, probe_error);
+    if (probe_error) {
+        std::println(stderr, "cannot write {}: {}", path, probe_error.message());
+        return EXIT_FAILURE;
+    }
     if (!std::ofstream{path, std::ios::app}) {
         std::println(stderr, "cannot write {}", path);
         return EXIT_FAILURE;
