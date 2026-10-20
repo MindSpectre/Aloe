@@ -13,6 +13,8 @@ add_library(${TICK_TO_TRADE}.Harness STATIC
         hugepages.cpp
         machine_info.cpp
         report.cpp
+        hop.cpp
+        benchmark_run.cpp
 )
 target_sources(${TICK_TO_TRADE}.Harness PRIVATE
         round_config.hpp
@@ -31,6 +33,8 @@ target_sources(${TICK_TO_TRADE}.Harness PRIVATE
         hugepages.hpp
         machine_info.hpp
         report.hpp
+        hop.hpp
+        benchmark_run.hpp
 )
 target_include_directories(${TICK_TO_TRADE}.Harness PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}

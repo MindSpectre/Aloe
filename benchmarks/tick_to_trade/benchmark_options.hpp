@@ -37,7 +37,8 @@ namespace aloe::benchmarks {
         bool keep_hugepages                = false;
         bool no_huge = false;  ///< `--no-huge` was passed after `--`: no reservation, and the result file says so.
         std::string out;       ///< The result file; empty means `tick-to-trade-<timestamp>.json` here.
-        std::vector<std::string> eal;  ///< argv for the EAL, the program name first.
+        std::vector<std::string> eal;             ///< argv for the EAL, the program name first.
+        std::string ring_name = "tick-to-trade";  ///< The ring pair's name prefix; tests pick their own.
     };
 
     /// `argv[0]` is the program; options come first, then `--` and the EAL's arguments verbatim.
