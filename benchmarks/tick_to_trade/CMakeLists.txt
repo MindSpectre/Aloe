@@ -10,6 +10,10 @@ target_sources(${TICK_TO_TRADE}.Harness PRIVATE
         round_config.hpp
         distribution.hpp
         ring_pair.hpp
+        application_work.hpp
+        stamped_device.hpp
+        run_state.hpp
+        thread_pinning.hpp
 )
 target_include_directories(${TICK_TO_TRADE}.Harness PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}

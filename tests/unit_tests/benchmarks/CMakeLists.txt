@@ -4,10 +4,14 @@
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Benchmarks
         test_distribution.cpp
+        test_application_work.cpp
+        test_stamped_device.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Benchmarks
         PRIVATE
         Aloe::Benchmarks::Harness
+        Aloe::Fixtures::Fabric
+        Aloe::Fixtures::Frames
         ${TEST_LIBS}
 )
 ##############################################################################
