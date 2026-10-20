@@ -60,8 +60,12 @@ and the hardening a client needs before the hardening a server needs. The RFCs a
 they leave a choice, Aloe does what Linux does, and Linux's packetdrill scenarios are the source of the
 scenario tests. The steps, in order:
 
-1. **Baseline benchmark.** Tick-to-send through the bricks against a raw poll of the device, on the fabric,
-   before any step adds work to the hot path. Every later step is measured against it.
+1. **Baseline benchmark.** Tick-to-trade and the gateway round through the bricks and through the runtime,
+   against a floor of raw frames, on DPDK's ring driver with a scripted venue on a second core; per-message
+   distributions, recorded in [docs/benchmarks/tick-to-trade.md](benchmarks/tick-to-trade.md) before any step
+   adds work to the hot path. Every later step reruns it. The loads and the isolated round that inform the
+   two-core shard follow in a second part. The benchmark exists; its first recorded run waits for a quiet
+   machine with hugepages.
 2. **Packet loan and test tools.** A packet the stack must keep after sending is lent to the device and comes
    back when the device is done with it: TCP sees ownership move and return, never a reference count. The
    DPDK backend implements the loan with the mbuf's reference count, the fabric by holding the packet. A
