@@ -81,14 +81,26 @@ namespace aloe::benchmarks {
                 }
                 return;
             }
+            const std::uint64_t gap_ticks      = ticks_for(state.config.gap);
+            const std::uint64_t deadline_ticks = ticks_for(peer_config.deadline);
+            std::uint64_t resume_at            = 0;
             for (std::uint64_t round = 0; round < total && !state.stop.load(); ++round) {
+                while (core::TscClock::get_ticks() < resume_at) {}
+                const std::uint64_t give_up = core::TscClock::get_ticks() + deadline_ticks;  // read before the tick
                 inline_peer->send_tick(round, state.config.payload);
                 while (device.stamps_taken() <= round && !state.stop.load()) {
                     step();
+                    if (device.stamps_taken() <= round && core::TscClock::get_ticks() > give_up) {
+                        state.fail(std::format("floor, round {}: no tick within the deadline", round));
+                    }
+                }
+                if (device.stamps_taken() <= round) {
+                    break;  // the order never left, the run failed: there is nothing to await
                 }
                 if (const auto seen = inline_peer->await_order(round); !seen) {
                     state.fail(std::format("peer, round {}: {}", round, to_string(seen.error())));
                 }
+                resume_at = core::TscClock::get_ticks() + gap_ticks;
             }
         }
 
@@ -129,6 +141,7 @@ namespace aloe::benchmarks {
                 }
                 resume_at = core::TscClock::get_ticks() + gap_ticks;
             }
+            state.finish();
         }
 
     }  // namespace

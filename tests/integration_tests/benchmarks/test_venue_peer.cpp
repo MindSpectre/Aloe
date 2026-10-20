@@ -44,6 +44,7 @@ namespace {
 
     void expect_closed_loop(const RunState& state, const Stamped& device, const VenuePeer& peer) {
         EXPECT_FALSE(state.failed.load()) << state.failure;
+        EXPECT_TRUE(state.stop.load()) << "the level finishes the run";
         EXPECT_EQ(device.stamps_taken(), state.config.total());
         EXPECT_EQ(peer.counters().orders_seen, state.config.total());
         for (std::size_t round = 0; round < state.config.total(); ++round) {
@@ -102,6 +103,44 @@ TEST(VenuePeer, FloorGatewayRoundBothTopologies) {
         venue.join();
         expect_closed_loop(state, device, peer);
     }
+}
+
+TEST(VenuePeer, FloorSameCoreTickRoundHonoursTheGap) {
+    RingPair pair{
+        {.name = "flr-gap", .pool_size = 256}
+    };
+    RoundConfig config = small(Round::Tick, Topology::SameCore, 64);
+    config.rounds      = 5;
+    config.warmup      = 0;
+    config.gap         = 1ms;
+    RunState state{config};
+    Stamped device{pair.stack(), state.stamps.stop};
+    VenuePeer peer{pair.peer(), floor_peer(pair), state.stamps.start};
+    run_floor(state, device, floor_peer(pair), &peer);
+    expect_closed_loop(state, device, peer);
+    const std::uint64_t gap = ticks_for(config.gap);
+    for (std::size_t round = 1; round < state.config.total(); ++round) {
+        EXPECT_GE(state.stamps.start[round] - state.stamps.stop[round - 1], gap) << round;
+    }
+}
+
+TEST(VenuePeer, FloorSameCoreFailsALostTickAtTheDeadline) {
+    RingPair pair{
+        {.name = "flr-lost", .pool_size = 256}
+    };
+    std::vector<Packet> taken;  // the peer's whole pool: send_tick finds no mbuf for its first carrier
+    for (auto packet = pair.peer().allocate(0); packet.has_value(); packet = pair.peer().allocate(0)) {
+        taken.push_back(std::move(*packet));
+    }
+    RunState state{small(Round::Tick, Topology::SameCore, 64)};
+    Stamped device{pair.stack(), state.stamps.stop};
+    PeerConfig config = floor_peer(pair);
+    config.deadline   = 50ms;
+    VenuePeer peer{pair.peer(), config, state.stamps.start};
+    run_floor(state, device, config, &peer);
+    EXPECT_TRUE(state.failed.load());
+    EXPECT_EQ(state.failure, "floor, round 0: no tick within the deadline");
+    EXPECT_EQ(device.stamps_taken(), 0U);
 }
 
 TEST(VenuePeer, AwaitOrderSkipsPureAcksChecksTheRoundAndTheChecksums) {
@@ -212,4 +251,49 @@ TEST(VenuePeer, AnswersArpRequestsWhileWaiting) {
     EXPECT_EQ(reply->arp->operation, wire::ArpOperation::Reply);
     EXPECT_EQ(reply->arp->sender_mac, config.peer_mac);
     EXPECT_EQ(reply->arp->sender_ip, config.peer_ip);
+}
+
+TEST(VenuePeer, AnswersAPassiveOpenInTheSynsOwnMbuf) {
+    RingPair pair{
+        {.name = "venue-passive", .pool_size = 256}
+    };
+    std::array<std::uint64_t, 1> starts{};
+    const PeerConfig config = floor_peer(pair);
+    VenuePeer peer{pair.peer(), config, starts};
+    frames::TcpSpec from_stack{.destination_mac  = config.peer_mac,
+                               .source_mac       = pair.stack().mac(),
+                               .source           = config.stack_ip,
+                               .destination      = config.peer_ip,
+                               .source_port      = 50000,
+                               .destination_port = config.peer_port,
+                               .sequence         = wire::TcpSequence{5000},
+                               .flags            = wire::TcpFlags{wire::TcpFlag::Syn},
+                               .mss              = 1460};
+    auto syn = pair.stack().allocate(0);
+    ASSERT_TRUE(syn.has_value());
+    ASSERT_TRUE(frames::fill(*syn, frames::tcp_frame(from_stack, {})));
+    const auto* const syn_mbuf = syn->get();
+    std::array<Packet, 1> out{std::move(*syn)};
+    ASSERT_EQ(pair.stack().transmit(0, out), 1U);
+
+    ASSERT_TRUE(peer.answer_passive_open().has_value());
+    std::array<Packet, 4> at_stack{};
+    ASSERT_EQ(pair.stack().receive(0, at_stack), 1U);
+    EXPECT_EQ(at_stack[0].get(), syn_mbuf) << "the SYN-ACK rides in the SYN's own mbuf, back to the stack's pool";
+    const auto syn_ack = frames::parse_frame(frames::bytes_of(at_stack[0]));
+    ASSERT_TRUE(syn_ack.has_value() && syn_ack->tcp.has_value());
+    EXPECT_TRUE(syn_ack->tcp->flags.has(wire::TcpFlag::Syn) && syn_ack->tcp->flags.has(wire::TcpFlag::Ack));
+    EXPECT_EQ(syn_ack->tcp->acknowledgement, wire::TcpSequence{5001});
+
+    from_stack.sequence        = wire::TcpSequence{5001};
+    from_stack.acknowledgement = syn_ack->tcp->sequence + 1;
+    from_stack.flags           = wire::TcpFlags{wire::TcpFlag::Ack};
+    from_stack.mss             = std::nullopt;
+    auto ack                   = pair.stack().allocate(0);
+    ASSERT_TRUE(ack.has_value());
+    ASSERT_TRUE(frames::fill(*ack, frames::tcp_frame(from_stack, {})));
+    out[0] = std::move(*ack);
+    ASSERT_EQ(pair.stack().transmit(0, out), 1U);
+    ASSERT_TRUE(peer.finish_passive_open().has_value());
+    EXPECT_EQ(peer.counters().surplus_freed, 1U) << "only the handshake's ACK, freed on the peer's core";
 }

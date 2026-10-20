@@ -64,8 +64,10 @@ namespace aloe::benchmarks {
             parsed->tcp->flags.has(wire::TcpFlag::Ack)) {
             return std::unexpected{PeerError::Unexpected};
         }
-        inject(script_.syn_ack(*parsed));
-        carrier_ = std::move(*packet);
+        carrier_ = std::move(*packet);  // the SYN's mbuf carries the SYN-ACK back: the stack frees it on its core
+        if (prepare_carrier(script_.syn_ack(*parsed))) {
+            send_carrier();
+        }
         return {};
     }
 
@@ -91,9 +93,12 @@ namespace aloe::benchmarks {
             }
             carrier_ = std::move(*fresh);
         }
-        tick_          = script_.data(tick_payload(payload, round));  // frees the last tick's frame, before the stamp
-        starts_[round] = core::TscClock::get_ticks();
-        transmit_carrier(tick_);
+        tick_ = script_.data(tick_payload(payload, round));  // frees the last tick's frame, before the stamp
+        if (!prepare_carrier(tick_)) {
+            return;
+        }
+        starts_[round] = core::TscClock::get_ticks();  // the frame is in the mbuf: the window opens at the transmit
+        send_carrier();
     }
 
     std::expected<void, PeerError> VenuePeer::await_order(const std::uint64_t round) {
@@ -137,7 +142,9 @@ namespace aloe::benchmarks {
     }
 
     void VenuePeer::send_bare_ack() {
-        transmit_carrier(script_.ack());
+        if (prepare_carrier(script_.ack())) {
+            send_carrier();
+        }
     }
 
     std::optional<VenuePeer::Packet> VenuePeer::collect() {
@@ -176,12 +183,13 @@ namespace aloe::benchmarks {
         std::ignore = port_->transmit(0, out);
     }
 
-    void VenuePeer::transmit_carrier(const std::span<const std::byte> frame) {
+    bool VenuePeer::prepare_carrier(const std::span<const std::byte> frame) {
         assert(!carrier_.empty() && "the carrier is the stack's last frame; the handshake seeds it");
         carrier_.trim_back(carrier_.size());
-        if (!frames::fill(carrier_, frame)) {
-            return;
-        }
+        return frames::fill(carrier_, frame);
+    }
+
+    void VenuePeer::send_carrier() noexcept {
         std::array<Packet, 1> out{std::move(carrier_)};
         if (port_->transmit(0, out) != 1) {
             carrier_ = std::move(out[0]);  // a refused transmit leaves the packet in the burst

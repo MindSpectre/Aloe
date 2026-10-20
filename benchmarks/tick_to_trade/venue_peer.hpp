@@ -65,10 +65,11 @@ namespace aloe::benchmarks {
     /**
      * @brief The venue, scripted: the other end of the stack's one connection, over the peer port of a RingPair.
      *
-     * Every member runs on the peer's thread, or inline on the stack's thread in the same-core topology. Setup
-     * frames come from the peer port's pool; every frame after the handshake is written into the carrier, the mbuf
-     * the stack's last frame arrived in, so the stack core's pool stays balanced. The peer answers an ARP request
-     * whenever it sees one. `starts[round]` receives the tick round's start stamp.
+     * Every member runs on the peer's thread, or inline on the stack's thread in the same-core topology. The active
+     * open's SYN and ACK, every ARP reply and, at the floor, the first tick come from the peer port's pool; every
+     * other frame is written into the carrier, the mbuf the stack's last frame arrived in, so the stack core's pool
+     * stays balanced. The peer answers an ARP request whenever it sees one. `starts[round]` receives the tick round's
+     * start stamp, taken once the tick is in the carrier and just before it is transmitted.
      */
     class VenuePeer {
     public:
@@ -80,12 +81,13 @@ namespace aloe::benchmarks {
         [[nodiscard]] std::expected<void, PeerError> open_active();
         /// Tick round: the SYN-ACK, kept as the carrier, then the ACK from the pool.
         [[nodiscard]] std::expected<void, PeerError> finish_active_open();
-        /// Gateway round, the stack opens: the SYN, kept as the carrier, then the SYN-ACK from the pool.
+        /// Gateway round, the stack opens: the SYN-ACK, written into the SYN's own mbuf and sent back in it.
         [[nodiscard]] std::expected<void, PeerError> answer_passive_open();
         /// Gateway round: the handshake's ACK, freed.
         [[nodiscard]] std::expected<void, PeerError> finish_passive_open();
 
-        /// Builds tick `round` of `payload` bytes into the carrier, stamps `starts[round]`, transmits.
+        /// Builds tick `round` of `payload` bytes into the carrier, stamps `starts[round]`, transmits. A tick the
+        /// carrier cannot hold goes unstamped; a tick that never arrives fails its round at the deadline.
         void send_tick(std::uint64_t round, std::size_t payload);
         /// Polls for the order of `round`: skips and frees pure ACKs, answers ARP, checks the order, keeps its mbuf
         /// as the carrier. Fails on the deadline or on a wrong order.
@@ -106,8 +108,10 @@ namespace aloe::benchmarks {
         [[nodiscard]] std::optional<Packet> collect();
         /// A fresh packet from the pool carrying `frame`; a refused transmit is counted by the round that times out.
         void inject(std::span<const std::byte> frame);
-        /// `frame` into the carrier, which must be present, and out.
-        void transmit_carrier(std::span<const std::byte> frame);
+        /// `frame` into the carrier, which must be present, in place of what it held. False when it has no room.
+        [[nodiscard]] bool prepare_carrier(std::span<const std::byte> frame);
+        /// The prepared carrier out; a refused transmit keeps it as the carrier.
+        void send_carrier() noexcept;
         void answer_arp(const frames::ParsedFrame& request);
         [[nodiscard]] static bool is_pure_ack(const frames::ParsedFrame& parsed) noexcept;
 
