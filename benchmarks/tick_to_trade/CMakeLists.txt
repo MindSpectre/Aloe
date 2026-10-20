@@ -3,15 +3,29 @@
 ##############################################################################
 set(TICK_TO_TRADE ${BENCHMARKS}.TickToTrade)
 
-add_library(${TICK_TO_TRADE}.Harness INTERFACE
+add_library(${TICK_TO_TRADE}.Harness STATIC
+        ring_pair.cpp
+)
+target_sources(${TICK_TO_TRADE}.Harness PRIVATE
         round_config.hpp
         distribution.hpp
+        ring_pair.hpp
 )
-target_include_directories(${TICK_TO_TRADE}.Harness INTERFACE
+target_include_directories(${TICK_TO_TRADE}.Harness PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
 )
-target_link_libraries(${TICK_TO_TRADE}.Harness INTERFACE
+target_link_libraries(${TICK_TO_TRADE}.Harness PUBLIC
         Aloe::Common::Core
+        Aloe::Common::Device
+        Aloe::Common::Ethdev
+        Aloe::Common::Loop
+        Aloe::Common::Net
+        Aloe::Common::Stream
+        Aloe::Common::Tcp
+        Aloe::Common::Runtime
+        Aloe::Common::Wire
+        Aloe::Fixtures::Frames
+        Threads::Threads
 )
 add_library(Aloe::Benchmarks::Harness ALIAS ${TICK_TO_TRADE}.Harness)
 ##############################################################################
