@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "machine": {"cpu": "AMD Ryzen 5 7600X 6-Core Processor", "cpus": 12, "smt": "on", "governor": "performance", "clocksource": "tsc", "kernel": "7.1.4-200.fc44.x86_64", "hugepages_free": 63},
+  "run": {"command": "./build/release/benchmarks/tick_to_trade/tick_to_trade", "revision": "993cdf3", "build": "Release", "timestamp": "2026-10-21T09:02:35Z", "tsc_ghz": 4.700, "rounds": 100000, "warmup": 10000, "gap_ns": 0, "stack_core": "2", "peer_core": "3", "no_huge": false},
+  "rows": [
+    {"round": "tick", "level": "floor", "topology": "cross-core", "payload": 64, "metric": "round", "count": 100000, "min": 179, "p50": 199, "p90": 229, "p99": 289, "p999": 1179, "max": 33339},
+    {"round": "tick", "level": "floor", "topology": "cross-core", "payload": 256, "metric": "round", "count": 100000, "min": 329, "p50": 349, "p90": 369, "p99": 439, "p999": 619, "max": 20289},
+    {"round": "tick", "level": "floor", "topology": "cross-core", "payload": 1024, "metric": "round", "count": 100000, "min": 879, "p50": 939, "p90": 989, "p99": 1139, "p999": 3039, "max": 26099},
+    {"round": "tick", "level": "floor", "topology": "cross-core", "payload": 1448, "metric": "round", "count": 100000, "min": 1189, "p50": 1229, "p90": 1279, "p99": 1399, "p999": 3869, "max": 24159},
+    {"round": "tick", "level": "floor", "topology": "cross-core", "payload": 1460, "metric": "round", "count": 100000, "min": 1199, "p50": 1249, "p90": 1299, "p99": 1499, "p999": 3729, "max": 25109},
+    {"round": "tick", "level": "level0", "topology": "cross-core", "payload": 64, "metric": "round", "count": 100000, "min": 309, "p50": 359, "p90": 379, "p99": 479, "p999": 959, "max": 20499},
+    {"round": "tick", "level": "level0", "topology": "cross-core", "payload": 256, "metric": "round", "count": 100000, "min": 469, "p50": 559, "p90": 589, "p99": 699, "p999": 1529, "max": 18589},
+    {"round": "tick", "level": "level0", "topology": "cross-core", "payload": 1024, "metric": "round", "count": 100000, "min": 1119, "p50": 1399, "p90": 1429, "p99": 1639, "p999": 3919, "max": 20699},
+    {"round": "tick", "level": "level0", "topology": "cross-core", "payload": 1448, "metric": "round", "count": 100000, "min": 1489, "p50": 1859, "p90": 1889, "p99": 2099, "p999": 4689, "max": 23549},
+    {"round": "tick", "level": "level0", "topology": "cross-core", "payload": 1460, "metric": "round", "count": 100000, "min": 1499, "p50": 1879, "p90": 1909, "p99": 2149, "p999": 4879, "max": 20819},
+    {"round": "tick", "level": "level1", "topology": "cross-core", "payload": 64, "metric": "round", "count": 100000, "min": 339, "p50": 379, "p90": 399, "p99": 539, "p999": 1049, "max": 24009},
+    {"round": "tick", "level": "level1", "topology": "cross-core", "payload": 256, "metric": "round", "count": 100000, "min": 509, "p50": 579, "p90": 609, "p99": 789, "p999": 2769, "max": 33679},
+    {"round": "tick", "level": "level1", "topology": "cross-core", "payload": 1024, "metric": "round", "count": 100000, "min": 1149, "p50": 1279, "p90": 1439, "p99": 1619, "p999": 3769, "max": 18339},
+    {"round": "tick", "level": "level1", "topology": "cross-core", "payload": 1448, "metric": "round", "count": 100000, "min": 1509, "p50": 1679, "p90": 1889, "p99": 2099, "p999": 4729, "max": 20289},
+    {"round": "tick", "level": "level1", "topology": "cross-core", "payload": 1460, "metric": "round", "count": 100000, "min": 1519, "p50": 1689, "p90": 1899, "p99": 2109, "p999": 4709, "max": 23089},
+    {"round": "gateway", "level": "floor", "topology": "cross-core", "payload": 128, "metric": "round", "count": 100000, "min": 49, "p50": 59, "p90": 69, "p99": 89, "p999": 129, "max": 13199},
+    {"round": "gateway", "level": "level0", "topology": "cross-core", "payload": 128, "metric": "round", "count": 100000, "min": 99, "p50": 109, "p90": 129, "p99": 169, "p999": 229, "max": 3789},
+    {"round": "gateway", "level": "level1", "topology": "cross-core", "payload": 128, "metric": "round", "count": 100000, "min": 109, "p50": 119, "p90": 129, "p99": 179, "p999": 239, "max": 5569}
+  ]
+}

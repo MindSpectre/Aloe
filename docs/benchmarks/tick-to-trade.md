@@ -195,6 +195,10 @@ mask.
   ARP request while it waits for the next handshake segment, but the stack cannot step to process the reply and
   send that segment while the venue waits.
 - `--out FILE` names the result file.
+- `--samples DIR` also writes every row's raw samples into `DIR`, one file per row named
+  `<round>-<level>-<topology>-<payload>-<metric>.txt` (`hop-cross-core-0-hop.txt` for the hop), a comment line and
+  then one value per measured round in nanoseconds, in round order. A headline run writes about 30 files of 100 000
+  lines: material for a distribution or a time-series plot, not for committing.
 
 ### The baseline commands
 
@@ -313,6 +317,15 @@ grows with the payload.
   768 mbufs out of reach for the rest of the run, so the 8192-mbuf pools fit roughly a dozen level 1
   configurations, twice the default matrix's six; a longer `--payload` sweep would need a larger pool. A pool that
   runs dry fails the run through `tcp.allocation_failures`.
+- **Two modes in the round time.** From 256 B up, the round time of level 0 and level 1 has two modes, about 140 ns
+  apart at 256 and 1024 B and 210 ns at 1448 B, in both topologies, with a larger share cross-core; the floor has a
+  smaller second mode. The slower mode arrives in bursts of hundreds to over a thousand consecutive rounds, and its
+  share differs from run to run: over three runs a minute apart, level 1 at 1448 B spent a quarter, then six tenths,
+  then nearly all of its rounds in the slower mode. A median that falls between the modes moves by a whole mode from
+  one run to the next, so at 1024 B and above level 0 against level 1 is read at the minimum and at the tail, or over
+  several runs, never from one run's p50. Cross-core the slower mode sits in the `receive` and `tcp` legs, the first
+  touch of the frame's cache lines, while the application leg runs the same in both modes. The cause is not
+  identified; the raw samples of a run, written with `--samples`, show it as a histogram and in round order.
 
 ## Results
 
@@ -345,15 +358,102 @@ The rerun's flags at p50 say whether the machine was quiet; the lines it flags t
 A headline file is named `<date>-<revision>-<hostname>.json`, and the breakdown file of the same run
 `<date>-<revision>-<hostname>-breakdown.json`: the UTC date of the run as `YYYY-MM-DD`, the short git revision the
 binary was configured from, and the machine's host name. The files sort by date, and the host name keeps a
-baseline from one machine from being read against another's.
+baseline from one machine from being read against another's. Further runs of the same day take a suffix after the
+host name: `-run2`, `-run3` for repetitions of the headline, `-gap5us` for the matrix with `--gap 5000`, `-earlier`
+for a run made before the recorded one.
 
-**Recorded run: pending. The maintainer runs the commands above on a quiet machine, commits the two result files
-beside this page, and fills in here:**
+### Recorded run: 2026-10-21, revision 993cdf3, host polaris
 
-- **the headline table;**
-- **the breakdown table;**
-- **the hop line;**
-- **two or three sentences on what they say: the stack's cost at p50 and p99.9, the runtime's overhead, the hop.**
+Run unprivileged on 64 pages reserved beforehand with
+`echo 64 | sudo tee /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages`, with an IDE and a browser open, so not
+on a quiet machine. The binary carried the `--samples` option on top of the revision, which touches no measured
+path. The files under `results/`: `2026-10-21-993cdf3-polaris.json` is the headline, `-run2` and `-run3` two
+repetitions within the same minute, `-breakdown` the level 0 legs in both topologies, `-gap5us` the headline matrix
+with `--gap 5000`, and `-earlier` a default-matrix run three hours before, without the hop.
+
+The headline, in nanoseconds:
+
+| round | level | topology | payload | min | p50 | p90 | p99 | p99.9 | max |
+|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| tick | floor | cross-core | 64 | 179 | 229 | 249 | 289 | 449 | 8449 |
+| tick | floor | cross-core | 256 | 329 | 399 | 449 | 489 | 799 | 8789 |
+| tick | floor | cross-core | 1024 | 889 | 969 | 1019 | 1179 | 3049 | 22819 |
+| tick | floor | cross-core | 1448 | 1199 | 1249 | 1319 | 1519 | 3479 | 18009 |
+| tick | floor | cross-core | 1460 | 1209 | 1259 | 1329 | 1569 | 3469 | 15159 |
+| tick | floor | same-core | 64 | 89 | 99 | 119 | 149 | 209 | 4719 |
+| tick | floor | same-core | 256 | 229 | 239 | 279 | 339 | 479 | 6179 |
+| tick | floor | same-core | 1024 | 799 | 809 | 889 | 959 | 1919 | 5909 |
+| tick | floor | same-core | 1448 | 1109 | 1209 | 1249 | 1319 | 3729 | 20579 |
+| tick | floor | same-core | 1460 | 1119 | 1219 | 1259 | 1329 | 4409 | 21269 |
+| tick | level 0 | cross-core | 64 | 309 | 359 | 439 | 529 | 849 | 6169 |
+| tick | level 0 | cross-core | 256 | 479 | 579 | 719 | 809 | 1729 | 14399 |
+| tick | level 0 | cross-core | 1024 | 1139 | 1399 | 1559 | 1729 | 4329 | 17199 |
+| tick | level 0 | cross-core | 1448 | 1499 | 1669 | 1869 | 2079 | 4249 | 27559 |
+| tick | level 0 | cross-core | 1460 | 1529 | 1759 | 1979 | 2219 | 4719 | 16539 |
+| tick | level 0 | same-core | 64 | 209 | 229 | 239 | 349 | 469 | 4249 |
+| tick | level 0 | same-core | 256 | 369 | 389 | 399 | 599 | 799 | 4959 |
+| tick | level 0 | same-core | 1024 | 1009 | 1039 | 1229 | 1349 | 3309 | 8369 |
+| tick | level 0 | same-core | 1448 | 1359 | 1389 | 1609 | 1709 | 3979 | 13139 |
+| tick | level 0 | same-core | 1460 | 1369 | 1389 | 1429 | 1689 | 3789 | 17529 |
+| tick | level 1 | cross-core | 64 | 349 | 379 | 409 | 569 | 829 | 10279 |
+| tick | level 1 | cross-core | 256 | 499 | 599 | 759 | 859 | 1719 | 8409 |
+| tick | level 1 | cross-core | 1024 | 1159 | 1439 | 1659 | 1799 | 4159 | 24759 |
+| tick | level 1 | cross-core | 1448 | 1519 | 1679 | 1879 | 2099 | 4049 | 22609 |
+| tick | level 1 | cross-core | 1460 | 1519 | 1689 | 1989 | 2119 | 4239 | 27779 |
+| gateway | floor | cross-core | 128 | 49 | 59 | 69 | 89 | 129 | 5019 |
+| gateway | floor | same-core | 128 | 19 | 29 | 39 | 49 | 79 | 5299 |
+| gateway | level 0 | cross-core | 128 | 99 | 109 | 109 | 169 | 199 | 7989 |
+| gateway | level 0 | same-core | 128 | 69 | 79 | 89 | 149 | 189 | 15789 |
+| gateway | level 1 | cross-core | 128 | 109 | 119 | 119 | 189 | 239 | 3579 |
+| hop | - | cross-core | 0 | 24 | 34 | 49 | 54 | 59 | 1879 |
+
+The breakdown, cross-core, p50 per leg in nanoseconds; the `round` column is the breakdown run's own round, which
+carries the stamps' cost:
+
+| round | payload | receive | ip | tcp | application | tcp-flush | queue-flush | round |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| tick | 64 | 99 | 49 | 59 | 119 | 9 | 39 | 389 |
+| tick | 256 | 119 | 49 | 139 | 259 | 9 | 39 | 609 |
+| tick | 1024 | 109 | 49 | 269 | 819 | 9 | 39 | 1319 |
+| tick | 1448 | 129 | 49 | 349 | 1129 | 9 | 39 | 1719 |
+| tick | 1460 | 129 | 49 | 349 | 1139 | 9 | 39 | 1729 |
+| gateway | 128 | - | - | - | 69 | 9 | 39 | 129 |
+
+The hop between cores 2 and 3: 34 ns at p50, 54 ns at p99.
+
+What they say. At 64 B, cross-core, the stack costs 130 ns at p50 and 400 ns at p99.9 over the floor, and the
+runtime 20 ns at p50 and nothing measurable at p99.9 over the bricks; in the gateway round the stack costs 50 ns at
+p50 over the floor and the runtime 10 ns over the bricks. The hop is 34 ns one way, and the floor cross-core
+against same-core at 64 B is 130 ns: a frame is several lines. From 1024 B up the application's fold over every
+byte sets the scale, about 0.75 ns a byte, and the `tcp` leg's checksum is the second cost; the receive, IP and
+flush legs do not grow with the payload.
+
+The repetitions, p50 of the cross-core tick round in nanoseconds:
+
+| level | payload | run 1 | run 2 | run 3 | earlier |
+|---|---:|---:|---:|---:|---:|
+| floor | 64 | 229 | 229 | 229 | 199 |
+| floor | 256 | 399 | 379 | 379 | 349 |
+| floor | 1024 | 969 | 989 | 989 | 939 |
+| floor | 1448 | 1249 | 1249 | 1309 | 1229 |
+| floor | 1460 | 1259 | 1259 | 1259 | 1249 |
+| level 0 | 64 | 359 | 349 | 339 | 359 |
+| level 0 | 256 | 579 | 549 | 559 | 559 |
+| level 0 | 1024 | 1399 | 1289 | 1389 | 1399 |
+| level 0 | 1448 | 1669 | 1669 | 1669 | 1859 |
+| level 0 | 1460 | 1759 | 1679 | 1679 | 1879 |
+| level 1 | 64 | 379 | 389 | 389 | 379 |
+| level 1 | 256 | 599 | 589 | 589 | 579 |
+| level 1 | 1024 | 1439 | 1439 | 1449 | 1279 |
+| level 1 | 1448 | 1679 | 1859 | 1899 | 1679 |
+| level 1 | 1460 | 1689 | 1889 | 1909 | 1689 |
+
+Level 0's median at 1448 B held at 1669 ns over three runs while level 1's moved from 1679 to 1899 ns, and the
+earlier run had level 0 at 1859 ns against level 1 at 1679 ns: the two modes described under "Known artefacts",
+not a change in the code, and the reason the level comparison from 1024 B up is read at the minimum and at the
+tail. `compare-benchmark.py` flags six p50 lines between run 1 and run 2, every one of them a mode shift or the
+same-core floor at 1448 and 1460 B. The gap run leaves every p50 at one of its two modes and raises the p99.9 of
+most lines, the cross-core floor at 64 B from 449 to 1799 ns: five idle microseconds between rounds cost the tail.
 
 ## Tracking regressions
 
