@@ -37,6 +37,7 @@ namespace aloe::benchmarks {
         bool keep_hugepages                = false;
         bool no_huge = false;  ///< `--no-huge` was passed after `--`: no reservation, and the result file says so.
         std::string out;       ///< The result file; empty means `tick-to-trade-<timestamp>.json` beside the binary.
+        std::string samples;   ///< A directory for every row's raw samples, one file per row; empty means none.
         std::vector<std::string> eal;             ///< argv for the EAL, the program name first.
         std::string ring_name = "tick-to-trade";  ///< The ring pair's name prefix; tests pick their own.
     };

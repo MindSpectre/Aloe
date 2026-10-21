@@ -210,16 +210,18 @@ namespace aloe::benchmarks {
             }
             round_trip.record(stop - start);
         }
-        const auto label = [&config](std::string metric, const Summary summary) {
+        // The summary sorts a copy; the row keeps the samples in round order for `--samples`.
+        const auto label = [&config](std::string metric, std::vector<std::uint64_t> samples) {
             return Row{.round    = std::string{to_string(config.round)},
                        .level    = std::string{to_string(config.level)},
                        .topology = std::string{to_string(config.topology)},
                        .payload  = config.payload,
                        .metric   = std::move(metric),
-                       .summary  = summary};
+                       .summary  = Distribution::summarise_nanoseconds(samples),
+                       .samples  = std::move(samples)};
         };
         std::vector<Row> rows;
-        rows.push_back(label("round", round_trip.summarise(scale, config.warmup)));
+        rows.push_back(label("round", round_trip.nanoseconds(scale, config.warmup)));
         if (!config.breakdown) {
             return rows;
         }
@@ -238,11 +240,11 @@ namespace aloe::benchmarks {
         };
         for (const auto& [name, stamps] : present) {
             const Distribution leg = leg_ticks(*previous, *stamps, name, note_after(previous));
-            rows.push_back(label(name, leg.summarise(scale, config.warmup)));
+            rows.push_back(label(name, leg.nanoseconds(scale, config.warmup)));
             previous = stamps;
         }
         const Distribution last = leg_ticks(*previous, state.stamps.stop, last_leg, note_after(previous));
-        rows.push_back(label(std::string{last_leg}, last.summarise(scale, config.warmup)));
+        rows.push_back(label(std::string{last_leg}, last.nanoseconds(scale, config.warmup)));
         return rows;
     }
 
@@ -322,13 +324,15 @@ namespace aloe::benchmarks {
             pair.drain();
         }
         if (options.hop) {
-            const Distribution hop = measure_hop(options.peer_core, options.warmup + options.measured);
+            const Distribution hop             = measure_hop(options.peer_core, options.warmup + options.measured);
+            std::vector<std::uint64_t> samples = hop.nanoseconds(scale, options.warmup);
             report.rows.push_back(Row{.round    = "hop",
                                       .level    = "-",
                                       .topology = "cross-core",
                                       .payload  = 0,
                                       .metric   = "hop",
-                                      .summary  = hop.summarise(scale, options.warmup)});
+                                      .summary  = Distribution::summarise_nanoseconds(samples),
+                                      .samples  = std::move(samples)});
         }
         return report;
     }

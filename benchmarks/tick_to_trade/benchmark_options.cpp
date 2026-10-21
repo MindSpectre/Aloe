@@ -92,6 +92,7 @@ namespace aloe::benchmarks {
                "  --hugepages N                 2 MB pages the run needs free (64)\n"
                "  --keep-hugepages              leave pages this process reserved for the next run\n"
                "  --out FILE                    the result file (tick-to-trade-<timestamp>.json beside the binary)\n"
+               "  --samples DIR                 also write every row's raw samples into DIR, one file per row\n"
                "  --                            what follows goes to the EAL verbatim; default: --in-memory "
                "--no-pci --no-telemetry -l <stack core>\n";
     }
@@ -135,7 +136,7 @@ namespace aloe::benchmarks {
                 options.keep_hugepages = true;
                 continue;
             }
-            static constexpr std::array<std::string_view, 11> valued{"--round",
+            static constexpr std::array<std::string_view, 12> valued{"--round",
                                                                      "--level",
                                                                      "--payload",
                                                                      "--rounds",
@@ -145,7 +146,8 @@ namespace aloe::benchmarks {
                                                                      "--stack-core",
                                                                      "--peer-core",
                                                                      "--hugepages",
-                                                                     "--out"};
+                                                                     "--out",
+                                                                     "--samples"};
             if (std::ranges::find(valued, word) == valued.end()) {
                 return bad(word, "unknown option");
             }
@@ -226,6 +228,8 @@ namespace aloe::benchmarks {
                 options.hugepages = *pages;
             } else if (word == "--out") {
                 options.out = std::string{value};
+            } else if (word == "--samples") {
+                options.samples = std::string{value};
             } else {
                 return bad(word, "unknown option");  // in `valued` but not handled here
             }

@@ -59,6 +59,18 @@ TEST(Distribution, SummariseSkipsTheWarmupAndScalesTicks) {
     EXPECT_EQ(summary.max, 2000U);
 }
 
+TEST(Distribution, NanosecondsKeepTheRoundOrderAndSkipTheWarmup) {
+    const aloe::core::TscScale half = aloe::core::TscScale::measured(2, 1);
+    Distribution distribution{3};
+    distribution.record(4000);
+    distribution.record(1000);
+    distribution.record(2000);
+    EXPECT_EQ(distribution.nanoseconds(half, 1), (std::vector<std::uint64_t>{500, 1000}))
+        << "unsorted, after the first";
+    EXPECT_EQ(distribution.nanoseconds(half, 0).size(), 3U);
+    EXPECT_THROW(std::ignore = distribution.nanoseconds(half, 3), std::invalid_argument);
+}
+
 TEST(Distribution, SummariseWithEverythingSkippedThrows) {
     Distribution distribution{2};
     distribution.record(1);

@@ -102,6 +102,7 @@ TEST(TickToTrade, SummariseRoundRefusesAHoleAndAnInvertedPair) {
     const auto rows                   = summarise_round(state, scale, config);
     ASSERT_EQ(rows.size(), 1U);
     EXPECT_EQ(rows[0].summary.count, 3U);
+    EXPECT_EQ(rows[0].samples.size(), 3U) << "the raw samples ride along for --samples";
     state.stamps.stop[1]   = 0;
     const std::string hole = refusal(state, config);
     EXPECT_NE(hole.find("round 1"), std::string::npos) << "a hole is a failure: " << hole;

@@ -52,18 +52,24 @@ namespace aloe::benchmarks {
             return ticks_;
         }
 
-        /// The samples after the first `skip`, in nanoseconds by `scale`, summarised. Throws std::invalid_argument
-        /// when no sample is left.
-        [[nodiscard]] Summary summarise(const core::TscScale& scale, const std::size_t skip) const {
+        /// The samples after the first `skip`, in nanoseconds by `scale`, in the order they were recorded. Throws
+        /// std::invalid_argument when no sample is left.
+        [[nodiscard]] std::vector<std::uint64_t> nanoseconds(const core::TscScale& scale,
+                                                             const std::size_t skip) const {
             if (ticks_.size() <= skip) {
                 throw std::invalid_argument{"no samples left after the warm-up"};
             }
-            std::vector<std::uint64_t> nanoseconds;
-            nanoseconds.reserve(ticks_.size() - skip);
+            std::vector<std::uint64_t> scaled;
+            scaled.reserve(ticks_.size() - skip);
             for (const std::uint64_t ticks : std::span{ticks_}.subspan(skip)) {
-                nanoseconds.push_back(scale.nanoseconds(ticks));
+                scaled.push_back(scale.nanoseconds(ticks));
             }
-            return summarise_nanoseconds(std::move(nanoseconds));
+            return scaled;
+        }
+
+        /// `nanoseconds(scale, skip)` summarised.
+        [[nodiscard]] Summary summarise(const core::TscScale& scale, const std::size_t skip) const {
+            return summarise_nanoseconds(nanoseconds(scale, skip));
         }
 
         /// Sorts `samples` and reads percentile p as the element of 1-based rank ceil(p * count): the nearest-rank

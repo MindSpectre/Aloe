@@ -2,10 +2,26 @@
 
 #include <algorithm>
 #include <format>
+#include <fstream>
+#include <stdexcept>
+#include <system_error>
 #include <tuple>
 #include <utility>
 
 namespace aloe::benchmarks {
+
+    namespace {
+
+        /// "tick-level0-cross-core-64-round.txt"; "hop-cross-core-0-hop.txt" for the hop, whose level is "-".
+        [[nodiscard]] std::string samples_file_name(const Row& row) {
+            std::string name = row.round;
+            if (row.level != "-") {
+                name += "-" + row.level;
+            }
+            return std::format("{}-{}-{}-{}.txt", name, row.topology, row.payload, row.metric);
+        }
+
+    }  // namespace
 
     std::string json_escape(const std::string_view text) {
         std::string escaped;
@@ -148,6 +164,31 @@ namespace aloe::benchmarks {
                                    s.p99,
                                    s.p999,
                                    s.max);
+            }
+        }
+    }
+
+    void write_samples(const std::filesystem::path& directory, const Report& report) {
+        std::error_code error;
+        std::filesystem::create_directories(directory, error);
+        if (error) {
+            throw std::runtime_error{std::format("cannot create {}: {}", directory.string(), error.message())};
+        }
+        for (const Row& row : report.rows) {
+            const std::filesystem::path path = directory / samples_file_name(row);
+            std::ofstream file{path};
+            file << std::format("# {} {} {} payload {} {}: nanoseconds per measured round, in order\n",
+                                row.round,
+                                row.level,
+                                row.topology,
+                                row.payload,
+                                row.metric);
+            for (const std::uint64_t sample : row.samples) {
+                file << sample << '\n';
+            }
+            file.close();
+            if (!file) {
+                throw std::runtime_error{std::format("cannot write {}", path.string())};
             }
         }
     }

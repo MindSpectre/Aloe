@@ -79,6 +79,14 @@ int main(int argc, char** argv) {
         std::error_code ignored;
         std::filesystem::remove(path, ignored);
     }
+    if (!options->samples.empty()) {
+        std::error_code error;
+        std::filesystem::create_directories(options->samples, error);
+        if (error) {
+            std::println(stderr, "cannot create {}: {}", options->samples, error.message());
+            return EXIT_FAILURE;
+        }
+    }
     try {
         aloe::core::calibrate_clock();
         std::optional<aloe::benchmarks::FileHugepageSysfs> sysfs;
@@ -119,6 +127,10 @@ int main(int argc, char** argv) {
             return EXIT_FAILURE;
         }
         std::println("results written to {}", path);
+        if (!options->samples.empty()) {
+            aloe::benchmarks::write_samples(options->samples, report);
+            std::println("samples written to {}", options->samples);
+        }
         return EXIT_SUCCESS;
     } catch (const aloe::benchmarks::HugepageError& error) {
         std::println(stderr, "hugepages: {}", error.what());

@@ -52,16 +52,13 @@ TEST(BenchmarkOptions, DefaultsAreTheSpecsNumbers) {
 }
 
 TEST(BenchmarkOptions, EveryOptionParses) {
-    const auto options = parse({"--round",     "tick",        "--level",
-                                "0",           "--payload",   "64,1460",
-                                "--rounds",    "10",          "--warmup",
-                                "2",           "--gap",       "500",
-                                "--topology",  "cross",       "--stack-core",
-                                "none",        "--peer-core", "5",
-                                "--breakdown", "--hop",       "--arp-on-wire",
-                                "--hugepages", "8",           "--keep-hugepages",
-                                "--out",       "r.json",      "--",
-                                "--no-huge",   "--no-pci"});
+    const auto options =
+        parse({"--round",     "tick",   "--level",       "0",           "--payload",   "64,1460",
+               "--rounds",    "10",     "--warmup",      "2",           "--gap",       "500",
+               "--topology",  "cross",  "--stack-core",  "none",        "--peer-core", "5",
+               "--breakdown", "--hop",  "--arp-on-wire", "--hugepages", "8",           "--keep-hugepages",
+               "--out",       "r.json", "--samples",     "raw",         "--",          "--no-huge",
+               "--no-pci"});
     ASSERT_TRUE(options.has_value()) << options.error();
     EXPECT_EQ(options->rounds, (std::vector<Round>{Round::Tick}));
     EXPECT_EQ(options->levels, (std::vector<Level>{Level::Bricks}));
@@ -78,6 +75,7 @@ TEST(BenchmarkOptions, EveryOptionParses) {
     EXPECT_EQ(options->hugepages, 8U);
     EXPECT_TRUE(options->keep_hugepages);
     EXPECT_EQ(options->out, "r.json");
+    EXPECT_EQ(options->samples, "raw");
     EXPECT_TRUE(options->no_huge) << "detected among the EAL arguments";
     EXPECT_EQ(options->eal, (std::vector<std::string>{"tick_to_trade", "--no-huge", "--no-pci"}));
 }

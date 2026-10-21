@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -35,6 +36,7 @@ namespace aloe::benchmarks {
         std::size_t payload = 0;
         std::string metric;  ///< "round", a `Phase` name, `last_leg` or "hop".
         Summary summary;
+        std::vector<std::uint64_t> samples;  ///< The distribution in nanoseconds, in round order, the warm-up skipped.
     };
 
     struct Report {
@@ -51,5 +53,10 @@ namespace aloe::benchmarks {
     /// The printed table: the machine and the run, then one block per (round, level, topology) with a line per
     /// payload and metric and the columns count, min, p50, p90, p99, p99.9, max in nanoseconds.
     void print_table(std::ostream& out, const Report& report);
+
+    /// Every row's samples, one file per row in `directory`, created when missing:
+    /// `<round>-<level>-<topology>-<payload>-<metric>.txt`, the hop's level left out, a comment line and then one
+    /// sample per line in nanoseconds, in round order. Throws std::runtime_error naming what could not be written.
+    void write_samples(const std::filesystem::path& directory, const Report& report);
 
 }  // namespace aloe::benchmarks
