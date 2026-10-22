@@ -49,10 +49,12 @@ ctest --preset debug -L unit     # or: integration, functional
 | `tests/shared/`                                                            | Helpers for Aloe's own test binaries: the unprivileged EAL arguments, the EAL as a gtest environment, the net and runtime fixtures, and the device conformance suite every backend runs.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `cmake/`                                                                   | `vcpkg-bootstrap.cmake` (the toolchain file), `dpdk.cmake`, test and library helpers.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `triplets/`                                                                | The vcpkg overlay triplet every port is built with.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `examples/`, `benchmarks/`                                                 | Living examples; benchmark targets as the stack grows.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `examples/`                                                                | Living examples.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `benchmarks/`                                                              | `benchmarks/tick_to_trade/`: the baseline benchmark, a harness library and a binary in `aloe::benchmarks`, run by hand in `release` on hugepages; its tests live under `tests/*/benchmarks/` and need neither.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 Targets are named `Aloe.<Group>.<Module>` with an `Aloe::<Group>::<Module>`
-alias; the groups are `Common` and `Fixtures`. Register tests with `add_unit_test`, `add_integration_test`,
+alias; the groups are `Common`, `Fixtures` and `Benchmarks` (`Aloe.Benchmarks.TickToTrade`, over the harness
+library `Aloe::Benchmarks::Harness`). Register tests with `add_unit_test`, `add_integration_test`,
 `add_functional_test` or `add_manual_test` from `cmake/tests.cmake`.
 
 Every module's public headers sit on one flat include path, so header
@@ -91,8 +93,8 @@ basenames are unique across modules: `packet.hpp` is the concept,
   namespaces, parameters, attributes, error handling, include order.
 - **Namespaces.** Every module gets a namespace named after it: `aloe::core`,
   `aloe::execution`, `aloe::log`, `aloe::wire`, `aloe::device`, `aloe::fabric`, `aloe::frames`, `aloe::ethdev`, `aloe::loop`,
-  `aloe::runtime`, `aloe::net`, `aloe::stream`, `aloe::tcp`. Nothing is
-  declared directly in `aloe`. Another module's names are qualified with its
+  `aloe::runtime`, `aloe::net`, `aloe::stream`, `aloe::tcp`; the benchmarks live in `aloe::benchmarks`. Nothing
+  is declared directly in `aloe`. Another module's names are qualified with its
   namespace (`wire::MacAddress` inside `aloe::fabric`), never pulled in with
   `using namespace`. Test helpers live in `aloe::testing`.
 - **stdexec and quill stay out of hot-path headers.** Only the runtime, the
@@ -203,6 +205,42 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - The first `TscClock::now()` in a process calibrates for 100 ms, and a refusal there terminates the program,
   since `now` cannot throw. Setup code calls `core::calibrate_clock()` first; a test that races threads on the
   clock calibrates before it starts them.
+- A `net_ring` virtual device loops each queue's transmit back onto its own receive, so two parties cannot talk
+  over one. Two ports built with `rte_eth_from_rings` over cross-connected rings can, as `benchmarks::RingPair`
+  builds them; such a port has the MAC `00:00:00:00:00:00`, which `Ipv4::process` accepts like any other.
+- `rte_eth_from_rings` registers its port as `net_ring_<name>` and fails with `ENAMETOOLONG` when that passes the
+  28 characters DPDK allows a ring's name. `benchmarks::RingPair` appends `-s` and `-p` for its ports and
+  `-to-stack-<queue>` for its rings, so a `RingPairConfig::name` stays within 15 characters.
+- DPDK's per-thread mempool cache does not amortise a one-way flow: a thread that only allocates refills its
+  cache in bulk each time it runs dry, and a thread that only frees flushes it each time it passes 1.5 times its
+  size, a ring operation every few hundred mbufs. Mbufs that cross cores on a measured path go back the way they
+  came (`benchmarks::VenuePeer` sends every frame in the mbuf the stack's last frame arrived in), so each core
+  takes from and returns to its own pool in balance.
+- `tcp::Stack` resets its count of full-sized segments whenever it sends a segment that carries an ACK, and
+  `flush` sends the ACK a data segment queued, so the immediate ACK of every second full-sized segment (RFC 5681)
+  fires only when two full segments reach one `process` call. A closed loop whose replies carry the ACK never
+  sees it; a test that wants it delivers two full segments in one burst.
+- The EAL pins the main thread to the main lcore of `-l`, and every thread created after it inherits that mask.
+  A thread meant to run elsewhere pins itself, or widens its mask to every CPU as `benchmarks::widen_to_all_cpus`
+  does; otherwise it shares the main lcore's core with whatever spins there.
+- A stack whose peer runs inline on its thread cannot resolve ARP on the wire: the peer answers the request while
+  it waits for the next handshake segment, but the stack sends that segment only after it processes the reply, and
+  it cannot step while the peer waits. `tick_to_trade` refuses `--arp-on-wire` with `--topology same` or `both`.
+- `tick_to_trade`'s two pools of 8192 mbufs do not fit the 64 MB the EAL takes under `--no-huge` by default: a
+  run without hugepages passes `-m 128` after `--`, and the shared test EAL arguments carry `-m 128` for the same
+  reason. The pools are that large because every level 1 configuration registers a DPDK lcore that is never
+  unregistered, and its mempool cache keeps up to 768 mbufs out of reach.
+- GCC 16 rejects `std::ranges::find` over a `std::vector<std::string>` with a string literal as the value, which
+  clang accepts: the `std::ranges::equal_to` constraint between `std::string` and the literal is not satisfied.
+  Compare with `std::ranges::any_of` and a lambda, as `benchmark_options.cpp` does.
+- A runtime task's `accept` opens its listener when the task first runs, and a shard's step receives before it
+  runs tasks, so a SYN already on the ring when the runtime starts finds no listener and is reset. Open the
+  listener before `start()` with `Streams::ensure_listener(port)`, as the benchmark's level 1 does, until a
+  public `Streams::listen` exists.
+- Under the `tsan` preset with `-DDO_BENCHMARKS=ON`, the benchmark's integration tests report hundreds of data
+  races, all on mbuf memory handed across `rte_ring` inside DPDK's archives, which are built without TSan
+  instrumentation, so TSan never sees the ordering. They are uninformative, not defects; the harness's own shared
+  state raises none.
 
 ## Documentation
 
@@ -213,6 +251,8 @@ Public documentation follows one pattern; keep it current in the same change as 
   module gets a page and a row in the README's module table.
 - `docs/roadmap.md` lists the phases. Update it when a phase lands or its scope changes.
 - `docs/guides/` holds task walkthroughs. Build and test changes go in `getting-started.md`.
+- `docs/benchmarks/<name>.md` describes one benchmark and carries its recorded results; a result file is
+  committed beside it under `docs/benchmarks/results/`.
 
 ## Commits
 

@@ -43,7 +43,8 @@ readers, writers and balancers on pinned cores keeps them and gives each one a q
 Status: the single-core shard exists, as the rule the [loop bricks](loop.md) follow and as the
 [runtime](runtime.md)'s `Shard`. TCP's ownership boundaries and its placement by the card's hash and the
 choice of local port exist in [tcp](tcp.md). Flow rules and concurrent execution of one connection's halves
-remain deferred.
+remain deferred. The baseline that measures the single-core shard, and that the two-core question will be decided
+with, is [the tick-to-trade benchmark](../benchmarks/tick-to-trade.md).
 
 ## Two products
 
@@ -191,3 +192,5 @@ These exist today and shape every later module.
 - **DPDK built for the generic x86-64 baseline,** so a cached build starts on any CPU model. See
   [getting started](../guides/getting-started.md#how-dpdk-is-built-and-linked).
 - **Tests need no root, no hugepages and no network card.** DPDK starts with a null virtual device.
+- **The benchmark runs on hugepages and reserves them itself under root;** the tests still need none. See
+  [the tick-to-trade benchmark](../benchmarks/tick-to-trade.md#hugepages).

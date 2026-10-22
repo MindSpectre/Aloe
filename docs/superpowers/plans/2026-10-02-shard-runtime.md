@@ -36,13 +36,13 @@ Copied from the spec and from `AGENTS.md`; every task's requirements include the
 
 Nothing in this plan was built end to end. The author asked for the plan without a prototype. Three claims from the spec's "Claims the prototype must prove" were spot-checked on 2026-10-02 with two single-file probes compiled against the headers in `build/release/vcpkg_installed/x64-linux-clang/include`, with the project's warning set (`-std=c++26 -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror`), on clang 22 and GCC 16. The probes were throwaway and are not in the repository.
 
-| Claim | Result |
-|---|---|
-| `stdexec::task<T, Env>` accepts an environment whose `start_scheduler_type` is a hand-written single-threaded scheduler, picks that scheduler up from the receiver's environment through `get_start_scheduler`, and never wraps awaited senders in `affine` when the scheduler's own `schedule()` sender advertises `exec::completion_behavior::asynchronous_affine` for `set_value`. | Proven. A parent task awaiting one `schedule()`, one timer, a child task that awaits a timer, and `ex::just(1)` produced exactly 1 run-queue push and 2 timer arms. The child inherited the scheduler. |
-| A stop requested on the scope's stop source while the task is parked on a timer completes the task stopped. | Proven, with a timer sender that checks the token when it fires. The real timer sender adds a stop callback that cancels the timer early; the pattern is standard and Task 8 tests it. |
-| `ex::task<int>` with the default environment still runs under `ex::sync_wait`. | Proven. The existing tests in `test_execution.cpp` keep passing once `core::task` aliases `stdexec::task`. |
-| A macro-free quill wrapper with the format string as a `FixedString` template parameter, one `static constexpr quill::MacroMetadata` per instantiation, calling `quill::Logger::log_statement<false>`. | Proven. Both compilers accept it; both lines came out on the console with the logger name and level. |
-| quill 13.0.0, installed by the reconfigure at review time on 2026-10-02, has what Task 2 calls: `Logger::log_statement<bool, Args...>(MacroMetadata const*, Args&&...)`, `LoggerBase::should_log_statement<LogLevel>()`, `LoggerBase::set_log_level`, the six-argument `constexpr MacroMetadata` constructor with `Event::Log`, `BackendOptions::cpu_affinity` as `std::vector<uint16_t>`, `FileSinkConfig::set_open_mode(char)`, `Backend::start`, `stop` and `is_running`, `Frontend::create_or_get_sink<TSink>` and `create_or_get_logger(name, sink)`. | Checked against the headers, not compiled. `Logger::flush_log` spins until the backend acknowledges, so `core::Logger::flush` with no `Logging` alive never returns. |
+| Claim                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | Result                                                                                                                                                                                                 |
+|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `stdexec::task<T, Env>` accepts an environment whose `start_scheduler_type` is a hand-written single-threaded scheduler, picks that scheduler up from the receiver's environment through `get_start_scheduler`, and never wraps awaited senders in `affine` when the scheduler's own `schedule()` sender advertises `exec::completion_behavior::asynchronous_affine` for `set_value`.                                                                                                                                                                      | Proven. A parent task awaiting one `schedule()`, one timer, a child task that awaits a timer, and `ex::just(1)` produced exactly 1 run-queue push and 2 timer arms. The child inherited the scheduler. |
+| A stop requested on the scope's stop source while the task is parked on a timer completes the task stopped.                                                                                                                                                                                                                                                                                                                                                                                                                                                | Proven, with a timer sender that checks the token when it fires. The real timer sender adds a stop callback that cancels the timer early; the pattern is standard and Task 8 tests it.                 |
+| `ex::task<int>` with the default environment still runs under `ex::sync_wait`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Proven. The existing tests in `test_execution.cpp` keep passing once `core::task` aliases `stdexec::task`.                                                                                             |
+| A macro-free quill wrapper with the format string as a `FixedString` template parameter, one `static constexpr quill::MacroMetadata` per instantiation, calling `quill::Logger::log_statement<false>`.                                                                                                                                                                                                                                                                                                                                                     | Proven. Both compilers accept it; both lines came out on the console with the logger name and level.                                                                                                   |
+| quill 13.0.0, installed by the reconfigure at review time on 2026-10-02, has what Task 2 calls: `Logger::log_statement<bool, Args...>(MacroMetadata const*, Args&&...)`, `LoggerBase::should_log_statement<LogLevel>()`, `LoggerBase::set_log_level`, the six-argument `constexpr MacroMetadata` constructor with `Event::Log`, `BackendOptions::cpu_affinity` as `std::vector<uint16_t>`, `FileSinkConfig::set_open_mode(char)`, `Backend::start`, `stop` and `is_running`, `Frontend::create_or_get_sink<TSink>` and `create_or_get_logger(name, sink)`. | Checked against the headers, not compiled. `Logger::flush_log` spins until the backend acknowledges, so `core::Logger::flush` with no `Logging` alive never returns.                                   |
 
 What the probes established about the exact mechanism, which the spec left to the prototype:
 
@@ -192,24 +192,24 @@ docs/roadmap.md, README.md, AGENTS.md                edits
 
 Task order and what each hands on:
 
-| Task | Delivers | Needed by |
-|---|---|---|
-| 1 | `core::task` on `stdexec::task`, `TaskEnvironment`, completion-behaviour aliases | 8, 9 |
-| 2 | `utils::FixedString`, `core::Logging`, `core::Logger`, `core::logger`, `core::log` and helpers, `LoggingEnvironment` | 6, 7, 11 |
-| 3 | runtime module skeleton, `Work`, `RunQueue` | all later |
-| 4 | `Inbox` and the `Runtime.Threads` test target | 7, 8, 12 |
-| 5 | `Timer`, `TimerWheel` | 7, 8 |
-| 6 | `ShardCounters`, `TaskScope` | 7, 8 |
-| 7 | `ShardContext` | 8 |
-| 8 | `Scheduler`, `schedule`, `schedule_after`, `schedule_at`, `spawn` | 9, 10 |
-| 9 | `ShardEnvironment`, `runtime::task<T>` | 10, 11, 12 |
-| 10 | `ShardQueue`, `Shard`, `IsStack`, `EchoStack` | 11 |
-| 11 | `Runtime` | 12, 13, 14 |
-| 12 | cross-shard and steering tests under TSan | 16 |
-| 13 | `ethdev::register_thread`, the ring integration test | 14 |
-| 14 | the tap manual test, `examples/ethernet_echo` | 15 |
-| 15 | documentation | 16 |
-| 16 | whole-branch verification | done |
+| Task | Delivers                                                                                                             | Needed by  |
+|------|----------------------------------------------------------------------------------------------------------------------|------------|
+| 1    | `core::task` on `stdexec::task`, `TaskEnvironment`, completion-behaviour aliases                                     | 8, 9       |
+| 2    | `utils::FixedString`, `core::Logging`, `core::Logger`, `core::logger`, `core::log` and helpers, `LoggingEnvironment` | 6, 7, 11   |
+| 3    | runtime module skeleton, `Work`, `RunQueue`                                                                          | all later  |
+| 4    | `Inbox` and the `Runtime.Threads` test target                                                                        | 7, 8, 12   |
+| 5    | `Timer`, `TimerWheel`                                                                                                | 7, 8       |
+| 6    | `ShardCounters`, `TaskScope`                                                                                         | 7, 8       |
+| 7    | `ShardContext`                                                                                                       | 8          |
+| 8    | `Scheduler`, `schedule`, `schedule_after`, `schedule_at`, `spawn`                                                    | 9, 10      |
+| 9    | `ShardEnvironment`, `runtime::task<T>`                                                                               | 10, 11, 12 |
+| 10   | `ShardQueue`, `Shard`, `IsStack`, `EchoStack`                                                                        | 11         |
+| 11   | `Runtime`                                                                                                            | 12, 13, 14 |
+| 12   | cross-shard and steering tests under TSan                                                                            | 16         |
+| 13   | `ethdev::register_thread`, the ring integration test                                                                 | 14         |
+| 14   | the tap manual test, `examples/ethernet_echo`                                                                        | 15         |
+| 15   | documentation                                                                                                        | 16         |
+| 16   | whole-branch verification                                                                                            | done       |
 
 ---
 
@@ -6342,13 +6342,13 @@ Expected: the first prints nothing; the second prints only `common/core/log/log.
 
 - [ ] **Step 3: The "done when" list, item by item**
 
-| Done when | Evidence |
-|---|---|
-| 1. Tasks and timers run on shards; cross-shard submission passes under tsan | `Aloe.Tests.Unit.Runtime` and `Aloe.Tests.Unit.Runtime.Threads` green under `tsan`, locally: CI does not run `tsan` |
+| Done when                                                                                                           | Evidence                                                                                                                                          |
+|---------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------|
+| 1. Tasks and timers run on shards; cross-shard submission passes under tsan                                         | `Aloe.Tests.Unit.Runtime` and `Aloe.Tests.Unit.Runtime.Threads` green under `tsan`, locally: CI does not run `tsan`                               |
 | 2. Echo on several shards on both backends; steering checked on the fabric; ring per queue in CI; real card by hand | `Steering.*` and `RuntimeRing.*` green; `Aloe.Examples.EthernetEcho` built, run on a card or a tap if one was at hand, with the outcome in the PR |
-| 3. A task awaiting a timer: one wheel entry, no run-queue push | `ShardTaskTest.ATaskAwaitingATimerCostsOneWheelEntryAndNoRunQueuePush` green |
-| 4. No root, no hugepages, no card; four presets and the format check | Step 1 |
-| 5. Documentation | Task 15, plus the Doxygen target if `BUILD_DOCS` is on: `cmake --build --preset debug --target docs` |
+| 3. A task awaiting a timer: one wheel entry, no run-queue push                                                      | `ShardTaskTest.ATaskAwaitingATimerCostsOneWheelEntryAndNoRunQueuePush` green                                                                      |
+| 4. No root, no hugepages, no card; four presets and the format check                                                | Step 1                                                                                                                                            |
+| 5. Documentation                                                                                                    | Task 15, plus the Doxygen target if `BUILD_DOCS` is on: `cmake --build --preset debug --target docs`                                              |
 
 - [ ] **Step 4: Amend the spec**
 

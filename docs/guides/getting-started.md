@@ -94,7 +94,7 @@ minutes); subsequent configures reuse the installed tree under
 | Preset              | Use it for                                                                   |
 |---------------------|------------------------------------------------------------------------------|
 | `debug`             | Default day-to-day build: tests, benchmarks, examples                        |
-| `release`           | Optimized build with the full feature set                                    |
+| `release`           | Optimized build with the full feature set; the benchmark runs from here      |
 | `ci`                | What PR CI builds: `release` minus benchmark/example targets and their ports |
 | `gcc-debug`         | Debug build of the project with GCC; clang-tidy does not run                 |
 | `asan`              | Debug build instrumented with AddressSanitizer + UndefinedBehaviorSanitizer  |
@@ -169,6 +169,37 @@ client's SYN waits for ARP until the kernel end answers, so the kernel's listene
 a port the host firewall opens (above 1024 under Fedora's defaults). Add a gateway after the address to reach hosts off
 the subnet, and replace `net_tap0` and the `--vdev` argument with a card's PCI address to run on hardware.
 
+## Benchmarks and hugepages
+
+`benchmarks/tick_to_trade/` builds `tick_to_trade`, the tick-to-trade benchmark that every step of phase 2 is
+measured against. Every preset whose `DO_BENCHMARKS` is on builds it, which leaves out `ci` and `tsan`, but it
+is run by hand, from `release`:
+
+```bash
+cmake --preset release
+cmake --build --preset release --target Aloe.Benchmarks.TickToTrade
+```
+
+The tests run without hugepages; the benchmark runs on them, as a deployment does. It needs 64 free pages of
+2 MB by default, and `--hugepages N` changes the count. There are two ways to have them. Under `sudo` the
+benchmark reserves what is missing for its own run and releases it at exit; or reserve the pages by hand once,
+after which it should run without root (the benchmark's page says what is verified):
+
+```bash
+sudo ./build/release/benchmarks/tick_to_trade/tick_to_trade
+
+echo 64 | sudo tee /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages
+./build/release/benchmarks/tick_to_trade/tick_to_trade
+```
+
+Without root and without enough free pages, it refuses before DPDK starts and prints both commands.
+`--keep-hugepages` keeps the pages a `sudo` run reserved for the next run instead of releasing them. No
+reservation survives a reboot unless it is made persistent through `sysctl`, as
+`echo 'vm.nr_hugepages = 64' | sudo tee /etc/sysctl.d/90-hugepages.conf` does. The benchmark never falls back
+to running without hugepages on its own: `--no-huge` reaches DPDK only after `--`, and then needs `-m 128`.
+[docs/benchmarks/tick-to-trade.md](../benchmarks/tick-to-trade.md) covers the cores, the options, how to read
+the table, and the recorded results.
+
 ## Formatting and the pre-commit hook
 
 `.clang-format` decides how C++ is laid out. `./scripts/check-format.sh` checks every
@@ -200,7 +231,7 @@ Feature toggles live in `cmake/features.cmake` and are set with `-D<NAME>=ON|OFF
 `cmake --preset` invocation, or overridden per preset in `CMakePresets.json`:
 
 - `USE_TESTS` - build the GoogleTest suites under `tests/`
-- `DO_BENCHMARKS` - build the benchmark binaries under `benchmarks/`
+- `DO_BENCHMARKS` - build the benchmark binaries under `benchmarks/` and their tests
 - `BUILD_EXAMPLES` - build the example apps under `examples/`
 - `KEEP_FRAME_POINTERS` - keep frame pointers in Release builds so `perf` call graphs
   resolve; off by default because Release otherwise omits them
@@ -224,5 +255,6 @@ cmake --build build/debug --target docs
 
 The generated site lands at `build/docs/html/index.html`; open it in a browser. The
 `Doxyfile` (`docs/doxygen/Doxyfile`) indexes `README.md`, `docs/roadmap.md`, `docs/architecture`,
-`docs/guides`, and `common`, and uses the vendored doxygen-awesome-css theme, so the
-architecture pages and guides appear alongside the generated API reference.
+`docs/guides`, `docs/benchmarks`, `common` and `fixtures`, and uses the vendored doxygen-awesome-css
+theme, so the architecture pages, the guides and the benchmark pages appear alongside the generated API
+reference.

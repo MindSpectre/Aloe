@@ -90,7 +90,9 @@ ctest --preset debug
 ```
 
 The first configure builds DPDK from source and takes several minutes. The
-tests need neither root nor hugepages nor a network card.
+tests need neither root nor hugepages nor a network card. The benchmark under
+`benchmarks/` does need hugepages; see
+[docs/benchmarks/tick-to-trade.md](docs/benchmarks/tick-to-trade.md).
 
 See [docs/guides/getting-started.md](docs/guides/getting-started.md) for
 prerequisites, the vcpkg setup, and the full list of presets and build options.
@@ -99,12 +101,13 @@ prerequisites, the vcpkg setup, and the full list of presets and build options.
 
 - `docs/architecture/` - the stack's design in overview.md, then one page per module.
 - `docs/guides/` - task-oriented walkthroughs, starting with getting-started.md.
+- `docs/benchmarks/` - one page per benchmark with its recorded results, the result files under `results/`.
 - `docs/roadmap.md` - the phases still to come, each with its completion condition.
 - `AGENTS.md` - how the repository is built, tested and laid out, for coding agents and people alike.
 - `codestyle.md` - the code style beyond what `.clang-format` enforces.
 
 The Doxygen API reference indexes this README alongside `docs/architecture/`,
-`docs/guides/` and the roadmap:
+`docs/guides/`, `docs/benchmarks/` and the roadmap:
 
 ```bash
 cmake --preset debug -DBUILD_DOCS=ON
