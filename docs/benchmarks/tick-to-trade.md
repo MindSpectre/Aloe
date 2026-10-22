@@ -373,51 +373,51 @@ with `--gap 5000`, and `-earlier` a default-matrix run three hours before, witho
 
 The headline, in nanoseconds:
 
-| round | level | topology | payload | min | p50 | p90 | p99 | p99.9 | max |
-|---|---|---|---:|---:|---:|---:|---:|---:|---:|
-| tick | floor | cross-core | 64 | 179 | 229 | 249 | 289 | 449 | 8449 |
-| tick | floor | cross-core | 256 | 329 | 399 | 449 | 489 | 799 | 8789 |
-| tick | floor | cross-core | 1024 | 889 | 969 | 1019 | 1179 | 3049 | 22819 |
-| tick | floor | cross-core | 1448 | 1199 | 1249 | 1319 | 1519 | 3479 | 18009 |
-| tick | floor | cross-core | 1460 | 1209 | 1259 | 1329 | 1569 | 3469 | 15159 |
-| tick | floor | same-core | 64 | 89 | 99 | 119 | 149 | 209 | 4719 |
-| tick | floor | same-core | 256 | 229 | 239 | 279 | 339 | 479 | 6179 |
-| tick | floor | same-core | 1024 | 799 | 809 | 889 | 959 | 1919 | 5909 |
-| tick | floor | same-core | 1448 | 1109 | 1209 | 1249 | 1319 | 3729 | 20579 |
-| tick | floor | same-core | 1460 | 1119 | 1219 | 1259 | 1329 | 4409 | 21269 |
-| tick | level 0 | cross-core | 64 | 309 | 359 | 439 | 529 | 849 | 6169 |
-| tick | level 0 | cross-core | 256 | 479 | 579 | 719 | 809 | 1729 | 14399 |
-| tick | level 0 | cross-core | 1024 | 1139 | 1399 | 1559 | 1729 | 4329 | 17199 |
-| tick | level 0 | cross-core | 1448 | 1499 | 1669 | 1869 | 2079 | 4249 | 27559 |
-| tick | level 0 | cross-core | 1460 | 1529 | 1759 | 1979 | 2219 | 4719 | 16539 |
-| tick | level 0 | same-core | 64 | 209 | 229 | 239 | 349 | 469 | 4249 |
-| tick | level 0 | same-core | 256 | 369 | 389 | 399 | 599 | 799 | 4959 |
-| tick | level 0 | same-core | 1024 | 1009 | 1039 | 1229 | 1349 | 3309 | 8369 |
-| tick | level 0 | same-core | 1448 | 1359 | 1389 | 1609 | 1709 | 3979 | 13139 |
-| tick | level 0 | same-core | 1460 | 1369 | 1389 | 1429 | 1689 | 3789 | 17529 |
-| tick | level 1 | cross-core | 64 | 349 | 379 | 409 | 569 | 829 | 10279 |
-| tick | level 1 | cross-core | 256 | 499 | 599 | 759 | 859 | 1719 | 8409 |
-| tick | level 1 | cross-core | 1024 | 1159 | 1439 | 1659 | 1799 | 4159 | 24759 |
-| tick | level 1 | cross-core | 1448 | 1519 | 1679 | 1879 | 2099 | 4049 | 22609 |
-| tick | level 1 | cross-core | 1460 | 1519 | 1689 | 1989 | 2119 | 4239 | 27779 |
-| gateway | floor | cross-core | 128 | 49 | 59 | 69 | 89 | 129 | 5019 |
-| gateway | floor | same-core | 128 | 19 | 29 | 39 | 49 | 79 | 5299 |
-| gateway | level 0 | cross-core | 128 | 99 | 109 | 109 | 169 | 199 | 7989 |
-| gateway | level 0 | same-core | 128 | 69 | 79 | 89 | 149 | 189 | 15789 |
-| gateway | level 1 | cross-core | 128 | 109 | 119 | 119 | 189 | 239 | 3579 |
-| hop | - | cross-core | 0 | 24 | 34 | 49 | 54 | 59 | 1879 |
+| round   | level   | topology   | payload |  min |  p50 |  p90 |  p99 | p99.9 |   max |
+|---------|---------|------------|--------:|-----:|-----:|-----:|-----:|------:|------:|
+| tick    | floor   | cross-core |      64 |  179 |  229 |  249 |  289 |   449 |  8449 |
+| tick    | floor   | cross-core |     256 |  329 |  399 |  449 |  489 |   799 |  8789 |
+| tick    | floor   | cross-core |    1024 |  889 |  969 | 1019 | 1179 |  3049 | 22819 |
+| tick    | floor   | cross-core |    1448 | 1199 | 1249 | 1319 | 1519 |  3479 | 18009 |
+| tick    | floor   | cross-core |    1460 | 1209 | 1259 | 1329 | 1569 |  3469 | 15159 |
+| tick    | floor   | same-core  |      64 |   89 |   99 |  119 |  149 |   209 |  4719 |
+| tick    | floor   | same-core  |     256 |  229 |  239 |  279 |  339 |   479 |  6179 |
+| tick    | floor   | same-core  |    1024 |  799 |  809 |  889 |  959 |  1919 |  5909 |
+| tick    | floor   | same-core  |    1448 | 1109 | 1209 | 1249 | 1319 |  3729 | 20579 |
+| tick    | floor   | same-core  |    1460 | 1119 | 1219 | 1259 | 1329 |  4409 | 21269 |
+| tick    | level 0 | cross-core |      64 |  309 |  359 |  439 |  529 |   849 |  6169 |
+| tick    | level 0 | cross-core |     256 |  479 |  579 |  719 |  809 |  1729 | 14399 |
+| tick    | level 0 | cross-core |    1024 | 1139 | 1399 | 1559 | 1729 |  4329 | 17199 |
+| tick    | level 0 | cross-core |    1448 | 1499 | 1669 | 1869 | 2079 |  4249 | 27559 |
+| tick    | level 0 | cross-core |    1460 | 1529 | 1759 | 1979 | 2219 |  4719 | 16539 |
+| tick    | level 0 | same-core  |      64 |  209 |  229 |  239 |  349 |   469 |  4249 |
+| tick    | level 0 | same-core  |     256 |  369 |  389 |  399 |  599 |   799 |  4959 |
+| tick    | level 0 | same-core  |    1024 | 1009 | 1039 | 1229 | 1349 |  3309 |  8369 |
+| tick    | level 0 | same-core  |    1448 | 1359 | 1389 | 1609 | 1709 |  3979 | 13139 |
+| tick    | level 0 | same-core  |    1460 | 1369 | 1389 | 1429 | 1689 |  3789 | 17529 |
+| tick    | level 1 | cross-core |      64 |  349 |  379 |  409 |  569 |   829 | 10279 |
+| tick    | level 1 | cross-core |     256 |  499 |  599 |  759 |  859 |  1719 |  8409 |
+| tick    | level 1 | cross-core |    1024 | 1159 | 1439 | 1659 | 1799 |  4159 | 24759 |
+| tick    | level 1 | cross-core |    1448 | 1519 | 1679 | 1879 | 2099 |  4049 | 22609 |
+| tick    | level 1 | cross-core |    1460 | 1519 | 1689 | 1989 | 2119 |  4239 | 27779 |
+| gateway | floor   | cross-core |     128 |   49 |   59 |   69 |   89 |   129 |  5019 |
+| gateway | floor   | same-core  |     128 |   19 |   29 |   39 |   49 |    79 |  5299 |
+| gateway | level 0 | cross-core |     128 |   99 |  109 |  109 |  169 |   199 |  7989 |
+| gateway | level 0 | same-core  |     128 |   69 |   79 |   89 |  149 |   189 | 15789 |
+| gateway | level 1 | cross-core |     128 |  109 |  119 |  119 |  189 |   239 |  3579 |
+| hop     | -       | cross-core |       0 |   24 |   34 |   49 |   54 |    59 |  1879 |
 
 The breakdown, cross-core, p50 per leg in nanoseconds; the `round` column is the breakdown run's own round, which
 carries the stamps' cost:
 
-| round | payload | receive | ip | tcp | application | tcp-flush | queue-flush | round |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| tick | 64 | 99 | 49 | 59 | 119 | 9 | 39 | 389 |
-| tick | 256 | 119 | 49 | 139 | 259 | 9 | 39 | 609 |
-| tick | 1024 | 109 | 49 | 269 | 819 | 9 | 39 | 1319 |
-| tick | 1448 | 129 | 49 | 349 | 1129 | 9 | 39 | 1719 |
-| tick | 1460 | 129 | 49 | 349 | 1139 | 9 | 39 | 1729 |
-| gateway | 128 | - | - | - | 69 | 9 | 39 | 129 |
+| round   | payload | receive | ip | tcp | application | tcp-flush | queue-flush | round |
+|---------|--------:|--------:|---:|----:|------------:|----------:|------------:|------:|
+| tick    |      64 |      99 | 49 |  59 |         119 |         9 |          39 |   389 |
+| tick    |     256 |     119 | 49 | 139 |         259 |         9 |          39 |   609 |
+| tick    |    1024 |     109 | 49 | 269 |         819 |         9 |          39 |  1319 |
+| tick    |    1448 |     129 | 49 | 349 |        1129 |         9 |          39 |  1719 |
+| tick    |    1460 |     129 | 49 | 349 |        1139 |         9 |          39 |  1729 |
+| gateway |     128 |       - |  - |   - |          69 |         9 |          39 |   129 |
 
 The hop between cores 2 and 3: 34 ns at p50, 54 ns at p99.
 
@@ -430,23 +430,23 @@ flush legs do not grow with the payload.
 
 The repetitions, p50 of the cross-core tick round in nanoseconds:
 
-| level | payload | run 1 | run 2 | run 3 | earlier |
-|---|---:|---:|---:|---:|---:|
-| floor | 64 | 229 | 229 | 229 | 199 |
-| floor | 256 | 399 | 379 | 379 | 349 |
-| floor | 1024 | 969 | 989 | 989 | 939 |
-| floor | 1448 | 1249 | 1249 | 1309 | 1229 |
-| floor | 1460 | 1259 | 1259 | 1259 | 1249 |
-| level 0 | 64 | 359 | 349 | 339 | 359 |
-| level 0 | 256 | 579 | 549 | 559 | 559 |
-| level 0 | 1024 | 1399 | 1289 | 1389 | 1399 |
-| level 0 | 1448 | 1669 | 1669 | 1669 | 1859 |
-| level 0 | 1460 | 1759 | 1679 | 1679 | 1879 |
-| level 1 | 64 | 379 | 389 | 389 | 379 |
-| level 1 | 256 | 599 | 589 | 589 | 579 |
-| level 1 | 1024 | 1439 | 1439 | 1449 | 1279 |
-| level 1 | 1448 | 1679 | 1859 | 1899 | 1679 |
-| level 1 | 1460 | 1689 | 1889 | 1909 | 1689 |
+| level   | payload | run 1 | run 2 | run 3 | earlier |
+|---------|--------:|------:|------:|------:|--------:|
+| floor   |      64 |   229 |   229 |   229 |     199 |
+| floor   |     256 |   399 |   379 |   379 |     349 |
+| floor   |    1024 |   969 |   989 |   989 |     939 |
+| floor   |    1448 |  1249 |  1249 |  1309 |    1229 |
+| floor   |    1460 |  1259 |  1259 |  1259 |    1249 |
+| level 0 |      64 |   359 |   349 |   339 |     359 |
+| level 0 |     256 |   579 |   549 |   559 |     559 |
+| level 0 |    1024 |  1399 |  1289 |  1389 |    1399 |
+| level 0 |    1448 |  1669 |  1669 |  1669 |    1859 |
+| level 0 |    1460 |  1759 |  1679 |  1679 |    1879 |
+| level 1 |      64 |   379 |   389 |   389 |     379 |
+| level 1 |     256 |   599 |   589 |   589 |     579 |
+| level 1 |    1024 |  1439 |  1439 |  1449 |    1279 |
+| level 1 |    1448 |  1679 |  1859 |  1899 |    1679 |
+| level 1 |    1460 |  1689 |  1889 |  1909 |    1689 |
 
 Level 0's median at 1448 B held at 1669 ns over three runs while level 1's moved from 1679 to 1899 ns, and the
 earlier run had level 0 at 1859 ns against level 1 at 1679 ns: the two modes described under "Known artefacts",
