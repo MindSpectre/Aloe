@@ -311,7 +311,8 @@ TEST_P(RunnerTest, AReadWithAWindowWaitsForTheTimeout) {
                                   "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
                                   "+0 > S 0:0(0) win 46720 <mss 1460>\n"
                                   "+1 > S 0:0(0) win 46720 <mss 1460>\n"
-                                  "+2~+2.01 read(3, ..., 1) = -1 ETIMEDOUT\n",
+                                  // The window starts a second early so the read retries until TimedOut arrives at +2.
+                                  "+1~+2.01 read(3, ..., 1) = -1 ETIMEDOUT\n",
                                   GetParam(),
                                   {},
                                   config);
@@ -334,12 +335,36 @@ TEST_P(RunnerTest, AReadWithoutAWindowRunsOnce) {
 }
 
 TEST_P(RunnerTest, ResetGivesEconnresetAndTheSlotIsReleased) {
-    const auto result = run_text(std::string{passive_open} + "+0 < R. 1:1(0) ack 1 win 65535\n"
-                                                             "+0 read(4, ..., 1000) = -1 ECONNRESET\n"
-                                                             "+0 < . 1:1(0) ack 1 win 65535\n"
-                                                             "+0 > R 1:1(0) win 0\n",
-                                 GetParam());
+    HarnessConfig config;
+    config.offloads   = GetParam();
+    const auto script = parse_script(std::string{passive_open} + "+0 < R. 1:1(0) ack 1 win 65535\n"
+                                                                 "+0 read(4, ..., 1000) = -1 ECONNRESET\n"
+                                                                 "+0 < . 1:1(0) ack 1 win 65535\n"
+                                                                 "+0 > R 1:1(0) win 0\n");
+    ASSERT_TRUE(script.has_value()) << script.error().message;
+    Harness harness{config};
+    Runner runner{harness, *script};
+    const auto result = runner.run();
     EXPECT_TRUE(result.has_value()) << result.error().message;
+    // The RST must come from the no-connection path: a slot still indexed in Closed would answer with a RST too.
+    EXPECT_EQ(harness.tcp().counters().dropped_no_connection, 1);
+    EXPECT_EQ(harness.tcp().counters().dropped_closed, 0);
+}
+
+TEST_P(RunnerTest, AReleasedSlotIsReusedByTheNextSyn) {
+    HarnessConfig config;
+    config.offloads        = GetParam();
+    config.tcp.connections = 1;
+    const auto script      = parse_script(std::string{passive_open} + "+0 < R. 1:1(0) ack 1 win 65535\n"
+                                                                      "+0 read(4, ..., 1000) = -1 ECONNRESET\n");
+    ASSERT_TRUE(script.has_value()) << script.error().message;
+    Harness harness{config};
+    Runner runner{harness, *script};
+    const auto result = runner.run();
+    EXPECT_TRUE(result.has_value()) << result.error().message;
+    EXPECT_EQ(harness.tcp().counters().connections_reset, 1);
+    // The flow table holds no entry once the runner has released the slot.
+    EXPECT_EQ(harness.tcp().table_size(), 0);
 }
 
 TEST_P(RunnerTest, ARefusedConnectGivesEconnrefused) {
