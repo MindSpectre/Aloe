@@ -254,8 +254,9 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - `rte_eth_dev_conf_get` is an experimental DPDK symbol. A test that calls it defines `ALLOW_EXPERIMENTAL_API`
   before its first include, as `test_ethdev_null.cpp` does; a public header never does.
 - A fabric with delayed frames or loans on `OnStep` ports needs `Fabric::advance(now)` from the test's loop, once
-  per tick; nothing is delivered or finished without it, and a loan never advanced stays out until the port is
-  destroyed, which the pool's assertion reports.
+  per tick; nothing is delivered or finished without it. A loan never advanced or reclaimed stays out until the
+  port is destroyed, which releases it silently, so the pool's assertion does not catch a missing `advance`: it
+  shows as `lent()` staying true and `loans_outstanding(queue)` above zero.
 - `std::uniform_real_distribution` gives different numbers on libstdc++ and libc++ for the same engine; the
   fabric's impairment turns the engine's raw bits into a double itself, and a test of its determinism must not use
   the distribution either.

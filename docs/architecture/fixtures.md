@@ -151,6 +151,9 @@ test with an exception when the frame is short.
 the queue thread's, unsynchronised, as the pool always was. `advance` touches only each queue's count of
 finished loans, under the queue's lock, and never the pool: the handles themselves are released by the queue's
 own next call. A lender dropped while lent orphans its block, and the handle gives the block back when it is
-released. The `Pool` destructor's assertion, that every packet is destroyed before its pool, is the check that
-every loan came back exactly once; a loan never finished or reclaimed stays out until the port is destroyed,
-and the assertion reports it.
+released. The pool's assertions are the check that every block came back exactly once: `give_back` refuses a
+block that is still lent or orphaned, and the destructor one that never came back. A loan never finished or
+reclaimed stays out until the port is destroyed, and destroying the port releases it silently: a queue's
+in-flight handles are destroyed before its pool, so an orphaned block still goes back first. A missing
+`Fabric::advance` therefore shows as `lent()` staying true and `loans_outstanding(queue)` above zero, not as the
+assertion; the assertion fires when a lender outlives its pool.
