@@ -90,9 +90,12 @@ TEST(EthdevTap, ALoanIsBackOnceTheTapHasWrittenTheFrame) {
         FAIL() << "this test creates a tap interface and needs CAP_NET_ADMIN; run it as root";
     }
     aloe::ethdev::Port port{
-        {.name = "net_tap0", .queues = 1, .pool_size = 512}
+        {.name = aloe::testing::probe_vdev("net_tap", "iface=aloe-loan"), .queues = 1, .pool_size = 512}
     };
-    const aloe::testing::PacketSocket kernel{interface};
+    // The tap driver trims the headers off an mbuf whose checksum it completes, which would move a lender's offsets.
+    EXPECT_FALSE(port.capabilities().tx_ipv4_checksum);
+    EXPECT_FALSE(port.capabilities().tx_l4_checksum);
+    const aloe::testing::PacketSocket kernel{"aloe-loan"};
 
     const auto frame = aloe::frames::ethernet_frame(aloe::wire::MacAddress::broadcast(),
                                                     port.mac(),

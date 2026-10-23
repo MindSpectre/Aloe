@@ -66,6 +66,14 @@ namespace aloe::ethdev {
                    (types.ipv4_udp ? RTE_ETH_RSS_NONFRAG_IPV4_UDP : 0);
         }
 
+        /// The transmit offloads Aloe may use on this driver. The tap driver completes a requested checksum by copying
+        /// the headers into a new segment and trimming them off the original mbuf, which moves a lender's offsets;
+        /// the loan promises they stay, so no transmit checksum offload is requested from it.
+        [[nodiscard]] std::uint64_t transmit_offloads_of(const rte_eth_dev_info& info) noexcept {
+            const bool tap = info.driver_name != nullptr && std::string_view{info.driver_name} == "net_tap";
+            return tap ? info.tx_offload_capa & ~tx_checksum_offloads : info.tx_offload_capa;
+        }
+
         [[nodiscard]] device::Capabilities capabilities_of(const rte_eth_dev_info& info) noexcept {
             const std::uint64_t rss_types = info.flow_type_rss_offloads & wanted_rss_types;
             const bool rss = rss_types != 0 && info.hash_key_size >= smallest_usable_key &&
@@ -84,8 +92,8 @@ namespace aloe::ethdev {
                 .rss_types        = rss ? types_of(rss_types) : device::RssHashTypes{},
                 .rx_ipv4_checksum = (info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) != 0,
                 .rx_l4_checksum   = (info.rx_offload_capa & rx_l4) == rx_l4,
-                .tx_ipv4_checksum = (info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) != 0,
-                .tx_l4_checksum   = (info.tx_offload_capa & tx_l4) == tx_l4,
+                .tx_ipv4_checksum = (transmit_offloads_of(info) & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) != 0,
+                .tx_l4_checksum   = (transmit_offloads_of(info) & tx_l4) == tx_l4,
             };
         }
 
@@ -162,7 +170,7 @@ namespace aloe::ethdev {
         conf.rxmode.mq_mode  = rss ? RTE_ETH_MQ_RX_RSS : RTE_ETH_MQ_RX_NONE;
         conf.rxmode.mtu      = config.mtu;
         conf.rxmode.offloads = info.rx_offload_capa & rx_checksum_offloads;
-        conf.txmode.offloads = info.tx_offload_capa & tx_checksum_offloads;
+        conf.txmode.offloads = transmit_offloads_of(info) & tx_checksum_offloads;
         if (rss) {
             conf.rx_adv_conf.rss_conf.rss_key     = key.data();
             conf.rx_adv_conf.rss_conf.rss_key_len = capabilities_.rss_key_size;
