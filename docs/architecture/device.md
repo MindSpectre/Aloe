@@ -25,14 +25,21 @@ them on top of it.
   new bytes, or nothing when the room is too small; `trim_front` and `trim_back` shrink. `rx()`
   gives the `RxMetadata` the device filled on receive, `tx()` and `set_tx()` the `TxMetadata` the
   device reads on transmit. A default-constructed or moved-from packet is `empty()`. Every backend
-  gives a fresh packet `aloe::device::packet_headroom`, 128 bytes, of headroom.
+  gives a fresh packet `aloe::device::packet_headroom`, 128 bytes, of headroom. `lend()` returns a second
+  handle over the same buffer for the device to transmit, and `lent()` is true while that handle is alive:
+  the loan. A lent packet is read, never written; a device asked to fill checksums may complete them in the
+  lent buffer; dropping the lender while lent frees the buffer once, when the handle goes. `lent()` is a
+  poll.
 - **`aloe::device::IsDevice`** -- one port with N queues, queue i for shard i. `allocate(queue)`,
   `receive(queue, out)` and `transmit(queue, in)` are the hot path and never throw.
   `capabilities()` reports what the device can do, `steering()` the receive-side scaling in effect,
   `counters(queue)` what happened. `mac()`, `mtu()` and `link_up()` describe the port.
-- **`aloe::device::Capabilities`** -- queue and MTU limits, whether the device hashes and steers, and which
-  checksum offloads it verifies on receive or fills on transmit. Anything absent gets its software
-  fallback in the stack above, never inside the device.
+  `reclaim(queue)` asks the driver to free transmitted packets it still holds and returns how many;
+  `capabilities().tx_reclaim` says whether the driver has the call. A received packet is its receiver's
+  alone: a backend that could deliver a shared buffer copies it first.
+- **`aloe::device::Capabilities`** -- queue and MTU limits, whether the device hashes and steers, which
+  checksum offloads it verifies on receive or fills on transmit, and `tx_reclaim`, whether `reclaim` does
+  anything. Anything absent gets its software fallback in the stack above, never inside the device.
 - **`aloe::device::RssDescription`**, **`aloe::device::FlowTuple`**, **`aloe::device::queue_for`** -- the steering rule.
   `queue_for(description, flow)` is a pure function of what the device reports, so the runtime can
   predict which queue any flow lands on. `aloe::device::toeplitz_hash` is the hash cards compute.
@@ -44,15 +51,24 @@ them on top of it.
 ### Backends
 
 - **`aloe::fabric::Fabric`** owns **`aloe::fabric::Port`**s on one broadcast domain. Unicast goes to
-  the port with that MAC, the sender included; broadcast and multicast go to every other port. There
-  is no loss, reordering or delay. A port with several queues steers by RSS exactly as a card would.
-  A port opened with `EmulatedOffloads::Checksums` fills checksums on transmit and verifies them on
-  receive, so both the offload path and the software path of the stack run in CI.
+  the port with that MAC, the sender included; broadcast and multicast go to every other port. Unless a
+  port's egress is impaired, there is no loss, reordering or delay. A port with several queues steers by
+  RSS exactly as a card would. A port opened with `EmulatedOffloads::Checksums` fills checksums on
+  transmit and verifies them on receive, so both the offload path and the software path of the stack run
+  in CI. A transmitted loan is held in the port's in-flight list under `PortConfig::loans`: `OnStep` (the
+  default) finishes at `Fabric::advance` and is released by the queue's next transmit, receive or reclaim,
+  with `reclaim` releasing at once; `Held` releases only on `return_loans`, the driver that will not let
+  go. `loans_outstanding(queue)` counts what is still held. Impairment and the clock are on the
+  [fixtures page](fixtures.md).
 - **`aloe::ethdev::Eal`** starts DPDK once per process. **`aloe::ethdev::Port`** wraps one DPDK
-  port: it configures the queues, the MTU, every checksum offload the driver has, and receive-side
-  scaling under Aloe's key when the driver has that. A physical card, `net_tap`, `net_ring` and
-  `net_null` are all just ports. A port claims its device through DPDK's ownership API, so a second
-  `Port` on the same name fails without disturbing the first.
+  port: it configures the queues, the MTU, every checksum offload the driver has but the tap driver's
+  transmit checksums (see the loan below), and receive-side scaling under Aloe's key when the driver has
+  that. A physical card, `net_tap`, `net_ring` and `net_null` are all just ports. A port claims its
+  device through DPDK's ownership API, so a second `Port` on the same name fails without disturbing the
+  first. The loan is the mbuf's reference count, raised by `lend` and read by `lent`; `reclaim` is
+  `rte_eth_tx_done_cleanup`, probed once after the start, which the ring, null and tap drivers lack and
+  the Intel drivers have. `receive` copies an mbuf that arrives shared, so the ring driver's loopback
+  cannot move a lender's offsets; a card never delivers one.
 - **`aloe::ethdev::register_thread()`** -- gives the calling thread a DPDK lcore id so per-lcore mempool
   caches work. The runtime's thread hook for DPDK ports.
 
@@ -99,6 +115,27 @@ fill the L4 checksum, write the IPv4 pseudo-header sum (`aloe::wire::ipv4_pseudo
 checksum field and zero into the IPv4 checksum field, then set `TxMetadata` with the header lengths
 and the fills wanted. Ask only for what `capabilities()` offers.
 
+A packet the caller keeps after sending is lent: the frame is complete and `set_tx` has run, the handle
+goes to the device, and the caller asks the packet when the device is done with it:
+
+```cpp
+template <aloe::device::IsDevice Device>
+bool send_and_keep(Device& device, typename Device::Packet& packet) {
+    std::array<typename Device::Packet, 1> burst{packet.lend()};
+    if (device.transmit(0, burst) == 0) {
+        burst[0] = {};  // refused: dropping the handle returns the loan at once
+        return false;
+    }
+    return true;
+}
+
+// later, before writing the packet again:
+if (packet.lent()) {
+    std::ignore = device.reclaim(0);  // frees finished transmits where the driver has the call
+}
+const bool back = !packet.lent();     // false: the device is still reading it
+```
+
 ## Design notes
 
 **One packet concept, one type per backend.** The fabric's packet is plain memory that ASan sees
@@ -121,8 +158,8 @@ bytes and one that takes 52 compute the same hash.
 **The fabric is a fixture.** It exists for tests, simulation and demos and never carries production
 traffic, which is why it lives in [`fixtures/`](fixtures.md) and not in `common/`. Delivery takes a lock per receive queue and copies frames twice, on
 transmit and on receive, so a packet pool is only ever touched by its queue's thread. Simplicity
-wins over speed. Scripted loss, reordering and delay arrive in a later phase; the delivery function
-is the one place they plug in.
+wins over speed. Scripted impairment, loss, duplication, reordering and delay, sits on a port's egress;
+see the [fixtures page](fixtures.md).
 
 **Ethdev reports what is in effect.** A driver that cannot set the MTU keeps its own, one that
 cannot update or read the indirection table is assumed to hold DPDK's default round-robin table,
@@ -136,3 +173,42 @@ packets, the size of the pointer array it hands to DPDK. `transmit` never accept
 offered and leaves every packet past its count untouched, so a caller retries or drops them.
 A frame shorter than an Ethernet header or longer than `mtu() + 14` is refused on both backends:
 `transmit` counts it as accepted, frees it and counts it as oversized on the transmitting queue.
+
+**The loan.** Full TCP resends lost data without copying it, so the stack keeps a packet after sending it
+while the device may still be reading it. The loan is spelled on the packet, not as a ticket from the
+device: the stack takes a handle from `lend()` and transmits it, keeps its own, and asks `lent()` when it
+needs to know whether the device is done. To the shard queue's ring and the device's `transmit` the handle
+is a packet like any other, so neither changes, and nothing above the device sees a reference count: the
+words are lend, lent and back. Ethdev raises the mbuf's count, and the driver's free after transmission and
+the lender's drop are both `rte_pktmbuf_free`, so the mbuf goes back to its pool exactly once, whichever
+handle goes last. The fabric marks the block lent and keeps the transmitted handle in the queue's
+in-flight list until its loan policy lets go; a lender dropped first orphans the block, and the handle
+gives it back. Neither backend has an event for the return, because DPDK has none. The three drivers CI
+runs on give a loan back at transmit or when the reader lets go: null and tap free the mbuf inside the
+transmit call, and the ring hands the very mbuf to the receiver. Only a card holds a transmitted frame
+long after it left, until a later burst or `reclaim` frees it, and on CI only the fabric's `Held` policy
+models that. A device asked to fill checksums may complete them in the lent buffer, as the fabric does;
+the size, the offsets and every other byte stay as lent. The tap driver would break that: DPDK 26.03's
+`tap_write_mbufs` answers a requested checksum fill by copying the headers into a new segment and trimming
+them off the original mbuf, which moves the lender's offsets. Ethdev therefore requests no transmit
+checksum offload from `net_tap`, and the stack checksums in software there, as it does on the ring. TCP
+does not lend yet. Step 3 of phase 2 on the [roadmap](../roadmap.md) keeps each segment as sent, headers
+included, lends it after IP has written its headers and the transmit metadata, and at a retransmit asks
+`lent()`, calls `reclaim()` and asks again before it defers, and copies the one segment only after a
+bound.
+
+**A shared mbuf is copied on receive.** The ring driver's loopback hands the receiver the very mbuf a
+lender still holds, so a reader that trims the received packet would move the lender's offsets. In
+`ethdev::Port::receive`, an mbuf whose reference count is above one is copied into a fresh mbuf of the
+queue's pool (`rte_pktmbuf_copy`), the shared one is dropped, which leaves it with the lender alone, and
+the caller gets the copy. A received packet is therefore its receiver's alone on every backend, and no
+reader of the ring needs a discipline, the benchmark's peer included. A card never delivers a shared mbuf,
+so on hardware the rule costs one load and one untaken branch per packet. When the pool has no mbuf for
+the copy, the frame is dropped and counted in `QueueCounters::dropped`, which on ethdev counts nothing
+else; receive-ring overruns stay per port, in `rte_eth_stats`.
+
+**Fast-free stays off.** DPDK's `RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE` frees a transmitted mbuf straight to
+its pool on the assumption that it has one reference, which a lent mbuf does not. Ethdev's transmit offload
+mask holds checksum bits only, and a `static_assert` beside it refuses a mask that contains the fast-free
+bit, whatever a driver offers. No CI driver advertises the offload, so the assertion and a read-back of the
+configured transmit offloads in the null driver's test are the checks.

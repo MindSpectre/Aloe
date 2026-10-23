@@ -120,6 +120,20 @@ device, so they need neither root nor a network card. `Aloe.Tests.Integration.Tc
 the TCP brick over DPDK's ring driver on real mbufs, with a scripted peer at another address,
 software checksums and no root.
 
+`Aloe.Tests.Unit.Scenarios` runs the scenario scripts under `tests/scenarios/` against the TCP brick on
+the fabric. It finds the scripts at run time and registers one test per script and per checksum mode of
+the fabric, `Scenario.tcp/<area>/<name>/NoOffloads` and `.../Checksums`, so CTest lists it as one entry.
+Run one area or one script with a gtest filter on the binary; a `-` in a filter starts the excluded
+patterns, so match a dash in a name with `?`:
+
+```bash
+./build/debug/tests/unit_tests/scenarios/Aloe.Tests.Unit.Scenarios --gtest_filter='Scenario.tcp/close/*'
+./build/debug/tests/unit_tests/scenarios/Aloe.Tests.Unit.Scenarios --gtest_filter='Scenario.tcp/close/fin?retransmitted*'
+```
+
+[docs/architecture/scenario.md](../architecture/scenario.md) describes the script language and how to
+write a script.
+
 Tests under `tests/manual_tests/` carry the label `manual` and need privileges or hardware.
 Every test preset excludes that label, so they never run unasked; run the binary by hand. The
 four there today drive DPDK's tap driver against the kernel and need `CAP_NET_ADMIN`:

@@ -134,7 +134,10 @@ timestamp and checksum and posts; the header layout chosen in phase 1 must allow
 is phase 2.
 
 The device layer has two backends: DPDK's ethdev for real network cards and for tap devices, and an
-in-memory fabric for deterministic tests. Scripted loss, reordering and delay join the fabric in phase 2.
+in-memory fabric for deterministic tests. The fabric scripts loss, duplication, reordering and delay on a
+port's egress, on a clock step of its own, and the [scenario](scenario.md) runner drives the TCP brick over
+it from scripts in packetdrill's syntax. A packet the stack keeps after sending is lent to the device and
+comes back when the device is done with it; the stack sees the loan, never a reference count.
 Network cards vary, so offloads such as checksums and segmentation are queried from the card at run time,
 and every offload has a software fallback. Steering is a pure function of what the card reports, so a
 program can predict which queue any flow lands on.

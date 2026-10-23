@@ -37,10 +37,11 @@ for the design and the [roadmap](docs/roadmap.md) for the phases.
 Fixtures for testing code written over the bricks live apart from the stack, in `fixtures/`
 ([docs/architecture/fixtures.md](docs/architecture/fixtures.md)):
 
-| Namespace       | Directory            | Description                                                                                                     |
-|-----------------|----------------------|-----------------------------------------------------------------------------------------------------------------|
-| `aloe::fabric`  | `fixtures/fabric/`   | The in-memory device backend: deterministic, no root, no hugepages, no network card.                            |
-| `aloe::frames`  | `fixtures/frames/`   | Frame builders and a parser over the wire formats, and packet byte helpers.                                     |
+| Namespace        | Directory            | Description                                                                                                                     |
+|------------------|----------------------|---------------------------------------------------------------------------------------------------------------------------------|
+| `aloe::fabric`   | `fixtures/fabric/`   | The in-memory device backend: deterministic, no root, no hugepages, no network card, with scripted impairment and a clock step. |
+| `aloe::frames`   | `fixtures/frames/`   | Frame builders and a parser over the wire formats, and packet byte helpers.                                                     |
+| `aloe::scenario` | `fixtures/scenario/` | Packetdrill-style scenario scripts run against the TCP brick on the fabric: the parser, the runner and the harness.             |
 
 Each module ships an umbrella header. Consumers link the module's target and
 include it by name:
