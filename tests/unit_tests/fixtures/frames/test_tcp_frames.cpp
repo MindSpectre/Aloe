@@ -219,3 +219,30 @@ TEST(TcpPeer, SeeNeverRetreats) {
     peer.see(stack_syn_ack(TcpSequence{1001U}));  // a retransmitted SYN-ACK
     EXPECT_EQ(peer.rcv_nxt(), TcpSequence{5001U});
 }
+
+TEST(TcpFrames, RawOptionsAreWrittenVerbatimAndReadBack) {
+    TcpSpec spec = peer_to_stack();
+    spec.mss.reset();
+    spec.options      = bytes({2, 4, 0x05, 0xb4, 1, 1, 4, 2});  // mss 1460, nop, nop, sackOK
+    spec.flags        = TcpFlags{TcpFlag::Syn};
+    const auto frame  = aloe::frames::tcp_frame(spec, {});
+    const auto parsed = aloe::frames::parse_frame(frame).value();
+    ASSERT_TRUE(parsed.tcp.has_value());
+    EXPECT_EQ(parsed.tcp->data_offset, 28);
+    const auto options = aloe::frames::tcp_options_of(parsed);
+    EXPECT_EQ(std::vector<std::byte>(options.begin(), options.end()), spec.options);
+    EXPECT_EQ(aloe::frames::l4_checksum_residue(*parsed.ipv4, parsed.l4), 0U);
+    const auto known = aloe::wire::TcpOptions::parse(options);
+    ASSERT_TRUE(known.has_value());
+    EXPECT_EQ(known->mss, 1460);
+}
+
+TEST(TcpFrames, NoOptionsMeansAnEmptyOptionSpan) {
+    TcpSpec spec = peer_to_stack();
+    spec.mss.reset();
+    const auto parsed = aloe::frames::parse_frame(aloe::frames::tcp_frame(spec, text("x"))).value();
+    EXPECT_EQ(parsed.tcp->data_offset, 20);
+    EXPECT_TRUE(aloe::frames::tcp_options_of(parsed).empty());
+    const auto payload = aloe::frames::tcp_payload(parsed);
+    EXPECT_EQ(std::vector<std::byte>(payload.begin(), payload.end()), text("x"));
+}
