@@ -63,6 +63,19 @@ namespace aloe::scenario {
         friend bool operator==(const PacketLine&, const PacketLine&) = default;
     };
 
+    /// A segment the stack sent, in the script's relative numbers.
+    struct ObservedSegment {
+        wire::TcpFlags flags{};
+        std::uint32_t first  = 0;
+        std::uint32_t last   = 0;
+        std::uint32_t length = 0;
+        std::uint32_t ack    = 0;  ///< Relative to the peer's ISN; meaningful with the Ack flag.
+        std::uint16_t window = 0;
+        std::uint16_t urgent = 0;
+        std::vector<std::byte> options{};
+        friend bool operator==(const ObservedSegment&, const ObservedSegment&) = default;
+    };
+
     /// One argument of a call line.
     struct Argument {
         enum class Kind : std::uint8_t { Integer, Ellipsis, Word, Bracketed, String };

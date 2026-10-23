@@ -7,6 +7,8 @@ add_library(${SCENARIO}.Script STATIC
         script/script.hpp
         script/parse_script.hpp
         script/parse_script.cpp
+        script/notation.hpp
+        script/notation.cpp
 )
 target_include_directories(${SCENARIO}.Script PUBLIC
         script/
@@ -14,6 +16,24 @@ target_include_directories(${SCENARIO}.Script PUBLIC
 target_link_libraries(${SCENARIO}.Script PUBLIC
         Aloe::Common::Core
         Aloe::Common::Wire
+)
+##############################################################################
+
+##############################################################################
+# The run side: the peer's numbers and the matcher
+##############################################################################
+add_library(${SCENARIO}.Run STATIC
+        run/peer.hpp
+        run/peer.cpp
+        run/match.hpp
+        run/match.cpp
+)
+target_include_directories(${SCENARIO}.Run PUBLIC
+        run/
+)
+target_link_libraries(${SCENARIO}.Run PUBLIC
+        ${SCENARIO}.Script
+        Aloe::Fixtures::Frames
 )
 ##############################################################################
 
@@ -27,6 +47,7 @@ add_combined_library(${SCENARIO}
         export/aloe/scenario
         LIBRARIES
         ${SCENARIO}.Script
+        ${SCENARIO}.Run
 )
 
 add_library(Aloe::Fixtures::Scenario ALIAS ${SCENARIO})

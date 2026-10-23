@@ -29,7 +29,7 @@ namespace aloe::frames {
         wire::TcpSequence acknowledgement{};
         wire::TcpFlags flags{};
         std::uint16_t window = 65535;
-        std::optional<std::uint16_t> mss;  ///< Written as the one option when present; set it on SYNs.
+        std::optional<std::uint16_t> mss{};  ///< Written as the one option when present; set it on SYNs.
         std::vector<std::byte>
             options{};  ///< Raw option bytes, written as they are when non-empty; then `mss` stays absent.
         Checksums checksums =

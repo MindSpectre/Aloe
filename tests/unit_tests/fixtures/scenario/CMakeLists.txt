@@ -3,10 +3,14 @@
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Scenario
         test_parse_script.cpp
+        test_peer.cpp
+        test_notation.cpp
+        test_match.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Scenario
         PRIVATE
         Aloe::Fixtures::Scenario
+        Aloe::Fixtures::Frames
         ${TEST_LIBS}
 )
 ##############################################################################
