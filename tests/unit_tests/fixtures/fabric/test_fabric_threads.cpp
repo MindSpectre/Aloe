@@ -3,6 +3,7 @@
 #include <aloe/wire>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -45,93 +46,126 @@ namespace {
             payload);
     }
 
-}  // namespace
-
-// The test the tsan preset exists for: every producer transmits from its own thread into one
-// port whose queues are drained by their own threads, and every frame arrives exactly once.
-TEST(FabricThreads, FramesFromManyThreadsArriveExactlyOnce) {
-    aloe::fabric::Fabric fabric;
-    auto& sink = fabric.add_port({.mac = server, .queues = queues, .pool_size = 64, .queue_depth = 100000});
-    std::vector<aloe::fabric::Port*> sources;
-    sources.reserve(producers);
-    for (std::size_t producer = 0; producer < producers; ++producer) {
-        sources.push_back(&fabric.add_port({.mac = producer_mac(producer), .pool_size = 64}));
-    }
-
-    std::atomic<std::size_t> producers_done{0};
-    std::mutex seen_mutex;
-    std::set<std::pair<std::uint32_t, std::uint32_t>> seen;
-    std::size_t received_total = 0;
-
-    std::vector<std::jthread> consumers;
-    consumers.reserve(queues);
-    for (std::uint16_t queue = 0; queue < queues; ++queue) {
-        consumers.emplace_back([&, queue] {
-            std::array<aloe::fabric::Packet, 16> burst;
-            while (true) {
-                // Read before receiving: every delivery happens before its producer counts itself
-                // done, so an empty queue after the producers finished stays empty.
-                const bool done         = producers_done.load() == producers;
-                const std::size_t count = sink.receive(queue, burst);
-                if (count == 0) {
-                    if (done) {
-                        break;
-                    }
-                    std::this_thread::yield();
-                    continue;
-                }
-                const std::lock_guard lock{seen_mutex};
-                for (std::size_t index = 0; index < count; ++index) {
-                    const auto payload = burst[index].data().last(8);
-                    EXPECT_TRUE(seen.emplace(aloe::wire::load_be32(payload.first(4)),
-                                             aloe::wire::load_be32(payload.subspan(4, 4)))
-                                    .second)
-                        << "a frame arrived twice";
-                    burst[index] = aloe::fabric::Packet{};
-                }
-                received_total += count;
-            }
-        });
-    }
-
-    {
-        std::vector<std::jthread> threads;
-        threads.reserve(producers);
+    // The body of the tests the tsan preset exists for: every producer transmits from its own thread into one
+    // port whose queues are drained by their own threads, and every frame arrives exactly once. With an impairment,
+    // a ticker thread steps the fabric's clock so the delayed frames come due while the producers run.
+    void run_threads(const std::optional<aloe::fabric::Impairment>& impairment) {
+        using namespace std::chrono_literals;  // for the ticker's step
+        aloe::fabric::Fabric fabric;
+        auto& sink = fabric.add_port({.mac = server, .queues = queues, .pool_size = 64, .queue_depth = 100000});
+        std::vector<aloe::fabric::Port*> sources;
+        sources.reserve(producers);
         for (std::size_t producer = 0; producer < producers; ++producer) {
-            threads.emplace_back([&, producer] {
-                aloe::fabric::Port& source = *sources[producer];
-                const auto send_all        = [&] {
-                    for (std::size_t sequence = 0; sequence < frames_per_producer; ++sequence) {
-                        std::optional<aloe::fabric::Packet> packet;
-                        while (!(packet = source.allocate(0))) {
-                            std::this_thread::yield();
+            sources.push_back(&fabric.add_port({.mac = producer_mac(producer), .pool_size = 64}));
+        }
+
+        if (impairment) {
+            for (aloe::fabric::Port* source : sources) {
+                source->set_impairment(*impairment);
+            }
+        }
+
+        std::atomic<std::size_t> producers_done{0};
+        std::atomic<bool> delivered_all{false};
+        std::mutex seen_mutex;
+        std::set<std::pair<std::uint32_t, std::uint32_t>> seen;
+        std::size_t received_total = 0;
+
+        std::vector<std::jthread> consumers;
+        consumers.reserve(queues);
+        for (std::uint16_t queue = 0; queue < queues; ++queue) {
+            consumers.emplace_back([&, queue] {
+                std::array<aloe::fabric::Packet, 16> burst;
+                while (true) {
+                    // Read before receiving: every delivery happens before its producer counts itself
+                    // done, so an empty queue after the producers finished stays empty.
+                    const bool done         = impairment ? delivered_all.load() : producers_done.load() == producers;
+                    const std::size_t count = sink.receive(queue, burst);
+                    if (count == 0) {
+                        if (done) {
+                            break;
                         }
-                        ASSERT_TRUE(aloe::frames::fill(*packet, frame_of(producer, sequence)));
-                        std::array<aloe::fabric::Packet, 1> burst{std::move(*packet)};
-                        ASSERT_EQ(source.transmit(0, burst), 1);
+                        std::this_thread::yield();
+                        continue;
                     }
-                };
-                send_all();
-                ++producers_done;  // even after a failed assertion, so the consumers stop
+                    const std::lock_guard lock{seen_mutex};
+                    for (std::size_t index = 0; index < count; ++index) {
+                        const auto payload = burst[index].data().last(8);
+                        EXPECT_TRUE(seen.emplace(aloe::wire::load_be32(payload.first(4)),
+                                                 aloe::wire::load_be32(payload.subspan(4, 4)))
+                                        .second)
+                            << "a frame arrived twice";
+                        burst[index] = aloe::fabric::Packet{};
+                    }
+                    received_total += count;
+                }
             });
         }
-    }
-    consumers.clear();
 
-    EXPECT_EQ(received_total, producers * frames_per_producer);
-    EXPECT_EQ(seen.size(), producers * frames_per_producer);
-    std::uint64_t counted = 0;
-    for (std::uint16_t queue = 0; queue < queues; ++queue) {
-        const aloe::device::QueueCounters counters = sink.counters(queue);
-        EXPECT_EQ(counters.dropped, 0);
-        EXPECT_GT(counters.received, 0) << "queue " << queue << " saw nothing: the hash did not spread";
-        counted += counters.received;
-    }
-    EXPECT_EQ(counted, producers * frames_per_producer);
-    for (std::size_t producer = 0; producer < producers; ++producer) {
-        EXPECT_EQ(sources[producer]->counters(0).transmitted, frames_per_producer) << "producer " << producer;
-        for (std::size_t sequence = 0; sequence < frames_per_producer; ++sequence) {
-            EXPECT_TRUE(seen.contains({static_cast<std::uint32_t>(producer), static_cast<std::uint32_t>(sequence)}));
+        std::jthread ticker;
+        if (impairment) {
+            ticker = std::jthread{[&] {
+                aloe::core::TimePoint now{};
+                while (producers_done.load() != producers) {
+                    now += 1ms;
+                    fabric.advance(now);
+                    std::this_thread::yield();
+                }
+                fabric.advance(now + 2ms);
+                delivered_all.store(true);
+            }};
+        }
+
+        {
+            std::vector<std::jthread> threads;
+            threads.reserve(producers);
+            for (std::size_t producer = 0; producer < producers; ++producer) {
+                threads.emplace_back([&, producer] {
+                    aloe::fabric::Port& source = *sources[producer];
+                    const auto send_all        = [&] {
+                        for (std::size_t sequence = 0; sequence < frames_per_producer; ++sequence) {
+                            std::optional<aloe::fabric::Packet> packet;
+                            while (!(packet = source.allocate(0))) {
+                                std::this_thread::yield();
+                            }
+                            ASSERT_TRUE(aloe::frames::fill(*packet, frame_of(producer, sequence)));
+                            std::array<aloe::fabric::Packet, 1> burst{std::move(*packet)};
+                            ASSERT_EQ(source.transmit(0, burst), 1);
+                        }
+                    };
+                    send_all();
+                    ++producers_done;  // even after a failed assertion, so the consumers stop
+                });
+            }
+        }
+        consumers.clear();
+
+        EXPECT_EQ(received_total, producers * frames_per_producer);
+        EXPECT_EQ(seen.size(), producers * frames_per_producer);
+        std::uint64_t counted = 0;
+        for (std::uint16_t queue = 0; queue < queues; ++queue) {
+            const aloe::device::QueueCounters counters = sink.counters(queue);
+            EXPECT_EQ(counters.dropped, 0);
+            EXPECT_GT(counters.received, 0) << "queue " << queue << " saw nothing: the hash did not spread";
+            counted += counters.received;
+        }
+        EXPECT_EQ(counted, producers * frames_per_producer);
+        for (std::size_t producer = 0; producer < producers; ++producer) {
+            EXPECT_EQ(sources[producer]->counters(0).transmitted, frames_per_producer) << "producer " << producer;
+            for (std::size_t sequence = 0; sequence < frames_per_producer; ++sequence) {
+                EXPECT_TRUE(
+                    seen.contains({static_cast<std::uint32_t>(producer), static_cast<std::uint32_t>(sequence)}));
+            }
         }
     }
+
+}  // namespace
+
+TEST(FabricThreads, FramesFromManyThreadsArriveExactlyOnce) {
+    run_threads(std::nullopt);
+}
+
+TEST(FabricThreads, FramesFromManyThreadsArriveExactlyOnceUnderDelay) {
+    using namespace std::chrono_literals;
+    run_threads(aloe::fabric::Impairment{.delay = 1ms});
 }

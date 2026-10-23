@@ -1,7 +1,10 @@
 #include <algorithm>
 #include <cassert>
+#include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -16,6 +19,7 @@
 #include <detail/frame.hpp>
 #include <ethernet.hpp>
 #include <fabric.hpp>
+#include <impairment.hpp>
 #include <ipv4_checksum.hpp>
 #include <ipv4_protocol.hpp>
 #include <mac_address.hpp>
@@ -26,6 +30,10 @@ namespace aloe::fabric {
 
         constexpr std::uint16_t fabric_rss_table_size = 128;
         constexpr std::uint16_t minimum_mtu           = 68;
+        // A double holds 53 bits of mantissa; the engine's raw 64 bits lose the low eleven, so the draw is the same
+        // on every standard library, which std::uniform_real_distribution is not.
+        constexpr unsigned discarded_bits             = 11;
+        constexpr int mantissa_bits                   = 53;
 
         [[nodiscard]] device::Capabilities capabilities_of(const PortConfig& config) {
             const bool checksums     = config.offloads == EmulatedOffloads::Checksums;
@@ -216,7 +224,7 @@ namespace aloe::fabric {
                 const std::lock_guard lock{source.mutex};
                 ++source.counters.oversized;
             } else {
-                fabric_.deliver(*this, frame);
+                egress(frame);
                 const std::lock_guard lock{source.mutex};
                 ++source.counters.transmitted;
                 if (packet.borrowed()) {
@@ -226,6 +234,106 @@ namespace aloe::fabric {
             packet = Packet{};
         }
         return in.size();
+    }
+
+    void Port::set_impairment(const Impairment& impairment) {
+        const std::lock_guard lock{impairment_mutex_};
+        impairment_ = impairment;
+        engine_.seed(impairment.seed);
+    }
+
+    ImpairmentCounters Port::impairment_counters() const noexcept {
+        const std::lock_guard lock{impairment_mutex_};
+        return impairment_counters_;
+    }
+
+    double Port::draw() noexcept {
+        return std::ldexp(static_cast<double>(engine_() >> discarded_bits), -mantissa_bits);
+    }
+
+    Verdict Port::judge(const std::span<const std::byte> frame) {
+        const std::lock_guard lock{impairment_mutex_};
+        const Egress egress{.index = egress_index_++, .frame = frame};
+        if (impairment_.script) {
+            if (const std::optional<Verdict> scripted = impairment_.script(egress)) {
+                return *scripted;
+            }
+        }
+        if (impairment_.loss > 0 && draw() < impairment_.loss) {
+            return Verdict{.action = Action::Drop};
+        }
+        if (impairment_.duplicate > 0 && draw() < impairment_.duplicate) {
+            return Verdict{.action = Action::Duplicate};
+        }
+        if (impairment_.reorder > 0 && draw() < impairment_.reorder) {
+            return Verdict{.action = Action::Reorder};
+        }
+        if (impairment_.delay > core::Duration{} || impairment_.jitter > core::Duration{}) {
+            return Verdict{.action = Action::Delay,
+                           .delay  = impairment_.delay +
+                                     std::chrono::duration_cast<core::Duration>(impairment_.jitter * draw())};
+        }
+        return Verdict{};
+    }
+
+    void Port::egress(const std::span<const std::byte> frame) {
+        const Verdict verdict = judge(frame);
+        switch (verdict.action) {
+            case Action::Deliver:
+                emit(frame);
+                return;
+            case Action::Drop: {
+                const std::lock_guard lock{impairment_mutex_};
+                ++impairment_counters_.dropped;
+                return;
+            }
+            case Action::Duplicate: {
+                emit(frame);
+                emit(frame);
+                const std::lock_guard lock{impairment_mutex_};
+                ++impairment_counters_.duplicated;
+                return;
+            }
+            case Action::Reorder: {
+                std::optional<std::vector<std::byte>> previous;
+                {
+                    const std::lock_guard lock{impairment_mutex_};
+                    ++impairment_counters_.reordered;
+                    previous = std::move(hold_);
+                    hold_    = std::vector<std::byte>(frame.begin(), frame.end());
+                }
+                if (previous) {
+                    fabric_.deliver(*this, *previous);
+                }
+                return;
+            }
+            case Action::Delay: {
+                {
+                    const std::lock_guard lock{impairment_mutex_};
+                    ++impairment_counters_.delayed;
+                }
+                fabric_.delay(*this, frame, verdict.delay);
+                return;
+            }
+        }
+        std::unreachable();
+    }
+
+    void Port::emit(const std::span<const std::byte> frame) {
+        fabric_.deliver(*this, frame);
+        release_hold();
+    }
+
+    void Port::release_hold() {
+        std::optional<std::vector<std::byte>> held;
+        {
+            const std::lock_guard lock{impairment_mutex_};
+            held = std::move(hold_);
+            hold_.reset();
+        }
+        if (held) {
+            fabric_.deliver(*this, *held);
+        }
     }
 
     void Port::release_finished(Queue& queue) const noexcept {
@@ -281,12 +389,27 @@ namespace aloe::fabric {
     }
 
     void Fabric::advance(const core::TimePoint now) {
+        std::vector<DelayedFrame> due;
         {
             const std::lock_guard lock{mutex_};
             if (now < now_) {
                 return;
             }
             now_ = now;
+            const auto later =
+                std::ranges::stable_partition(delayed_, [this](const DelayedFrame& entry) { return entry.due > now_; });
+            due.assign(std::make_move_iterator(later.begin()), std::make_move_iterator(later.end()));
+            delayed_.erase(later.begin(), later.end());
+        }
+        std::ranges::sort(due, [](const DelayedFrame& left, const DelayedFrame& right) {
+            return left.due != right.due ? left.due < right.due : left.sequence < right.sequence;
+        });
+        // Delivery takes destination queue locks, so no fabric or impairment lock is held from here on.
+        for (const DelayedFrame& entry : due) {
+            deliver(*entry.source, entry.bytes);
+        }
+        for (const auto& port : ports_) {
+            port->release_hold();
         }
         for (const auto& port : ports_) {
             if (port->config_.loans != LoanReturn::OnStep) {
@@ -297,6 +420,14 @@ namespace aloe::fabric {
                 queue->finished = queue->in_flight.size();
             }
         }
+    }
+
+    void Fabric::delay(Port& source, const std::span<const std::byte> frame, const core::Duration by) {
+        const std::lock_guard lock{mutex_};
+        delayed_.push_back(DelayedFrame{.due      = now_ + by,
+                                        .sequence = delayed_sequence_++,
+                                        .source   = &source,
+                                        .bytes    = std::vector<std::byte>(frame.begin(), frame.end())});
     }
 
     core::TimePoint Fabric::now() const noexcept {

@@ -7,11 +7,13 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <span>
 #include <vector>
 
 #include <device.hpp>
 #include <fabric_packet.hpp>
+#include <impairment.hpp>
 #include <mac_address.hpp>
 #include <rss.hpp>
 
@@ -107,6 +109,10 @@ namespace aloe::fabric {
         /// Handles transmitted and not yet released.
         [[nodiscard]] std::size_t loans_outstanding(std::uint16_t queue) const noexcept;
 
+        /// Replaces the egress impairment and reseeds its engine. Any thread.
+        void set_impairment(const Impairment& impairment);
+        [[nodiscard]] ImpairmentCounters impairment_counters() const noexcept;
+
     private:
         friend class Fabric;
 
@@ -134,6 +140,17 @@ namespace aloe::fabric {
         /// Called by the fabric from the transmitting thread.
         void deliver(std::span<const std::byte> frame);
 
+        /// The verdict for one frame: the script's, else the model's draws. Takes `impairment_mutex_`.
+        [[nodiscard]] Verdict judge(std::span<const std::byte> frame);
+        /// Applies the verdict to the frame. Delivers only with no lock held.
+        void egress(std::span<const std::byte> frame);
+        /// Delivers the frame, then lets a reorder hold go.
+        void emit(std::span<const std::byte> frame);
+        /// Delivers the reorder hold if there is one.
+        void release_hold();
+        /// A uniform double in [0, 1) from the engine's raw output. The caller holds `impairment_mutex_`.
+        [[nodiscard]] double draw() noexcept;
+
         void fill_checksums(Packet& packet) const noexcept;
         [[nodiscard]] device::RxMetadata inspect(std::span<const std::byte> frame, std::uint16_t& queue) const noexcept;
 
@@ -142,6 +159,12 @@ namespace aloe::fabric {
         device::Capabilities capabilities_;
         device::RssDescription steering_;
         std::vector<std::unique_ptr<Queue>> queues_;
+        Impairment impairment_;
+        std::mt19937_64 engine_{impairment_.seed};
+        ImpairmentCounters impairment_counters_;
+        std::optional<std::vector<std::byte>> hold_;
+        std::uint64_t egress_index_ = 0;
+        mutable std::mutex impairment_mutex_;
     };
 
     /**
@@ -149,8 +172,8 @@ namespace aloe::fabric {
      * simulated and demonstrated on. Never a production path.
      *
      * Transmit delivers at once: unicast to the port with that MAC (the sender included), broadcast
-     * and multicast to every other port. There is no loss, reordering or delay; `deliver` is where
-     * a later phase adds them. Add every port before any thread transmits.
+     * and multicast to every other port, unless the source port's impairment drops, duplicates, holds or
+     * delays the frame. Add every port before any thread transmits.
      */
     class Fabric {
     public:
@@ -168,9 +191,9 @@ namespace aloe::fabric {
             return ports_.size();
         }
 
-        /// The fixture's clock step: marks every OnStep loan transmitted before the call finished, and from Task 6
-        /// on delivers the frames whose delay is due. Safe from any thread. An earlier stamp than the last changes
-        /// nothing.
+        /// The fixture's clock step: delivers the delayed frames that are due in (due, sequence) order, releases the
+        /// reorder holds, then marks every OnStep loan transmitted before the call finished. Safe from any thread. An
+        /// earlier stamp than the last changes nothing.
         void advance(core::TimePoint now);
 
         [[nodiscard]] core::TimePoint now() const noexcept;
@@ -178,11 +201,22 @@ namespace aloe::fabric {
     private:
         friend class Port;
 
+        struct DelayedFrame {
+            core::TimePoint due;
+            std::uint64_t sequence = 0;
+            Port* source           = nullptr;
+            std::vector<std::byte> bytes;
+        };
+
         void deliver(const Port& source, std::span<const std::byte> frame);
+        /// Queues the frame to be delivered by the first `advance` at or past `now_ + by`. Takes `mutex_` only to push.
+        void delay(Port& source, std::span<const std::byte> frame, core::Duration by);
 
         std::vector<std::unique_ptr<Port>> ports_;
         mutable std::mutex mutex_;
         core::TimePoint now_{};
+        std::vector<DelayedFrame> delayed_;
+        std::uint64_t delayed_sequence_ = 0;
     };
 
 }  // namespace aloe::fabric
