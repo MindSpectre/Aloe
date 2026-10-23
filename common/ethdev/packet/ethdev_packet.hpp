@@ -21,7 +21,8 @@ namespace aloe::ethdev {
      *
      * Models IsPacket at zero overhead. The mbuf is one segment; destroying the packet frees it to
      * its pool. Receive metadata is read from the mbuf's offload flags, and transmit metadata is
-     * written to them, so there is no state beyond the pointer.
+     * written to them, so there is no state beyond the pointer. A packet can lend a second handle to
+     * the device and asks `lent()` whether the device is done; see `device::IsPacket`.
      */
     class Packet {
     public:
@@ -82,6 +83,7 @@ namespace aloe::ethdev {
         }
 
         [[nodiscard]] std::optional<std::span<std::byte>> prepend(const std::size_t count) noexcept {
+            assert(!lent() && "a lent packet is not written");
             if (mbuf_ == nullptr || count > std::numeric_limits<std::uint16_t>::max()) {
                 return std::nullopt;
             }
@@ -92,6 +94,7 @@ namespace aloe::ethdev {
         }
 
         [[nodiscard]] std::optional<std::span<std::byte>> append(const std::size_t count) noexcept {
+            assert(!lent() && "a lent packet is not written");
             if (mbuf_ == nullptr || count > std::numeric_limits<std::uint16_t>::max()) {
                 return std::nullopt;
             }
@@ -102,6 +105,7 @@ namespace aloe::ethdev {
         }
 
         void trim_front(const std::size_t count) noexcept {
+            assert(!lent() && "a lent packet is not written");
             assert(count <= size());
             core::force_non_const(this);  // writes the mbuf, which a const member could still do
             if (mbuf_ != nullptr) {
@@ -110,6 +114,7 @@ namespace aloe::ethdev {
         }
 
         void trim_back(const std::size_t count) noexcept {
+            assert(!lent() && "a lent packet is not written");
             assert(count <= size());
             core::force_non_const(this);  // writes the mbuf, which a const member could still do
             if (mbuf_ != nullptr) {
@@ -151,6 +156,7 @@ namespace aloe::ethdev {
         }
 
         void set_tx(const device::TxMetadata& tx) noexcept {
+            assert(!lent() && "a lent packet is not written");
             core::force_non_const(this);  // writes the mbuf, which a const member could still do
             if (mbuf_ == nullptr) {
                 return;
@@ -169,6 +175,27 @@ namespace aloe::ethdev {
                 flags |= RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_UDP_CKSUM;
             }
             mbuf_->ol_flags = flags;
+        }
+
+        /**
+         * @brief A second handle over the same mbuf, for the device to transmit: the loan.
+         *
+         * The packet is lent until that handle is gone, whether it was transmitted and freed by the
+         * driver or dropped untransmitted. Called on a packet that is not empty and not lent, after
+         * the frame is complete and `set_tx` has run. Raises the mbuf's reference count; nothing
+         * above ethdev sees the number.
+         */
+        [[nodiscard]] Packet lend() noexcept {
+            assert(mbuf_ != nullptr && "lend of an empty packet");
+            assert(!lent() && "one loan at a time");
+            core::force_non_const(this);  // writes the mbuf's count, which a const member could still do
+            rte_mbuf_refcnt_update(mbuf_, 1);
+            return Packet{mbuf_};
+        }
+
+        /// True while a handle from `lend()` is alive somewhere. A poll: no backend has an event for the return.
+        [[nodiscard]] bool lent() const noexcept {
+            return mbuf_ != nullptr && rte_mbuf_refcnt_read(mbuf_) > 1;
         }
 
         /// The mbuf, still owned by the packet.

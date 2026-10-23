@@ -130,3 +130,54 @@ TEST_F(EthdevPacket, EmptyPacketsHaveNoRoom) {
     packet.set_tx(aloe::device::TxMetadata{.l2_length = 14});
     EXPECT_EQ(packet.tx(), aloe::device::TxMetadata{}) << "nothing to write to";
 }
+
+TEST_F(EthdevPacket, LendsASecondHandleOverTheSameMbuf) {
+    const unsigned before       = rte_mempool_avail_count(pool_);
+    aloe::ethdev::Packet packet = allocate();
+    ASSERT_TRUE(packet.append(10).has_value());
+    const aloe::device::TxMetadata tx{.l2_length = 14, .l3_length = 20};
+    packet.set_tx(tx);
+    EXPECT_FALSE(packet.lent());
+
+    aloe::ethdev::Packet handle = packet.lend();
+    EXPECT_TRUE(packet.lent());
+    EXPECT_EQ(handle.get(), packet.get()) << "one mbuf, two handles";
+    EXPECT_EQ(rte_mbuf_refcnt_read(packet.get()), 2);
+    EXPECT_EQ(handle.size(), 10);
+    EXPECT_EQ(handle.tx(), tx) << "the handle carries the transmit metadata as of the lend";
+    EXPECT_EQ(rte_mempool_avail_count(pool_), before - 1);
+
+    handle = aloe::ethdev::Packet{};
+    EXPECT_FALSE(packet.lent()) << "back once the handle is gone";
+    EXPECT_EQ(rte_mbuf_refcnt_read(packet.get()), 1);
+    EXPECT_EQ(rte_mempool_avail_count(pool_), before - 1) << "dropping the handle frees nothing";
+    EXPECT_EQ(packet.size(), 10);
+
+    packet = aloe::ethdev::Packet{};
+    EXPECT_EQ(rte_mempool_avail_count(pool_), before) << "the lender frees the mbuf when it is the last handle";
+}
+
+TEST_F(EthdevPacket, ADroppedLenderFreesWhenTheLastHandleGoes) {
+    const unsigned before = rte_mempool_avail_count(pool_);
+    aloe::ethdev::Packet handle;
+    {
+        aloe::ethdev::Packet packet = allocate();
+        handle                      = packet.lend();
+    }
+    EXPECT_EQ(rte_mempool_avail_count(pool_), before - 1) << "the handle keeps the mbuf alive";
+    EXPECT_EQ(rte_mbuf_refcnt_read(handle.get()), 1);
+    handle = aloe::ethdev::Packet{};
+    EXPECT_EQ(rte_mempool_avail_count(pool_), before) << "freed exactly once, by the last handle";
+}
+
+TEST_F(EthdevPacket, AHandleCanBeLentAgainOnceItIsBack) {
+    aloe::ethdev::Packet packet = allocate();
+    {
+        const aloe::ethdev::Packet first = packet.lend();
+        EXPECT_TRUE(packet.lent());
+    }
+    EXPECT_FALSE(packet.lent());
+    const aloe::ethdev::Packet second = packet.lend();
+    EXPECT_TRUE(packet.lent());
+    EXPECT_EQ(rte_mbuf_refcnt_read(packet.get()), 2);
+}
