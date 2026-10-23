@@ -1,7 +1,9 @@
 #include "runner.hpp"
 
+#include <algorithm>
 #include <aloe/core>
 #include <aloe/frames>
+#include <aloe/stream>
 #include <aloe/tcp>
 #include <aloe/wire>
 #include <array>
@@ -10,6 +12,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -49,6 +52,83 @@ namespace aloe::scenario {
                     return "TableFull";
             }
             std::unreachable();
+        }
+
+        [[nodiscard]] std::string_view name_of(const tcp::ConnectError error) noexcept {
+            switch (error) {
+                case tcp::ConnectError::TableFull:
+                    return "TableFull";
+                case tcp::ConnectError::NoPort:
+                    return "NoPort";
+                case tcp::ConnectError::Unplaceable:
+                    return "Unplaceable";
+                case tcp::ConnectError::NoRoute:
+                    return "NoRoute";
+            }
+            std::unreachable();
+        }
+
+        [[nodiscard]] std::string_view name_of(const tcp::State state) noexcept {
+            switch (state) {
+                case tcp::State::Closed:
+                    return "Closed";
+                case tcp::State::SynSent:
+                    return "SynSent";
+                case tcp::State::SynReceived:
+                    return "SynReceived";
+                case tcp::State::Established:
+                    return "Established";
+                case tcp::State::FinWait1:
+                    return "FinWait1";
+                case tcp::State::FinWait2:
+                    return "FinWait2";
+                case tcp::State::CloseWait:
+                    return "CloseWait";
+                case tcp::State::Closing:
+                    return "Closing";
+                case tcp::State::LastAck:
+                    return "LastAck";
+            }
+            std::unreachable();
+        }
+
+        [[nodiscard]] std::string_view name_of(const stream::Event event) noexcept {
+            switch (event) {
+                case stream::Event::Connected:
+                    return "Connected";
+                case stream::Event::Accepted:
+                    return "Accepted";
+                case stream::Event::Readable:
+                    return "Readable";
+                case stream::Event::Writable:
+                    return "Writable";
+                case stream::Event::Acked:
+                    return "Acked";
+                case stream::Event::PeerClosed:
+                    return "PeerClosed";
+                case stream::Event::Closed:
+                    return "Closed";
+                case stream::Event::Reset:
+                    return "Reset";
+                case stream::Event::TimedOut:
+                    return "TimedOut";
+                case stream::Event::Unresolved:
+                    return "Unresolved";
+            }
+            std::unreachable();
+        }
+
+        /// The events that end a connection; the stack raises one of them, once.
+        constexpr std::array terminal_events{
+            stream::Event::Closed, stream::Event::Reset, stream::Event::TimedOut, stream::Event::Unresolved};
+
+        [[nodiscard]] std::optional<stream::Event> terminal_of(const stream::Events events) noexcept {
+            for (const stream::Event event : terminal_events) {
+                if (events.has(event)) {
+                    return event;
+                }
+            }
+            return std::nullopt;
         }
 
     }  // namespace
@@ -226,7 +306,43 @@ namespace aloe::scenario {
     }
 
     void Runner::drain_events() {
-        while (harness_->tcp().poll_event()) {}
+        while (const auto polled = harness_->tcp().poll_event()) {
+            on_event(*polled);
+        }
+    }
+
+    void Runner::on_event(const Harness::Event& polled) {
+        Harness::Connection* connection             = polled.connection;
+        const stream::Events events                 = polled.events;
+        const std::optional<stream::Event> terminal = terminal_of(events);
+        const auto bound                            = std::ranges::find_if(
+            descriptors_, [connection](const auto& entry) { return entry.second.connection == connection; });
+        if (bound != descriptors_.end()) {
+            Binding& binding    = bound->second;
+            binding.established = binding.established || events.connected() || events.accepted();
+            if (terminal) {
+                binding.terminal   = terminal;  // the first: with the pointer gone, no later event finds the binding
+                binding.connection = nullptr;
+                connection->release();
+            }
+            return;
+        }
+        // Not bound: the application owns it from `Accepted` on, and `accept` takes it from the pending ones.
+        const auto pending = std::ranges::find(pending_accepts_, connection);
+        const bool owned   = pending != pending_accepts_.end() || events.accepted();
+        if (!owned) {
+            return;
+        }
+        if (terminal) {
+            if (pending != pending_accepts_.end()) {
+                pending_accepts_.erase(pending);
+            }
+            connection->release();
+            return;
+        }
+        if (pending == pending_accepts_.end()) {
+            pending_accepts_.push_back(connection);
+        }
     }
 
     Runner::Window Runner::window_of(const Event& event) const {
@@ -250,6 +366,14 @@ namespace aloe::scenario {
             {"fcntl",      &Runner::call_fcntl     },
             {"bind",       &Runner::call_bind      },
             {"listen",     &Runner::call_listen    },
+            {"accept",     &Runner::call_accept    },
+            {"connect",    &Runner::call_connect   },
+            {"write",      &Runner::call_write     },
+            {"send",       &Runner::call_write     },
+            {"read",       &Runner::call_read      },
+            {"recv",       &Runner::call_read      },
+            {"close",      &Runner::call_close     },
+            {"shutdown",   &Runner::call_shutdown  },
         });
         for (const auto& [name, bound] : calls) {
             if (name == call.name) {
@@ -260,10 +384,7 @@ namespace aloe::scenario {
     }
 
     Runner::Outcome Runner::call_socket(const Event& event, const CallLine& call) {
-        if (!descriptors_.try_emplace(call.result).second) {
-            return fail(event, std::format("descriptor {} is in use", call.result));
-        }
-        return {};
+        return open_descriptor(event, call, call.result, Binding{});
     }
 
     Runner::Outcome Runner::call_setsockopt(const Event& event, const CallLine& call) {
@@ -317,6 +438,235 @@ namespace aloe::scenario {
         return {};
     }
 
+    Runner::Outcome Runner::call_accept(const Event& event, const CallLine& call) {
+        return wait(event, call, &Runner::try_accept);
+    }
+
+    Runner::Outcome Runner::call_connect(const Event& event, const CallLine& call) {
+        auto found = descriptor_of(event, call, Binding::Kind::Socket);
+        if (!found) {
+            return std::unexpected{std::move(found.error())};
+        }
+        const bool in_progress = call.result == -1 && call.error == "EINPROGRESS";
+        if (call.result != 0 && !in_progress) {
+            return fail(event, "connect: unsupported result");
+        }
+        const HarnessConfig& config = harness_->config();
+        const auto connected =
+            harness_->tcp().connect(tcp::Endpoint{.address = config.peer_address, .port = config.peer_port}, now_);
+        if (!connected) {
+            return fail(event, std::format("connect: {}", name_of(connected.error())));
+        }
+        Binding& binding   = **found;
+        binding.kind       = Binding::Kind::Connection;
+        binding.connection = *connected;
+        return {};
+    }
+
+    Runner::Outcome Runner::call_write(const Event& event, const CallLine& call) {
+        auto found = live_connection(event, call);
+        if (!found) {
+            return std::unexpected{std::move(found.error())};
+        }
+        auto count = count_of(event, call);
+        if (!count) {
+            return std::unexpected{std::move(count.error())};
+        }
+        if (auto flags = expect_no_flags(event, call); !flags) {
+            return flags;
+        }
+        Harness::Connection& connection = *(*found)->connection;
+        std::size_t written             = 0;
+        while (written < *count) {
+            const auto span = connection.prepare(*count - written);
+            if (!span) {
+                break;  // nothing writable: the peer's window is full, or no packet is free
+            }
+            std::ranges::copy(frames::pattern(span->size(), static_cast<std::uint8_t>(written)), span->begin());
+            if (!connection.commit(span->size())) {
+                break;
+            }
+            written += span->size();
+        }
+        if (std::cmp_not_equal(written, call.result)) {
+            return fail(event,
+                        std::format("{}: accepted {} of {}, expected {}", call.name, written, *count, call.result));
+        }
+        return {};
+    }
+
+    Runner::Outcome Runner::call_read(const Event& event, const CallLine& call) {
+        return wait(event, call, &Runner::try_read);
+    }
+
+    Runner::Outcome Runner::call_close(const Event& event, const CallLine& call) {
+        auto found = descriptor(event, call);
+        if (!found) {
+            return std::unexpected{std::move(found.error())};
+        }
+        if (auto zero = expect_zero(event, call); !zero) {
+            return zero;
+        }
+        const std::int64_t number = call.arguments.front().integer;
+        Binding& binding          = **found;
+        if (binding.kind == Binding::Kind::Closed) {
+            return fail(event, std::format("close: descriptor {} is already closed", number));
+        }
+        if (binding.kind == Binding::Kind::Connection && binding.connection != nullptr) {
+            binding.connection->close();
+            binding.kind = Binding::Kind::Closed;  // the slot stays until its terminal event releases it
+            return {};
+        }
+        if (binding.kind == Binding::Kind::Listener) {
+            harness_->tcp().unlisten(binding.port);
+        }
+        descriptors_.erase(number);
+        return {};
+    }
+
+    Runner::Outcome Runner::call_shutdown(const Event& event, const CallLine& call) {
+        auto found = live_connection(event, call);
+        if (!found) {
+            return std::unexpected{std::move(found.error())};
+        }
+        const std::string_view how = call.arguments.size() > 1 ? call.arguments[1].text : std::string_view{};
+        if (how != "SHUT_WR") {
+            return fail(event, std::format("unbound call shutdown({})", how));
+        }
+        if (auto zero = expect_zero(event, call); !zero) {
+            return zero;
+        }
+        (*found)->connection->close();  // a FIN after what was committed; the connection stays readable
+        return {};
+    }
+
+    Runner::Outcome Runner::wait(const Event& event, const CallLine& call, const Try attempt) {
+        const Window window = window_of(event);
+        Attempt satisfied   = std::invoke(attempt, this, event, call);
+        while (satisfied && !*satisfied && window.low != window.high && now_ < window.high) {
+            if (auto stepped = step(event); !stepped) {
+                return stepped;
+            }
+            satisfied = std::invoke(attempt, this, event, call);
+        }
+        if (!satisfied) {
+            return std::unexpected{std::move(satisfied.error())};
+        }
+        if (!*satisfied) {
+            return fail(event, std::format("{}: not satisfied: {}", call.name, found_at(call)));
+        }
+        return {};
+    }
+
+    Runner::Attempt Runner::try_accept(const Event& event, const CallLine& call) {
+        if (auto found = descriptor_of(event, call, Binding::Kind::Listener); !found) {
+            return std::unexpected{std::move(found.error())};
+        }
+        if (pending_accepts_.empty()) {
+            return false;
+        }
+        Binding accepted{};
+        accepted.kind        = Binding::Kind::Connection;
+        accepted.connection  = pending_accepts_.front();
+        accepted.established = true;
+        if (auto opened = open_descriptor(event, call, call.result, accepted); !opened) {
+            return std::unexpected{std::move(opened.error())};
+        }
+        pending_accepts_.pop_front();
+        return true;
+    }
+
+    Runner::Attempt Runner::try_read(const Event& event, const CallLine& call) {
+        // Data can be asked only of a live connection; an errno word may name the event that released it.
+        auto found =
+            call.result < 0 ? descriptor_of(event, call, Binding::Kind::Connection) : live_connection(event, call);
+        if (!found) {
+            return std::unexpected{std::move(found.error())};
+        }
+        auto count = count_of(event, call);
+        if (!count) {
+            return std::unexpected{std::move(count.error())};
+        }
+        if (auto flags = expect_no_flags(event, call); !flags) {
+            return std::unexpected{std::move(flags.error())};
+        }
+        const Binding& binding = **found;
+        if (call.result < 0) {
+            return errno_holds(event, call, binding);
+        }
+        Harness::Connection& connection = *binding.connection;
+        if (call.result == 0) {
+            return connection.peer_closed() && connection.unread().empty();
+        }
+        const std::size_t available = std::min(connection.unread().size(), *count);
+        if (available == 0) {
+            return false;
+        }
+        if (std::cmp_not_equal(available, call.result)) {
+            return fail(event, std::format("{}: {} unread, expected {}", call.name, available, call.result));
+        }
+        connection.consume(available);
+        return true;
+    }
+
+    Runner::Attempt Runner::errno_holds(const Event& event, const CallLine& call, const Binding& binding) {
+        if (call.result != -1) {
+            return fail(event, std::format("{}: unsupported result {}", call.name, call.result));
+        }
+        const std::string_view word = call.error;
+        if (word == "EAGAIN") {
+            const Harness::Connection* connection = binding.connection;
+            return connection != nullptr && connection->unread().empty() && !connection->peer_closed();
+        }
+        if (word == "ETIMEDOUT") {
+            return binding.terminal == stream::Event::TimedOut;
+        }
+        if (word == "ECONNRESET") {
+            return binding.terminal == stream::Event::Reset && binding.established;
+        }
+        if (word == "ECONNREFUSED") {
+            return binding.terminal == stream::Event::Reset && !binding.established;
+        }
+        if (word == "EHOSTUNREACH") {
+            return binding.terminal == stream::Event::Unresolved;
+        }
+        return fail(event, std::format("unbound errno {}", word));
+    }
+
+    std::string Runner::found_at(const CallLine& call) const {
+        const auto found = descriptors_.find(call.arguments.front().integer);
+        if (found == descriptors_.end()) {
+            return "the descriptor is not open";
+        }
+        const Binding& binding = found->second;
+        if (binding.kind == Binding::Kind::Listener) {
+            return "no accepted connection is pending";
+        }
+        if (binding.connection == nullptr) {
+            return std::format("the connection is {}{}",
+                               name_of(binding.terminal.value_or(stream::Event::Closed)),
+                               binding.established ? "" : ", never established");
+        }
+        const Harness::Connection& connection = *binding.connection;
+        return std::format("{} unread, the peer {}, state {}",
+                           connection.unread().size(),
+                           connection.peer_closed() ? "closed" : "open",
+                           name_of(connection.state()));
+    }
+
+    Runner::Outcome Runner::open_descriptor(const Event& event,
+                                            const CallLine& call,
+                                            const std::int64_t number,
+                                            const Binding binding) {
+        if (number < 0) {
+            return fail(event, std::format("{}: result {} is not a descriptor", call.name, number));
+        }
+        if (!descriptors_.try_emplace(number, binding).second) {
+            return fail(event, std::format("descriptor {} is in use", number));
+        }
+        return {};
+    }
+
     std::expected<Runner::Binding*, Failure> Runner::descriptor(const Event& event, const CallLine& call) {
         if (call.arguments.empty() || call.arguments.front().kind != Argument::Kind::Integer) {
             return fail(event, std::format("{}: the first argument is not a descriptor", call.name));
@@ -341,12 +691,43 @@ namespace aloe::scenario {
         return found;
     }
 
+    std::expected<Runner::Binding*, Failure> Runner::live_connection(const Event& event, const CallLine& call) {
+        auto found = descriptor_of(event, call, Binding::Kind::Connection);
+        if (found && (*found)->connection == nullptr) {
+            const stream::Event terminal = (*found)->terminal.value_or(stream::Event::Closed);
+            return fail(event, std::format("{}: the connection is {}", call.name, name_of(terminal)));
+        }
+        return found;
+    }
+
+    std::expected<std::size_t, Failure> Runner::count_of(const Event& event, const CallLine& call) {
+        constexpr std::size_t position = 2;  // write(n, ..., count)
+        if (call.arguments.size() <= position || call.arguments[position].kind != Argument::Kind::Integer ||
+            call.arguments[position].integer < 0) {
+            return fail(event, std::format("{}: the count is not a number", call.name));
+        }
+        return static_cast<std::size_t>(call.arguments[position].integer);
+    }
+
+    Runner::Outcome Runner::expect_no_flags(const Event& event, const CallLine& call) {
+        constexpr std::size_t position = 3;  // send(n, ..., count, flags)
+        if (call.arguments.size() > position &&
+            (call.arguments[position].kind != Argument::Kind::Integer || call.arguments[position].integer != 0)) {
+            return fail(event, std::format("{}: flags other than 0 are not supported", call.name));
+        }
+        return {};
+    }
+
     std::string_view Runner::kind_name(const Binding::Kind kind) noexcept {
         switch (kind) {
             case Binding::Kind::Socket:
                 return "socket";
             case Binding::Kind::Listener:
                 return "listener";
+            case Binding::Kind::Connection:
+                return "connection";
+            case Binding::Kind::Closed:
+                return "closed connection";
         }
         std::unreachable();
     }

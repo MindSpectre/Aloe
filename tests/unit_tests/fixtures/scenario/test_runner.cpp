@@ -214,3 +214,187 @@ TEST(RunnerFormat, PrefixesThePathAndLine) {
     EXPECT_EQ(aloe::scenario::format(Failure{.line = 12, .message = "missing: x"}, "tests/scenarios/tcp/a.pkt"),
               "tests/scenarios/tcp/a.pkt:12: missing: x");
 }
+
+namespace {
+
+    constexpr std::string_view passive_open = "0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
+                                              "+0 setsockopt(3, SOL_SOCKET, SO_REUSEADDR, [1], 4) = 0\n"
+                                              "+0 bind(3, ..., ...) = 0\n"
+                                              "+0 listen(3, 1) = 0\n"
+                                              "+0 < S 0:0(0) win 65535 <mss 1460>\n"
+                                              "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n"
+                                              "+0 < . 1:1(0) ack 1 win 65535\n"
+                                              "+0 accept(3, ..., ...) = 4\n";
+
+}  // namespace
+
+TEST_P(RunnerTest, PassiveOpenWithAcceptAndClose) {
+    const auto result = run_text(std::string{passive_open} + "+0 close(4) = 0\n"
+                                                             "+0 > F. 1:1(0) ack 1 win 46720\n"
+                                                             "+0 < . 1:1(0) ack 2 win 65535\n"
+                                                             "+0 < F. 1:1(0) ack 2 win 65535\n"
+                                                             "+0 > . 2:2(0) ack 2 win 46720\n",
+                                 GetParam());
+    EXPECT_TRUE(result.has_value()) << result.error().message;
+}
+
+TEST_P(RunnerTest, ActiveOpenWithConnect) {
+    const auto result = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
+                                 "+0 fcntl(3, F_SETFL, O_RDWR|O_NONBLOCK) = 0\n"
+                                 "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
+                                 "+0 > S 0:0(0) win 46720 <mss 1460>\n"
+                                 "+0 < S. 0:0(0) ack 1 win 65535 <mss 1460>\n"
+                                 "+0 > . 1:1(0) ack 1 win 46720\n",
+                                 GetParam());
+    EXPECT_TRUE(result.has_value()) << result.error().message;
+}
+
+TEST_P(RunnerTest, WriteSegmentsByThePeersMssAcrossInterleavedAcks) {
+    const auto result = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
+                                 "+0 bind(3, ..., ...) = 0\n"
+                                 "+0 listen(3, 1) = 0\n"
+                                 "+0 < S 0:0(0) win 65535 <mss 1000>\n"
+                                 "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n"
+                                 "+0 < . 1:1(0) ack 1 win 65535\n"
+                                 "+0 accept(3, ..., ...) = 4\n"
+                                 "+0 write(4, ..., 2500) = 2500\n"
+                                 "+0 > P. 1:1001(1000) ack 1 win 46720\n"
+                                 "+0 < . 1:1(0) ack 1001 win 65535\n"
+                                 "+0 > P. 1001:2001(1000) ack 1 win 46720\n"
+                                 "+0 < . 1:1(0) ack 2001 win 65535\n"
+                                 "+0 > P. 2001:2501(500) ack 1 win 46720\n"
+                                 "+0 < . 1:1(0) ack 2501 win 65535\n",
+                                 GetParam());
+    EXPECT_TRUE(result.has_value()) << result.error().message;
+}
+
+TEST_P(RunnerTest, ReadConsumesWhatArrivedAndEagainWhenNothingIs) {
+    const auto result = run_text(std::string{passive_open} + "+0 < P. 1:1001(1000) ack 1 win 65535\n"
+                                                             "+0 > . 1:1(0) ack 1001 win 45720\n"
+                                                             "+0 read(4, ..., 1000) = 1000\n"
+                                                             "+0 > . 1:1(0) ack 1001 win 46720\n"
+                                                             "+0 read(4, ..., 1000) = -1 EAGAIN\n",
+                                 GetParam());
+    EXPECT_TRUE(result.has_value()) << result.error().message;
+}
+
+TEST_P(RunnerTest, WriteBeyondTheWindowFailsWithTheCountAccepted) {
+    const auto result = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
+                                 "+0 bind(3, ..., ...) = 0\n"
+                                 "+0 listen(3, 1) = 0\n"
+                                 "+0 < S 0:0(0) win 500 <mss 1460>\n"
+                                 "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n"
+                                 "+0 < . 1:1(0) ack 1 win 500\n"
+                                 "+0 accept(3, ..., ...) = 4\n"
+                                 "+0 write(4, ..., 1000) = 1000\n",
+                                 GetParam());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(mentions(result, "500")) << result.error().message;
+    EXPECT_TRUE(mentions(result, "1000")) << result.error().message;
+    EXPECT_EQ(result.error().line, 8);
+}
+
+TEST_P(RunnerTest, ReadBeyondUnreadFailsWithTheCounts) {
+    const auto result = run_text(std::string{passive_open} + "+0 < P. 1:101(100) ack 1 win 65535\n"
+                                                             "+0 > . 1:1(0) ack 101 win 46620\n"
+                                                             "+0 read(4, ..., 1000) = 500\n",
+                                 GetParam());
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(mentions(result, "100")) << result.error().message;
+    EXPECT_TRUE(mentions(result, "500")) << result.error().message;
+}
+
+TEST_P(RunnerTest, AReadWithAWindowWaitsForTheTimeout) {
+    HarnessConfig config;
+    config.tcp.retries = 1;  // the SYN again at one second, TimedOut two seconds after that
+    const auto result  = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
+                                  "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
+                                  "+0 > S 0:0(0) win 46720 <mss 1460>\n"
+                                  "+1 > S 0:0(0) win 46720 <mss 1460>\n"
+                                  "+2~+2.01 read(3, ..., 1) = -1 ETIMEDOUT\n",
+                                  GetParam(),
+                                  {},
+                                  config);
+    EXPECT_TRUE(result.has_value()) << result.error().message;
+}
+
+TEST_P(RunnerTest, AReadWithoutAWindowRunsOnce) {
+    HarnessConfig config;
+    config.tcp.retries = 1;
+    const auto result  = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
+                                  "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
+                                  "+0 > S 0:0(0) win 46720 <mss 1460>\n"
+                                  "+0.5 read(3, ..., 1) = -1 ETIMEDOUT\n",
+                                  GetParam(),
+                                  {},
+                                  config);
+    EXPECT_TRUE(mentions(result, "not satisfied")) << (result ? "passed" : result.error().message);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(mentions(result, "SynSent")) << result.error().message;
+}
+
+TEST_P(RunnerTest, ResetGivesEconnresetAndTheSlotIsReleased) {
+    const auto result = run_text(std::string{passive_open} + "+0 < R. 1:1(0) ack 1 win 65535\n"
+                                                             "+0 read(4, ..., 1000) = -1 ECONNRESET\n"
+                                                             "+0 < . 1:1(0) ack 1 win 65535\n"
+                                                             "+0 > R 1:1(0) win 0\n",
+                                 GetParam());
+    EXPECT_TRUE(result.has_value()) << result.error().message;
+}
+
+TEST_P(RunnerTest, ARefusedConnectGivesEconnrefused) {
+    const auto result = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
+                                 "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
+                                 "+0 > S 0:0(0) win 46720 <mss 1460>\n"
+                                 "+0 < R. 0:0(0) ack 1 win 0\n"
+                                 "+0 read(3, ..., 1) = -1 ECONNREFUSED\n",
+                                 GetParam());
+    EXPECT_TRUE(result.has_value()) << result.error().message;
+}
+
+TEST_P(RunnerTest, CloseOnAListenerUnlistens) {
+    const auto result = run_text(std::string{listen_preamble} + "+0 close(3) = 0\n"
+                                                                "+0 < S 0:0(0) win 65535 <mss 1460>\n"
+                                                                "+0 > R. 0:0(0) ack 1 win 0\n",
+                                 GetParam());
+    EXPECT_TRUE(result.has_value()) << result.error().message;
+}
+
+TEST_P(RunnerTest, ShutdownSendsAFinAndKeepsReading) {
+    const auto result = run_text(std::string{passive_open} + "+0 shutdown(4, SHUT_WR) = 0\n"
+                                                             "+0 > F. 1:1(0) ack 1 win 46720\n"
+                                                             "+0 < . 1:1(0) ack 2 win 65535\n"
+                                                             "+0 < P. 1:101(100) ack 2 win 65535\n"
+                                                             "+0 > . 2:2(0) ack 101 win 46620\n"
+                                                             "+0 read(4, ..., 100) = 100\n"
+                                                             "+0 > . 2:2(0) ack 101 win 46720\n",
+                                 GetParam());
+    EXPECT_TRUE(result.has_value()) << result.error().message;
+}
+
+TEST_P(RunnerTest, AcceptWithNothingPendingFails) {
+    const auto result = run_text(std::string{listen_preamble} + "+0 accept(3, ..., ...) = 4\n", GetParam());
+    EXPECT_TRUE(mentions(result, "accept")) << (result ? "passed" : result.error().message);
+    EXPECT_TRUE(mentions(result, "not satisfied"));
+}
+
+TEST_P(RunnerTest, AnUnknownSetsockoptOptionFails) {
+    const auto result =
+        run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n+0 setsockopt(3, SOL_TCP, TCP_MAXSEG, [1000], 4) = 0\n",
+                 GetParam());
+    EXPECT_TRUE(mentions(result, "TCP_MAXSEG")) << (result ? "passed" : result.error().message);
+}
+
+TEST_P(RunnerTest, ANegativeDescriptorOtherShutdownsAndFlagsFail) {
+    const auto negative = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = -1\n", GetParam());
+    ASSERT_FALSE(negative.has_value());
+    EXPECT_TRUE(mentions(negative, "socket: result -1 is not a descriptor")) << negative.error().message;
+
+    const auto shut_rd = run_text(std::string{passive_open} + "+0 shutdown(4, SHUT_RD) = 0\n", GetParam());
+    ASSERT_FALSE(shut_rd.has_value());
+    EXPECT_TRUE(mentions(shut_rd, "unbound call shutdown(SHUT_RD)")) << shut_rd.error().message;
+
+    const auto peek = run_text(std::string{passive_open} + "+0 recv(4, ..., 1000, MSG_PEEK) = -1 EAGAIN\n", GetParam());
+    ASSERT_FALSE(peek.has_value());
+    EXPECT_TRUE(mentions(peek, "recv: flags other than 0 are not supported")) << peek.error().message;
+}
