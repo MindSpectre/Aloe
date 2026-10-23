@@ -5,6 +5,7 @@
 #include <aloe/tcp>
 #include <aloe/wire>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <format>
@@ -26,6 +27,9 @@ namespace aloe::scenario {
 
         /// An inbound line's window when none is written.
         constexpr std::uint16_t default_window = 65535;
+
+        /// TCP's header length counts 32-bit words, so an option list fills whole words.
+        constexpr std::size_t option_alignment = 4;
 
         /// A stamp in the script's notation: seconds since the epoch.
         [[nodiscard]] std::string at(const core::TimePoint stamp) {
@@ -80,8 +84,15 @@ namespace aloe::scenario {
         if (line.options.any) {
             return fail(event, "inbound options must be written");
         }
+        if (line.urgent) {
+            return fail(event, "inbound urg is not supported");  // frames::TcpSpec carries no urgent pointer
+        }
         if (auto reached = reach(event); !reached) {
             return reached;
+        }
+        auto options = encode_options(line.options, peer_.inbound_sack_base());  // the base the steps may have fixed
+        if (options.size() % option_alignment != 0) {
+            return fail(event, "inbound options must be a multiple of 4 bytes; pad with nop");
         }
         const HarnessConfig& config = harness_->config();
         const auto frame =
@@ -95,7 +106,7 @@ namespace aloe::scenario {
                                .acknowledgement  = line.ack ? peer_.acknowledgement(*line.ack) : wire::TcpSequence{},
                                .flags            = line.flags,
                                .window           = line.window.value_or(default_window),
-                               .options          = encode_options(line.options, peer_.inbound_sack_base())},
+                               .options          = std::move(options)},
                               frames::pattern(line.length, static_cast<std::uint8_t>(line.first)));
         harness_->inject(frame, now_);
         return settle(event);
@@ -225,8 +236,8 @@ namespace aloe::scenario {
                 return {.low = previous_ + time.low, .high = previous_ + time.high};
             case TimeSpec::Kind::Absolute:
                 return {.low = core::TimePoint{} + time.low, .high = core::TimePoint{} + time.high};
-            case TimeSpec::Kind::Any:
-                return {.low = now_, .high = now_ + config_.any_bound};
+            case TimeSpec::Kind::Any:  // from the start, so a segment already waiting in the queue is never early
+                return {.low = core::TimePoint{}, .high = now_ + config_.any_bound};
         }
         std::unreachable();
     }

@@ -183,6 +183,33 @@ TEST_P(RunnerTest, ABadChecksumFailsEvenWhenEveryFieldMatches) {
     EXPECT_TRUE(mentions(result, "checksum")) << (result ? "passed" : result.error().message);
 }
 
+TEST_P(RunnerTest, AStarLineTakesASegmentAlreadyWaiting) {
+    const auto at_once = run_text(std::string{listen_preamble} + "+0 < S 0:0(0) win 65535 <mss 1460>\n"
+                                                                 "* > S. 0:0(0) ack 1 <mss 1460>\n",
+                                  GetParam());
+    EXPECT_TRUE(at_once.has_value()) << at_once.error().message;
+    // The SYN-ACK was sent at 0; the `*` line is reached at 0.5 and still takes it.
+    const auto later = run_text(std::string{listen_preamble} + "+0 < S 0:0(0) win 65535 <mss 1460>\n"
+                                                               "+0.5 < . 1:1(0) ack 1 win 65535\n"
+                                                               "* > S. 0:0(0) ack 1 <mss 1460>\n",
+                                GetParam());
+    EXPECT_TRUE(later.has_value()) << later.error().message;
+}
+
+TEST_P(RunnerTest, AnInboundUrgFails) {
+    const auto result =
+        run_text(std::string{listen_preamble} + "+0 < S 0:0(0) win 65535 urg 1 <mss 1460>\n", GetParam());
+    EXPECT_TRUE(mentions(result, "inbound urg is not supported")) << (result ? "passed" : result.error().message);
+    EXPECT_EQ(result.error().line, 5);
+}
+
+TEST_P(RunnerTest, InboundOptionsOutsideWholeWordsFail) {
+    const auto result = run_text(std::string{listen_preamble} + "+0 < S 0:0(0) win 65535 <sackOK>\n", GetParam());
+    EXPECT_TRUE(mentions(result, "inbound options must be a multiple of 4 bytes; pad with nop"))
+        << (result ? "passed" : result.error().message);
+    EXPECT_EQ(result.error().line, 5);
+}
+
 TEST(RunnerFormat, PrefixesThePathAndLine) {
     EXPECT_EQ(aloe::scenario::format(Failure{.line = 12, .message = "missing: x"}, "tests/scenarios/tcp/a.pkt"),
               "tests/scenarios/tcp/a.pkt:12: missing: x");
