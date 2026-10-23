@@ -6,6 +6,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Scenario
         test_peer.cpp
         test_notation.cpp
         test_match.cpp
+        test_harness.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Scenario
         PRIVATE

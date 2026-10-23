@@ -5,6 +5,7 @@
  * the fabric. Consumers link Aloe::Fixtures::Scenario and write `#include <aloe/scenario>`.
  */
 
+#include <harness.hpp>
 #include <match.hpp>
 #include <notation.hpp>
 #include <parse_script.hpp>

@@ -27,6 +27,8 @@ add_library(${SCENARIO}.Run STATIC
         run/peer.cpp
         run/match.hpp
         run/match.cpp
+        run/harness.hpp
+        run/harness.cpp
 )
 target_include_directories(${SCENARIO}.Run PUBLIC
         run/
@@ -34,6 +36,10 @@ target_include_directories(${SCENARIO}.Run PUBLIC
 target_link_libraries(${SCENARIO}.Run PUBLIC
         ${SCENARIO}.Script
         Aloe::Fixtures::Frames
+        Aloe::Fixtures::Fabric
+        Aloe::Common::Tcp
+        Aloe::Common::Net
+        Aloe::Common::Loop
 )
 ##############################################################################
 
