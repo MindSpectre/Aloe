@@ -177,7 +177,7 @@ in seconds since the start and the window as written, before the tolerance:
 tests/scenarios/tcp/close/remote-fin-then-local-close.pkt:13: expected "> F. 1:1(0) ack 2 win 46720" at +0.000000; the stack sent "> . 1:1(0) ack 2 win 46720" at +0.000000: flags differ
 ```
 
-A message that is not a mismatch says so first: `early:`, `late:`, `missing:`, `unexpected:` or `bad checksum:`.
+A mismatch says so first: `early:`, `late:`, `missing:`, `unexpected:` or `bad checksum:`. A call failure (`unbound call ...`, `read: not satisfied: ...`) names the call instead.
 
 ## Limits
 
@@ -186,13 +186,13 @@ What the runner does not model yet, which a script author needs to know:
 - The runner releases a connection's slot at its first terminal event, `Closed`, `Reset`, `TimedOut` or
   `Unresolved`, so whatever was unread is gone after it. After a `shutdown`, the peer's data followed by its FIN
   takes the connection to `Closed`, and a later `read` fails where Linux would return the data.
-- A closed descriptor keeps its number: `accept(3, ..., ...) = 4` after `close(4)` fails with descriptor 4 in
+- A closed connection's descriptor keeps its number until its terminal event (closing a listener or a socket frees it at once): `accept(3, ..., ...) = 4` after `close(4)` fails with descriptor 4 in
   use. Number the next connection 5.
 - `close` in SynSent does nothing, since the brick's `close()` acts in Established and CloseWait only; closing a
   listener leaves the connections it had accepted and `accept` had not taken where they are.
-- `close` always sends a FIN. Linux resets instead when unread data is pending (RFC 2525, 2.17); whether Aloe
-  follows is a question for the lifecycle step of phase 2, and no script in the first set closes with unread
-  data.
+- `close` on an established connection sends a FIN even with unread data. The reset Linux sends in that case
+  (RFC 2525, 2.17) is a question for the lifecycle step of phase 2, and no script in the first set closes with
+  unread data.
 - The runner does not advance the clock after the script's last line, so a script that asserts the stack stays
   silent for a while needs a later line to take the clock there.
 - `send` and `recv` flags must be `0`, `shutdown` takes only `SHUT_WR`, and `setsockopt` binds only
@@ -256,8 +256,8 @@ is the thin gtest wrapper. `tests/shared/` keeps what only Aloe's binaries need.
 **The runner's clock is virtual and steps at the wheel's resolution.** Nothing in a run reads a real clock, so a
 script is deterministic, its 63 seconds of retries take milliseconds, and it runs the same under every sanitizer.
 The clock steps by the wheel's resolution because the stack's timers fire at that resolution and no finer: a
-script that needs finer timing asks for timing the stack does not have. The default tolerance is one resolution,
-since a timer is late by up to that much.
+script that needs finer timing asks for timing the stack does not have. The default tolerance is 1 ms, the wheel's default resolution;
+a script's `--tolerance_usecs` overrides it.
 
 **Unbound calls fail loudly.** A call the runner does not bind, an option or errno word it does not know, flags
 on a `send`, an inbound field the frame builder cannot write, or syntax outside the subset fails the script with

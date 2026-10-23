@@ -78,7 +78,7 @@ reseeds its engine, from any thread; a default `Impairment` is no impairment, an
 it always has.
 
 - **`aloe::fabric::Impairment`** -- `loss`, `duplicate` and `reorder` are probabilities per frame; `delay` is
-  added to a delayed frame and `jitter` adds a uniform extra in `[0, jitter]`, drawn per frame; `seed` seeds the
+  added to a delayed frame and `jitter` adds a uniform extra in `[0, jitter)`, drawn per frame; `seed` seeds the
   engine; `script` is called first for every frame.
 - **`aloe::fabric::Egress`**, **`Verdict`**, **`Action`** -- what the script sees and answers. `Egress::index`
   counts the frames offered to the port's impairment from zero, since the port's first frame: `set_impairment`

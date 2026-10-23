@@ -267,7 +267,7 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - Once `frames::TcpSpec` owns a `std::vector` (its raw `options`), clang-tidy's `modernize-pass-by-value` wants a
   constructor that keeps one to take it by value and move it, as `TcpPeer(TcpSpec spec, ...)` does, not as
   `const TcpSpec`.
-- The scenario scripts binary registers its tests at run time, so `ctest` lists one entry for it; use
+- The scenario scripts binary registers its tests at run time; as for every test binary, `ctest` lists one entry; use
   `--gtest_filter='Scenario.tcp/<area>/*'` on the binary to run one area. A `-` in a gtest filter starts the
   excluded patterns, so a script with a dash in its name is matched with `?`: `fin?retransmitted*`, not `fin-*`.
 

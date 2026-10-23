@@ -122,8 +122,8 @@ software checksums and no root.
 
 `Aloe.Tests.Unit.Scenarios` runs the scenario scripts under `tests/scenarios/` against the TCP brick on
 the fabric. It finds the scripts at run time and registers one test per script and per checksum mode of
-the fabric, `Scenario.tcp/<area>/<name>/NoOffloads` and `.../Checksums`, so CTest lists it as one entry.
-Run one area or one script with a gtest filter on the binary; a `-` in a filter starts the excluded
+the fabric, `Scenario.tcp/<area>/<name>/NoOffloads` and `.../Checksums`; as for every test binary, CTest lists one entry.
+Run one area or one script with `--gtest_filter` on the binary; a `-` in a filter starts the excluded
 patterns, so match a dash in a name with `?`:
 
 ```bash
