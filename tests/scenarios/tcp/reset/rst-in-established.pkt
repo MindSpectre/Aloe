@@ -1,0 +1,15 @@
+// A RST on an established connection: the read reports it, the slot is released, and a later segment from the
+// peer is answered with a RST of our own, since nothing remembers the connection.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460>
++0 < . 1:1(0) ack 1 win 65535
++0 accept(3, ..., ...) = 4
+
++0 < R. 1:1(0) ack 1 win 65535
++0 read(4, ..., 1000) = -1 ECONNRESET
++0 < . 1:1(0) ack 1 win 65535
++0 > R 1:1(0) win 0
