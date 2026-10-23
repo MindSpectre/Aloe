@@ -45,6 +45,7 @@ namespace aloe::fabric {
                 .rx_l4_checksum   = checksums,
                 .tx_ipv4_checksum = checksums,
                 .tx_l4_checksum   = checksums,
+                .tx_reclaim       = true,
             };
         }
 
@@ -133,6 +134,7 @@ namespace aloe::fabric {
         assert(queue < queues_.size());
         Queue& source = *queues_[queue];
         const std::lock_guard lock{source.mutex};
+        release_finished(source);
         std::size_t count = 0;
         while (count < out.size() && !source.pending.empty()) {
             std::optional<Packet> packet = source.pool.allocate();
@@ -199,6 +201,10 @@ namespace aloe::fabric {
     std::size_t Port::transmit(const std::uint16_t queue, std::span<Packet> in) noexcept {
         assert(queue < queues_.size());
         Queue& source = *queues_[queue];
+        {
+            const std::lock_guard lock{source.mutex};
+            release_finished(source);
+        }
         for (Packet& packet : in) {
             if (packet.empty()) {
                 continue;
@@ -213,10 +219,49 @@ namespace aloe::fabric {
                 fabric_.deliver(*this, frame);
                 const std::lock_guard lock{source.mutex};
                 ++source.counters.transmitted;
+                if (packet.borrowed()) {
+                    source.in_flight.push_back(std::move(packet));
+                }
             }
             packet = Packet{};
         }
         return in.size();
+    }
+
+    void Port::release_finished(Queue& queue) const noexcept {
+        if (config_.loans != LoanReturn::OnStep) {
+            return;
+        }
+        const auto finished = static_cast<std::ptrdiff_t>(queue.finished);
+        queue.in_flight.erase(queue.in_flight.begin(), queue.in_flight.begin() + finished);
+        queue.finished = 0;
+    }
+
+    std::size_t Port::reclaim(const std::uint16_t queue) noexcept {
+        assert(queue < queues_.size());
+        Queue& source = *queues_[queue];
+        const std::lock_guard lock{source.mutex};
+        if (config_.loans != LoanReturn::OnStep) {
+            return 0;
+        }
+        const std::size_t count = source.in_flight.size();
+        source.in_flight.clear();
+        source.finished = 0;
+        return count;
+    }
+
+    void Port::return_loans(const std::uint16_t queue) noexcept {
+        assert(queue < queues_.size());
+        Queue& source = *queues_[queue];
+        const std::lock_guard lock{source.mutex};
+        source.in_flight.clear();
+        source.finished = 0;
+    }
+
+    std::size_t Port::loans_outstanding(const std::uint16_t queue) const noexcept {
+        assert(queue < queues_.size());
+        const std::lock_guard lock{queues_[queue]->mutex};
+        return queues_[queue]->in_flight.size();
     }
 
     Port& Fabric::add_port(const PortConfig& config) {
@@ -233,6 +278,30 @@ namespace aloe::fabric {
         }
         ports_.push_back(std::make_unique<Port>(Port::PrivateTag{}, *this, config));
         return *ports_.back();
+    }
+
+    void Fabric::advance(const core::TimePoint now) {
+        {
+            const std::lock_guard lock{mutex_};
+            if (now < now_) {
+                return;
+            }
+            now_ = now;
+        }
+        for (const auto& port : ports_) {
+            if (port->config_.loans != LoanReturn::OnStep) {
+                continue;
+            }
+            for (const auto& queue : port->queues_) {
+                const std::lock_guard lock{queue->mutex};
+                queue->finished = queue->in_flight.size();
+            }
+        }
+    }
+
+    core::TimePoint Fabric::now() const noexcept {
+        const std::lock_guard lock{mutex_};
+        return now_;
     }
 
     void Fabric::deliver(const Port& source, const std::span<const std::byte> frame) {

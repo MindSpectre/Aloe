@@ -16,7 +16,7 @@ namespace {
 
     constexpr aloe::wire::MacAddress alpha{0x02, 0, 0, 0, 0, 0x0a};
     constexpr aloe::wire::MacAddress beta{0x02, 0, 0, 0, 0, 0x0b};
-    constexpr aloe::wire::MacAddress gamma{0x02, 0, 0, 0, 0, 0x0c};
+    constexpr aloe::wire::MacAddress gamma_mac{0x02, 0, 0, 0, 0, 0x0c};
     constexpr aloe::wire::MacAddress nobody{0x02, 0, 0, 0, 0, 0xff};
 
     aloe::fabric::PortConfig port(const aloe::wire::MacAddress& mac) {
@@ -52,7 +52,7 @@ TEST(FabricDelivery, UnicastReachesThePortWithThatMacOnly) {
     aloe::fabric::Fabric fabric;
     auto& a = fabric.add_port(port(alpha));
     auto& b = fabric.add_port(port(beta));
-    auto& c = fabric.add_port(port(gamma));
+    auto& c = fabric.add_port(port(gamma_mac));
 
     const auto frame =
         aloe::frames::ethernet_frame(beta, alpha, aloe::frames::ethertype_experimental, aloe::frames::pattern(30));
@@ -70,7 +70,7 @@ TEST(FabricDelivery, BroadcastAndMulticastReachEveryOtherPort) {
     aloe::fabric::Fabric fabric;
     auto& a = fabric.add_port(port(alpha));
     auto& b = fabric.add_port(port(beta));
-    auto& c = fabric.add_port(port(gamma));
+    auto& c = fabric.add_port(port(gamma_mac));
 
     const auto broadcast = aloe::frames::ethernet_frame(
         aloe::wire::MacAddress::broadcast(), alpha, aloe::frames::ethertype_experimental, aloe::frames::pattern(30));

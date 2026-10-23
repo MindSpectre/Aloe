@@ -1,5 +1,6 @@
 #pragma once
 
+#include <aloe/core>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -24,6 +25,13 @@ namespace aloe::fabric {
         Checksums,  ///< Fills checksums on transmit and verifies them on receive.
     };
 
+    /// When a port lets go of a transmitted loan.
+    enum class LoanReturn : std::uint8_t {
+        OnStep,  ///< Finished by `Fabric::advance`, released by the queue's next transmit, receive or reclaim;
+                 ///< `reclaim` releases at once.
+        Held,    ///< Only `Port::return_loans` releases; `reclaim` returns zero. The driver that will not let go.
+    };
+
     struct PortConfig {
         wire::MacAddress mac;
         std::uint16_t queues      = 1;
@@ -32,6 +40,7 @@ namespace aloe::fabric {
         std::size_t pool_size     = 1024;  ///< Packets per queue.
         std::size_t queue_depth   = 1024;  ///< Frames a receive queue holds before it drops.
         EmulatedOffloads offloads = EmulatedOffloads::None;
+        LoanReturn loans          = LoanReturn::OnStep;
     };
 
     /**
@@ -91,6 +100,13 @@ namespace aloe::fabric {
         [[nodiscard]] std::size_t transmit(std::uint16_t queue, std::span<Packet> in) noexcept;
         [[nodiscard]] device::QueueCounters counters(std::uint16_t queue) const noexcept;
 
+        /// Releases every loan of the queue on an OnStep port and returns how many; zero on a Held port. Queue thread.
+        [[nodiscard]] std::size_t reclaim(std::uint16_t queue) noexcept;
+        /// Releases every loan of the queue whatever the policy. Queue thread; the test's hand on a Held port.
+        void return_loans(std::uint16_t queue) noexcept;
+        /// Handles transmitted and not yet released.
+        [[nodiscard]] std::size_t loans_outstanding(std::uint16_t queue) const noexcept;
+
     private:
         friend class Fabric;
 
@@ -108,7 +124,12 @@ namespace aloe::fabric {
             std::deque<PendingFrame> pending;
             Pool pool;
             device::QueueCounters counters;
+            std::vector<Packet> in_flight;  ///< Borrowed handles, in transmit order; after pool, so they die first.
+            std::size_t finished = 0;       ///< The front of in_flight that advance marked finished.
         };
+
+        /// Releases the handles `advance` finished, on an OnStep port. The caller holds the queue's lock.
+        void release_finished(Queue& queue) const noexcept;
 
         /// Called by the fabric from the transmitting thread.
         void deliver(std::span<const std::byte> frame);
@@ -147,12 +168,21 @@ namespace aloe::fabric {
             return ports_.size();
         }
 
+        /// The fixture's clock step: marks every OnStep loan transmitted before the call finished, and from Task 6
+        /// on delivers the frames whose delay is due. Safe from any thread. An earlier stamp than the last changes
+        /// nothing.
+        void advance(core::TimePoint now);
+
+        [[nodiscard]] core::TimePoint now() const noexcept;
+
     private:
         friend class Port;
 
         void deliver(const Port& source, std::span<const std::byte> frame);
 
         std::vector<std::unique_ptr<Port>> ports_;
+        mutable std::mutex mutex_;
+        core::TimePoint now_{};
     };
 
 }  // namespace aloe::fabric
