@@ -66,6 +66,13 @@ namespace {
         void set_tx(const aloe::device::TxMetadata& tx) noexcept {
             tx_ = tx;
         }
+        [[nodiscard]] FakePacket lend() noexcept {
+            lent_ = true;
+            return FakePacket{};
+        }
+        [[nodiscard]] bool lent() const noexcept {
+            return lent_;
+        }
 
     private:
         std::vector<std::byte> storage_ = std::vector<std::byte>(aloe::device::packet_headroom + 64);
@@ -73,6 +80,7 @@ namespace {
         std::size_t end_                = aloe::device::packet_headroom;
         aloe::device::RxMetadata rx_;
         aloe::device::TxMetadata tx_;
+        bool lent_ = false;
     };
 
     class FakeDevice {
@@ -106,6 +114,9 @@ namespace {
         }
         [[nodiscard]] std::size_t receive(std::uint16_t queue, std::span<Packet> out) noexcept {
             counters_[queue].received += out.size();
+            return 0;
+        }
+        [[nodiscard]] static std::size_t reclaim(std::uint16_t /*queue*/) noexcept {
             return 0;
         }
         [[nodiscard]] std::size_t transmit(std::uint16_t queue, std::span<Packet> in) noexcept {

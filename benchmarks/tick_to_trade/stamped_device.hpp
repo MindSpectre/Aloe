@@ -91,6 +91,10 @@ namespace aloe::benchmarks {
             return accepted;
         }
 
+        [[nodiscard]] std::size_t reclaim(const std::uint16_t queue) noexcept {
+            return device_->reclaim(queue);
+        }
+
         [[nodiscard]] device::QueueCounters counters(const std::uint16_t queue) const noexcept {
             return device_->counters(queue);
         }

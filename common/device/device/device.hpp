@@ -63,6 +63,12 @@ namespace aloe::device {
      *   packets. `transmit` takes packets from the front of `in` and returns how many it accepted.
      *   Accepted packets are moved from; the rest stay untouched with the caller, who retries or
      *   drops them. Empty slots are skipped and count as accepted.
+     * - `reclaim(queue)` asks the driver to free transmitted packets it still holds and returns how many it
+     *   let go of; on a device whose `capabilities().tx_reclaim` is false it returns zero and does nothing.
+     *   Queue thread, like every per-queue operation.
+     * - A received packet is exclusively owned by its receiver. A backend able to deliver a shared buffer
+     *   (the ring driver's loopback hands the very mbuf a lender still holds) copies it first; a copy that
+     *   finds no buffer drops the frame and counts it in `dropped`.
      * - `counters(queue)` is read from the queue's own thread, like every other per-queue operation.
      * - The hot-path operations never throw and never allocate anything but packets. Construction
      *   and destruction are cold paths.
@@ -81,6 +87,7 @@ namespace aloe::device {
             { device.allocate(queue) } -> std::same_as<std::optional<typename D::Packet>>;
             { device.receive(queue, packets) } -> std::same_as<std::size_t>;
             { device.transmit(queue, packets) } -> std::same_as<std::size_t>;
+            { device.reclaim(queue) } -> std::same_as<std::size_t>;
             { const_device.counters(queue) } -> std::same_as<QueueCounters>;
         };
 

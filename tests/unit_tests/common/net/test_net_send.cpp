@@ -75,6 +75,11 @@ namespace {
             return 0;
         }
 
+        [[nodiscard]] std::size_t reclaim(const std::uint16_t queue) noexcept {
+            aloe::core::force_non_const(this);
+            return inner_->reclaim(queue);
+        }
+
         [[nodiscard]] aloe::device::QueueCounters counters(const std::uint16_t queue) const noexcept {
             return inner_->counters(queue);
         }

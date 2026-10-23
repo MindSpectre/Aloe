@@ -73,6 +73,10 @@ namespace {
             return port_->transmit(queue, in.first(std::min(in.size(), accept)));
         }
 
+        [[nodiscard]] std::size_t reclaim(const std::uint16_t queue) const noexcept {
+            return port_->reclaim(queue);
+        }
+
         [[nodiscard]] aloe::device::QueueCounters counters(const std::uint16_t queue) const noexcept {
             return port_->counters(queue);
         }

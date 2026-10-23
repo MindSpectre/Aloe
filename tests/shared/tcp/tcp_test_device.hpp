@@ -65,6 +65,10 @@ namespace aloe::testing {
             return refuse_transmit ? 0 : port_->transmit(queue, in);
         }
 
+        [[nodiscard]] std::size_t reclaim(const std::uint16_t queue) const noexcept {
+            return port_->reclaim(queue);
+        }
+
         [[nodiscard]] device::QueueCounters counters(const std::uint16_t queue) const noexcept {
             return port_->counters(queue);
         }
