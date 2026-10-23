@@ -23,18 +23,20 @@ namespace aloe::fabric {
           begin_{std::exchange(other.begin_, 0)},
           end_{std::exchange(other.end_, 0)},
           rx_{std::exchange(other.rx_, device::RxMetadata{})},
-          tx_{std::exchange(other.tx_, device::TxMetadata{})} {
+          tx_{std::exchange(other.tx_, device::TxMetadata{})},
+          borrowed_{std::exchange(other.borrowed_, false)} {
     }
 
     Packet& Packet::operator=(Packet&& other) noexcept {
         if (this != &other) {
             release();
-            pool_  = std::exchange(other.pool_, nullptr);
-            block_ = std::exchange(other.block_, nullptr);
-            begin_ = std::exchange(other.begin_, 0);
-            end_   = std::exchange(other.end_, 0);
-            rx_    = std::exchange(other.rx_, device::RxMetadata{});
-            tx_    = std::exchange(other.tx_, device::TxMetadata{});
+            pool_     = std::exchange(other.pool_, nullptr);
+            block_    = std::exchange(other.block_, nullptr);
+            begin_    = std::exchange(other.begin_, 0);
+            end_      = std::exchange(other.end_, 0);
+            rx_       = std::exchange(other.rx_, device::RxMetadata{});
+            tx_       = std::exchange(other.tx_, device::TxMetadata{});
+            borrowed_ = std::exchange(other.borrowed_, false);
         }
         return *this;
     }
@@ -43,14 +45,38 @@ namespace aloe::fabric {
         release();
     }
 
+    Packet Packet::lend() noexcept {
+        assert(block_ != nullptr && "lend of an empty packet");
+        assert(!block_->lent && "one loan at a time");
+        block_->lent = true;
+        Packet handle{*pool_, *block_};
+        handle.begin_    = begin_;
+        handle.end_      = end_;
+        handle.tx_       = tx_;
+        handle.borrowed_ = true;
+        return handle;
+    }
+
     void Packet::release() noexcept {
-        if (block_ != nullptr) {
-            pool_->give_back(*block_);
-            pool_  = nullptr;
-            block_ = nullptr;
-            begin_ = 0;
-            end_   = 0;
+        if (block_ == nullptr) {
+            return;
         }
+        if (borrowed_) {
+            block_->lent = false;
+            if (block_->orphaned) {
+                block_->orphaned = false;
+                pool_->give_back(*block_);
+            }
+        } else if (block_->lent) {
+            block_->orphaned = true;  // the handle gives the block back when it goes
+        } else {
+            pool_->give_back(*block_);
+        }
+        pool_     = nullptr;
+        block_    = nullptr;
+        begin_    = 0;
+        end_      = 0;
+        borrowed_ = false;
     }
 
     std::span<std::byte> Packet::data() noexcept {
@@ -76,6 +102,7 @@ namespace aloe::fabric {
     }
 
     std::optional<std::span<std::byte>> Packet::prepend(const std::size_t count) noexcept {
+        assert(!lent() && "a lent packet is not written");
         if (block_ == nullptr || count > headroom()) {
             return std::nullopt;
         }
@@ -84,6 +111,7 @@ namespace aloe::fabric {
     }
 
     std::optional<std::span<std::byte>> Packet::append(const std::size_t count) noexcept {
+        assert(!lent() && "a lent packet is not written");
         if (block_ == nullptr || count > tailroom()) {
             return std::nullopt;
         }
@@ -92,11 +120,13 @@ namespace aloe::fabric {
     }
 
     void Packet::trim_front(const std::size_t count) noexcept {
+        assert(!lent() && "a lent packet is not written");
         assert(count <= size());
         begin_ += std::min(count, size());
     }
 
     void Packet::trim_back(const std::size_t count) noexcept {
+        assert(!lent() && "a lent packet is not written");
         assert(count <= size());
         end_ -= std::min(count, size());
     }
@@ -129,6 +159,7 @@ namespace aloe::fabric {
 
     void Pool::give_back(detail::Block& block) noexcept {
         assert(free_.size() < blocks_.size());
+        assert(!block.lent && !block.orphaned && "a block comes back with no loan outstanding");
         free_.push_back(&block);
     }
 

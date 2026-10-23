@@ -129,3 +129,70 @@ TEST(FabricPacket, EveryBlockIsHandedOutOnce) {
     packets.clear();
     EXPECT_EQ(pool.available(), 8);
 }
+
+TEST(FabricPacket, LendsAHandleAndReportsTheLoan) {
+    aloe::fabric::Pool pool{1, capacity};
+    auto packet = pool.allocate();
+    ASSERT_TRUE(packet.has_value());
+    ASSERT_TRUE(packet->append(5).has_value());
+    packet->set_tx(aloe::device::TxMetadata{.l2_length = 14});
+    EXPECT_FALSE(packet->lent());
+    EXPECT_FALSE(packet->borrowed());
+
+    aloe::fabric::Packet handle = packet->lend();
+    EXPECT_TRUE(packet->lent());
+    EXPECT_TRUE(handle.borrowed());
+    EXPECT_FALSE(packet->borrowed());
+    EXPECT_EQ(handle.size(), 5);
+    EXPECT_EQ(handle.data().data(), packet->data().data()) << "the same bytes";
+    EXPECT_EQ(handle.tx().l2_length, 14) << "the transmit metadata as of the lend";
+    EXPECT_EQ(pool.available(), 0);
+
+    handle = aloe::fabric::Packet{};
+    EXPECT_FALSE(packet->lent()) << "back once the handle is gone";
+    EXPECT_EQ(pool.available(), 0) << "dropping the handle gives nothing back";
+    *packet = aloe::fabric::Packet{};
+    EXPECT_EQ(pool.available(), 1);
+}
+
+TEST(FabricPacket, ADroppedLenderGivesTheBlockBackWhenTheHandleGoes) {
+    aloe::fabric::Pool pool{1, capacity};
+    aloe::fabric::Packet handle;
+    {
+        auto packet = pool.allocate();
+        ASSERT_TRUE(packet.has_value());
+        handle = packet->lend();
+    }
+    EXPECT_EQ(pool.available(), 0) << "the handle keeps the block";
+    EXPECT_FALSE(handle.empty());
+    handle = aloe::fabric::Packet{};
+    EXPECT_EQ(pool.available(), 1) << "given back once, by the last handle";
+}
+
+TEST(FabricPacket, MovingAHandleKeepsItBorrowed) {
+    aloe::fabric::Pool pool{1, capacity};
+    auto packet = pool.allocate();
+    ASSERT_TRUE(packet.has_value());
+    aloe::fabric::Packet handle = packet->lend();
+    aloe::fabric::Packet moved{std::move(handle)};
+    EXPECT_TRUE(handle.empty());  // NOLINT(bugprone-use-after-move): the moved-from state is the point
+    EXPECT_TRUE(moved.borrowed());
+    EXPECT_TRUE(packet->lent());
+    moved = aloe::fabric::Packet{};
+    EXPECT_FALSE(packet->lent());
+    EXPECT_EQ(pool.available(), 0);
+}
+
+TEST(FabricPacket, APacketCanBeLentAgainOnceItIsBack) {
+    aloe::fabric::Pool pool{1, capacity};
+    auto packet = pool.allocate();
+    ASSERT_TRUE(packet.has_value());
+    {
+        const aloe::fabric::Packet first = packet->lend();
+        EXPECT_TRUE(packet->lent());
+    }
+    EXPECT_FALSE(packet->lent());
+    const aloe::fabric::Packet second = packet->lend();
+    EXPECT_TRUE(packet->lent());
+    EXPECT_TRUE(second.borrowed());
+}
