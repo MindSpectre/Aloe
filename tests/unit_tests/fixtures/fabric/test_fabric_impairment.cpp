@@ -129,6 +129,25 @@ TEST_F(Link, AReorderedFrameFollowsTheNextOne) {
     EXPECT_EQ(source.impairment_counters().reordered, 1);
 }
 
+TEST_F(Link, ADuplicateStaysTogetherAheadOfAHeldFrame) {
+    Impairment impairment;
+    impairment.script = [](const Egress& egress) -> std::optional<Verdict> {
+        if (egress.index == 0) {
+            return Verdict{.action = Action::Reorder};
+        }
+        if (egress.index == 1) {
+            return Verdict{.action = Action::Duplicate};
+        }
+        return std::nullopt;
+    };
+    source.set_impairment(impairment);
+    send(0);
+    send(1);
+    EXPECT_EQ(received(), (std::vector<std::uint8_t>{1, 1, 0}));
+    EXPECT_EQ(source.impairment_counters().reordered, 1);
+    EXPECT_EQ(source.impairment_counters().duplicated, 1);
+}
+
 TEST_F(Link, AReorderHoldIsReleasedByAdvanceWhenNothingFollows) {
     source.set_impairment(only(0, Verdict{.action = Action::Reorder}));
     send(0);

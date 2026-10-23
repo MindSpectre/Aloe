@@ -288,8 +288,9 @@ namespace aloe::fabric {
                 return;
             }
             case Action::Duplicate: {
-                emit(frame);
-                emit(frame);
+                fabric_.deliver(*this, frame);
+                fabric_.deliver(*this, frame);
+                release_hold();
                 const std::lock_guard lock{impairment_mutex_};
                 ++impairment_counters_.duplicated;
                 return;
