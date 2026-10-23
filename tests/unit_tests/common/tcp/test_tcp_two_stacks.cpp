@@ -4,6 +4,8 @@
 #include <aloe/tcp>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <span>
 #include <tuple>
 #include <vector>
@@ -88,6 +90,7 @@ namespace {
             for (int tick = 0; tick < 10 && (server == nullptr || client->state() != aloe::tcp::State::Established);
                  ++tick) {
                 now_ += 1ms;
+                fabric_.advance(now_);
                 server_.receive(now_);
                 while (const auto event = server_.tcp.poll_event()) {
                     if (event->events.accepted()) {
@@ -106,10 +109,12 @@ namespace {
         void exchange() {
             client_.flush(now_);
             now_ += 1ms;
+            fabric_.advance(now_);
             server_.receive(now_);
             while (server_.tcp.poll_event()) {}
             server_.flush(now_);
             now_ += 1ms;
+            fabric_.advance(now_);
             client_.receive(now_);
             while (client_.tcp.poll_event()) {}
         }
@@ -168,6 +173,7 @@ TEST_P(TcpTwoStacks, EchoAcrossMssAndClose) {
 
     for (int tick = 0; tick < 200 && !(server_done && client_done); ++tick) {
         now_ += 1ms;
+        fabric_.advance(now_);
         server_.receive(now_);
         while (const auto event = server_.tcp.poll_event()) {
             auto& s = *event->connection;
@@ -279,4 +285,88 @@ TEST_P(TcpTwoStacksFourSlots, SmallSegmentsBeyondTheSlotsAreDroppedForGood) {
     EXPECT_EQ(c->unacknowledged(), 2U);
     c->release();
     s->release();
+}
+
+TEST_P(TcpTwoStacks, ALostSynIsRetransmittedAndTheConnectionEstablishes) {
+    client_port_.set_impairment(
+        {.script = [](const aloe::fabric::Egress& egress) -> std::optional<aloe::fabric::Verdict> {
+            if (egress.index == 0) {
+                return aloe::fabric::Verdict{.action = aloe::fabric::Action::Drop};
+            }
+            return std::nullopt;
+        }});
+    server_.ip.learn(client_ip, client_mac, now_);
+    client_.ip.learn(server_ip, server_mac, now_);
+    ASSERT_TRUE(server_.tcp.listen(7).has_value());
+    const auto session = client_.tcp.connect({.address = server_ip, .port = 7}, now_);
+    ASSERT_TRUE(session.has_value());
+    Tcp::ConnectionType* client = *session;
+    client_.flush(now_);
+    EXPECT_EQ(client_port_.impairment_counters().dropped, 1) << "the wire ate the first SYN";
+
+    Tcp::ConnectionType* server = nullptr;
+    for (int tick = 0; tick < 15 && client->state() != aloe::tcp::State::Established; ++tick) {
+        now_ += 100ms;
+        fabric_.advance(now_);
+        client_.receive(now_);
+        while (client_.tcp.poll_event()) {}
+        client_.flush(now_);
+        server_.receive(now_);
+        while (const auto event = server_.tcp.poll_event()) {
+            if (event->events.accepted()) {
+                server = event->connection;
+            }
+        }
+        server_.flush(now_);
+    }
+    EXPECT_EQ(client->state(), aloe::tcp::State::Established);
+    ASSERT_NE(server, nullptr);
+    EXPECT_EQ(client_.tcp.counters().retransmits, 1) << "the SYN again, one second after the first";
+    EXPECT_EQ(client_port_.impairment_counters().dropped, 1) << "only the first SYN was lost";
+    client->release();
+    server->release();
+}
+
+TEST_P(TcpTwoStacks, ADuplicatedSegmentIsCountedAndReadOnce) {
+    Tcp::ConnectionType* client = nullptr;
+    Tcp::ConnectionType* server = establish(client);
+    ASSERT_NE(server, nullptr);
+    client_port_.set_impairment({.duplicate = 1.0});
+    const auto payload = aloe::frames::pattern(100);
+    ASSERT_EQ(client->send(payload), 100U);
+    exchange();
+    client_port_.set_impairment({});
+    EXPECT_EQ(client_port_.impairment_counters().duplicated, 1);
+    EXPECT_EQ(server_.tcp.counters().dropped_duplicate, 1);
+    EXPECT_EQ(server->unread().size(), 100U) << "read once";
+    client->release();
+    server->release();
+}
+
+TEST_P(TcpTwoStacks, DelayedSegmentsArriveInOrderAfterTheStep) {
+    Tcp::ConnectionType* client = nullptr;
+    Tcp::ConnectionType* server = establish(client);
+    ASSERT_NE(server, nullptr);
+    client_port_.set_impairment({.delay = 5ms});
+    for (std::uint8_t seed = 0; seed < 3; ++seed) {
+        ASSERT_EQ(client->send(aloe::frames::pattern(1000, seed)), 1000U);
+    }
+    client_.flush(now_);
+    EXPECT_EQ(client_port_.impairment_counters().delayed, 3);
+
+    now_ += 1ms;
+    fabric_.advance(now_);
+    server_.receive(now_);
+    EXPECT_EQ(server->unread().size(), 0U) << "nothing before the delay is due";
+
+    now_ += 5ms;
+    fabric_.advance(now_);
+    server_.receive(now_);
+    EXPECT_EQ(server->unread().size(), 3000U);
+    EXPECT_EQ(server_.tcp.counters().dropped_out_of_order, 0);
+    while (server_.tcp.poll_event()) {}
+    server_.flush(now_);
+    client_port_.set_impairment({});
+    client->release();
+    server->release();
 }
