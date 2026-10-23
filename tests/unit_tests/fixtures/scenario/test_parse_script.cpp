@@ -155,3 +155,82 @@ TEST(ParseScript, AnEmptyScriptHasNoEvents) {
     ASSERT_TRUE(script.has_value());
     EXPECT_TRUE(script->events.empty());
 }
+
+TEST(ParseScript, ParsesCallLines) {
+    const auto script = parse_script("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
+                                     "+0 setsockopt(3, SOL_SOCKET, SO_REUSEADDR, [1], 4) = 0\n"
+                                     "+0 fcntl(3, F_SETFL, O_RDWR|O_NONBLOCK) = 0\n"
+                                     "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
+                                     "+0 write(4, ..., 1000) = 1000\n"
+                                     "+32~+32.01 read(3, ..., 1) = -1 ETIMEDOUT\n"
+                                     "+0 close(4) = 0\n");
+    ASSERT_TRUE(script.has_value()) << script.error().message;
+    ASSERT_EQ(script->events.size(), 7);
+    using aloe::scenario::Argument;
+    using aloe::scenario::CallLine;
+    const auto& socket = std::get<CallLine>(script->events[0].action);
+    EXPECT_EQ(socket.name, "socket");
+    ASSERT_EQ(socket.arguments.size(), 3);
+    EXPECT_EQ(socket.arguments[0].kind, Argument::Kind::Ellipsis);
+    EXPECT_EQ(socket.arguments[1], (Argument{.kind = Argument::Kind::Word, .text = "SOCK_STREAM"}));
+    EXPECT_EQ(socket.result, 3);
+    EXPECT_TRUE(socket.error.empty());
+    EXPECT_EQ(script->events[0].time.kind, TimeSpec::Kind::Absolute);
+
+    const auto& setsockopt = std::get<CallLine>(script->events[1].action);
+    ASSERT_EQ(setsockopt.arguments.size(), 5);
+    EXPECT_EQ(setsockopt.arguments[0], (Argument{.kind = Argument::Kind::Integer, .integer = 3}));
+    EXPECT_EQ(setsockopt.arguments[3], (Argument{.kind = Argument::Kind::Bracketed, .text = "1"}));
+
+    EXPECT_EQ(std::get<CallLine>(script->events[2].action).arguments[2],
+              (Argument{.kind = Argument::Kind::Word, .text = "O_RDWR|O_NONBLOCK"}));
+
+    const auto& connect = std::get<CallLine>(script->events[3].action);
+    EXPECT_EQ(connect.result, -1);
+    EXPECT_EQ(connect.error, "EINPROGRESS");
+    EXPECT_EQ(connect.note, "Operation now in progress");
+
+    const auto& read = std::get<CallLine>(script->events[5].action);
+    EXPECT_EQ(read.result, -1);
+    EXPECT_EQ(read.error, "ETIMEDOUT");
+    EXPECT_TRUE(read.note.empty());
+    EXPECT_EQ(script->events[5].time, (TimeSpec{.kind = TimeSpec::Kind::Relative, .low = 32s, .high = 32010ms}));
+
+    const auto& close = std::get<CallLine>(script->events[6].action);
+    EXPECT_EQ(close.name, "close");
+    ASSERT_EQ(close.arguments.size(), 1);
+    EXPECT_EQ(close.arguments[0].integer, 4);
+}
+
+TEST(ParseScript, ParsesAQuotedStringArgument) {
+    const auto script = parse_script("+0 write(4, \"hello\", 5) = 5\n");
+    ASSERT_TRUE(script.has_value()) << script.error().message;
+    const auto& write = std::get<aloe::scenario::CallLine>(script->events[0].action);
+    EXPECT_EQ(write.arguments[1],
+              (aloe::scenario::Argument{.kind = aloe::scenario::Argument::Kind::String, .text = "hello"}));
+}
+
+TEST(ParseScript, ParsesTheToleranceOption) {
+    const auto script = parse_script("--tolerance_usecs=2000\n\n0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(script.has_value()) << script.error().message;
+    EXPECT_EQ(script->tolerance, 2ms);
+    EXPECT_EQ(script->events.size(), 1);
+}
+
+TEST(ParseScript, ReportsCallLineErrors) {
+    const auto no_result = parse_script("+0 close(4)\n");
+    ASSERT_FALSE(no_result.has_value());
+    EXPECT_NE(no_result.error().message.find('='), std::string_view::npos);
+
+    const auto unknown_option = parse_script("--mss=1000\n0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_FALSE(unknown_option.has_value());
+    EXPECT_EQ(unknown_option.error().line, 1);
+    EXPECT_NE(unknown_option.error().message.find("mss"), std::string_view::npos);
+
+    const auto late_option = parse_script("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n--tolerance_usecs=1\n");
+    ASSERT_FALSE(late_option.has_value());
+    EXPECT_EQ(late_option.error().line, 2);
+
+    const auto unclosed = parse_script("+0 close(4 = 0\n");
+    ASSERT_FALSE(unclosed.has_value());
+}
