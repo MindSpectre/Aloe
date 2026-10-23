@@ -30,6 +30,8 @@ namespace aloe::device {
         bool rx_l4_checksum   = false;         ///< Verifies TCP and UDP checksums on receive.
         bool tx_ipv4_checksum = false;         ///< Fills IPv4 header checksums on transmit.
         bool tx_l4_checksum   = false;         ///< Completes TCP and UDP checksums on transmit.
+        bool tx_reclaim =
+            false;  ///< `reclaim(queue)` asks the driver to free finished transmits; false: it returns zero.
 
         friend constexpr bool operator==(const Capabilities&, const Capabilities&) noexcept = default;
     };
@@ -38,8 +40,9 @@ namespace aloe::device {
     struct QueueCounters {
         std::uint64_t received    = 0;
         std::uint64_t transmitted = 0;
-        std::uint64_t dropped     = 0;  ///< Arrived with no room in the receive queue.
-        std::uint64_t oversized   = 0;  ///< Longer than the MTU allows, or shorter than a header.
+        std::uint64_t dropped =
+            0;  ///< Arrived with no room in the receive queue, or no buffer to copy a shared one into.
+        std::uint64_t oversized = 0;  ///< Longer than the MTU allows, or shorter than a header.
 
         friend constexpr bool operator==(const QueueCounters&, const QueueCounters&) noexcept = default;
     };

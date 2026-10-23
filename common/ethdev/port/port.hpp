@@ -76,6 +76,10 @@ namespace aloe::ethdev {
         [[nodiscard]] std::size_t receive(std::uint16_t queue, std::span<Packet> out) noexcept;
         [[nodiscard]] std::size_t transmit(std::uint16_t queue, std::span<Packet> in) noexcept;
 
+        /// Asks the driver to free transmitted mbufs it still holds; how many it let go of. Zero, and nothing done,
+        /// when `capabilities().tx_reclaim` is false: none of the ring, null and tap drivers implements it.
+        [[nodiscard]] std::size_t reclaim(std::uint16_t queue) noexcept;
+
         /// Read from the queue's own thread. `dropped` stays zero: DPDK reports receive-ring
         /// overruns per port, in `rte_eth_stats`, not per queue.
         [[nodiscard]] device::QueueCounters counters(std::uint16_t queue) const noexcept;
