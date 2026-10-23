@@ -29,6 +29,8 @@ add_library(${SCENARIO}.Run STATIC
         run/match.cpp
         run/harness.hpp
         run/harness.cpp
+        run/runner.hpp
+        run/runner.cpp
 )
 target_include_directories(${SCENARIO}.Run PUBLIC
         run/

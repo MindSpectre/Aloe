@@ -10,4 +10,5 @@
 #include <notation.hpp>
 #include <parse_script.hpp>
 #include <peer.hpp>
+#include <runner.hpp>
 #include <script.hpp>
