@@ -168,7 +168,7 @@ namespace aloe::scenario {
                 std::string blocks;
                 for (std::size_t block = 0; block < body.size(); block += sack_block_size) {
                     if (!blocks.empty()) {
-                        blocks += ',';
+                        blocks += ' ';  // packetdrill separates blocks with spaces; commas separate options
                     }
                     blocks += std::format("{}:{}",
                                           wire::load_be32(body.subspan(block, 4)) - sack_base.value,

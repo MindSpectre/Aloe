@@ -79,7 +79,7 @@ TEST(ParseScript, ParsesFlagsNumbersAndFields) {
 
 TEST(ParseScript, ParsesEveryOption) {
     const auto script = parse_script(
-        "+0 < S 0:0(0) win 65535 <mss 1000,sackOK,nop,nop,nop,wscale 7,TS val 100 ecr 200,sack 1:2,3:4,eol>\n"
+        "+0 < S 0:0(0) win 65535 <mss 1000,sackOK,nop,nop,nop,wscale 7,TS val 100 ecr 200,sack 1:2 3:4,eol>\n"
         "+0 > S. 0:0(0) ack 1 <...>\n");
     ASSERT_TRUE(script.has_value()) << script.error().message;
     const auto& options = packet(*script, 0).options;
@@ -99,6 +99,19 @@ TEST(ParseScript, ParsesEveryOption) {
     EXPECT_EQ(options.list[8].kind, TcpOption::Kind::Eol);
     EXPECT_TRUE(packet(*script, 1).options.any);
     EXPECT_TRUE(packet(*script, 1).options.list.empty());
+}
+
+TEST(ParseScript, SackBlocksAreSeparatedBySpacesAsInPacketdrill) {
+    const auto spaces = parse_script("+0 < . 1:1(0) ack 1 <sack 1:2 3:4 5:6,nop,nop>\n");
+    ASSERT_TRUE(spaces.has_value()) << spaces.error().message;
+    const auto& options = packet(*spaces, 0).options;
+    ASSERT_EQ(options.list.size(), 3);
+    EXPECT_EQ(options.list[0].blocks.size(), 3);
+    EXPECT_EQ(options.list[1].kind, TcpOption::Kind::Nop);
+
+    const auto commas = parse_script("+0 < . 1:1(0) ack 1 <sack 1:2,3:4>\n");
+    ASSERT_FALSE(commas.has_value());
+    EXPECT_NE(commas.error().message.find("separated by spaces"), std::string_view::npos) << commas.error().message;
 }
 
 TEST(ParseScript, SkipsCommentsAndBlankLinesAndKeepsLineNumbers) {

@@ -36,7 +36,7 @@ namespace {
 }  // namespace
 
 TEST(Notation, EncodesEveryOptionKind) {
-    const PacketLine line = line_of("+0 < S 0:0(0) <mss 1460,nop,eol,sackOK,wscale 7,TS val 1 ecr 2,sack 1:2,3:4>\n");
+    const PacketLine line = line_of("+0 < S 0:0(0) <mss 1460,nop,eol,sackOK,wscale 7,TS val 1 ecr 2,sack 1:2 3:4>\n");
     EXPECT_EQ(encode_options(line.options, TcpSequence{1000}),
               bytes({2, 4, 0x05, 0xb4, 1, 0, 4,    2, 3, 3, 7,    8, 10, 0, 0,    0, 1, 0, 0,   0,
                      2, 5, 18,   0,    0, 3, 0xe9, 0, 0, 3, 0xea, 0, 0,  3, 0xeb, 0, 0, 3, 0xec}));
@@ -47,6 +47,9 @@ TEST(Notation, DescribesOptionBytesInTheScriptsWords) {
     EXPECT_EQ(describe_options(bytes({3, 3, 7}), TcpSequence{}), "wscale 7");
     EXPECT_EQ(describe_options(bytes({8, 10, 0, 0, 0, 1, 0, 0, 0, 2}), TcpSequence{}), "TS val 1 ecr 2");
     EXPECT_EQ(describe_options(bytes({5, 10, 0, 0, 3, 0xe9, 0, 0, 3, 0xea}), TcpSequence{1000}), "sack 1:2");
+    EXPECT_EQ(
+        describe_options(bytes({5, 18, 0, 0, 3, 0xe9, 0, 0, 3, 0xea, 0, 0, 3, 0xeb, 0, 0, 3, 0xec}), TcpSequence{1000}),
+        "sack 1:2 3:4");
     EXPECT_EQ(describe_options(bytes({30, 2}), TcpSequence{}), "kind 30");
     EXPECT_EQ(describe_options(bytes({2, 4, 0x05}), TcpSequence{}), "bad options");
     EXPECT_EQ(describe_options({}, TcpSequence{}), "");

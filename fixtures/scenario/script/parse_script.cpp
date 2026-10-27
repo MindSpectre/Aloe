@@ -369,10 +369,13 @@ namespace aloe::scenario {
                     }
                     option.blocks.push_back(*block);
                     if (cursor.peek() == ',' && Cursor::is_digit(cursor.peek_after_next())) {
-                        cursor.consume(',');
-                        continue;
+                        // A comma separates options, so a block after one would be read as an unknown option.
+                        return fail(cursor.column(), "sack blocks are separated by spaces, as in packetdrill");
                     }
-                    return {};
+                    cursor.skip_spaces();
+                    if (!Cursor::is_digit(cursor.peek())) {
+                        return {};
+                    }
                 }
             }
 

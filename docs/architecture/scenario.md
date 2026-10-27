@@ -87,7 +87,8 @@ the column, for anything outside it:
   `F`, `R`, `P` and `U`, with `.` for ACK alone or as a suffix (`S.`, `P.`, `F.`, `R.`) and `-` for none; then
   `first:last(length)`, where `last - first` must equal `length`; then `ack n`, `win n` and `urg n`, each at most
   once; then an option list in angle brackets, comma-separated, of `mss n`, `nop`, `eol`, `sackOK`, `wscale n`,
-  `sack a:b,c:d` and `TS val v ecr e` in any order, or `<...>` for any options.
+  `sack a:b c:d` and `TS val v ecr e` in any order, or `<...>` for any options. A sack option's blocks are
+  separated by spaces, as in packetdrill, since a comma starts the next option: `<sack 1001:2001 3001:4001,nop,nop>`.
 - **Call lines.** `name(arguments) = result`, with an errno word after a `-1` and an optional `(text)` after
   that, as `= -1 EINPROGRESS (Operation now in progress)`. Arguments are integers, `...`, bare words
   (`SOCK_STREAM`, `IPPROTO_TCP`, `SO_REUSEADDR`, `O_RDWR|O_NONBLOCK`), a bracketed value (`[1]`) or a quoted
