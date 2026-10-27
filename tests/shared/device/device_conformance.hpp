@@ -78,6 +78,15 @@ namespace aloe::testing {
             }
             return result;
         }
+
+        /// How many packets queue 0 can hand out right now: allocate until it refuses, then let them all go.
+        std::size_t pool_count() {
+            std::vector<Packet> held;
+            while (auto packet = device().allocate(0)) {
+                held.push_back(std::move(*packet));
+            }
+            return held.size();
+        }
     };
 
     TYPED_TEST_SUITE_P(DeviceConformance);
@@ -289,6 +298,69 @@ namespace aloe::testing {
         EXPECT_EQ(packet->size(), 10);
     }
 
+    TYPED_TEST_P(DeviceConformance, ALentPacketIsReadableAndBackOnceTheDeviceIsDone) {
+        const auto frame                    = this->frame(80, 9);
+        typename TestFixture::Packet lender = this->packet_with(frame);
+        EXPECT_FALSE(lender.lent());
+        std::array<typename TestFixture::Packet, 1> burst{lender.lend()};
+        EXPECT_TRUE(lender.lent());
+        ASSERT_EQ(this->device().transmit(0, burst), 1);
+        EXPECT_TRUE(burst[0].empty()) << "the handle is what the device took";
+        EXPECT_EQ(frames::bytes_of(lender), frame) << "the lender reads its frame while lent";
+
+        auto received = this->receive_up_to(1);
+        ASSERT_EQ(received.size(), 1);
+        EXPECT_EQ(frames::bytes_of(received[0]), frame);
+        received[0].trim_front(wire::EthernetHeader::size);
+        EXPECT_EQ(lender.size(), frame.size()) << "a trim on the received packet moves nothing of the lender's";
+        received.clear();
+        std::ignore = this->device().reclaim(0);
+        EXPECT_FALSE(lender.lent()) << "back once the device is done: the reader freed its copy, or the reclaim ran";
+        EXPECT_EQ(frames::bytes_of(lender), frame);
+    }
+
+    TYPED_TEST_P(DeviceConformance, AHandleDroppedWithoutTransmitReturnsTheLoanAtOnce) {
+        const auto frame                    = this->frame(20, 4);
+        typename TestFixture::Packet lender = this->packet_with(frame);
+        {
+            const typename TestFixture::Packet handle = lender.lend();
+            EXPECT_TRUE(lender.lent());
+        }
+        EXPECT_FALSE(lender.lent());
+        std::array<typename TestFixture::Packet, 1> burst{std::move(lender)};
+        ASSERT_EQ(this->device().transmit(0, burst), 1) << "and the packet still transmits as any other";
+        auto received = this->receive_up_to(1);
+        ASSERT_EQ(received.size(), 1);
+        EXPECT_EQ(frames::bytes_of(received[0]), frame);
+    }
+
+    TYPED_TEST_P(DeviceConformance, ADroppedLenderIsFreedOnceWhenTheDeviceReturnsIt) {
+        const std::size_t before = this->pool_count();
+        {
+            typename TestFixture::Packet lender = this->packet_with(this->frame(20, 6));
+            std::array<typename TestFixture::Packet, 1> burst{lender.lend()};
+            ASSERT_EQ(this->device().transmit(0, burst), 1);
+        }  // the lender is gone while the device still has the handle
+        auto received = this->receive_up_to(1);
+        ASSERT_EQ(received.size(), 1);
+        received.clear();
+        std::ignore = this->device().reclaim(0);
+        EXPECT_EQ(this->pool_count(), before) << "the buffer came back exactly once";
+    }
+
+    TYPED_TEST_P(DeviceConformance, ReclaimAgreesWithItsCapability) {
+        if (!this->device().capabilities().tx_reclaim) {
+            EXPECT_EQ(this->device().reclaim(0), 0) << "a device without the call does nothing and says so";
+            return;
+        }
+        typename TestFixture::Packet lender = this->packet_with(this->frame(20, 8));
+        std::array<typename TestFixture::Packet, 1> burst{lender.lend()};
+        ASSERT_EQ(this->device().transmit(0, burst), 1);
+        this->receive_up_to(1).clear();
+        std::ignore = this->device().reclaim(0);
+        EXPECT_FALSE(lender.lent()) << "a device with the call lets go of a finished transmit";
+    }
+
     REGISTER_TYPED_TEST_SUITE_P(DeviceConformance,
                                 CapabilitiesAreSane,
                                 AllocateYieldsAnEmptyPacketWithFullHeadroom,
@@ -303,6 +375,10 @@ namespace aloe::testing {
                                 CountersCount,
                                 ThePoolRunsOutAndRecovers,
                                 ReceiveOnAnIdleQueueReturnsNothing,
-                                MovedFromPacketsAreEmpty);
+                                MovedFromPacketsAreEmpty,
+                                ALentPacketIsReadableAndBackOnceTheDeviceIsDone,
+                                AHandleDroppedWithoutTransmitReturnsTheLoanAtOnce,
+                                ADroppedLenderIsFreedOnceWhenTheDeviceReturnsIt,
+                                ReclaimAgreesWithItsCapability);
 
 }  // namespace aloe::testing

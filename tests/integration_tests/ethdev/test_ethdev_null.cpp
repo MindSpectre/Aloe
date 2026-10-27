@@ -1,3 +1,5 @@
+// rte_eth_dev_conf_get is not yet part of DPDK's stable ABI; this test reads the configuration back.
+#define ALLOW_EXPERIMENTAL_API
 #include <aloe/ethdev>
 #include <array>
 #include <cstddef>
@@ -7,6 +9,7 @@
 
 #include <eal_environment.hpp>
 #include <gtest/gtest.h>
+#include <rte_ethdev.h>
 
 static_assert(aloe::device::IsDevice<aloe::ethdev::Port>);
 
@@ -100,4 +103,29 @@ TEST(EthdevNull, APortIsTakenOnce) {
                  aloe::ethdev::EthdevError)
         << "even a request that fails before configuring leaves the port alone";
     EXPECT_TRUE(first.link_up()) << "the first port is unharmed";
+}
+
+TEST(EthdevNull, TheNullDriverReturnsALoanAtTransmit) {
+    aloe::ethdev::Port port{
+        {.name = aloe::testing::probe_vdev("net_null"), .queues = 1, .pool_size = 256}
+    };
+    auto lender = port.allocate(0);
+    ASSERT_TRUE(lender.has_value());
+    ASSERT_TRUE(lender->append(60).has_value());
+    std::array<aloe::ethdev::Packet, 1> burst{lender->lend()};
+    EXPECT_TRUE(lender->lent());
+    ASSERT_EQ(port.transmit(0, burst), 1);
+    EXPECT_FALSE(lender->lent()) << "eth_null_tx frees the burst inside the call";
+    EXPECT_FALSE(port.capabilities().tx_reclaim);
+    EXPECT_EQ(port.reclaim(0), 0);
+}
+
+TEST(EthdevNull, FastFreeStaysOff) {
+    const aloe::ethdev::Port port{
+        {.name = aloe::testing::probe_vdev("net_null"), .queues = 1, .pool_size = 256}
+    };
+    rte_eth_conf conf{};
+    ASSERT_EQ(rte_eth_dev_conf_get(port.port_id(), &conf), 0);
+    EXPECT_EQ(conf.txmode.offloads & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE, 0U)
+        << "fast-free assumes one reference per transmitted mbuf; a lent packet has two";
 }

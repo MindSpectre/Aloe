@@ -32,6 +32,9 @@ namespace aloe::ethdev {
             RTE_ETH_RX_OFFLOAD_IPV4_CKSUM | RTE_ETH_RX_OFFLOAD_UDP_CKSUM | RTE_ETH_RX_OFFLOAD_TCP_CKSUM;
         constexpr std::uint64_t tx_checksum_offloads =
             RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | RTE_ETH_TX_OFFLOAD_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
+        // Fast-free frees a transmitted mbuf straight to its pool assuming it has one reference. A lent packet has
+        // two, so the offload stays off whatever the driver offers; the mask is the invariant.
+        static_assert((tx_checksum_offloads & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE) == 0);
         constexpr std::uint64_t wanted_rss_types =
             RTE_ETH_RSS_IPV4 | RTE_ETH_RSS_NONFRAG_IPV4_TCP | RTE_ETH_RSS_NONFRAG_IPV4_UDP;
 
@@ -63,6 +66,14 @@ namespace aloe::ethdev {
                    (types.ipv4_udp ? RTE_ETH_RSS_NONFRAG_IPV4_UDP : 0);
         }
 
+        /// The transmit offloads Aloe may use on this driver. The tap driver completes a requested checksum by copying
+        /// the headers into a new segment and trimming them off the original mbuf, which moves a lender's offsets;
+        /// the loan promises they stay, so no transmit checksum offload is requested from it.
+        [[nodiscard]] std::uint64_t transmit_offloads_of(const rte_eth_dev_info& info) noexcept {
+            const bool tap = info.driver_name != nullptr && std::string_view{info.driver_name} == "net_tap";
+            return tap ? info.tx_offload_capa & ~tx_checksum_offloads : info.tx_offload_capa;
+        }
+
         [[nodiscard]] device::Capabilities capabilities_of(const rte_eth_dev_info& info) noexcept {
             const std::uint64_t rss_types = info.flow_type_rss_offloads & wanted_rss_types;
             const bool rss = rss_types != 0 && info.hash_key_size >= smallest_usable_key &&
@@ -81,8 +92,8 @@ namespace aloe::ethdev {
                 .rss_types        = rss ? types_of(rss_types) : device::RssHashTypes{},
                 .rx_ipv4_checksum = (info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) != 0,
                 .rx_l4_checksum   = (info.rx_offload_capa & rx_l4) == rx_l4,
-                .tx_ipv4_checksum = (info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) != 0,
-                .tx_l4_checksum   = (info.tx_offload_capa & tx_l4) == tx_l4,
+                .tx_ipv4_checksum = (transmit_offloads_of(info) & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM) != 0,
+                .tx_l4_checksum   = (transmit_offloads_of(info) & tx_l4) == tx_l4,
             };
         }
 
@@ -133,6 +144,8 @@ namespace aloe::ethdev {
             configure(config, info);
             check(rte_eth_dev_start(port_id_), "rte_eth_dev_start");
             started_ = true;
+            capabilities_.tx_reclaim =
+                rte_eth_tx_done_cleanup(port_id_, 0, 0) >= 0;  // -ENOTSUP from a driver without it
             check(rte_eth_dev_get_mtu(port_id_, &mtu_), "rte_eth_dev_get_mtu");
             rte_ether_addr address{};
             check(rte_eth_macaddr_get(port_id_, &address), "rte_eth_macaddr_get");
@@ -157,7 +170,7 @@ namespace aloe::ethdev {
         conf.rxmode.mq_mode  = rss ? RTE_ETH_MQ_RX_RSS : RTE_ETH_MQ_RX_NONE;
         conf.rxmode.mtu      = config.mtu;
         conf.rxmode.offloads = info.rx_offload_capa & rx_checksum_offloads;
-        conf.txmode.offloads = info.tx_offload_capa & tx_checksum_offloads;
+        conf.txmode.offloads = transmit_offloads_of(info) & tx_checksum_offloads;
         if (rss) {
             conf.rx_adv_conf.rss_conf.rss_key     = key.data();
             conf.rx_adv_conf.rss_conf.rss_key_len = capabilities_.rss_key_size;
@@ -296,6 +309,17 @@ namespace aloe::ethdev {
         std::size_t count       = 0;
         for (std::uint16_t index = 0; index < got; ++index) {
             rte_mbuf* mbuf = burst[index];
+            if (rte_mbuf_refcnt_read(mbuf) > 1) {
+                // Only a loopback driver delivers a shared mbuf: a packet some lender still holds. The reader gets
+                // its own copy, so a trim here never moves the lender's offsets; a card never takes this branch.
+                rte_mbuf* const copy = rte_pktmbuf_copy(mbuf, pools_[queue], 0, UINT32_MAX);
+                rte_pktmbuf_free(mbuf);  // drops this reference; the lender keeps the mbuf
+                if (copy == nullptr) {
+                    ++counters_[queue].dropped;
+                    continue;
+                }
+                mbuf = copy;
+            }
             if (mbuf->nb_segs != 1 || mbuf->pkt_len > limit || mbuf->pkt_len < wire::EthernetHeader::size) {
                 rte_pktmbuf_free(mbuf);
                 ++counters_[queue].oversized;
@@ -310,6 +334,13 @@ namespace aloe::ethdev {
         }
         counters_[queue].received += count;
         return count;
+    }
+
+    std::size_t Port::reclaim(const std::uint16_t queue) noexcept {
+        assert(queue < queues_);
+        core::force_non_const(this);  // the driver frees mbufs, which a const member could still ask for
+        const int freed = rte_eth_tx_done_cleanup(port_id_, queue, 0);
+        return freed > 0 ? static_cast<std::size_t>(freed) : 0;
     }
 
     std::size_t Port::transmit(const std::uint16_t queue, std::span<Packet> in) noexcept {

@@ -16,7 +16,10 @@ the asynchronous model, and a protocol module that links this target cannot incl
   and the device's facts: `mac()`, `mtu()`, `capabilities()`, `steering()`, `queue_count()`. When the ring
   is full, `transmit` flushes once and, if the device still refuses, returns false and the caller keeps the
   packet: the backpressure signal TCP treats as loss. `discard()` drops what the device will not take, for
-  a drain. Nothing here blocks, throws or allocates after construction.
+  a drain. `reclaim()` asks the device to free finished transmits on this queue and returns how many, zero
+  on a device without the call. A lent handle (see the [device layer](device.md)) is a packet like any
+  other here: `transmit` rings it, `flush` hands it to the device, and `discard` drops it, which returns the
+  loan. Nothing here blocks, throws or allocates after construction.
 - **`aloe::loop::Timer`, `TimerWheel`** -- an intrusive timer node, a deadline and a function, and the
   hierarchical wheel it lives in: four levels of 256 slots at a resolution fixed on construction, arm and
   cancel in constant time, swept by `advance(now)`. Deadlines round up to the resolution, so a timer never

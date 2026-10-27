@@ -1,0 +1,12 @@
+// The peer's ACK is late: our SYN-ACK goes again after 1, 2 and 4 seconds, then the ACK completes the handshake.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460>
++1 > S. 0:0(0) ack 1 win 46720 <mss 1460>
++2 > S. 0:0(0) ack 1 win 46720 <mss 1460>
++4 > S. 0:0(0) ack 1 win 46720 <mss 1460>
++0 < . 1:1(0) ack 1 win 65535
++0 accept(3, ..., ...) = 4

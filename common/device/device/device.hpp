@@ -30,6 +30,8 @@ namespace aloe::device {
         bool rx_l4_checksum   = false;         ///< Verifies TCP and UDP checksums on receive.
         bool tx_ipv4_checksum = false;         ///< Fills IPv4 header checksums on transmit.
         bool tx_l4_checksum   = false;         ///< Completes TCP and UDP checksums on transmit.
+        bool tx_reclaim =
+            false;  ///< `reclaim(queue)` asks the driver to free finished transmits; false: it returns zero.
 
         friend constexpr bool operator==(const Capabilities&, const Capabilities&) noexcept = default;
     };
@@ -38,8 +40,9 @@ namespace aloe::device {
     struct QueueCounters {
         std::uint64_t received    = 0;
         std::uint64_t transmitted = 0;
-        std::uint64_t dropped     = 0;  ///< Arrived with no room in the receive queue.
-        std::uint64_t oversized   = 0;  ///< Longer than the MTU allows, or shorter than a header.
+        std::uint64_t dropped =
+            0;  ///< Arrived with no room in the receive queue, or no buffer to copy a shared one into.
+        std::uint64_t oversized = 0;  ///< Longer than the MTU allows, or shorter than a header.
 
         friend constexpr bool operator==(const QueueCounters&, const QueueCounters&) noexcept = default;
     };
@@ -60,6 +63,12 @@ namespace aloe::device {
      *   packets. `transmit` takes packets from the front of `in` and returns how many it accepted.
      *   Accepted packets are moved from; the rest stay untouched with the caller, who retries or
      *   drops them. Empty slots are skipped and count as accepted.
+     * - `reclaim(queue)` asks the driver to free transmitted packets it still holds and returns how many it
+     *   let go of; on a device whose `capabilities().tx_reclaim` is false it returns zero and does nothing.
+     *   Queue thread, like every per-queue operation.
+     * - A received packet is exclusively owned by its receiver. A backend able to deliver a shared buffer
+     *   (the ring driver's loopback hands the very mbuf a lender still holds) copies it first; a copy that
+     *   finds no buffer drops the frame and counts it in `dropped`.
      * - `counters(queue)` is read from the queue's own thread, like every other per-queue operation.
      * - The hot-path operations never throw and never allocate anything but packets. Construction
      *   and destruction are cold paths.
@@ -78,6 +87,7 @@ namespace aloe::device {
             { device.allocate(queue) } -> std::same_as<std::optional<typename D::Packet>>;
             { device.receive(queue, packets) } -> std::same_as<std::size_t>;
             { device.transmit(queue, packets) } -> std::same_as<std::size_t>;
+            { device.reclaim(queue) } -> std::same_as<std::size_t>;
             { const_device.counters(queue) } -> std::same_as<QueueCounters>;
         };
 

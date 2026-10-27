@@ -1,0 +1,4 @@
+// A SYN to a port nobody listens on: RST+ACK with sequence zero, acknowledging the SYN (RFC 9293, no connection).
+// Nothing is bound or listening in this script.
++0 < S 0:0(0) win 65535 <mss 1460>
++0 > R. 0:0(0) ack 1 win 0

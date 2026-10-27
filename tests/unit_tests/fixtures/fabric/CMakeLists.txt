@@ -4,6 +4,8 @@
 add_unit_test(${UNIT_TESTING_TARGET}.Fabric
         test_fabric_conformance.cpp
         test_fabric_delivery.cpp
+        test_fabric_impairment.cpp
+        test_fabric_loans.cpp
         test_fabric_offloads.cpp
         test_fabric_packet.cpp
         test_fabric_steering.cpp
@@ -11,6 +13,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Fabric
 target_link_libraries(${UNIT_TESTING_TARGET}.Fabric
         PRIVATE
         Aloe::Fixtures::Fabric
+        Aloe::Fixtures::Frames
         ${SHARED_TESTING_TARGET}.Device
         ${TEST_LIBS}
 )

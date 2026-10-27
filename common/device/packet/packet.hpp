@@ -50,6 +50,17 @@ namespace aloe::device {
      * moved-from packet is empty and owns nothing. Growth returns the new bytes, or nothing when the
      * room is too small; nothing else can fail. `trim_front` and `trim_back` must not exceed
      * `size()`.
+     *
+     * The loan: `lend()` returns a second handle over the same buffer, for the device to transmit, and
+     * `lent()` is true while that handle is alive, in a transmit ring, in the driver, or dropped nowhere
+     * yet. The lender keeps its handle and never gives it up, so there is no ticket to redeem. The
+     * contract: `lend()` on a packet that is not empty and not lent, after the frame is complete and
+     * `set_tx` has run, one handle at a time; while lent, the lender reads (`data()`, `size()`, `rx()`,
+     * `tx()`) and never grows, trims or sets metadata, and neither does anyone holding the handle; the
+     * handle is transmitted or dropped, and dropping it untransmitted returns the loan at once; dropping
+     * the lender while lent is allowed, and the buffer is freed exactly once when the last handle goes.
+     * A device may complete the checksums it was asked to fill inside the lent buffer; the size, the
+     * offsets and every other byte stay as lent. `lent()` is a poll: no backend has an event for the return.
      */
     template <typename P>
     concept IsPacket = std::movable<P> && std::default_initializable<P> &&
@@ -66,6 +77,8 @@ namespace aloe::device {
                            { const_packet.rx() } -> std::same_as<RxMetadata>;
                            { const_packet.tx() } -> std::same_as<TxMetadata>;
                            { packet.set_tx(tx) } -> std::same_as<void>;
+                           { packet.lend() } -> std::same_as<P>;
+                           { const_packet.lent() } -> std::same_as<bool>;
                        };
 
 }  // namespace aloe::device

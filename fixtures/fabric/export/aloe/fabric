@@ -7,3 +7,4 @@
 
 #include <fabric.hpp>
 #include <fabric_packet.hpp>
+#include <impairment.hpp>

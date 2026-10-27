@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -19,6 +20,8 @@ namespace aloe::fabric {
         struct Block {
             std::unique_ptr<std::byte[]> storage;
             std::size_t capacity = 0;
+            bool lent            = false;  ///< A handle from lend() is alive.
+            bool orphaned        = false;  ///< The lender is gone; the handle gives the block back.
         };
 
     }  // namespace detail
@@ -27,7 +30,9 @@ namespace aloe::fabric {
      * @brief The fabric's packet: a move-only handle over one Block of a Pool.
      *
      * Models IsPacket. The block is plain memory, so ASan sees every byte. Destroying the packet, or
-     * assigning over it, returns the block to its pool, which must still be alive.
+     * assigning over it, returns the block to its pool, which must still be alive. A packet can lend a second
+     * handle to the port and asks `lent()` whether the port is done; a lender dropped while lent orphans its
+     * block, which goes back to the pool with the handle.
      */
     class Packet {
     public:
@@ -72,7 +77,19 @@ namespace aloe::fabric {
         }
 
         void set_tx(const device::TxMetadata& tx) noexcept {
+            assert(!lent() && "a lent packet is not written");
             tx_ = tx;
+        }
+
+        /// A second handle over the same block, for the port to transmit: the loan. One at a time; not empty.
+        [[nodiscard]] Packet lend() noexcept;
+        /// True while a handle from `lend()` is alive: in a ring, or in the port's in-flight list.
+        [[nodiscard]] bool lent() const noexcept {
+            return block_ != nullptr && block_->lent;
+        }
+        /// True on the handle `lend()` returned, false on the lender.
+        [[nodiscard]] bool borrowed() const noexcept {
+            return borrowed_;
         }
 
     private:
@@ -93,6 +110,7 @@ namespace aloe::fabric {
         std::size_t end_      = 0;
         device::RxMetadata rx_;
         device::TxMetadata tx_;
+        bool borrowed_ = false;
     };
 
     /**

@@ -164,7 +164,11 @@ TEST(NetTap, TheKernelPingsTheBrick) {
         pollfd waiting{.fd = fd, .events = POLLIN, .revents = 0};
         const auto left =
             std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now());
-        if (poll(&waiting, 1, static_cast<int>(std::max<std::int64_t>(left.count(), 1))) <= 0) {
+        const int ready = poll(&waiting, 1, static_cast<int>(std::max<std::int64_t>(left.count(), 1)));
+        if (ready < 0 && errno == EINTR) {
+            continue;  // the tap driver signals the process on every frame the kernel writes; poll is never restarted
+        }
+        if (ready <= 0) {
             break;
         }
         std::array<std::byte, 2048> buffer{};

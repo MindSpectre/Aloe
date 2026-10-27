@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <aloe/wire>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -28,7 +29,9 @@ namespace aloe::frames {
         wire::TcpSequence acknowledgement{};
         wire::TcpFlags flags{};
         std::uint16_t window = 65535;
-        std::optional<std::uint16_t> mss;  ///< Written as the one option when present; set it on SYNs.
+        std::optional<std::uint16_t> mss{};  ///< Written as the one option when present; set it on SYNs.
+        std::vector<std::byte>
+            options{};  ///< Raw option bytes, written as they are when non-empty; then `mss` stays absent.
         Checksums checksums =
             Checksums::Correct;  ///< `Wrong` corrupts the TCP checksum only; the IPv4 header stays right.
     };
@@ -36,7 +39,11 @@ namespace aloe::frames {
     /// The segment's bytes after the IPv4 header: header, the MSS option when given, then `payload`.
     [[nodiscard]] inline std::vector<std::byte> tcp_segment(const TcpSpec& spec,
                                                             const std::span<const std::byte> payload) {
-        const std::size_t header = wire::TcpHeader::size + (spec.mss ? wire::TcpOptions::mss_size : 0);
+        const std::size_t option_bytes =
+            spec.options.empty() ? (spec.mss ? wire::TcpOptions::mss_size : 0) : spec.options.size();
+        assert(spec.options.empty() || !spec.mss);
+        assert(option_bytes % 4 == 0 && option_bytes <= wire::TcpHeader::max_size - wire::TcpHeader::size);
+        const std::size_t header = wire::TcpHeader::size + option_bytes;
         std::vector<std::byte> segment(header + payload.size());
         wire::TcpHeader{.source_port      = spec.source_port,
                         .destination_port = spec.destination_port,
@@ -46,7 +53,9 @@ namespace aloe::frames {
                         .flags            = spec.flags,
                         .window           = spec.window}
             .write(segment);
-        if (spec.mss) {
+        if (!spec.options.empty()) {
+            std::ranges::copy(spec.options, segment.begin() + static_cast<std::ptrdiff_t>(wire::TcpHeader::size));
+        } else if (spec.mss) {
             wire::TcpOptions::write_mss(std::span<std::byte>{segment}.subspan(wire::TcpHeader::size), *spec.mss);
         }
         std::ranges::copy(payload, segment.begin() + static_cast<std::ptrdiff_t>(header));
@@ -93,6 +102,16 @@ namespace aloe::frames {
             return {};
         }
         return std::span<const std::byte>{frame.l4}.subspan(frame.tcp->data_offset);
+    }
+
+    /// The option bytes between the fixed header and the data offset of a parsed frame; empty when the frame is not
+    /// TCP.
+    [[nodiscard]] inline std::span<const std::byte> tcp_options_of(const ParsedFrame& frame) {
+        if (!frame.tcp) {
+            return {};
+        }
+        return std::span<const std::byte>{frame.l4}.subspan(wire::TcpHeader::size,
+                                                            frame.tcp->data_offset - wire::TcpHeader::size);
     }
 
 }  // namespace aloe::frames

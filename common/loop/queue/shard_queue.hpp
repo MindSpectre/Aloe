@@ -99,6 +99,13 @@ namespace aloe::loop {
             }
         }
 
+        /// Asks the device to free finished transmits on this queue; how many it let go of. Zero on a device without
+        /// the call.
+        [[nodiscard]] std::size_t reclaim() noexcept {
+            core::force_non_const(this);  // the stack's mutable view of the device, though only the pointee is written
+            return device_->reclaim(queue_);
+        }
+
         [[nodiscard]] std::size_t pending() const noexcept {
             return size_;
         }

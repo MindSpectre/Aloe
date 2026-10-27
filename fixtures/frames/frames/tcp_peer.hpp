@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include <net_frames.hpp>
@@ -22,8 +23,8 @@ namespace aloe::frames {
      */
     class TcpPeer {
     public:
-        TcpPeer(const TcpSpec spec, const wire::TcpSequence initial) noexcept
-            : spec_{spec},
+        TcpPeer(TcpSpec spec, const wire::TcpSequence initial) noexcept
+            : spec_{std::move(spec)},
               iss_{initial},
               snd_nxt_{initial} {
         }

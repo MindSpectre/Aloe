@@ -1,0 +1,17 @@
+// A segment above a gap is not kept in this phase: it is answered at once with the acknowledgement at the gap,
+// and the read sees only what came in order. Linux would hold it and answer with a SACK block (phase 2, step 4).
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460>
++0 < . 1:1(0) ack 1 win 65535
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 65535
++0 > . 1:1(0) ack 1001 win 45720
++0 < P. 2001:3001(1000) ack 1 win 65535
++0 > . 1:1(0) ack 1001 win 45720
++0 read(4, ..., 3000) = 1000
++0 > . 1:1(0) ack 1001 win 46720

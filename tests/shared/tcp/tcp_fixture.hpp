@@ -77,9 +77,9 @@ namespace aloe::testing {
      * @brief The brick over one queue of a device, a peer scripted by the test, and the helpers
      * to inject, tick and collect. Time is `now_`: the epoch plus what the test adds.
      *
-     * `receive` injects through IP and TCP without flushing; `advance` moves the stamp, runs an
-     * empty `process` and advances the wheel; `collect` flushes TCP and the queue and returns what
-     * the harness port received. No fatal assertion lives in a helper that returns a value.
+     * `receive` injects through IP and TCP without flushing; `advance` moves the stamp, steps the
+     * fabric, runs a receive pass over what it delivered and advances the wheel; `collect` flushes TCP and the queue
+     * and returns what the harness port received. No fatal assertion lives in a helper that returns a value.
      */
     template <device::IsDevice Device>
     class TcpHarness {
@@ -93,12 +93,14 @@ namespace aloe::testing {
 
         /// `ring_capacity` 1 makes the first refused device transmit refuse the send itself: the refusing fixture's
         /// choice.
-        TcpHarness(fabric::Port& harness,
+        TcpHarness(fabric::Fabric& fabric,
+                   fabric::Port& harness,
                    Device& device,
                    const tcp::TcpConfig& config     = {},
                    const net::Ipv4Config& ip_config = stack_config(),
                    const std::size_t ring_capacity  = 16)
-            : harness_{&harness},
+            : fabric_{&fabric},
+              harness_{&harness},
               queue_{device, 0, ring_capacity, counters_},
               ip_{queue_, ip_config},
               tcp_{std::make_unique<Tcp>(ip_, wheel_, config)} {
@@ -106,7 +108,8 @@ namespace aloe::testing {
         }
 
     protected:
-        fabric::Port* harness_ = nullptr;
+        fabric::Fabric* fabric_ = nullptr;
+        fabric::Port* harness_  = nullptr;
         loop::ShardCounters counters_;
         loop::ShardQueue<Device> queue_;
         Ipv4 ip_;
@@ -140,10 +143,12 @@ namespace aloe::testing {
             tcp_->process(ip_.received(wire::Ipv4Protocol::Tcp), now_);
         }
 
-        /// Moves time, runs an empty process at the new stamp, then fires the timers due.
+        /// Moves time, steps the fabric, runs a receive pass at the new stamp over what it delivered (usually
+        /// nothing), then fires the timers due.
         void advance(const core::Duration by) {
             now_ += by;
-            tcp_->process({}, now_);
+            fabric_->advance(now_);  // delayed frames and finished loans, first, so this tick receives them
+            process_pending();
             std::ignore = wheel_.advance(now_);
         }
 
@@ -235,7 +240,7 @@ namespace aloe::testing {
     protected:
         TcpFixture()
             : FabricPair{GetParam()},
-              TcpHarness{harness, port} {
+              TcpHarness{fabric, harness, port} {
         }
 
         [[nodiscard]] static bool offloads() {
@@ -252,7 +257,7 @@ namespace aloe::testing {
         TcpRefusingFixture()
             : FabricPair{GetParam()},
               TestDeviceHolder{port},
-              TcpHarness{harness, device, {}, stack_config(), 1} {
+              TcpHarness{fabric, harness, device, {}, stack_config(), 1} {
         }
 
         /// From now on every send is refused: the device takes nothing, and an empty packet fills the one-slot ring

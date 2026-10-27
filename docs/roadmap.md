@@ -57,8 +57,8 @@ The simulation tests and the tap suite pass; the examples build and wait for a r
 The first deployment is a client: long-lived connections out to trading venues, many of them across the
 internet behind TLS and WebSocket. That sets the order: loss recovery and receive latency before throughput,
 and the hardening a client needs before the hardening a server needs. The RFCs are the specification; where
-they leave a choice, Aloe does what Linux does, and Linux's packetdrill scenarios are the source of the
-scenario tests. The steps, in order:
+they leave a choice, Aloe does what Linux does, and Linux's packetdrill corpus is the reference for what Linux
+does; the scenario scripts are Aloe's own. The steps, in order:
 
 1. **Baseline benchmark.** Tick-to-trade and the gateway round through the bricks and through the runtime,
    against a floor of raw frames, on DPDK's ring driver with a scripted venue on a second core; per-message
@@ -70,8 +70,11 @@ scenario tests. The steps, in order:
    back when the device is done with it: TCP sees ownership move and return, never a reference count. The
    DPDK backend implements the loan with the mbuf's reference count, the fabric by holding the packet. A
    packet still on loan is never rewritten: as in Linux and lwIP, a retransmit waits until the first copy has
-   left the host. Scripted loss, reordering, delay and duplication in the fabric, and a runner for
-   packetdrill-style scenario scripts. TCP's behaviour does not change in this step.
+   left the host. Scripted loss, duplication, reordering and delay in the fabric, and a runner for scenario
+   scripts in packetdrill's syntax: Aloe's own scripts, with Linux's corpus as the reference for what Linux
+   does. TCP's behaviour does not change in this step. Landed; the loan is a device and loop capability until
+   step 3 lends from `commit`. See the [device layer](architecture/device.md), the
+   [fixtures](architecture/fixtures.md) and the [scenario runner](architecture/scenario.md).
 3. **Reliable send.** The retransmission queue over lent packets, patched in place when they come back; RTO
    estimation (RFC 6298); timestamps for RTT measurement and PAWS (RFC 7323); zero-window probes; fast
    retransmit and NewReno (RFC 5681, RFC 6582) behind a pluggable congestion-control policy. Pre-built segment

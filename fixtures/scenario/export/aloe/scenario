@@ -1,0 +1,14 @@
+#pragma once
+
+/**
+ * Public umbrella for the Aloe scenario module: packetdrill-style scripts run against the TCP brick on
+ * the fabric. Consumers link Aloe::Fixtures::Scenario and write `#include <aloe/scenario>`.
+ */
+
+#include <harness.hpp>
+#include <match.hpp>
+#include <notation.hpp>
+#include <parse_script.hpp>
+#include <peer.hpp>
+#include <runner.hpp>
+#include <script.hpp>

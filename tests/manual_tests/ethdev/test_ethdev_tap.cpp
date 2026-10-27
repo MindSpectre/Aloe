@@ -84,3 +84,29 @@ TEST(EthdevTap, FramesCrossBetweenTheKernelAndThePort) {
     ASSERT_EQ(port.transmit(0, burst), 1);
     EXPECT_TRUE(kernel_receives(kernel, outbound)) << "a frame transmitted by the port reaches the kernel";
 }
+
+TEST(EthdevTap, ALoanIsBackOnceTheTapHasWrittenTheFrame) {
+    if (geteuid() != 0) {
+        FAIL() << "this test creates a tap interface and needs CAP_NET_ADMIN; run it as root";
+    }
+    aloe::ethdev::Port port{
+        {.name = aloe::testing::probe_vdev("net_tap", "iface=aloe-loan"), .queues = 1, .pool_size = 512}
+    };
+    // The tap driver trims the headers off an mbuf whose checksum it completes, which would move a lender's offsets.
+    EXPECT_FALSE(port.capabilities().tx_ipv4_checksum);
+    EXPECT_FALSE(port.capabilities().tx_l4_checksum);
+    const aloe::testing::PacketSocket kernel{"aloe-loan"};
+
+    const auto frame = aloe::frames::ethernet_frame(aloe::wire::MacAddress::broadcast(),
+                                                    port.mac(),
+                                                    aloe::frames::ethertype_experimental,
+                                                    aloe::frames::pattern(60, 3));
+    auto lender      = port.allocate(0);
+    ASSERT_TRUE(lender.has_value());
+    ASSERT_TRUE(aloe::frames::fill(*lender, frame));
+    std::array<aloe::ethdev::Packet, 1> burst{lender->lend()};
+    ASSERT_EQ(port.transmit(0, burst), 1);
+    EXPECT_FALSE(lender->lent()) << "the tap driver frees the mbuf after writing it to the kernel";
+    EXPECT_TRUE(kernel_receives(kernel, frame));
+    EXPECT_EQ(aloe::frames::bytes_of(*lender), frame);
+}

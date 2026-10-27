@@ -21,6 +21,7 @@ target_link_libraries(${FABRIC}.Packet PUBLIC
 add_library(${FABRIC}.Fabric STATIC
         fabric/fabric.hpp
         fabric/fabric.cpp
+        fabric/impairment.hpp
         fabric/detail/frame.hpp
 )
 target_include_directories(${FABRIC}.Fabric PUBLIC
@@ -28,6 +29,7 @@ target_include_directories(${FABRIC}.Fabric PUBLIC
 )
 target_link_libraries(${FABRIC}.Fabric PUBLIC
         ${FABRIC}.Packet
+        Aloe::Common::Core
         Threads::Threads
 )
 ##############################################################################

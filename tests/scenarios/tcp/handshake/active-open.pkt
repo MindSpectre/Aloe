@@ -1,0 +1,8 @@
+// An active open: our SYN with the one option, the peer's SYN-ACK, our ACK at the flush.
+// connect returns at once, as a non-blocking connect does; the ACK is deferred so a commit could ride it.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 fcntl(3, F_SETFL, O_RDWR|O_NONBLOCK) = 0
++0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)
++0 > S 0:0(0) win 46720 <mss 1460>
++0 < S. 0:0(0) ack 1 win 65535 <mss 1460>
++0 > . 1:1(0) ack 1 win 46720

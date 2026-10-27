@@ -26,3 +26,18 @@ target_link_libraries(${UNIT_TESTING_TARGET}.Loop.Threads
         ${TEST_LIBS}
 )
 ##############################################################################
+
+##############################################################################
+# Test Loop: the shard queue over a fabric port, for the loan's reclaim
+##############################################################################
+add_unit_test(${UNIT_TESTING_TARGET}.Loop.Queue
+        test_shard_queue.cpp
+)
+target_link_libraries(${UNIT_TESTING_TARGET}.Loop.Queue
+        PRIVATE
+        Aloe::Common::Loop
+        Aloe::Fixtures::Fabric
+        Aloe::Fixtures::Frames
+        ${TEST_LIBS}
+)
+##############################################################################

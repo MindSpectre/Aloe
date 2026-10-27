@@ -6,11 +6,13 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <device_conformance.hpp>
 #include <eal_environment.hpp>
 #include <gtest/gtest.h>
+#include <rte_mbuf.h>
 
 namespace aloe::testing {
 
@@ -213,4 +215,85 @@ TEST(EthdevRing, ARefusedFrameBehindAPartialSendStaysWithTheCaller) {
     EXPECT_EQ(aloe::frames::bytes_of(burst[3]), frame);
     EXPECT_EQ(port.counters(0).oversized, 0) << "and not counted";
     EXPECT_EQ(port.counters(0).transmitted, 1023);
+}
+
+TEST(EthdevRing, AReceivedSharedMbufIsACopyAndTheLoanIsBack) {
+    aloe::ethdev::Port port{
+        {.name = aloe::testing::probe_vdev("net_ring"), .queues = 1, .pool_size = 256}
+    };
+    const auto frame = aloe::frames::ethernet_frame(
+        port.mac(), aloe::testing::peer, aloe::frames::ethertype_experimental, aloe::frames::pattern(60, 5));
+    auto lender = port.allocate(0);
+    ASSERT_TRUE(lender.has_value());
+    ASSERT_TRUE(aloe::frames::fill(*lender, frame));
+
+    std::array<aloe::ethdev::Packet, 1> burst{lender->lend()};
+    ASSERT_EQ(port.transmit(0, burst), 1);
+    EXPECT_TRUE(burst[0].empty());
+    EXPECT_TRUE(lender->lent()) << "the ring holds the very mbuf until the reader takes it";
+
+    std::array<aloe::ethdev::Packet, 2> received;
+    ASSERT_EQ(port.receive(0, received), 1);
+    EXPECT_NE(received[0].get(), lender->get()) << "the reader gets a copy";
+    EXPECT_FALSE(lender->lent()) << "and the receive dropped the shared reference";
+    EXPECT_EQ(aloe::frames::bytes_of(received[0]), frame);
+    EXPECT_EQ(received[0].headroom(), aloe::device::packet_headroom);
+    EXPECT_EQ(received[0].tx(), aloe::device::TxMetadata{});
+
+    received[0].trim_front(14);
+    EXPECT_EQ(lender->size(), frame.size()) << "a trim on the copy moves nothing of the lender's";
+    EXPECT_EQ(aloe::frames::bytes_of(*lender), frame);
+    EXPECT_EQ(port.counters(0).received, 1);
+    EXPECT_EQ(port.counters(0).dropped, 0);
+}
+
+TEST(EthdevRing, AnUnsharedMbufIsNotCopied) {
+    aloe::ethdev::Port port{
+        {.name = aloe::testing::probe_vdev("net_ring"), .queues = 1, .pool_size = 256}
+    };
+    const auto frame = aloe::frames::ethernet_frame(
+        port.mac(), aloe::testing::peer, aloe::frames::ethertype_experimental, aloe::frames::pattern(40, 1));
+    auto packet = port.allocate(0);
+    ASSERT_TRUE(packet.has_value());
+    ASSERT_TRUE(aloe::frames::fill(*packet, frame));
+    rte_mbuf* const raw = packet->get();
+    std::array<aloe::ethdev::Packet, 1> burst{std::move(*packet)};
+    ASSERT_EQ(port.transmit(0, burst), 1);
+    std::array<aloe::ethdev::Packet, 1> received;
+    ASSERT_EQ(port.receive(0, received), 1);
+    EXPECT_EQ(received[0].get(), raw) << "the ring hands the mbuf itself; nothing to protect";
+}
+
+TEST(EthdevRing, ReclaimIsUnsupportedByTheRingDriver) {
+    aloe::ethdev::Port port{
+        {.name = aloe::testing::probe_vdev("net_ring"), .queues = 1, .pool_size = 256}
+    };
+    EXPECT_FALSE(port.capabilities().tx_reclaim);
+    EXPECT_EQ(port.reclaim(0), 0);
+}
+
+TEST(EthdevRing, AReceiveWhoseCopyFindsNoMbufDropsAndCounts) {
+    aloe::ethdev::Port port{
+        {.name = aloe::testing::probe_vdev("net_ring"), .queues = 1, .pool_size = 64}
+    };
+    const auto frame = aloe::frames::ethernet_frame(
+        port.mac(), aloe::testing::peer, aloe::frames::ethertype_experimental, aloe::frames::pattern(40, 2));
+    auto lender = port.allocate(0);
+    ASSERT_TRUE(lender.has_value());
+    ASSERT_TRUE(aloe::frames::fill(*lender, frame));
+    std::array<aloe::ethdev::Packet, 1> burst{lender->lend()};
+    ASSERT_EQ(port.transmit(0, burst), 1);
+
+    std::vector<aloe::ethdev::Packet> held;
+    while (auto packet = port.allocate(0)) {
+        held.push_back(std::move(*packet));
+    }
+    ASSERT_FALSE(held.empty());
+
+    std::array<aloe::ethdev::Packet, 1> received;
+    EXPECT_EQ(port.receive(0, received), 0) << "no mbuf for the copy: the frame is dropped";
+    EXPECT_EQ(port.counters(0).dropped, 1);
+    EXPECT_FALSE(lender->lent()) << "the shared reference was dropped with it";
+    held.clear();
+    EXPECT_EQ(port.receive(0, received), 0) << "the frame is gone, not retried";
 }
