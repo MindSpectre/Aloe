@@ -14,3 +14,6 @@
 +0 < . 1:1(0) ack 2 win 65535
 +0 < F. 1:1(0) ack 2 win 65535
 +0 > . 2:2(0) ack 2 win 46720
+
+// Five quiet seconds: nothing is retransmitted once the connection is Closed.
++5 close(3) = 0

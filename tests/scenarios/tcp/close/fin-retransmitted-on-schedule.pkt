@@ -14,3 +14,6 @@
 +1 > F. 1:1(0) ack 1 win 46720
 +2 > F. 1:1(0) ack 1 win 46720
 +0 < . 1:1(0) ack 2 win 65535
+
+// Five quiet seconds: a FIN whose retry was not cancelled would go again at +4.
++5 close(3) = 0
