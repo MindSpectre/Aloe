@@ -140,10 +140,11 @@ lifetimes of an hour, beyond the `*` bound and the longest retry schedule.
 ## Time and matching
 
 **The clock is virtual.** It starts at the epoch and moves only as the script asks, one wheel resolution at a
-time. One step is: `now += resolution`, an empty `tcp.process` at the new stamp, `wheel.advance`,
-`fabric.advance`, a drain of the stack's events (which binds them to the descriptors and releases a connection
-whose terminal event arrived), `tcp.flush`, `queue.flush`, and then every frame the peer's port received joins
-the runner's queue of sent segments, stamped with `now`.
+time. One step is: `now += resolution`, `fabric.advance`, a receive pass through IP and TCP at the new stamp over
+whatever the fabric delivered to the stack's port (usually nothing), `wheel.advance`, a drain of the stack's
+events (which binds them to the descriptors and releases a connection whose terminal event arrived),
+`tcp.flush`, `queue.flush`, and then every frame the peer's port received joins the runner's queue of sent
+segments, stamped with `now`.
 
 **Inbound lines and calls act at their nominal time,** with no tolerance: the runner steps up to that stamp,
 injects or calls, then drains, flushes and collects at the same stamp, so a `+0 >` line right after one is

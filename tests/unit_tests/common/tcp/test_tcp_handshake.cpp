@@ -159,6 +159,17 @@ TEST_P(TcpHandshake, RefusedOpen) {
     EXPECT_EQ(tcp_->table_size(), 0U);
 }
 
+TEST_P(TcpHandshake, ASynTheFabricDelayedIsAnsweredOnTheTickItArrives) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    harness_->set_impairment({.delay = 5ms});
+    receive(peer_.syn());
+    ASSERT_TRUE(collect().empty()) << "the SYN is still on the fabric";
+    advance(5ms);
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "the SYN-ACK on the tick the SYN arrives";
+    EXPECT_EQ(frames[0].tcp->flags, (TcpFlags{TcpFlag::Syn, TcpFlag::Ack}));
+}
+
 TEST_P(TcpHandshake, StrayAckGetsRstWithRfc793Numbers) {
     receive(peer_.segment({TcpFlag::Ack}, {}, TcpSequence{1001U}, TcpSequence{777U}));
     const auto frames = collect();

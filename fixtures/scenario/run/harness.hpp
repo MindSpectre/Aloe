@@ -89,7 +89,8 @@ namespace aloe::scenario {
         /// Transmits `frame` from the peer's port and runs IP and TCP over what the stack's port received, at `now`.
         void inject(std::span<const std::byte> frame, core::TimePoint now);
 
-        /// An empty process at `now`, the wheel, then the fabric: the first half of a tick with nothing injected.
+        /// The fabric's frames and loans due by `now`, a receive pass over what reached the stack's port (an empty one
+        /// still stamps TCP), then the wheel: the first half of a tick with nothing injected.
         void step(core::TimePoint now);
 
         /// TCP's flush, then the queue's.
@@ -99,6 +100,9 @@ namespace aloe::scenario {
         [[nodiscard]] std::vector<Collected> collect();
 
     private:
+        /// What the stack's port holds, through IP and TCP at `now`; there may be nothing.
+        void receive(core::TimePoint now);
+
         HarnessConfig config_;
         fabric::Fabric fabric_;
         fabric::Port* peer_port_;

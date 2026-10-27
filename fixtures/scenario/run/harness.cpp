@@ -53,15 +53,19 @@ namespace aloe::scenario {
         if (peer_port_->transmit(0, out) != 1) {
             throw std::runtime_error{"the peer's port refused the frame"};
         }
-        const std::size_t count = queue_.receive(burst_);
-        ip_.process(std::span<Packet>{burst_}.first(count), now);
-        tcp_.process(ip_.received(wire::Ipv4Protocol::Tcp), now);
+        receive(now);
     }
 
     void Harness::step(const core::TimePoint now) {
-        tcp_.process({}, now);
+        fabric_.advance(now);  // first, so a frame it delivers is received in this step
+        receive(now);
         std::ignore = wheel_.advance(now);
-        fabric_.advance(now);
+    }
+
+    void Harness::receive(const core::TimePoint now) {
+        const std::size_t count = queue_.receive(burst_);
+        ip_.process(std::span<Packet>{burst_}.first(count), now);
+        tcp_.process(ip_.received(wire::Ipv4Protocol::Tcp), now);
     }
 
     void Harness::flush(const core::TimePoint now) {

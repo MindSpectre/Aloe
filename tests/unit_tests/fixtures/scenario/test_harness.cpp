@@ -80,6 +80,23 @@ TEST_P(HarnessTest, StepFiresTheWheelAndTheRetransmitComesOut) {
     EXPECT_EQ(harness.tcp().counters().retransmits, 1);
 }
 
+TEST_P(HarnessTest, StepHandsTheStackAFrameTheFabricDelivers) {
+    HarnessConfig config;
+    config.offloads = GetParam();
+    Harness harness{config};
+    ASSERT_TRUE(harness.tcp().listen(config.stack_port).has_value());
+    harness.peer_port().set_impairment({.delay = 5ms});
+    harness.inject(peer_syn(config), TimePoint{});
+    harness.flush(TimePoint{});
+    ASSERT_TRUE(harness.collect().empty()) << "the SYN is still on the fabric";
+    const TimePoint due = TimePoint{} + 5ms;
+    harness.step(due);
+    harness.flush(due);
+    const auto collected = harness.collect();
+    ASSERT_EQ(collected.size(), 1) << "the SYN-ACK in the step the SYN arrives";
+    EXPECT_EQ(collected[0].frame.tcp->flags, (TcpFlags{TcpFlag::Syn, TcpFlag::Ack}));
+}
+
 TEST_P(HarnessTest, TheArpCacheOutlivesAnyScript) {
     // `net::Ipv4` exposes no config accessor; the lifetimes show through behaviour: five minutes in, past the
     // cache's default 60 s reachable and 120 s expiry, a reply still needs no ARP request.
