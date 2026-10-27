@@ -238,6 +238,22 @@ TEST_P(RunnerTest, PassiveOpenWithAcceptAndClose) {
     EXPECT_TRUE(result.has_value()) << result.error().message;
 }
 
+TEST_P(RunnerTest, AClosedConnectionsNumberIsFreedAtItsTerminalEvent) {
+    const auto before = run_text(std::string{passive_open} + "+0 close(4) = 0\n"
+                                                             "+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 4\n",
+                                 GetParam());
+    EXPECT_TRUE(mentions(before, "descriptor 4 is in use")) << (before ? "passed" : before.error().message);
+
+    const auto after = run_text(std::string{passive_open} + "+0 close(4) = 0\n"
+                                                            "+0 > F. 1:1(0) ack 1 win 46720\n"
+                                                            "+0 < . 1:1(0) ack 2 win 65535\n"
+                                                            "+0 < F. 1:1(0) ack 2 win 65535\n"
+                                                            "+0 > . 2:2(0) ack 2 win 46720\n"
+                                                            "+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 4\n",
+                                GetParam());
+    EXPECT_TRUE(after.has_value()) << after.error().message;
+}
+
 TEST_P(RunnerTest, ActiveOpenWithConnect) {
     const auto result = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
                                  "+0 fcntl(3, F_SETFL, O_RDWR|O_NONBLOCK) = 0\n"

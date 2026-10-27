@@ -186,8 +186,9 @@ What the runner does not model yet, which a script author needs to know:
 - The runner releases a connection's slot at its first terminal event, `Closed`, `Reset`, `TimedOut` or
   `Unresolved`, so whatever was unread is gone after it. After a `shutdown`, the peer's data followed by its FIN
   takes the connection to `Closed`, and a later `read` fails where Linux would return the data.
-- A closed connection's descriptor keeps its number until its terminal event (closing a listener or a socket frees it at once): `accept(3, ..., ...) = 4` after `close(4)` fails with descriptor 4 in
-  use. Number the next connection 5.
+- A closed connection's descriptor keeps its number until its terminal event, which frees it (closing a listener or a
+  socket frees it at once): `accept(3, ..., ...) = 4` after `close(4)` fails with descriptor 4 in use while the FIN
+  exchange is still open. Number the next connection 5.
 - `close` in SynSent does nothing, since the brick's `close()` acts in Established and CloseWait only; closing a
   listener leaves the connections it had accepted and `accept` had not taken where they are.
 - `close` on an established connection sends a FIN even with unread data. The reset Linux sends in that case

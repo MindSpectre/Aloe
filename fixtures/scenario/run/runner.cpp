@@ -324,6 +324,9 @@ namespace aloe::scenario {
                 binding.terminal   = terminal;  // the first: with the pointer gone, no later event finds the binding
                 binding.connection = nullptr;
                 connection->release();
+                if (binding.kind == Binding::Kind::Closed) {
+                    descriptors_.erase(bound);  // closed by the script and now finished: the number is free again
+                }
             }
             return;
         }
