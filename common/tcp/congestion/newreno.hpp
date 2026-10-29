@@ -76,8 +76,9 @@ namespace aloe::tcp {
             state.acked_bytes = 0;
         }
 
+        /// RFC 5681 §4.1's restart window, as Linux's `tcp_cwnd_restart` floors it: never above the window it had.
         static constexpr void on_idle(State& state, const std::uint16_t mss) noexcept {
-            state.cwnd        = initial_window(mss);
+            state.cwnd        = std::min(state.cwnd, initial_window(mss));
             state.acked_bytes = 0;
         }
 

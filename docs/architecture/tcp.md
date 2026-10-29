@@ -240,8 +240,8 @@ them without a change to the concept or the queue.
   partial ACK deflates the window by the bytes it covers, adds a segment back when it covers at least one, and
   never leaves less than a segment; the full ACK sets `cwnd = min(ssthresh, max(flight, mss) + mss)`, RFC 6582's
   first option; a timeout sets `ssthresh = max(flight / 2, 2 mss)` and `cwnd = mss`; a send after an idle RTO
-  restarts at the initial window. Linux's reno runs PRR in recovery instead of the inflation and deflation, so
-  its windows differ there; the recovery scripts pin RFC 6582 as written.
+  restarts at `min(IW, cwnd)`, RFC 5681's restart window. Linux's reno runs PRR in recovery instead of the
+  inflation and deflation, so its windows differ there; the recovery scripts pin RFC 6582 as written.
 - **`NoCongestionControl`**: the window is the largest 32-bit value and every hook is empty, so the peer's
   window is the only limit. Recovery still happens, fast retransmit, the RTO, the retries and the user timeout;
   what goes is the reaction to loss as a congestion signal. It is for private cross-connects, and it is as

@@ -105,9 +105,18 @@ TEST(NewReno, TimeoutRestartsAtOneSegment) {
     NewReno::on_timeout(s, 4000, mss);
     EXPECT_EQ(s.ssthresh, 2000U);
     EXPECT_EQ(NewReno::window(s), 1000U);
+}
+
+TEST(NewReno, IdleRestartsAtTheSmallerOfTheInitialWindowAndTheWindow) {
+    NewReno::State s;
+    NewReno::reset(s, mss);
+    NewReno::on_timeout(s, 4000, mss);
     NewReno::on_idle(s, mss);
-    EXPECT_EQ(NewReno::window(s), 10000U);
+    EXPECT_EQ(NewReno::window(s), 1000U) << "RFC 5681: min(IW, cwnd) never raises a window a timeout cut";
     EXPECT_EQ(s.ssthresh, 2000U) << "idle keeps the threshold";
+    NewReno::State grown{.cwnd = 20000, .ssthresh = max_window, .acked_bytes = 0};
+    NewReno::on_idle(grown, mss);
+    EXPECT_EQ(NewReno::window(grown), 10000U) << "twenty segments restart at the initial ten";
 }
 
 TEST(NewReno, AdditionsSaturate) {
