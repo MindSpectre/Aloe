@@ -10,13 +10,17 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <optional>
+#include <print>
 #include <span>
+#include <sstream>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -52,7 +56,14 @@
 // on the tap, so the kernel loses 5% of what it sends the stack, and removes the qdisc afterwards; it skips when `tc`
 // or `sch_netem` is missing. The stack's own transmits go through a `LossyDevice`, which frees every tenth packet and
 // reports it sent. Each case needs at least one retransmission on the stack's side and the clean close; the brick
-// cases need timestamps negotiated, which the kernel offers by default. Waits are 30 s there.
+// cases need timestamps negotiated, which the kernel offers by default. Waits are 30 s there. Each case also prints
+// how far the kernel's `RetransSegs` (the `Tcp:` rows of `/proc/net/snmp`) rose while it ran: the kernel's own
+// resends, for information only, since the counter is system-wide and other traffic moves it too.
+//
+// `BrickServerProbesAKernelClientThatStopsReading` is the probe against Linux: a kernel client with an 8 KB
+// `SO_RCVBUF` sends 50 000 bytes and reads none of the echo until the brick has sent a zero-window probe, so the
+// kernel's window closes and the brick probes it; the connection must stay open, and once the client reads, the
+// echo completes and both sides close cleanly.
 //
 // The kernel's SYN carries SACK-permitted, timestamps and window scale, which the option parser skips; the tap
 // offers no offloads, so every checksum is software on our side and verified by the kernel.
@@ -301,6 +312,14 @@ namespace {
         [[nodiscard]] bool timestamps_negotiated() const noexcept {
             return timestamps_.load(std::memory_order_acquire);
         }
+        /// The stack's `zero_window_probes` as of the loop's last tick: readable while the loop runs.
+        [[nodiscard]] std::uint64_t zero_window_probes() const noexcept {
+            return zero_window_probes_.load(std::memory_order_acquire);
+        }
+        /// The connection raised `Closed`, `Reset` or `TimedOut`.
+        [[nodiscard]] bool ended() const noexcept {
+            return ended_.load(std::memory_order_acquire);
+        }
         std::atomic<bool> connected{false};
 
     private:
@@ -355,13 +374,16 @@ namespace {
                     if (event->events.closed()) {
                         clean_close_.store(c.state() == aloe::tcp::State::Closed && !event->events.reset(),
                                            std::memory_order_release);
+                        ended_.store(true, std::memory_order_release);
                         c.release();
                     } else if (event->events.reset() || event->events.timed_out()) {
+                        ended_.store(true, std::memory_order_release);
                         c.release();
                     }
                 }
                 tcp.flush(now);
                 std::ignore = queue.flush();
+                zero_window_probes_.store(tcp.counters().zero_window_probes, std::memory_order_release);
                 if (received == 0) {
                     std::this_thread::yield();
                 }
@@ -389,6 +411,8 @@ namespace {
         std::vector<std::byte> received_;
         std::atomic<bool> timestamps_{false};
         std::atomic<bool> clean_close_{false};  ///< Written by the loop thread, polled by the test thread.
+        std::atomic<bool> ended_{false};
+        std::atomic<std::uint64_t> zero_window_probes_{0};
         std::jthread thread_;
     };
 
@@ -483,6 +507,61 @@ namespace {
         ASSERT_EQ(shutdown(fd, SHUT_WR), 0);
         EXPECT_TRUE(recv_eof(fd)) << "the brick's FIN after ours";
         close(fd);
+    }
+
+    /// A kernel client that stops reading: an 8 KB receive buffer, set before connecting so the window is sized from
+    /// it, and a send buffer that takes the whole payload at once; it sends everything, runs `stalled` with the socket
+    /// while the echo is left unread, then reads the echo, closes and expects EOF.
+    template <typename Stalled>
+    void kernel_client_stalled_round_trip(const std::span<const std::byte> payload, Stalled stalled) {
+        const int fd = socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT_GE(fd, 0);
+        const int receive_buffer = 8192;
+        ASSERT_EQ(setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof(receive_buffer)), 0)
+            << std::strerror(errno);
+        const int send_buffer = 131072;
+        ASSERT_EQ(setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &send_buffer, sizeof(send_buffer)), 0) << std::strerror(errno);
+        const sockaddr_in server = address_of(stack_ip, echo_port);
+        ASSERT_EQ(::connect(fd, reinterpret_cast<const sockaddr*>(&server), sizeof(server)), 0) << std::strerror(errno);
+        ASSERT_TRUE(send_all(fd, payload));
+        stalled(fd);
+        std::vector<std::byte> back(payload.size());
+        EXPECT_TRUE(recv_all(fd, back)) << "the echo, once the client reads";
+        EXPECT_EQ(back, std::vector<std::byte>(payload.begin(), payload.end()));
+        ASSERT_EQ(shutdown(fd, SHUT_WR), 0);
+        EXPECT_TRUE(recv_eof(fd)) << "the brick's FIN after ours";
+        close(fd);
+    }
+
+    /// The kernel's `RetransSegs`, from the `Tcp:` rows of `/proc/net/snmp`, a row of names and a row of values;
+    /// nothing when the file or the field is missing. System-wide: every TCP socket of the host moves it.
+    [[nodiscard]] std::optional<std::uint64_t> kernel_retrans_segs() {
+        std::ifstream snmp{"/proc/net/snmp"};
+        std::string names;
+        std::string values;
+        for (std::string line; std::getline(snmp, line);) {
+            if (!line.starts_with("Tcp:")) {
+                continue;
+            }
+            if (names.empty()) {
+                names = line;
+            } else {
+                values = line;
+                break;
+            }
+        }
+        std::istringstream name_stream{names};
+        std::istringstream value_stream{values};
+        std::string name;
+        std::string value;
+        while (name_stream >> name && value_stream >> value) {
+            if (name == "RetransSegs") {
+                std::uint64_t count     = 0;
+                const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), count);
+                return error == std::errc{} ? std::optional{count} : std::nullopt;
+            }
+        }
+        return std::nullopt;
     }
 
     /// A kernel server: accepts one connection, echoes until EOF, then closes.
@@ -582,17 +661,27 @@ namespace {
             }
             shaped_ = true;
             patience_storage().store(lossy_patience);
+            retrans_before_ = kernel_retrans_segs();
         }
 
+        /// Prints how far the kernel's `RetransSegs` rose during the case, and records it as a property: information,
+        /// not an assertion, since the counter is system-wide.
         void TearDown() override {
             patience_storage().store(default_patience);
             if (shaped_) {
                 std::ignore = tc("qdisc del dev aloe-tcp root");
             }
+            const std::optional<std::uint64_t> after = kernel_retrans_segs();
+            if (retrans_before_ && after) {
+                const std::uint64_t resent = *after - *retrans_before_;
+                std::println("the kernel's RetransSegs rose by {} during the case (system-wide)", resent);
+                RecordProperty("kernel_retrans_segs", std::to_string(resent));
+            }
         }
 
     private:
         bool shaped_ = false;
+        std::optional<std::uint64_t> retrans_before_{};
     };
 
     template <typename Device>
@@ -715,6 +804,29 @@ TEST_F(TcpTap, RuntimeServer) {
 
 TEST_F(TcpTap, RuntimeClient) {
     runtime_client(*port_, 3000, false);
+}
+
+TEST_F(TcpTap, BrickServerProbesAKernelClientThatStopsReading) {
+    const auto payload = message(lossy_size);
+    BrickLoop<Port> loop{*port_, true, {}};
+    kernel_client_stalled_round_trip(payload, [&loop](const int fd) {
+        EXPECT_TRUE(eventually([&loop] { return loop.zero_window_probes() >= 1; }))
+            << "the brick sent no zero-window probe within " << patience().count()
+            << " ms: the kernel's window never closed";
+        EXPECT_FALSE(loop.ended()) << "the connection stays open while the kernel's window is closed";
+        int error            = 0;
+        socklen_t error_size = sizeof(error);
+        EXPECT_EQ(getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &error_size), 0) << std::strerror(errno);
+        EXPECT_EQ(error, 0) << "the kernel's socket is still connected: " << std::strerror(error);
+    });
+    EXPECT_TRUE(eventually([&loop] { return loop.clean_close(); }))
+        << "the brick saw no clean close within " << patience().count() << " ms";
+    loop.stop();
+    EXPECT_EQ(loop.counters().connections_accepted, 1U);
+    EXPECT_EQ(loop.counters().connections_closed, 1U) << "both FINs acknowledged";
+    EXPECT_EQ(loop.counters().connections_timed_out, 0U);
+    EXPECT_GE(loop.counters().zero_window_probes, 1U);
+    EXPECT_TRUE(loop.clean_close());
 }
 
 TEST_F(TcpTapLoss, BrickServer) {
