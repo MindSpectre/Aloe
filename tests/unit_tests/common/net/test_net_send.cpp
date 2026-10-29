@@ -28,68 +28,6 @@ namespace {
     using aloe::testing::stack_mac;
     using aloe::wire::Ipv4Protocol;
 
-    /// A device that takes nothing on transmit. The fabric port under it never refuses, so this does.
-    class StuckPort {
-    public:
-        using Packet = aloe::fabric::Packet;
-
-        explicit StuckPort(aloe::fabric::Port& inner) noexcept
-            : inner_{&inner} {
-        }
-
-        [[nodiscard]] std::uint16_t queue_count() const noexcept {
-            return inner_->queue_count();
-        }
-
-        [[nodiscard]] aloe::wire::MacAddress mac() const noexcept {
-            return inner_->mac();
-        }
-
-        [[nodiscard]] std::uint16_t mtu() const noexcept {
-            return inner_->mtu();
-        }
-
-        [[nodiscard]] bool link_up() const noexcept {
-            return inner_->link_up();
-        }
-
-        [[nodiscard]] const aloe::device::Capabilities& capabilities() const noexcept {
-            return inner_->capabilities();
-        }
-
-        [[nodiscard]] const aloe::device::RssDescription& steering() const noexcept {
-            return inner_->steering();
-        }
-
-        [[nodiscard]] std::optional<Packet> allocate(const std::uint16_t queue) noexcept {
-            aloe::core::force_non_const(this);
-            return inner_->allocate(queue);
-        }
-
-        [[nodiscard]] std::size_t receive(const std::uint16_t queue, std::span<Packet> out) noexcept {
-            aloe::core::force_non_const(this);
-            return inner_->receive(queue, out);
-        }
-
-        [[nodiscard]] static std::size_t transmit(std::uint16_t /*queue*/, std::span<Packet> /*in*/) noexcept {
-            return 0;
-        }
-
-        [[nodiscard]] std::size_t reclaim(const std::uint16_t queue) noexcept {
-            aloe::core::force_non_const(this);
-            return inner_->reclaim(queue);
-        }
-
-        [[nodiscard]] aloe::device::QueueCounters counters(const std::uint16_t queue) const noexcept {
-            return inner_->counters(queue);
-        }
-
-    private:
-        aloe::fabric::Port* inner_;
-    };
-
-    static_assert(aloe::device::IsDevice<StuckPort>);
-
     class NetSend : public aloe::testing::NetFixture {
     protected:
         /// A UDP segment from port 40000 to port 80 with the checksum field zero, then `payload`, on a fresh packet.
@@ -281,10 +219,10 @@ TEST_P(NetSend, AnOversizedSegmentIsRefusedUnchangedAndTheLargestOneGoes) {
 }
 
 TEST_P(NetSend, ARefusedSendReturnsThePacketExactlyAsBuilt) {
-    StuckPort stuck{port_};
+    aloe::testing::StuckPort stuck{port_};
     aloe::loop::ShardCounters counters;
-    aloe::loop::ShardQueue<StuckPort> queue{stuck, 0, 1, counters};  // a ring of one
-    aloe::net::Ipv4<StuckPort> ip{queue, aloe::testing::stack_config()};
+    aloe::loop::ShardQueue<aloe::testing::StuckPort> queue{stuck, 0, 1, counters};  // a ring of one
+    aloe::net::Ipv4<aloe::testing::StuckPort> ip{queue, aloe::testing::stack_config()};
     ip.learn(harness_ip, harness_mac, now_);
 
     ASSERT_TRUE(ip.send(udp_segment(aloe::frames::pattern(4)), udp_to(harness_ip), now_).has_value())

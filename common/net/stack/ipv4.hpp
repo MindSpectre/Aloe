@@ -27,6 +27,7 @@
 #include <ipv4_subnet.hpp>
 #include <mac_address.hpp>
 #include <packet.hpp>
+#include <prebuilt.hpp>
 #include <shard_queue.hpp>
 
 namespace aloe::net {
@@ -187,24 +188,11 @@ namespace aloe::net {
             assert((request.checksum == device::L4Checksum::None ||
                     packet.size() >= checksum_offset(request.checksum) + 2) &&
                    "a segment shorter than its checksum field");
-            wire::MacAddress next_mac{};
-            if (is_broadcast(request.destination)) {
-                next_mac = wire::MacAddress::broadcast();
-            } else if (request.destination.is_multicast()) {
-                next_mac = request.destination.multicast_mac();
-            } else {
-                const std::optional<wire::Ipv4Address> hop = next_hop(request.destination);
-                if (!hop) {
-                    ++counters_.send_no_route;
-                    return std::unexpected{SendError::NoRoute};
-                }
-                const std::optional<wire::MacAddress> mac = resolve(*hop, now);
-                if (!mac) {
-                    ++counters_.send_unresolved;
-                    return std::unexpected{SendError::Unresolved};
-                }
-                next_mac = *mac;
+            const std::expected<wire::MacAddress, SendError> mac = next_mac(request.destination, now);
+            if (!mac) {
+                return std::unexpected{mac.error()};
             }
+            const wire::MacAddress hop_mac = *mac;
             const std::size_t segment_size = packet.size();
             if (segment_size > max_l4_size()) {
                 ++counters_.send_oversized;
@@ -222,9 +210,8 @@ namespace aloe::net {
                                           .protocol       = request.protocol,
                                           .source         = config_.address,
                                           .destination    = request.destination};
-            wire::EthernetHeader{.destination = next_mac,
-                                 .source      = queue_->mac(),
-                                 .ethertype   = std::to_underlying(wire::EtherType::Ipv4)}
+            wire::EthernetHeader{
+                .destination = hop_mac, .source = queue_->mac(), .ethertype = std::to_underlying(wire::EtherType::Ipv4)}
                 .write(frame.first(wire::EthernetHeader::size));
             header.write(frame.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size));
             packet.set_tx(finish_checksums(frame, header, request.checksum));
@@ -238,6 +225,97 @@ namespace aloe::net {
                 wire::store_be16(frame.subspan(headers_size + checksum_offset(request.checksum), 2), 0);
             }
             packet.trim_front(headers_size);
+            packet.set_tx(device::TxMetadata{});
+            // NOLINTEND(bugprone-use-after-move)
+            ++counters_.send_refused;
+            return std::unexpected{SendError::Refused};
+        }
+
+        /**
+         * @brief The headers of a frame to `destination`, to build once and reuse until `valid_until` or a new
+         * generation.
+         *
+         * Routes and looks the hop up as `send` does, counting `send_no_route` and `send_unresolved` and sending the
+         * ARP request when the cache asks. `valid_until` is the end of the entry's reachable time while it is fresh, a
+         * request interval from `now` while it is stale, and never for a broadcast or multicast destination.
+         */
+        [[nodiscard]] std::expected<Prebuilt, SendError> prebuild(const wire::Ipv4Address destination,
+                                                                  const wire::Ipv4Protocol protocol,
+                                                                  const core::TimePoint now) noexcept {
+            const std::expected<wire::MacAddress, SendError> mac = next_mac(destination, now);
+            if (!mac) {
+                return std::unexpected{mac.error()};
+            }
+            Prebuilt prebuilt{};
+            wire::EthernetHeader{
+                .destination = *mac, .source = queue_->mac(), .ethertype = std::to_underlying(wire::EtherType::Ipv4)}
+                .write(std::span<std::byte>{prebuilt.headers}.first(wire::EthernetHeader::size));
+            wire::Ipv4Header{.total_length   = 0,
+                             .identification = 0,
+                             .ttl            = config_.ttl,
+                             .protocol       = protocol,
+                             .source         = config_.address,
+                             .destination    = destination}
+                .write(std::span<std::byte>{prebuilt.headers}.subspan(wire::EthernetHeader::size));
+            prebuilt.valid_until = core::TimePoint::max();
+            if (!is_broadcast(destination) && !destination.is_multicast()) {
+                const std::optional<core::TimePoint> confirmed = arp_.confirmed(*next_hop(destination));
+                const bool fresh     = confirmed.has_value() && now - *confirmed < config_.arp_reachable;
+                prebuilt.valid_until = fresh ? *confirmed + config_.arp_reachable : now + config_.arp_request_interval;
+            }
+            prebuilt.generation = generation();
+            return prebuilt;
+        }
+
+        /// Moves when a cached MAC changes or goes: a `Prebuilt` of an older generation may name a stale next hop.
+        [[nodiscard]] std::uint64_t generation() const noexcept {
+            return arp_.generation();
+        }
+
+        /**
+         * @brief Finishes and transmits a frame the caller built from a `Prebuilt`, and keeps the packet.
+         *
+         * `packet` holds a whole frame: the first `Prebuilt::size` bytes from `prebuild`, then the segment, whose
+         * checksum field is zero when one is requested. The brick writes the total length, a fresh identification
+         * and the checksums, lends the packet to the device and transmits the loan, so `packet` stays with the
+         * caller for a later resend once `lent()` is false. On `Refused` the frame is as the caller built it (the
+         * per-datagram fields back to zero).
+         */
+        [[nodiscard]] std::expected<void, SendError>
+        send_frame(Packet& packet, const SendRequest& request, [[maybe_unused]] const core::TimePoint now) noexcept {
+            assert(!packet.empty() && !packet.lent() && "a frame that is empty or still on loan");
+            assert((request.checksum == device::L4Checksum::None ||
+                    packet.size() >= Prebuilt::size + checksum_offset(request.checksum) + 2) &&
+                   "a segment shorter than its checksum field");
+            const std::size_t frame_size = packet.size();
+            if (frame_size > queue_->mtu() + wire::EthernetHeader::size) {
+                ++counters_.send_oversized;
+                return std::unexpected{SendError::Oversized};
+            }
+            const std::span<std::byte> frame = packet.data();
+            const std::span<std::byte> ip    = frame.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size);
+            wire::store_be16(ip.subspan(ipv4_total_length_offset, 2),
+                             static_cast<std::uint16_t>(frame_size - wire::EthernetHeader::size));
+            wire::store_be16(ip.subspan(ipv4_identification_offset, 2), next_identification());
+            wire::store_be16(ip.subspan(wire::ipv4_checksum_offset, 2), 0);
+            const std::optional<wire::Ipv4Header> header =
+                wire::Ipv4Header::parse(frame.subspan(wire::EthernetHeader::size));
+            assert(header.has_value() && "the first bytes after Ethernet are not an IPv4 header from a Prebuilt");
+            packet.set_tx(finish_checksums(frame, *header, request.checksum));
+            Packet handle = packet.lend();
+            if (queue_->transmit(std::move(handle))) {
+                ++counters_.datagrams_sent;
+                return {};
+            }
+            // ShardQueue::transmit moves only on success: drop the loan, then restore the frame as built.
+            // NOLINTBEGIN(bugprone-use-after-move)
+            handle = Packet{};
+            wire::store_be16(ip.subspan(ipv4_total_length_offset, 2), 0);
+            wire::store_be16(ip.subspan(ipv4_identification_offset, 2), 0);
+            wire::store_be16(ip.subspan(wire::ipv4_checksum_offset, 2), 0);
+            if (request.checksum != device::L4Checksum::None) {
+                wire::store_be16(frame.subspan(Prebuilt::size + checksum_offset(request.checksum), 2), 0);
+            }
             packet.set_tx(device::TxMetadata{});
             // NOLINTEND(bugprone-use-after-move)
             ++counters_.send_refused;
@@ -360,6 +438,29 @@ namespace aloe::net {
 
         [[nodiscard]] bool for_me(const wire::Ipv4Address destination) const noexcept {
             return destination == config_.address || is_broadcast(destination);
+        }
+
+        /// The MAC a frame to `destination` goes to: a group MAC, or the routed hop's from the cache, counting the
+        /// failures as `send` and `prebuild` report them.
+        [[nodiscard]] std::expected<wire::MacAddress, SendError> next_mac(const wire::Ipv4Address destination,
+                                                                          const core::TimePoint now) noexcept {
+            if (is_broadcast(destination)) {
+                return wire::MacAddress::broadcast();
+            }
+            if (destination.is_multicast()) {
+                return destination.multicast_mac();
+            }
+            const std::optional<wire::Ipv4Address> hop = next_hop(destination);
+            if (!hop) {
+                ++counters_.send_no_route;
+                return std::unexpected{SendError::NoRoute};
+            }
+            const std::optional<wire::MacAddress> mac = resolve(*hop, now);
+            if (!mac) {
+                ++counters_.send_unresolved;
+                return std::unexpected{SendError::Unresolved};
+            }
+            return *mac;
         }
 
         [[nodiscard]] std::uint16_t next_identification() noexcept {
@@ -558,8 +659,10 @@ namespace aloe::net {
             }
         }
 
-        static constexpr std::size_t tcp_checksum_offset = 16;
-        static constexpr std::size_t udp_checksum_offset = 6;
+        static constexpr std::size_t ipv4_total_length_offset   = 2;
+        static constexpr std::size_t ipv4_identification_offset = 4;
+        static constexpr std::size_t tcp_checksum_offset        = 16;
+        static constexpr std::size_t udp_checksum_offset        = 6;
 
         [[nodiscard]] static constexpr std::size_t checksum_offset(const device::L4Checksum l4) noexcept {
             return l4 == device::L4Checksum::Tcp ? tcp_checksum_offset : udp_checksum_offset;

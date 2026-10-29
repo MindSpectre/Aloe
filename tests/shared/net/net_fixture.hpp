@@ -9,6 +9,8 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <tuple>
@@ -36,6 +38,68 @@ namespace aloe::testing {
     [[nodiscard]] inline std::string offloads_name(const ::testing::TestParamInfo<fabric::EmulatedOffloads>& info) {
         return info.param == fabric::EmulatedOffloads::Checksums ? "Checksums" : "NoOffloads";
     }
+
+    /// A device that takes nothing on transmit. The fabric port under it never refuses, so this does.
+    class StuckPort {
+    public:
+        using Packet = fabric::Packet;
+
+        explicit StuckPort(fabric::Port& inner) noexcept
+            : inner_{&inner} {
+        }
+
+        [[nodiscard]] std::uint16_t queue_count() const noexcept {
+            return inner_->queue_count();
+        }
+
+        [[nodiscard]] wire::MacAddress mac() const noexcept {
+            return inner_->mac();
+        }
+
+        [[nodiscard]] std::uint16_t mtu() const noexcept {
+            return inner_->mtu();
+        }
+
+        [[nodiscard]] bool link_up() const noexcept {
+            return inner_->link_up();
+        }
+
+        [[nodiscard]] const device::Capabilities& capabilities() const noexcept {
+            return inner_->capabilities();
+        }
+
+        [[nodiscard]] const device::RssDescription& steering() const noexcept {
+            return inner_->steering();
+        }
+
+        [[nodiscard]] std::optional<Packet> allocate(const std::uint16_t queue) noexcept {
+            core::force_non_const(this);
+            return inner_->allocate(queue);
+        }
+
+        [[nodiscard]] std::size_t receive(const std::uint16_t queue, std::span<Packet> out) noexcept {
+            core::force_non_const(this);
+            return inner_->receive(queue, out);
+        }
+
+        [[nodiscard]] static std::size_t transmit(std::uint16_t /*queue*/, std::span<Packet> /*in*/) noexcept {
+            return 0;
+        }
+
+        [[nodiscard]] std::size_t reclaim(const std::uint16_t queue) noexcept {
+            core::force_non_const(this);
+            return inner_->reclaim(queue);
+        }
+
+        [[nodiscard]] device::QueueCounters counters(const std::uint16_t queue) const noexcept {
+            return inner_->counters(queue);
+        }
+
+    private:
+        fabric::Port* inner_;
+    };
+
+    static_assert(device::IsDevice<StuckPort>);
 
     /**
      * @brief A fabric with a harness port and a stack port, and the brick over queue 0 of the stack port.

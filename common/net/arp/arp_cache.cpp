@@ -139,6 +139,10 @@ namespace aloe::net {
         if (age < config_.expire) {
             return {.mac = entry->mac, .send_request = request_due(*entry, now)};
         }
+        entry->state     = State::Incomplete;  // expiry observed: the MAC goes
+        entry->mac       = {};
+        entry->confirmed = {};
+        ++generation_;
         return {.mac = std::nullopt, .send_request = request_due(*entry, now)};
     }
 
@@ -148,10 +152,21 @@ namespace aloe::net {
         if (entry == nullptr) {
             entry = &insert(address, now);
         }
+        if (entry->state != State::Reachable || entry->mac != mac) {
+            ++generation_;
+        }
         entry->mac       = mac;
         entry->state     = State::Reachable;
         entry->confirmed = now;
         entry->requested.reset();
+    }
+
+    std::optional<core::TimePoint> ArpCache::confirmed(const wire::Ipv4Address address) const noexcept {
+        const Entry* entry = find(address);
+        if (entry == nullptr || entry->state != State::Reachable) {
+            return std::nullopt;
+        }
+        return entry->confirmed;
     }
 
     bool ArpCache::contains(const wire::Ipv4Address address) const noexcept {
