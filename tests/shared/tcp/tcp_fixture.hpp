@@ -189,6 +189,11 @@ namespace aloe::testing {
             tcp_->force_next_isn(isn);
         }
 
+        /// The connection's RFC 6582 `recover` takes `recover`, as if an episode had recorded it.
+        void force_recover(Connection& connection, const wire::TcpSequence recover) noexcept {
+            tcp_->force_recover(connection, recover);
+        }
+
     protected:
         fabric::Fabric* fabric_ = nullptr;
         fabric::Port* harness_  = nullptr;

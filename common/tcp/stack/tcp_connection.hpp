@@ -324,9 +324,11 @@ namespace aloe::tcp {
         core::TimePoint delivered_time_{};  ///< The ACK that last advanced `delivered_`.
 
         // Loss recovery (RFC 5681, RFC 3042, RFC 6582): the duplicate count, limited transmit's allowance, the recover
-        // point, the ISS until an episode sets it, and which episode the connection is in.
-        std::uint8_t dupacks_ = 0;            ///< Duplicate ACKs since the last ACK of new data; saturates.
-        Sequence recover_{};                  ///< RFC 6582's `recover`: the last sequence sent as an episode began.
+        // point, the ISS at the open, and which episode the connection is in.
+        std::uint8_t dupacks_ = 0;  ///< Duplicate ACKs since the last ACK of new data; saturates.
+        /// RFC 6582's `recover`: the last sequence sent as an episode began; outside an episode, one before `snd_una`
+        /// once an ACK of new data moved it, so the serial comparison never sees it half the space behind.
+        Sequence recover_{};
         bool in_recovery_  = false;           ///< Fast recovery, from the third duplicate to the ACK past `recover_`.
         bool loss_episode_ = false;           ///< After a timeout: each ACK short of `recover_` resends the new head.
         std::uint32_t limited_transmit_ = 0;  ///< Bytes beyond the windows the first two duplicates allow; RFC 3042.

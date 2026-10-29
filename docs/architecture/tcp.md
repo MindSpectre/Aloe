@@ -24,10 +24,10 @@ link `Aloe::Common::Tcp`. It depends on [`net`](net.md), [`stream`](stream.md), 
   `SynSent` connection the caller owns, or a `ConnectError`; the slot is the caller's even while its SYN waits
   for ARP. `counters()`, `pending_events()`, `table_size()`, `nodes_available()`, `send_nodes_available()` and
   `sent_segment(connection, position)`, one entry of a connection's retransmission queue, are for tests and
-  monitoring; `force_next_isn(isn)` is for tests. The stack keeps the stamp of the last `process`, `flush` or
-  `connect` and uses it for everything a connection does in between. It names its types `ConnectionType`
-  (`Connection<Ip, CongestionControl>`), `EventType` (`ConnectionEvent<Ip, CongestionControl>`) and `Policy`
-  (the congestion control).
+  monitoring; `force_next_isn(isn)` and `force_recover(connection, recover)` are for tests. The stack keeps the
+  stamp of the last `process`, `flush` or `connect` and uses it for everything a connection does in between. It
+  names its types `ConnectionType` (`Connection<Ip, CongestionControl>`), `EventType`
+  (`ConnectionEvent<Ip, CongestionControl>`) and `Policy` (the congestion control).
 - **`aloe::tcp::Connection<Ip, CongestionControl>`** -- one connection, a slot of its stack with a stable
   `index()` and address until `release`. It models `stream::IsStream`: `unread()` and `consume(n)` on the
   receive side; `writable()`, `prepare(n)`, `commit(n)` and the copying convenience `send(bytes)` on the
@@ -479,10 +479,12 @@ runs. A duplicate ACK is an ACK with no payload, no SYN and no FIN, whose acknow
 and whose window equals the current one, arriving while the queue is not empty. The first and the second each let
 one more segment out beyond the congestion window, within the peer's window. The third starts fast recovery when
 its acknowledgement "covers more than recover", in RFC 6582's words, with `recover` starting at the initial
-sequence number: the guard against a second fast retransmit for data a timeout already resent. Fast recovery
-records `recover`, the last sequence number sent, tells the policy of the loss with the flight less what limited
-transmit sent beyond the windows, resends the head at once and counts `fast_retransmits` and `recoveries`.
-Further duplicates are reported to the policy, which NewReno answers by inflating its window. An ACK past
+sequence number: the guard against a second fast retransmit for data a timeout already resent. Outside recovery
+and the loss episode below, every ACK of new data slides `recover` to one before the new `acknowledged()`: the
+guard compares in serial arithmetic, which would read a `recover` left more than 2^31 behind as ahead and refuse
+every fast retransmit after 2 GiB without loss. Fast recovery records `recover`, the last sequence number sent,
+tells the policy of the loss with the flight less what limited transmit sent beyond the windows, resends the head
+at once and counts `fast_retransmits` and `recoveries`. Further duplicates are reported to the policy, which NewReno answers by inflating its window. An ACK past
 `recover` is the full ACK and ends recovery; one short of it is a partial ACK: the new head goes again at once,
 counted in `fast_retransmits`, and the policy hears how much was acknowledged. Every ACK that advances re-arms
 the timer, RFC 6582's Slow-but-Steady variant, as Linux re-arms it; and a fast retransmit or a partial-ACK resend

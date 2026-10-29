@@ -169,6 +169,29 @@ TEST_P(TcpRecovery, AFastRetransmitIsAdmittedOnceEverythingSentBeforeTheTimeoutI
     EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
 }
 
+TEST_P(TcpRecovery, FastRetransmitStillFiresWhenRecoverIsHalfTheSpaceBehind) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    // As after 2 GiB sent with no loss: `recover` more than half the sequence space behind `snd_una`, which the
+    // serial comparison reads as ahead of it, so without the slide the guard would refuse every third duplicate.
+    const aloe::wire::TcpSequence behind{c->acknowledged().value - 0x80000001U};
+    ASSERT_TRUE(behind.after(c->acknowledged()));
+    force_recover(*c, behind);
+    ASSERT_EQ(c->send(aloe::frames::pattern(2920)), 2920U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 2U);
+    receive(peer_.ack(sent[0]));  // new data acknowledged outside recovery: recover slides behind snd_una
+    const auto dup = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    EXPECT_TRUE(c->in_recovery());
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 1U);
+    EXPECT_EQ(resent[0].tcp->sequence, sent[1].tcp->sequence);
+}
+
 TEST_P(TcpRecovery, AFastRetransmitRestartsTheRetransmissionTimer) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);

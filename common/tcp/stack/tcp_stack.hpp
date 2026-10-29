@@ -281,6 +281,11 @@ namespace aloe::tcp {
             forced_isn_ = isn;
         }
 
+        /// For tests: the connection's RFC 6582 `recover` takes this value, as if an episode had recorded it.
+        void force_recover(ConnectionType& conn, const wire::TcpSequence recover) noexcept {
+            conn.recover_ = recover;
+        }
+
     private:
         friend class Connection<Ip, CongestionControl>;
 
@@ -1764,7 +1769,8 @@ namespace aloe::tcp {
          * is RFC 6582's partial ACK: the new head goes again at once (`fast_retransmit`), and the policy is told what
          * was acknowledged. Outside fast recovery the policy hears of the ACK (`on_ack`); in the loss episode
          * after a timeout an ACK short of `recover` resends the new head at once, counted in `retransmits`, as Linux
-         * resends what its loss state marked lost (RACK refines this later), and one past it ends the episode.
+         * resends what its loss state marked lost (RACK refines this later), and one past it ends the episode. Outside
+         * both, `recover` slides to one before the new `snd_una`.
          */
         void
         acknowledge_data(ConnectionType& conn, const Sequence ack, const std::optional<std::uint32_t> echo) noexcept {
@@ -1798,6 +1804,10 @@ namespace aloe::tcp {
                                               .delivered_at_send = freed.delivered_at_send,
                                               .app_limited       = freed.app_limited});
             if (!conn.loss_episode_) {
+                // Outside recovery and the loss episode, `recover` follows one before `snd_una`. The guard compares in
+                // serial arithmetic, which reads a `recover` left more than 2^31 behind `snd_una` as ahead of it, so a
+                // `recover` set at the open or by the last episode would refuse every fast retransmit after 2 GiB.
+                conn.recover_ = Sequence{ack.value - 1};
                 return;
             }
             if (ack.after(conn.recover_)) {
