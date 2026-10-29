@@ -337,6 +337,10 @@ TEST_P(TcpTwoStacks, RandomLossBothWaysStillCompletesTheEcho) {
     server_port_.set_impairment({.loss = 0.1, .seed = 11});  // NOLINT(cert-msc51-cpp)
     EXPECT_TRUE(run_echo(20000, 20000)) << "20 s of virtual time covers the backoffs";
     EXPECT_EQ(client_.tcp.counters().dropped_bad_checksum + server_.tcp.counters().dropped_bad_checksum, 0U);
+    EXPECT_GT(client_port_.impairment_counters().dropped, 0U) << "the seed loses some of the client's frames";
+    EXPECT_GT(server_port_.impairment_counters().dropped, 0U) << "and some of the server's";
+    EXPECT_GE(client_.tcp.counters().retransmits + client_.tcp.counters().fast_retransmits, 1U);
+    EXPECT_GE(server_.tcp.counters().retransmits + server_.tcp.counters().fast_retransmits, 1U);
 }
 
 TEST_P(TcpTwoStacks, DuplicationReorderingAndDelayAreAbsorbed) {
@@ -365,6 +369,8 @@ TEST_P(TcpTwoStacksNoCongestion, TheEchoCompletesUnderLossWithoutCongestionContr
     client_port_.set_impairment(
         {.loss = 0.1, .seed = 5});  // NOLINT(cert-msc51-cpp): a fixed seed keeps the test reproducible
     EXPECT_TRUE(run_echo(20000, 20000));
+    EXPECT_GT(client_port_.impairment_counters().dropped, 0U) << "the seed loses some of the client's frames";
+    EXPECT_GE(client_.tcp.counters().retransmits + client_.tcp.counters().fast_retransmits, 1U);
 }
 
 TEST_P(TcpTwoStacks, ALostSynIsRetransmittedAndTheConnectionEstablishes) {
