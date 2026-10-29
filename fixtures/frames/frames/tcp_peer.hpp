@@ -168,6 +168,11 @@ namespace aloe::frames {
             timestamps_ = value;
         }
 
+        /// The window every segment the peer builds from now on offers; zero closes it, for probing.
+        void set_window(const std::uint16_t window) noexcept {
+            spec_.window = window;
+        }
+
         /// The timestamp value of the last frame `see` was given that carried the option.
         [[nodiscard]] std::optional<std::uint32_t> ts_seen() const noexcept {
             return ts_seen_;

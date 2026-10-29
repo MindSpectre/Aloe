@@ -1,0 +1,19 @@
+// Three probes without an answer: at +0.2, then +0.4 and +0.8 after the one before, each with the clock's value
+// then, and the fourth expiry, 1.6 s after the third probe, finds three unanswered and ends the connection; read
+// reports ETIMEDOUT then. Linux counts unanswered probes against tcp_retries2 too, but sends them only while it holds
+// unsent data; see the TCP page.
+--tcp_data_retries=3
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < . 1:1(0) ack 1 win 0 <nop,nop,TS val 100 ecr 0>
++0.2 > . 0:0(0) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0.4 > . 0:0(0) ack 1 win 46720 <nop,nop,TS val 600 ecr 100>
++0.8 > . 0:0(0) ack 1 win 46720 <nop,nop,TS val 1400 ecr 100>
++1.6~+1.61 read(4, ..., 1) = -1 ETIMEDOUT

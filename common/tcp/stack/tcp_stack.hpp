@@ -494,6 +494,7 @@ namespace aloe::tcp {
             conn.wl2_           = header.acknowledgement;
             conn.state_         = State::Established;
             CongestionControl::reset(conn.congestion_, conn.mss());
+            update_probing(conn);  // a SYN-ACK offering no window starts probing as any ACK does
             ++counters_.connections_opened;
             queue_ack(conn);  // deferred: a commit on the Connected event completes the handshake with data
             raise(conn, stream::Event::Connected);
@@ -646,6 +647,7 @@ namespace aloe::tcp {
             // RFC 793 updates the window only when SND.UNA <= SEG.ACK <= SND.NXT: a stale ACK carries a stale window.
             if (!ack.before(conn.snd_una_)) {
                 update_peer_window(conn, header);
+                update_probing(conn);  // a window that opened ends probing; the comparison below raises Writable
             }
             if (writable(conn) > writable_before) {
                 raise(conn, stream::Event::Writable);
@@ -759,6 +761,25 @@ namespace aloe::tcp {
                 conn.snd_wnd_ = header.window;
                 conn.wl1_     = header.sequence;
                 conn.wl2_     = header.acknowledgement;
+            }
+        }
+
+        /**
+         * The end of an acceptable ACK, after its window update. The peer answered, so the count of unanswered probes
+         * clears, as Linux's `tcp_ack` clears it on every acceptable ACK. A window that opened ends probing; a zero
+         * window with nothing queued in Established or CloseWait starts it, whether or not the application has data.
+         */
+        void update_probing(ConnectionType& conn) noexcept {
+            conn.probes_out_ = 0;
+            if (conn.probing()) {
+                if (conn.snd_wnd_ > 0) {
+                    disarm(conn);
+                }
+                return;
+            }
+            if (conn.snd_wnd_ == 0 && conn.queue_count_ == 0 &&
+                (conn.state_ == State::Established || conn.state_ == State::CloseWait)) {
+                start_probing(conn);
             }
         }
 
@@ -1243,18 +1264,37 @@ namespace aloe::tcp {
                                (node.flags.has(wire::TcpFlag::Fin) ? 1U : 0U);
         }
 
-        /// A header-only ACK at `snd_nxt` from a fresh packet: lent to the device and forgotten, never kept.
-        [[nodiscard]] bool send_pure_ack(ConnectionType& conn) noexcept {
+        /// A header-only ACK at `sequence` from a fresh packet: lent to the device and forgotten, never kept. A failure
+        /// is counted.
+        [[nodiscard]] bool send_bare_ack(ConnectionType& conn, const Sequence sequence) noexcept {
             std::optional<Packet> packet = ip_->allocate();
             if (!packet) {
                 ++counters_.send_refused;
                 return false;
             }
-            if (!emit(conn, *packet, false, conn.snd_nxt_, wire::TcpFlags{wire::TcpFlag::Ack}, false)) {
+            if (!emit(conn, *packet, false, sequence, wire::TcpFlags{wire::TcpFlag::Ack}, false)) {
                 return false;  // the packet goes back to the pool
             }
             *packet = Packet{};  // the device frees the buffer when it is done
+            return true;
+        }
+
+        /// A pure ACK at `snd_nxt`.
+        [[nodiscard]] bool send_pure_ack(ConnectionType& conn) noexcept {
+            if (!send_bare_ack(conn, conn.snd_nxt_)) {
+                return false;
+            }
             ++counters_.pure_acks_sent;
+            return true;
+        }
+
+        /// A zero-window probe, Linux's `tcp_xmit_probe_skb`: a pure ACK at `snd_una - 1`, which occupies no sequence
+        /// space and which the peer, finding it outside its window, answers with an ACK carrying its window.
+        [[nodiscard]] bool send_probe(ConnectionType& conn) noexcept {
+            if (!send_bare_ack(conn, Sequence{conn.snd_una_.value - 1})) {
+                return false;
+            }
+            ++counters_.zero_window_probes;
             return true;
         }
 
@@ -1462,7 +1502,7 @@ namespace aloe::tcp {
             }
         }
 
-        // The control path: events, slots, the port choice, the retransmit timer, close, abort and release.
+        // The control path: events, slots, the port choice, the retransmit and probe timers, close, abort and release.
 
         void raise(ConnectionType& conn, const stream::Event event) noexcept {
             conn.events_ |= event;
@@ -1591,6 +1631,26 @@ namespace aloe::tcp {
             wheel_->arm(conn.timer_, now_ + config_.unresolved_retry);
         }
 
+        /// The next probe, `probe_interval_` from now; under a user timeout never later than the start of probing plus
+        /// the timeout, Linux's `tcp_clamp_probe0_to_user_timeout`, and never earlier than now.
+        void arm_probe(ConnectionType& conn) noexcept {
+            core::TimePoint deadline = now_ + conn.probe_interval_;
+            if (config_.user_timeout > core::Duration::zero()) {
+                deadline = std::min(deadline, std::max(now_, conn.probe_started_ + config_.user_timeout));
+            }
+            conn.timer_kind_ = detail::TimerKind::Probe;
+            wheel_->arm(conn.timer_, deadline);
+        }
+
+        /// The peer's window is zero with nothing queued: no probe out yet, the user timeout counting from now, and
+        /// the first probe one RTO away.
+        void start_probing(ConnectionType& conn) noexcept {
+            conn.probes_out_     = 0;
+            conn.probe_started_  = now_;
+            conn.probe_interval_ = conn.rto_;
+            arm_probe(conn);
+        }
+
         void disarm(ConnectionType& conn) noexcept {
             wheel_->cancel(conn.timer_);
             conn.timer_kind_ = detail::TimerKind::None;
@@ -1670,6 +1730,9 @@ namespace aloe::tcp {
                 case detail::TimerKind::ArpPoll:
                     on_arp_poll(conn);
                     break;
+                case detail::TimerKind::Probe:
+                    on_probe_timeout(conn);
+                    break;
                 case detail::TimerKind::None:
                     break;
             }
@@ -1732,6 +1795,30 @@ namespace aloe::tcp {
                 return;
             }
             arm_poll(conn);
+        }
+
+        /**
+         * The probe timer ran out with the peer's window still zero. First the user timeout, counted from the start of
+         * probing, and then `data_retries` unanswered probes may end the connection instead; else one probe goes, it
+         * counts as unanswered until an acceptable ACK clears the count, and the interval doubles up to `rto_max`. A
+         * probe refused counts all the same: the next expiry tries again.
+         */
+        void on_probe_timeout(ConnectionType& conn) noexcept {
+            assert(conn.queue_count_ == 0 && conn.snd_wnd_ == 0 &&
+                   (conn.state_ == State::Established || conn.state_ == State::CloseWait) &&
+                   "a probe runs only while the window is zero and nothing is queued");
+            if (config_.user_timeout > core::Duration::zero() && now_ - conn.probe_started_ >= config_.user_timeout) {
+                time_out(conn, /*by_user_timeout=*/true);
+                return;
+            }
+            if (conn.probes_out_ >= config_.data_retries) {
+                time_out(conn, /*by_user_timeout=*/false);
+                return;
+            }
+            std::ignore = send_probe(conn);  // a refusal was counted by the send
+            ++conn.probes_out_;
+            conn.probe_interval_ = std::min(conn.probe_interval_ * 2, config_.rto_max);
+            arm_probe(conn);
         }
 
         /// The retry cap or the user timeout ran out: `TimedOut` for an owned connection, counted apart when the user
@@ -1812,8 +1899,8 @@ namespace aloe::tcp {
             conn.fin_sent_     = true;
             conn.snd_nxt_      = fin + 1;  // the FIN takes its number whether or not it left: the timer resends it
             std::ignore        = queue_control(conn, wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, fin);
-            if (idle && !conn.timer_.armed()) {
-                arm_retransmit(conn);  // refused, or no node: the RTO tries again
+            if (idle && (!conn.timer_.armed() || conn.probing())) {
+                arm_retransmit(conn);  // refused, or no node: the RTO tries again, and takes the timer from a probe
             }
         }
 

@@ -31,6 +31,7 @@ namespace aloe::tcp {
             None,        ///< Not armed.
             Retransmit,  ///< The RTO: the head of the retransmission queue goes again.
             ArpPoll,     ///< A SYN, SYN-ACK or FIN whose first send found no next hop: the send is tried again.
+            Probe,       ///< The peer's window is zero and nothing is queued: a zero-window probe goes.
         };
 
     }  // namespace detail
@@ -170,6 +171,10 @@ namespace aloe::tcp {
         [[nodiscard]] std::uint8_t retransmit_count() const noexcept {
             return retransmit_count_;
         }
+        /// The peer's window is zero with nothing queued: the timer sends zero-window probes until it opens.
+        [[nodiscard]] bool probing() const noexcept {
+            return timer_kind_ == detail::TimerKind::Probe;
+        }
 
     private:
         friend class Stack<Ip,
@@ -235,6 +240,9 @@ namespace aloe::tcp {
             retransmit_count_ = 0;
             timer_kind_       = detail::TimerKind::None;
             unresolved_polls_ = 0;
+            probes_out_       = 0;
+            probe_started_    = {};
+            probe_interval_   = {};
             congestion_       = {};
             send_timestamps_  = false;
             ts_offset_        = 0;
@@ -306,6 +314,9 @@ namespace aloe::tcp {
         core::Duration rto_{};  ///< `rto_initial` until the first sample; doubled by each expiry up to `rto_max`.
         std::uint8_t retransmit_count_  = 0;  ///< Expiries that resent since the last ACK of new data; capped.
         std::uint16_t unresolved_polls_ = 0;  ///< Polls since the last send that left; the config bounds them.
+        std::uint8_t probes_out_ = 0;      ///< Zero-window probes since the last acceptable ACK; `data_retries` caps.
+        core::TimePoint probe_started_{};  ///< When probing started: the user timeout counts from here.
+        core::Duration probe_interval_{};  ///< The next probe's delay: the RTO, doubled per probe up to `rto_max`.
         typename CongestionControl::State
             congestion_{};  ///< The policy's state; reset where the connection is Established.
 
