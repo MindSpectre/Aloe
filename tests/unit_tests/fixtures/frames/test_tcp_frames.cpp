@@ -246,3 +246,31 @@ TEST(TcpFrames, NoOptionsMeansAnEmptyOptionSpan) {
     const auto payload = aloe::frames::tcp_payload(parsed);
     EXPECT_EQ(std::vector<std::byte>(payload.begin(), payload.end()), text("x"));
 }
+
+TEST(TcpFrames, OptionHelpersAndAPeerThatStampsEverySegment) {
+    EXPECT_EQ(aloe::frames::mss_option(1460).size(), 4U);
+    EXPECT_EQ(aloe::frames::timestamps_option(1, 2).size(), 12U);
+    TcpPeer peer{peer_to_stack(), TcpSequence{1000}};
+    peer.set_timestamps(500);
+    const auto syn = aloe::frames::parse_frame(peer.syn());
+    ASSERT_TRUE(syn && syn->tcp);
+    EXPECT_EQ(syn->tcp->data_offset, 36U) << "mss, nop, nop, TS";
+    const auto options = aloe::wire::TcpOptions::parse(aloe::frames::tcp_options_of(*syn));
+    ASSERT_TRUE(options.has_value());
+    EXPECT_EQ(options->mss, 1460U);
+    EXPECT_EQ(options->timestamp_value, 500U);
+    EXPECT_EQ(options->timestamp_echo, 0U) << "nothing seen yet";
+    // A frame "from the stack" with a timestamp: the peer echoes it from then on.
+    TcpSpec reply   = peer_to_stack();
+    reply.mss       = std::nullopt;
+    reply.options   = aloe::frames::timestamps_option(777, 500);
+    reply.flags     = {TcpFlag::Ack};
+    const auto seen = aloe::frames::parse_frame(aloe::frames::tcp_frame(reply, {}));
+    peer.see(*seen);
+    EXPECT_EQ(peer.ts_seen(), 777U);
+    const auto ack = aloe::frames::parse_frame(peer.ack());
+    EXPECT_EQ(ack->tcp->data_offset, 32U) << "nop, nop, TS on a plain segment";
+    EXPECT_EQ(aloe::wire::TcpOptions::parse(aloe::frames::tcp_options_of(*ack))->timestamp_echo, 777U);
+    peer.set_timestamps(std::nullopt);
+    EXPECT_EQ(aloe::frames::parse_frame(peer.ack())->tcp->data_offset, 20U);
+}

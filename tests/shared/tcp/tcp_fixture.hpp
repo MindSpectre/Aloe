@@ -124,11 +124,15 @@ namespace aloe::testing {
         struct FabricPair {
             explicit FabricPair(const fabric::EmulatedOffloads offloads,
                                 const std::uint16_t stack_queues = 1,
-                                const std::size_t pool_size      = 64)
+                                const std::size_t pool_size      = 64,
+                                const fabric::LoanReturn loans   = fabric::LoanReturn::OnStep)
                 : harness{fabric.add_port(
                       {.mac = harness_mac, .pool_size = 256, .queue_depth = 4096, .offloads = offloads})},
-                  port{fabric.add_port(
-                      {.mac = stack_mac, .queues = stack_queues, .pool_size = pool_size, .offloads = offloads})} {
+                  port{fabric.add_port({.mac       = stack_mac,
+                                        .queues    = stack_queues,
+                                        .pool_size = pool_size,
+                                        .offloads  = offloads,
+                                        .loans     = loans})} {
             }
 
             fabric::Fabric fabric;
@@ -178,6 +182,11 @@ namespace aloe::testing {
               ip_{queue_, ip_config},
               tcp_{std::make_unique<Tcp>(ip_, wheel_, config)} {
             ip_.learn(harness_ip, harness_mac, now_);
+        }
+
+        /// The next connection the stack opens takes `isn` as its initial sequence number.
+        void force_next_isn(const wire::TcpSequence isn) noexcept {
+            tcp_->force_next_isn(isn);
         }
 
     protected:
@@ -314,6 +323,30 @@ namespace aloe::testing {
         TcpFixture()
             : FabricPair{GetParam()},
               TcpHarness{fabric, harness, port} {
+        }
+
+        [[nodiscard]] static bool offloads() {
+            return GetParam() == fabric::EmulatedOffloads::Checksums;
+        }
+    };
+
+    /// As `TcpFixture`, over a stack port whose driver never lets go of a lent packet until told: the fixture for
+    /// packets kept past their transmit.
+    class TcpHeldFixture : public ::testing::TestWithParam<fabric::EmulatedOffloads>,
+                           protected detail::FabricPair,
+                           protected TcpHarness<fabric::Port> {
+    protected:
+        TcpHeldFixture()
+            : FabricPair{GetParam(), 1, 64, fabric::LoanReturn::Held},
+              TcpHarness{fabric, harness, port} {
+        }
+
+        [[nodiscard]] std::size_t loans_outstanding() {
+            return port.loans_outstanding(0);
+        }
+
+        void return_loans() {
+            port.return_loans(0);
         }
 
         [[nodiscard]] static bool offloads() {

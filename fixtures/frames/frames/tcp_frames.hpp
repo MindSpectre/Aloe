@@ -36,6 +36,29 @@ namespace aloe::frames {
             Checksums::Correct;  ///< `Wrong` corrupts the TCP checksum only; the IPv4 header stays right.
     };
 
+    /// The four-byte MSS option.
+    [[nodiscard]] inline std::vector<std::byte> mss_option(const std::uint16_t mss) {
+        std::vector<std::byte> block(wire::TcpOptions::mss_size);
+        wire::TcpOptions::write_mss(block, mss);
+        return block;
+    }
+
+    /// The twelve-byte aligned timestamp block.
+    [[nodiscard]] inline std::vector<std::byte> timestamps_option(const std::uint32_t value, const std::uint32_t echo) {
+        std::vector<std::byte> block(wire::TcpOptions::timestamps_size);
+        wire::TcpOptions::write_timestamps(block, value, echo);
+        return block;
+    }
+
+    /// The blocks one after the other: a SYN's `mss_option` then `timestamps_option`.
+    [[nodiscard]] inline std::vector<std::byte> joined(const std::span<const std::vector<std::byte>> blocks) {
+        std::vector<std::byte> out;
+        for (const std::vector<std::byte>& block : blocks) {
+            out.insert(out.end(), block.begin(), block.end());
+        }
+        return out;
+    }
+
     /// The segment's bytes after the IPv4 header: header, the MSS option when given, then `payload`.
     [[nodiscard]] inline std::vector<std::byte> tcp_segment(const TcpSpec& spec,
                                                             const std::span<const std::byte> payload) {

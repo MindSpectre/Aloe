@@ -236,6 +236,11 @@ namespace aloe::tcp {
             return table_.size();
         }
 
+        /// For tests: the next connection opened takes this initial sequence number instead of a drawn one.
+        void force_next_isn(const wire::TcpSequence isn) noexcept {
+            forced_isn_ = isn;
+        }
+
     private:
         friend class Connection<Ip, CongestionControl>;
 
@@ -1002,6 +1007,11 @@ namespace aloe::tcp {
         }
 
         [[nodiscard]] Sequence draw_isn() noexcept {
+            if (forced_isn_) {
+                const Sequence isn = *forced_isn_;
+                forced_isn_.reset();
+                return isn;
+            }
             return Sequence{static_cast<std::uint32_t>(isn_engine_())};
         }
 
@@ -1267,6 +1277,7 @@ namespace aloe::tcp {
         RetryList retries_                      = {};
         std::uint16_t cursor_                   = 0;
         std::mt19937 isn_engine_{std::random_device{}()};
+        std::optional<Sequence> forced_isn_{};
         core::TimePoint now_{};
         TcpCounters counters_{};
         bool hardware_hash_ = false;  ///< The card hashes IPv4 TCP tuples: its hash is the table's base hash.
