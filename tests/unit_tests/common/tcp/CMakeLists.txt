@@ -16,6 +16,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Tcp
         test_tcp_send_queue.cpp
         test_tcp_template.cpp
         test_tcp_rto.cpp
+        test_tcp_loan.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Tcp
         PRIVATE

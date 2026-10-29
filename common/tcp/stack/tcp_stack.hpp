@@ -140,8 +140,8 @@ namespace aloe::tcp {
             return EventType{.connection = c, .events = snapshot};
         }
 
-        /// Retries the resends that found their packet lent, then sends the ordinary ACKs and window updates that
-        /// waited, one pure ACK per connection.
+        /// Retries the resends that found their packet lent, which leave once it is back or go by the busy rule, then
+        /// sends the ordinary ACKs and window updates that waited, one pure ACK per connection.
         void flush(const core::TimePoint now) noexcept {
             now_ = now;
             for (ConnectionType* c = deferred_.front(); c != nullptr;) {
@@ -956,6 +956,16 @@ namespace aloe::tcp {
                 }
                 return sent;
             }
+            record_transmission(conn, node);
+            if (first_into_empty) {
+                arm_retransmit(conn);
+            }
+            return {};
+        }
+
+        /// A transmission of the entry left, from its packet or as a copy: stamped, counted as a control segment for a
+        /// SYN or FIN, and the ARP poll's count cleared.
+        void record_transmission(ConnectionType& conn, SentNode& node) noexcept {
             if (node.transmits == 0) {
                 node.first_sent = now_;
             }
@@ -967,10 +977,6 @@ namespace aloe::tcp {
                 ++counters_.control_segments_sent;
             }
             conn.unresolved_polls_ = 0;
-            if (first_into_empty) {
-                arm_retransmit(conn);
-            }
-            return {};
         }
 
         /// Queues a SYN, SYN-ACK or FIN at `sequence` and transmits it. The entry stays when the send fails, for the
@@ -987,14 +993,16 @@ namespace aloe::tcp {
 
         /**
          * Frees every entry from the head that `ack` covers whole and returns what it freed; an entry covered in part
-         * stays whole, trimmed only if it is resent. The payload freed counts as delivered. A resend that waited on
-         * the deferred list is moot once its entry is freed.
+         * stays whole, trimmed only if it is resent. Each entry it reaches is reconciled first, so a copy that came
+         * back leaves its range. The payload freed counts as delivered. A resend that waited on the deferred list is
+         * moot once its entry is freed; the packets of a freed entry go back now or when the device returns them.
          */
         [[nodiscard]] Freed acknowledge(ConnectionType& conn, const Sequence ack) noexcept {
             Freed freed{};
             std::uint64_t payload = 0;
             while (conn.queue_head_ != detail::no_node) {
-                const SentNode& node = send_pool_.node(conn.queue_head_);
+                SentNode& node = send_pool_.node(conn.queue_head_);
+                reconcile(conn, node);
                 if ((node.first + node.length).after(ack)) {
                     break;
                 }
@@ -1021,24 +1029,21 @@ namespace aloe::tcp {
         }
 
         /**
-         * The head entry again, from its own packet. Still lent: the device is asked to reclaim, and if it still holds
-         * the packet nothing is written into it: the connection waits on the deferred list for the next flush, counted
-         * once. Back: when `snd_una` passed the entry's first byte, the headers move forward over the acknowledged
-         * front, which is trimmed off, and `transmit_entry` sends what is left. IP's error, or nothing when the resend
-         * left or was deferred. A send that failed leaves the deferred list too: the timer's next expiry tries again.
+         * The head entry again. A copy out is reconciled first. Still lent: the device is asked to reclaim, and if it
+         * still holds the packet nothing is written into it and the busy rule decides (`resend_busy`). Back: when
+         * `snd_una` passed the entry's first byte, the headers move forward over the acknowledged front, which is
+         * trimmed off, and `transmit_entry` sends what is left. IP's error, or nothing when the resend left or was
+         * deferred. A send that failed leaves the deferred list too: the timer's next expiry tries again.
          */
         [[nodiscard]] std::expected<void, net::SendError> resend_head(ConnectionType& conn) noexcept {
             assert(conn.queue_head_ != detail::no_node && "a resend with nothing queued");
             SentNode& node = send_pool_.node(conn.queue_head_);
-            if (node.packet.lent()) {
-                std::ignore = ip_->queue().reclaim();
+            reconcile(conn, node);
+            if (node.packet.lent() && ip_->queue().reclaim() > 0) {
+                reconcile(conn, node);  // what the device let go of may be either packet
             }
             if (node.packet.lent()) {
-                if (!deferred_.contains(conn)) {
-                    deferred_.push_back(conn);
-                    ++counters_.retransmits_deferred;
-                }
-                return {};
+                return resend_busy(conn, node);
             }
             if (conn.snd_una_.after(node.first)) {
                 const auto acknowledged = static_cast<std::uint32_t>(conn.snd_una_ - node.first);
@@ -1052,7 +1057,103 @@ namespace aloe::tcp {
                 conn.delivered_ += acknowledged;  // acknowledged bytes leave the entry here, not when it is freed
             }
             deferred_.remove(conn);  // the packet is back: whatever IP answers, this resend is not waiting any more
-            return transmit_entry(conn, conn.queue_head_);
+            const std::expected<void, net::SendError> sent = transmit_entry(conn, conn.queue_head_);
+            if (sent) {
+                node.deferrals = 0;
+            }
+            return sent;
+        }
+
+        /**
+         * The busy rule, for a head whose packet the device still holds after a reclaim. A resend at the stamp of the
+         * last deferral is that deferral again, since the device had no time to finish: it stays on the deferred list
+         * and counts nothing. Below `retransmit_defers` deferrals the resend waits for the next flush, counted once
+         * per deferral; at the bound, with no copy out, the copy goes (`send_copy`); with a copy out and both packets
+         * lent, it waits again.
+         */
+        [[nodiscard]] std::expected<void, net::SendError> resend_busy(ConnectionType& conn, SentNode& node) noexcept {
+            if (deferred_.contains(conn) && node.deferred_at == now_) {
+                return {};
+            }
+            if (node.deferrals < config_.retransmit_defers) {
+                ++node.deferrals;
+            } else if (node.copy.empty()) {
+                return send_copy(conn, node);
+            }
+            node.deferred_at = now_;
+            if (!deferred_.contains(conn)) {
+                deferred_.push_back(conn);
+            }
+            ++counters_.retransmits_deferred;
+            return {};
+        }
+
+        /**
+         * The copy fallback: a fresh packet with the lent packet's header bytes and the part of its payload not yet
+         * acknowledged, read from the lent packet and never written into it, framed by `emit` from `max(first,
+         * snd_una)` and lent as the entry's second packet; counted in `retransmits_copied`. No packet free counts
+         * `allocation_failures` and refuses; a refused send drops the copy. Either way the entry stays as it was and
+         * the connection leaves the deferred list: the timer's next expiry tries again.
+         */
+        [[nodiscard]] std::expected<void, net::SendError> send_copy(ConnectionType& conn, SentNode& node) noexcept {
+            assert(node.framed && node.copy.empty() && "one copy at a time, of a frame that left");
+            deferred_.remove(conn);
+            const Sequence first    = conn.snd_una_.after(node.first) ? conn.snd_una_ : node.first;
+            const auto acknowledged = static_cast<std::uint32_t>(first - node.first);
+            assert((acknowledged == 0 || acknowledged < node.payload) && "only data is acknowledged in part");
+            const auto payload                     = static_cast<std::uint16_t>(node.payload - acknowledged);
+            const std::span<const std::byte> frame = node.packet.data();  // read only: the device holds the packet
+            const std::size_t header_size          = frame.size() - node.payload;
+            std::optional<Packet> copy             = ip_->allocate();
+            if (!copy) {
+                ++counters_.allocation_failures;
+                return std::unexpected{net::SendError::Refused};
+            }
+            const std::optional<std::span<std::byte>> bytes = copy->append(header_size + payload);
+            assert(bytes.has_value() && "a packet from allocate() holds the frame it copies");
+            if (!bytes) {
+                ++counters_.allocation_failures;  // unreachable by construction; counted in a release build
+                return std::unexpected{net::SendError::Refused};
+            }
+            std::ranges::copy(frame.first(header_size), bytes->begin());
+            std::ranges::copy(frame.subspan(header_size + acknowledged), bytes->subspan(header_size).begin());
+            if (const std::expected<void, net::SendError> sent =
+                    emit(conn, *copy, true, first, node.flags, node.flags.has(wire::TcpFlag::Syn));
+                !sent) {
+                return sent;  // the copy goes back to the pool
+            }
+            node.copy         = std::move(*copy);
+            node.copy_first   = first;
+            node.copy_payload = payload;
+            node.deferrals    = 0;
+            record_transmission(conn, node);
+            ++counters_.retransmits_copied;
+            return {};
+        }
+
+        /**
+         * Settles an entry with a copy out once either packet is back. The original back: the copy is dropped. The
+         * copy back first: it replaces the original, and the entry shrinks to the copy's range, the front it left out
+         * counted as delivered as a trim counts it. A dropped handle's buffer goes back now or when the device returns
+         * it. Nothing with no copy out, or with both packets still lent.
+         */
+        void reconcile(ConnectionType& conn, SentNode& node) noexcept {
+            if (node.copy.empty()) {
+                return;
+            }
+            if (!node.packet.lent()) {
+                node.copy = Packet{};
+                return;
+            }
+            if (node.copy.lent()) {
+                return;
+            }
+            conn.delivered_ += static_cast<std::uint32_t>(node.payload - node.copy_payload);
+            node.packet      = std::exchange(node.copy, Packet{});
+            node.first       = node.copy_first;
+            node.payload     = node.copy_payload;
+            node.length      = node.payload + (node.flags.has(wire::TcpFlag::Syn) ? 1U : 0U) +
+                               (node.flags.has(wire::TcpFlag::Fin) ? 1U : 0U);
         }
 
         /// A header-only ACK at `snd_nxt` from a fresh packet: lent to the device and forgotten, never kept.
@@ -1317,7 +1418,8 @@ namespace aloe::tcp {
             conn.unread_bytes_ = 0;
         }
 
-        /// Every entry back to the pool: the node now, its packet now or when the device returns it, exactly once.
+        /// Every entry back to the pool: the node now, its packet and a copy out now or when the device returns them,
+        /// each exactly once.
         void drop_queue(ConnectionType& conn) noexcept {
             for (std::uint32_t index = conn.queue_head_; index != detail::no_node;) {
                 const std::uint32_t next = send_pool_.node(index).next;

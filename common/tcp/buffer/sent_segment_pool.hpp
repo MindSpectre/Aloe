@@ -20,9 +20,9 @@ namespace aloe::tcp::detail {
      *
      * A node is one segment that occupies sequence space, SYN, SYN-ACK, data or FIN, from its first transmission until
      * an ACK covers it: the packet with the whole frame as it last left, and what a resend and a rate sample read.
-     * Fixed at construction, never grown. Every node may keep a packet of the device's pool, so that pool covers the
-     * receive descriptors, `receive_pool` held packets, `send_pool` kept packets, the transmit ring, what the card
-     * holds and the open preparations.
+     * Fixed at construction, never grown. Every node may keep a packet of the device's pool, and a second one while
+     * the copy fallback has one out, so that pool covers the receive descriptors, `receive_pool` held packets,
+     * `send_pool` kept packets and the copies out, the transmit ring, what the card holds and the open preparations.
      */
     template <device::IsPacket Packet>
     class SentSegmentPool {
@@ -36,6 +36,10 @@ namespace aloe::tcp::detail {
             wire::TcpFlags flags{};     ///< As the segment carries them.
             core::TimePoint sent{};     ///< The last transmission; the epoch while never transmitted.
             core::TimePoint first_sent{};
+            wire::TcpSequence copy_first{};  ///< The copy's first sequence number while a copy is out.
+            std::uint16_t copy_payload = 0;  ///< The copy's payload bytes: the part not acknowledged when it left.
+            std::uint8_t deferrals     = 0;  ///< Resends deferred since the last one that left.
+            core::TimePoint deferred_at{};   ///< The last deferral: a later resend at the same stamp is the same one.
             std::uint8_t transmits          = 0;
             bool framed                     = false;  ///< The packet holds the frame headers in front of the payload.
             std::uint64_t delivered_at_send = 0;
