@@ -210,7 +210,7 @@ namespace aloe::tcp {
             c.iss_              = draw_isn();
             c.snd_nxt_          = c.iss_ + 1;
             c.snd_una_          = c.iss_;
-            c.recover_          = before_iss(c.iss_);
+            c.recover_          = c.iss_;  // RFC 6582: recover starts at the initial send sequence number
             c.rto_              = config_.rto_initial;
             c.srtt_             = std::nullopt;
             c.retransmit_count_ = 0;
@@ -445,7 +445,7 @@ namespace aloe::tcp {
             conn.iss_              = draw_isn();
             conn.snd_nxt_          = conn.iss_ + 1;
             conn.snd_una_          = conn.iss_;
-            conn.recover_          = before_iss(conn.iss_);
+            conn.recover_          = conn.iss_;  // RFC 6582: recover starts at the initial send sequence number
             conn.rto_              = config_.rto_initial;
             conn.srtt_             = std::nullopt;
             conn.retransmit_count_ = 0;
@@ -1596,15 +1596,6 @@ namespace aloe::tcp {
             deferred_.remove(conn);
         }
 
-        /**
-         * Where `recover` starts: one before the ISS. RFC 6582 starts it at the ISS, under which a loss of the first
-         * data segment could never be fast-retransmitted, since its duplicates acknowledge only the SYN and `ack - 1`
-         * is the ISS; one before is where FreeBSD's `snd_recover = iss` with its `th_ack > snd_recover` test starts.
-         */
-        [[nodiscard]] static constexpr Sequence before_iss(const Sequence iss) noexcept {
-            return Sequence{iss.value - 1};
-        }
-
         [[nodiscard]] Sequence draw_isn() noexcept {
             if (forced_isn_) {
                 const Sequence isn = *forced_isn_;
@@ -1770,8 +1761,8 @@ namespace aloe::tcp {
          * An ACK of new data on a synchronized connection: the entries it frees, the sample and the timer
          * (`on_acknowledged`), then loss recovery; the duplicate count and limited transmit's allowance clear. In fast
          * recovery, an ACK past `recover` is the full ACK and ends it, the policy told the flight left; one short of it
-         * is RFC 6582's partial ACK: the new head goes again at once, counted in `fast_retransmits`, and the policy is
-         * told what was acknowledged. Outside fast recovery the policy hears of the ACK (`on_ack`); in the loss episode
+         * is RFC 6582's partial ACK: the new head goes again at once (`fast_retransmit`), and the policy is told what
+         * was acknowledged. Outside fast recovery the policy hears of the ACK (`on_ack`); in the loss episode
          * after a timeout an ACK short of `recover` resends the new head at once, counted in `retransmits`, as Linux
          * resends what its loss state marked lost (RACK refines this later), and one past it ends the episode.
          */
@@ -1792,10 +1783,7 @@ namespace aloe::tcp {
                         conn.congestion_, conn.snd_nxt_.value - conn.snd_una_.value, smss);
                     return;
                 }
-                if (conn.queue_head_ != detail::no_node) {
-                    std::ignore = resend_head(conn);
-                }
-                ++counters_.fast_retransmits;
+                fast_retransmit(conn);
                 CongestionControl::on_partial_ack(conn.congestion_, acked, smss);
                 return;
             }
@@ -1825,10 +1813,11 @@ namespace aloe::tcp {
         /**
          * RFC 5681's duplicate ACK. In fast recovery the policy hears of it; NewReno inflates its window a segment.
          * Outside it the first and second each allow a segment beyond the windows, RFC 3042's limited transmit, an
-         * allowance of the stack's; the third starts fast recovery unless `ack - 1` is not past `recover`, RFC 6582's
-         * guard against a second fast retransmit for what a timeout already resent. Fast recovery records `recover`,
-         * tells the policy of the loss with the flight less what limited transmit sent past the windows, which RFC
-         * 5681 leaves out of the threshold, and resends the head at once. Later duplicates outside recovery do nothing.
+         * allowance of the stack's; the third starts fast recovery only when, in RFC 6582's words, "the Cumulative
+         * Acknowledgment field covers more than recover", that is `ack` past `recover`: the guard against a second fast
+         * retransmit for data a timeout already resent. Fast recovery records `recover`, tells the policy of the loss
+         * with the flight less what limited transmit sent past the windows, which RFC 5681 leaves out of the
+         * threshold, and resends the head at once (`fast_retransmit`). Later duplicates outside recovery do nothing.
          */
         void on_duplicate_ack(ConnectionType& conn, const Sequence ack) noexcept {
             ++counters_.duplicate_acks;
@@ -1844,8 +1833,8 @@ namespace aloe::tcp {
                 conn.limited_transmit_ = std::min<std::uint32_t>(conn.limited_transmit_ + smss, 2U * smss);
                 return;
             }
-            if (conn.dupacks_ != 3 || !Sequence{ack.value - 1}.after(conn.recover_)) {
-                return;
+            if (conn.dupacks_ != 3 || !ack.after(conn.recover_)) {
+                return;  // RFC 6582: the acknowledgement does not cover more than recover
             }
             const std::uint64_t flight = conn.snd_nxt_.value - conn.snd_una_.value;
             const std::uint64_t window =
@@ -1854,9 +1843,24 @@ namespace aloe::tcp {
             conn.in_recovery_      = true;
             conn.limited_transmit_ = 0;
             CongestionControl::on_loss(conn.congestion_, static_cast<std::uint32_t>(std::min(flight, window)), smss);
-            std::ignore = resend_head(conn);
-            ++counters_.fast_retransmits;
+            fast_retransmit(conn);
             ++counters_.recoveries;
+        }
+
+        /**
+         * The head again, driven by the third duplicate or a partial ACK, counted in `fast_retransmits`. When it
+         * leaves, in place or as a copy, the RTO restarts from now, as Linux re-arms it on resending the head
+         * (`tcp_xmit_retransmit_queue`), so the timer the first send armed does not expire before the resend's ACK can
+         * return. A resend deferred, or refused, leaves the timer as it was.
+         */
+        void fast_retransmit(ConnectionType& conn) noexcept {
+            ++counters_.fast_retransmits;
+            if (conn.queue_head_ == detail::no_node) {
+                return;  // only a FIN that found no node is outstanding: the RTO resends it
+            }
+            if (resend_head(conn) && !deferred_.contains(conn)) {
+                arm_retransmit(conn);
+            }
         }
 
         /// Called by the wheel with the timer unarmed; its kind says what for.
@@ -1900,8 +1904,8 @@ namespace aloe::tcp {
                 return;
             }
             if (++conn.retransmit_count_ == 1) {
-                // RFC 6582's step 4: the timeout leaves fast recovery and records `recover`; the loss episode resends
-                // what was sent before it, one head per ACK of new data.
+                // RFC 6582 on a retransmit timeout: record the highest sequence number transmitted in recover and
+                // leave fast recovery; the loss episode resends what was sent before it, one head per ACK of new data.
                 conn.in_recovery_      = false;
                 conn.loss_episode_     = true;
                 conn.recover_          = Sequence{conn.snd_nxt_.value - 1};

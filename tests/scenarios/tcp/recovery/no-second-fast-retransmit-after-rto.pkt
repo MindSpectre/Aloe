@@ -1,8 +1,8 @@
 // RFC 6582's guard: two segments, the first resent by the timeout at +0.2, which records recover = 1976, the last byte
-// sent. Three duplicates then acknowledge 1, and 1 - 1 is not past recover, so they start no fast retransmit and
-// nothing goes out. The ACK of the head is short of recover: the loss episode the timeout began resends the next head
-// at once; the ACK of both ends it. Linux stays in its loss state until the same ACK and resends the second segment on
-// the first ACK as well.
+// sent. Three duplicates then acknowledge 1, which does not cover more than recover, so they start no fast retransmit
+// and nothing goes out. The ACK of the head is short of recover: the loss episode the timeout began resends the next
+// head at once; the ACK of both ends it. Linux stays in its loss state until the same ACK and resends the second
+// segment on the first ACK as well.
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0
 +0 listen(3, 1) = 0

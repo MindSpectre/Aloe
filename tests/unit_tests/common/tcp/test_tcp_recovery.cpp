@@ -145,6 +145,53 @@ TEST_P(TcpRecovery, TheRecoverGuardBlocksASecondFastRetransmitAfterATimeout) {
     EXPECT_EQ(tcp_->counters().fast_retransmits, 0U);
 }
 
+TEST_P(TcpRecovery, AFastRetransmitIsAdmittedOnceEverythingSentBeforeTheTimeoutIsAcknowledged) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(2920)), 2920U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 2U);
+    advance(200ms);
+    ASSERT_EQ(collect().size(), 1U) << "the timeout's resend of the head; recover is the last byte sent before it";
+    receive(peer_.ack(sent[1]));  // exactly snd_nxt as it was at the timeout: recover + 1
+    EXPECT_TRUE(collect().empty()) << "the ACK past recover ends the loss episode";
+    ASSERT_EQ(c->send(aloe::frames::pattern(1460)), 1460U);
+    const auto third = collect();
+    ASSERT_EQ(third.size(), 1U);
+    const auto dup = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    EXPECT_TRUE(c->in_recovery()) << "RFC 6582: the acknowledgement covers more than recover";
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 1U);
+    EXPECT_EQ(resent[0].tcp->sequence, third[0].tcp->sequence);
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
+}
+
+TEST_P(TcpRecovery, AFastRetransmitRestartsTheRetransmissionTimer) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->rto(), 200ms);
+    ASSERT_EQ(c->send(aloe::frames::pattern(2920)), 2920U);
+    const auto sent = collect();  // t0: the timer is armed for t0 + 200 ms
+    advance(150ms);
+    const auto dup = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    ASSERT_EQ(collect().size(), 1U) << "the fast retransmit at t = t0 + 150 ms";
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
+    advance(199ms);
+    EXPECT_TRUE(collect().empty()) << "the timer restarted at t: nothing expires before t + 200 ms";
+    EXPECT_EQ(tcp_->counters().retransmits, 0U);
+    advance(1ms);
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 1U);
+    EXPECT_EQ(resent[0].tcp->sequence, sent[0].tcp->sequence);
+    EXPECT_EQ(tcp_->counters().retransmits, 1U);
+}
+
 TEST_P(TcpRecovery, AfterATimeoutEachAckOfNewDataResendsTheNextHead) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
