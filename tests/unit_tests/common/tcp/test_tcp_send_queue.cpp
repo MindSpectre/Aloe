@@ -16,6 +16,15 @@ namespace {
     using TcpSendQueue         = aloe::testing::TcpFixture;
     using TcpSendQueueRefusing = aloe::testing::TcpRefusingFixture;
 
+    /// A shard with two retransmission-queue nodes: two one-byte segments in flight empty the pool, which pins what
+    /// each path that needs a node does without one.
+    class TcpSendPoolExhausted : public aloe::testing::TcpFixture {
+    protected:
+        TcpSendPoolExhausted() {
+            configure_tcp({.send_pool = 2});
+        }
+    };
+
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpSendQueue,
                              ::testing::Values(aloe::fabric::EmulatedOffloads::None,
@@ -23,6 +32,11 @@ namespace {
                              aloe::testing::offloads_name);
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpSendQueueRefusing,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpSendPoolExhausted,
                              ::testing::Values(aloe::fabric::EmulatedOffloads::None,
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
@@ -181,4 +195,132 @@ TEST_P(TcpSendQueueRefusing, ARefusedCommitTakesNoEntry) {
     EXPECT_EQ(c->queued_segments(), 0U);
     EXPECT_EQ(tcp_->send_nodes_available(), tcp_->config().send_pool);
     EXPECT_EQ(tcp_->counters().send_refused, 1U);
+}
+
+TEST_P(TcpSendPoolExhausted, CommitWithNoNodeIsRefusedWithAHint) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    ASSERT_EQ(collect().size(), 2U);
+    ASSERT_EQ(tcp_->send_nodes_available(), 0U) << "two unacknowledged segments hold both nodes";
+    while (poll()) {}
+    const aloe::wire::TcpSequence committed = c->committed();
+    const auto room                         = c->prepare(1);
+    ASSERT_TRUE(room.has_value()) << "the windows allow more: prepare does not ask the queue";
+    EXPECT_FALSE(c->commit(1));
+    EXPECT_EQ(tcp_->counters().allocation_failures, 1U) << "no queue node for the segment";
+    EXPECT_EQ(tcp_->counters().commits_refused, 0U);
+    EXPECT_EQ(c->committed(), committed) << "the byte is not accepted";
+    EXPECT_EQ(c->queued_segments(), 2U);
+    EXPECT_EQ(tcp_->counters().data_segments_sent, 2U);
+    EXPECT_TRUE(collect().empty());
+    process_pending();
+    const auto hint = poll();
+    ASSERT_TRUE(hint.has_value());
+    EXPECT_TRUE(hint->events.writable()) << "the retry hint, at the next process";
+}
+
+TEST_P(TcpSendPoolExhausted, ConnectWithNoNodeFails) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    ASSERT_EQ(collect().size(), 2U);
+    ASSERT_EQ(tcp_->send_nodes_available(), 0U);
+    const auto connected =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port + 1}, now_);
+    ASSERT_FALSE(connected.has_value());
+    EXPECT_EQ(connected.error(), aloe::tcp::ConnectError::TableFull) << "no node for the SYN";
+    EXPECT_EQ(tcp_->table_size(), 1U) << "no slot taken";
+    EXPECT_TRUE(collect().empty()) << "no SYN";
+}
+
+TEST_P(TcpSendPoolExhausted, PassiveOpenWithNoNodeCountsDroppedNoNode) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 2U);
+    ASSERT_EQ(tcp_->send_nodes_available(), 0U);
+    while (poll()) {}
+    aloe::frames::TcpPeer second{aloe::testing::peer_spec(aloe::testing::tcp_peer_port + 1),
+                                 aloe::wire::TcpSequence{5000}};
+    receive(second.syn());
+    EXPECT_EQ(tcp_->counters().dropped_no_node, 1U) << "no node for the SYN-ACK";
+    EXPECT_EQ(tcp_->counters().resets_sent, 0U);
+    EXPECT_EQ(tcp_->table_size(), 1U) << "no connection";
+    EXPECT_TRUE(collect().empty()) << "no SYN-ACK and no RST: the peer's SYN timer tries again";
+    EXPECT_FALSE(poll().has_value());
+    receive(peer_.ack(sent[1]));  // frees both nodes
+    receive(second.segment({aloe::wire::TcpFlag::Syn}, {}, second.iss(), {}, true));
+    const auto answer = collect();
+    ASSERT_EQ(answer.size(), 1U);
+    EXPECT_TRUE(aloe::testing::is_flags(answer[0], {aloe::wire::TcpFlag::Syn, aloe::wire::TcpFlag::Ack}))
+        << "the SYN again, once a node is free";
+    EXPECT_EQ(tcp_->table_size(), 2U);
+}
+
+TEST_P(TcpSendPoolExhausted, CloseWithThePoolEmptySendsTheFinOnTheNextRto) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->rto(), 200ms);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 2U);
+    ASSERT_EQ(tcp_->send_nodes_available(), 0U);
+    const aloe::wire::TcpSequence fin_sequence = c->committed();
+    c->close();
+    EXPECT_EQ(c->state(), aloe::tcp::State::FinWait1);
+    EXPECT_EQ(c->committed(), fin_sequence + 1U) << "the FIN took its number";
+    EXPECT_EQ(c->queued_segments(), 2U) << "but no entry";
+    EXPECT_EQ(tcp_->counters().send_refused, 1U) << "the FIN found no node";
+    EXPECT_TRUE(collect().empty()) << "the FIN did not leave";
+    receive(peer_.ack(sent[1]));  // both segments acknowledged: both nodes free, the FIN still without one
+    EXPECT_EQ(c->queued_segments(), 0U);
+    EXPECT_EQ(tcp_->send_nodes_available(), 2U);
+    EXPECT_TRUE(collect().empty()) << "a freed node does not send the FIN: the timer does";
+    advance(199ms);
+    EXPECT_TRUE(collect().empty()) << "the ACK restarted the RTO";
+    advance(1ms);
+    const auto fin = collect();
+    ASSERT_EQ(fin.size(), 1U);
+    EXPECT_TRUE(aloe::testing::is_flags(fin[0], {aloe::wire::TcpFlag::Fin, aloe::wire::TcpFlag::Ack}));
+    EXPECT_EQ(fin[0].tcp->sequence, fin_sequence);
+    EXPECT_EQ(c->queued_segments(), 1U) << "the expiry found the FIN a node";
+    EXPECT_EQ(tcp_->counters().retransmits, 1U) << "counted as the expiry's resend";
+    receive(peer_.ack(fin[0]));
+    EXPECT_EQ(c->state(), aloe::tcp::State::FinWait2);
+    EXPECT_EQ(c->queued_segments(), 0U);
+    EXPECT_EQ(tcp_->send_nodes_available(), 2U);
+}
+
+TEST_P(TcpSendPoolExhausted, CloseWithThePoolEmptyQueuesTheFinBehindTheHeadAtTheRto) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 2U);
+    const aloe::wire::TcpSequence fin_sequence = c->committed();
+    c->close();
+    receive(peer_.ack(sent[0]));  // one node free; the second segment is still the head
+    EXPECT_EQ(tcp_->send_nodes_available(), 1U);
+    advance(200ms);
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 1U) << "the expiry resends the head; the FIN takes the free node behind it";
+    EXPECT_EQ(resent[0].tcp->sequence, sent[1].tcp->sequence);
+    EXPECT_EQ(c->queued_segments(), 2U);
+    EXPECT_EQ(tcp_->send_nodes_available(), 0U);
+    receive(peer_.ack(resent[0]));  // the loss episode resends the new head: the FIN's first transmission
+    const auto fin = collect();
+    ASSERT_EQ(fin.size(), 1U);
+    EXPECT_TRUE(aloe::testing::is_flags(fin[0], {aloe::wire::TcpFlag::Fin, aloe::wire::TcpFlag::Ack}));
+    EXPECT_EQ(fin[0].tcp->sequence, fin_sequence);
+    EXPECT_EQ(tcp_->counters().retransmits, 2U);
+    receive(peer_.ack(fin[0]));
+    EXPECT_EQ(c->state(), aloe::tcp::State::FinWait2);
+    EXPECT_EQ(tcp_->send_nodes_available(), 2U);
 }
