@@ -1,0 +1,30 @@
+// The script of karn-skips-a-retransmitted-sample with timestamps on: the ACK of the resent first segment echoes
+// the resend's value, which gives a sample of 0 ms where Karn's rule gives none, so the backoff ends and the second
+// write's resend comes at +0.2, not +0.4; its ACK echoes that resend the same way. The third write's ACK, 50 ms
+// after it left, samples from the sequence as before: RTO 206.25 ms (srtt 6.25, rttvar 12.5: 6.25 + max(50, 200)),
+// so the fourth write's resend comes at the first tick from 206.25 ms on, written +0.206~+0.207, its value 657.
+// Linux falls back to the echo the same way (tcp_ack_update_rtt).
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 10) = 10
++0 > P. 1:11(10) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0.2 > P. 1:11(10) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0 < . 1:1(0) ack 11 win 65535 <nop,nop,TS val 100 ecr 200>
++0 write(4, ..., 10) = 10
++0 > P. 11:21(10) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0.2 > P. 11:21(10) ack 1 win 46720 <nop,nop,TS val 400 ecr 100>
++0 < . 1:1(0) ack 21 win 65535 <nop,nop,TS val 100 ecr 400>
++0 write(4, ..., 10) = 10
++0 > P. 21:31(10) ack 1 win 46720 <nop,nop,TS val 400 ecr 100>
++0.05 < . 1:1(0) ack 31 win 65535 <nop,nop,TS val 100 ecr 400>
++0 write(4, ..., 10) = 10
++0 > P. 31:41(10) ack 1 win 46720 <nop,nop,TS val 450 ecr 100>
++0.206~+0.207 > P. 31:41(10) ack 1 win 46720 <nop,nop,TS val 657 ecr 100>
++0 < . 1:1(0) ack 41 win 65535 <nop,nop,TS val 100 ecr 657>

@@ -104,14 +104,14 @@ TEST_P(TcpRto, AnAckOfNewDataResetsTheRetryCountAndKarnKeepsTheBackoff) {
     ASSERT_EQ(frames.size(), 2U);
     advance(200ms);
     EXPECT_EQ(collect().size(), 1U) << "the head resent";
-    receive(peer_.ack(frames[0]));  // acknowledges the resent entry: no sample
+    receive(peer_.ack(frames[0]));  // frees only the resent entry: no sample, and no echo to fall back on
     EXPECT_EQ(c->retransmit_count(), 0U);
     EXPECT_EQ(c->rto(), 400ms) << "backed off until a valid sample";
     EXPECT_EQ(tcp_->counters().rtt_samples, 1U) << "only the handshake's";
     advance(400ms);
-    EXPECT_EQ(collect().size(), 1U) << "the second segment, at the backed-off RTO";
+    EXPECT_EQ(collect().size(), 1U) << "the second segment, at the backed-off RTO from the ACK";
     advance(50ms);
-    receive(peer_.ack(frames[1]));  // the second segment was resent too: still no sample
+    receive(peer_.ack(frames[1]));  // frees only the second entry, resent too: still no sample
     EXPECT_EQ(tcp_->counters().rtt_samples, 1U);
     ASSERT_EQ(c->send(aloe::frames::pattern(10)), 10U);
     const auto third = collect();
@@ -121,6 +121,42 @@ TEST_P(TcpRto, AnAckOfNewDataResetsTheRetryCountAndKarnKeepsTheBackoff) {
     EXPECT_EQ(tcp_->counters().rtt_samples, 2U) << "transmitted once: a sample";
     EXPECT_EQ(c->rto(), 202500us)
         << "srtt 7/8 * 0 + 1/8 * 20 = 2.5, rttvar 3/4 * 0 + 1/4 * 20 = 5: 2.5 + max(4 * 5, 200), backoff gone";
+}
+
+TEST_P(TcpRto, KarnDiscardsTheSampleWhenAnyFreedEntryWasRetransmitted) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(2000)), 2000U);
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 2U);
+    advance(200ms);
+    EXPECT_EQ(collect().size(), 1U) << "the head resent";
+    const auto samples = tcp_->counters().rtt_samples;
+    peer_.see(frames[0]);
+    receive(peer_.ack(frames[1]));  // one cumulative ACK of both: the second left once, the first twice
+    EXPECT_EQ(c->queued_segments(), 0U);
+    EXPECT_EQ(tcp_->counters().rtt_samples, samples) << "a resent entry among those freed: no sample, as Linux";
+    EXPECT_EQ(c->rto(), 400ms) << "the backoff stays";
+}
+
+TEST_P(TcpRto, AnAckBetweenExpiriesReArmsToNowPlusRto) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(2000)), 2000U);
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 2U);
+    advance(100ms);
+    receive(peer_.ack(frames[0]));  // the first, sent once: a sample of 100 ms
+    EXPECT_EQ(c->rto(), 212500us) << "srtt 12.5, rttvar 25: 12.5 + max(4 * 25, 200)";
+    advance(100ms);
+    EXPECT_TRUE(collect().empty()) << "+200, the first arming's deadline: the ACK re-armed the timer";
+    advance(112ms);
+    EXPECT_TRUE(collect().empty()) << "+312";
+    advance(1ms);
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 1U) << "+313, the first tick at or after 100 + 212.5";
+    EXPECT_EQ(resent[0].tcp->sequence, frames[1].tcp->sequence);
+    EXPECT_EQ(tcp_->counters().retransmits, 1U);
 }
 
 TEST_P(TcpRto, DataRetriesEndInTimedOut) {

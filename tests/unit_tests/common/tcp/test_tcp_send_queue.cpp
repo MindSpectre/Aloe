@@ -1,8 +1,11 @@
+#include <algorithm>
 #include <aloe/frames>
 #include <aloe/tcp>
 #include <aloe/wire>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <span>
 
 #include <gtest/gtest.h>
 #include <tcp_fixture.hpp>
@@ -118,7 +121,18 @@ TEST_P(TcpSendQueue, AHandshakeSegmentIsAnEntryResentFromItsPacket) {
     const auto again = collect();
     ASSERT_EQ(again.size(), 1U);
     EXPECT_EQ(again[0].tcp->sequence, first[0].tcp->sequence);
-    EXPECT_EQ(again[0].l4, first[0].l4) << "the same segment, from the same packet";
+    // The same segment, from the same packet: every byte as it was but the checksum and the timestamp value, which
+    // the resend rewrites with the clock a second later.
+    constexpr std::size_t checksum_at = 16;              // in the fixed header
+    constexpr std::size_t ts_value_at = 20 + 4 + 2 + 2;  // past the header, the MSS, two nops, kind and length
+    const auto value_of               = [](const aloe::frames::ParsedFrame& frame) {
+        return aloe::wire::TcpOptions::parse(aloe::frames::tcp_options_of(frame))->timestamp_value.value_or(0);
+    };
+    EXPECT_EQ(value_of(again[0]) - value_of(first[0]), 1000U);
+    auto expected = first[0].l4;
+    std::ranges::copy(std::span{again[0].l4}.subspan(checksum_at, 2), expected.begin() + checksum_at);
+    std::ranges::copy(std::span{again[0].l4}.subspan(ts_value_at, 4), expected.begin() + ts_value_at);
+    EXPECT_EQ(again[0].l4, expected) << "the same segment, from the same packet";
     EXPECT_NE(again[0].ipv4->identification, first[0].ipv4->identification);
     EXPECT_EQ(tcp_->sent_segment(c, 0).transmits, 2U);
     EXPECT_EQ(tcp_->counters().retransmits, 1U);

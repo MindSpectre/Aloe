@@ -5,16 +5,16 @@
 +0 bind(3, ..., ...) = 0
 +0 listen(3, 1) = 0
 
-+0 < S 0:0(0) win 65535 <mss 1460>
-+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>
-+0 < . 1:1(0) ack 1 win 65535
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
 +0 accept(3, ..., ...) = 4
 
 +0 close(4) = 0
-+0 > F. 1:1(0) ack 1 win 46720
-+0.2 > F. 1:1(0) ack 1 win 46720
-+0.4 > F. 1:1(0) ack 1 win 46720
-+0 < . 1:1(0) ack 2 win 65535
++0 > F. 1:1(0) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0.2 > F. 1:1(0) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0.4 > F. 1:1(0) ack 1 win 46720 <nop,nop,TS val 600 ecr 100>
++0 < . 1:1(0) ack 2 win 65535 <nop,nop,TS val 100 ecr 600>
 
 // Five quiet seconds: a FIN whose timer was not cancelled would go again at +0.8.
 +5 close(3) = 0

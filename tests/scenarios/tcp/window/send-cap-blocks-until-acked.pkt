@@ -1,18 +1,21 @@
-// A send cap of two segments: the third byte waits for the first ACK, and write reports what was accepted.
+// A send cap of two segments: a write of 3000 takes two segments of 988, the peer's MSS of 1000 less the timestamp
+// option, and write reports what was accepted; the rest waits for the ACK, which frees both entries, so the next
+// write's 1024 bytes leave as a segment of 988 and one of 36.
 --tcp_send_segments=2
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0
 +0 listen(3, 1) = 0
 
-+0 < S 0:0(0) win 65535 <mss 1000>
-+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>
-+0 < . 1:1(0) ack 1 win 65535
++0 < S 0:0(0) win 65535 <mss 1000,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
 +0 accept(3, ..., ...) = 4
 
-+0 write(4, ..., 3000) = 2000
-+0 > P. 1:1001(1000) ack 1 win 46720
-+0 > P. 1001:2001(1000) ack 1 win 46720
-+0 < . 1:1(0) ack 1001 win 65535
-+0 write(4, ..., 1000) = 1000
-+0 > P. 2001:3001(1000) ack 1 win 46720
-+0 < . 1:1(0) ack 3001 win 65535
++0 write(4, ..., 3000) = 1976
++0 > P. 1:989(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 > P. 989:1977(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1977 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 1024) = 1024
++0 > P. 1977:2965(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 > P. 2965:3001(36) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 3001 win 65535 <nop,nop,TS val 100 ecr 0>

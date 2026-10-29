@@ -1,0 +1,31 @@
+// Karn: the ACK of a resent segment gives no sample, so the backed-off RTO stays until an ACK of a segment sent
+// once arrives. Without timestamps there is no echo to fall back on: the second write's segment is resent after the
+// backed-off 400 ms. Its ACK gives no sample either; the third's, 50 ms after it left, does, and the RTO returns
+// to the estimator's 206.25 ms (srtt 6.25, rttvar 12.5: 6.25 + max(50, 200)), so the fourth write's resend comes
+// at the first tick from 206.25 ms on, written +0.206~+0.207. Linux applies Karn's rule the same way; its estimator
+// also keeps a per-round-trip maximum of the deviation, so its RTO after the sample would differ slightly.
+--tcp_timestamps=0
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460>
++0 < . 1:1(0) ack 1 win 65535
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 10) = 10
++0 > P. 1:11(10) ack 1 win 46720
++0.2 > P. 1:11(10) ack 1 win 46720
++0 < . 1:1(0) ack 11 win 65535
++0 write(4, ..., 10) = 10
++0 > P. 11:21(10) ack 1 win 46720
++0.4 > P. 11:21(10) ack 1 win 46720
++0 < . 1:1(0) ack 21 win 65535
++0 write(4, ..., 10) = 10
++0 > P. 21:31(10) ack 1 win 46720
++0.05 < . 1:1(0) ack 31 win 65535
++0 write(4, ..., 10) = 10
++0 > P. 31:41(10) ack 1 win 46720
++0.206~+0.207 > P. 31:41(10) ack 1 win 46720
++0 < . 1:1(0) ack 41 win 65535

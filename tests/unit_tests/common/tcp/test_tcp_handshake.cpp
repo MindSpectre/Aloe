@@ -98,7 +98,7 @@ TEST_P(TcpHandshake, ActiveOpen) {
     EXPECT_GE(syn.tcp->source_port, 32768U);
     EXPECT_LE(syn.tcp->source_port, 60999U);
     EXPECT_EQ(c.local().port, syn.tcp->source_port);
-    EXPECT_EQ(syn.tcp->data_offset, 24U);
+    EXPECT_EQ(syn.tcp->data_offset, 36U) << "mss, nop, nop, TS: the SYN offers timestamps";
     EXPECT_EQ(mss_option(syn), aloe::testing::tcp_fabric_mss);
     EXPECT_EQ(syn.tcp->window, aloe::testing::tcp_fabric_budget);
     EXPECT_EQ(syn.tcp->acknowledgement, TcpSequence{});
@@ -122,7 +122,7 @@ TEST_P(TcpHandshake, ActiveOpen) {
     EXPECT_EQ(acks[0].tcp->sequence, iss + 1U);
     EXPECT_EQ(acks[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 1});
     EXPECT_EQ(acks[0].tcp->window, aloe::testing::tcp_fabric_budget);
-    EXPECT_EQ(acks[0].tcp->data_offset, 20U);
+    EXPECT_EQ(acks[0].tcp->data_offset, 20U) << "the peer's SYN-ACK carried no timestamps: off";
     EXPECT_EQ(tcp_->counters().connections_opened, 1U);
     EXPECT_EQ(tcp_->counters().pure_acks_sent, 1U);
     EXPECT_FALSE(poll().has_value());

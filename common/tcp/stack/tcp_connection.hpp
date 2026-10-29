@@ -18,6 +18,7 @@
 #include <tcp_fwd.hpp>
 #include <tcp_header.hpp>
 #include <tcp_node_pool.hpp>
+#include <tcp_options.hpp>
 #include <tcp_sequence.hpp>
 #include <timer_wheel.hpp>
 
@@ -78,9 +79,17 @@ namespace aloe::tcp {
         [[nodiscard]] stream::Events events() const noexcept {
             return events_;
         }
-        /// What we send with: the smaller of the peer's option and ours.
+        /// The payload a segment carries: the smaller of the peer's MSS option and ours, less the timestamp option
+        /// once the connection sends it. The SYN's MSS option keeps the full value.
         [[nodiscard]] std::uint16_t mss() const noexcept {
-            return std::min(peer_mss_, stack_->mss_);
+            const std::uint16_t negotiated = std::min(peer_mss_, stack_->mss_);
+            const std::uint16_t options =
+                timestamps() ? static_cast<std::uint16_t>(wire::TcpOptions::timestamps_size) : std::uint16_t{0};
+            return static_cast<std::uint16_t>(negotiated - std::min(negotiated, options));
+        }
+        /// RFC 7323 timestamps were negotiated: both ends offered them in the handshake and the config allows them.
+        [[nodiscard]] bool timestamps() const noexcept {
+            return send_timestamps_ && state_ != State::SynSent;
         }
 
         /// The unconsumed payloads of the held packets, in order. Invalidated by `consume` and the next `process`.
@@ -227,6 +236,12 @@ namespace aloe::tcp {
             timer_kind_       = detail::TimerKind::None;
             unresolved_polls_ = 0;
             congestion_       = {};
+            send_timestamps_  = false;
+            ts_offset_        = 0;
+            ts_recent_        = 0;
+            ts_recent_stamp_  = {};
+            ts_recent_valid_  = false;
+            last_ack_sent_    = {};
         }
 
         // Identity and ownership.
@@ -293,6 +308,14 @@ namespace aloe::tcp {
         std::uint16_t unresolved_polls_ = 0;  ///< Polls since the last send that left; the config bounds them.
         typename CongestionControl::State
             congestion_{};  ///< The policy's state; reset where the connection is Established.
+
+        // Timestamps (RFC 7323): the offer, the clock's offset, the echo and what PAWS compares against.
+        bool send_timestamps_ = false;  ///< In SynSent the SYN's offer; from the handshake on, the negotiated option.
+        std::uint32_t ts_offset_ = 0;   ///< Added to the stack's millisecond clock; drawn per connection.
+        std::uint32_t ts_recent_ = 0;   ///< TS.Recent: the value the next segment echoes.
+        core::TimePoint ts_recent_stamp_{};  ///< When TS.Recent was last set; PAWS ignores it after 24 days.
+        bool ts_recent_valid_ = false;       ///< TS.Recent holds a value from the peer.
+        Sequence last_ack_sent_{};  ///< Last.ACK.sent: the acknowledgement the last ACK-bearing segment carried.
     };
 
     /// One notification from `poll_event`: the connection and the flags taken from it.
