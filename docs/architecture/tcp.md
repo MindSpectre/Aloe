@@ -241,7 +241,8 @@ them without a change to the concept or the queue.
   partial ACK deflates the window by the bytes it covers, adds a segment back when it covers at least one, and
   never leaves less than a segment; the full ACK sets `cwnd = min(ssthresh, max(flight, mss) + mss)`, RFC 6582's
   first option; a timeout sets `ssthresh = max(flight / 2, 2 mss)` and `cwnd = mss`; a send after an idle RTO
-  restarts at `min(IW, cwnd)`, RFC 5681's restart window. Linux's reno runs PRR in recovery instead of the
+  restarts at `min(IW, cwnd)`, RFC 5681's restart window, and keeps `ssthresh`, where Linux's `tcp_cwnd_restart`
+  first raises it to at least three quarters of the window. Linux's reno runs PRR in recovery instead of the
   inflation and deflation, so its windows differ there; the recovery scripts pin RFC 6582 as written.
 - **`NoCongestionControl`**: the window is the largest 32-bit value and every hook is empty, so the peer's
   window is the only limit. Recovery still happens, fast retransmit, the RTO, the retries and the user timeout;
@@ -441,7 +442,7 @@ Such an end counts `connections_timed_out` and `connections_user_timed_out`. The
 synchronized states and zero-window probing, not the handshake, which `retries` bounds; the runtime's
 `connect(peer, deadline)` gives a caller a shorter bound there. Linux's `TCP_USER_TIMEOUT` differs in three ways
 (`tcp_write_timeout`): it counts from the first retransmission (`retrans_stamp`), not the first transmission, so it
-ends a connection up to one RTO later and only after a resend; with the timeout set it ignores `tcp_retries2`,
+ends a connection about one RTO later and only after a resend; with the timeout set it ignores `tcp_retries2`,
 where Aloe ends at whichever of `data_retries` and the timeout comes first; and since Linux 5.4 it bounds the
 handshake too, once the retry count has not ended it.
 
@@ -493,9 +494,10 @@ and the loss episode below, every ACK of new data slides `recover` to one before
 guard compares in serial arithmetic, which would read a `recover` left more than 2^31 behind as ahead and refuse
 every fast retransmit after 2 GiB without loss. Fast recovery records `recover`, the last sequence number sent,
 tells the policy of the loss with the flight less what limited transmit sent beyond the windows, resends the head
-at once and counts `fast_retransmits` and `recoveries`. Further duplicates are reported to the policy, which NewReno answers by inflating its window. An ACK past
-`recover` is the full ACK and ends recovery; one short of it is a partial ACK: the new head goes again at once,
-counted in `fast_retransmits`, and the policy hears how much was acknowledged. Every ACK that advances re-arms
+at once and counts `fast_retransmits` and `recoveries`. Further duplicates are reported to the policy, which NewReno
+answers by inflating its window. An ACK past `recover` is the full ACK and ends recovery; one short of it is a partial
+ACK: the new head goes again at once, counted in `fast_retransmits`, and the policy hears how much was acknowledged.
+Every ACK that advances re-arms
 the timer, RFC 6582's Slow-but-Steady variant, as Linux re-arms it; and a fast retransmit or a partial-ACK resend
 that leaves re-arms it too, as Linux's `tcp_xmit_retransmit_queue` does on resending the head, so the timer the
 first send armed does not fire before the resend's ACK can return. The first timeout since an ACK of new data

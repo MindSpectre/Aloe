@@ -1236,7 +1236,7 @@ namespace aloe::tcp {
             const auto acknowledged = static_cast<std::uint32_t>(first - node.first);
             assert((acknowledged == 0 || acknowledged < node.payload) && "only data is acknowledged in part");
             const auto payload                     = static_cast<std::uint16_t>(node.payload - acknowledged);
-            const std::span<const std::byte> frame = std::as_const(node.packet).data();  // the device holds the packet
+            const std::span<const std::byte> frame = node.packet.data();  // read only: the device holds the packet
             const std::size_t header_size          = frame.size() - node.payload;
             std::optional<Packet> copy             = ip_->allocate();
             if (!copy) {

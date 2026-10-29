@@ -1,7 +1,7 @@
 // RFC 5681's restart after idle: ten segments acknowledged one by one double the window to twenty segments, but the
 // next write comes 300 ms later, past the RTO of 200 ms with nothing in flight, so the window restarts at
-// min(IW, cwnd), the initial ten, and the write sends 9880. Linux halves its window per RTO of idle down to the initial window (tcp_cwnd_restart),
-// which after 300 ms is also ten.
+// min(IW, cwnd), the initial ten, and the write sends 9880. Linux halves its window per RTO of idle down to the initial
+// window (tcp_cwnd_restart), which after 300 ms is also ten.
 --congestion=newreno
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0

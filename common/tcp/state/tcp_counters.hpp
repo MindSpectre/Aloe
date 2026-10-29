@@ -50,7 +50,8 @@ namespace aloe::tcp {
 
         std::uint64_t send_refused        = 0;
         std::uint64_t send_unresolved     = 0;
-        /// A commit after the connection left Established and CloseWait, or whose count the windows no longer cover.
+        /// A commit after the connection left Established and CloseWait, or whose count the windows no longer cover;
+        /// and a commit without a prepare, a contract violation a release build refuses.
         std::uint64_t commits_refused     = 0;
         /// A packet the pool could not supply for a prepare, or a queue node for a commit, both with a retry hint that
         /// says when to try again; and a copy fallback whose packet the pool could not supply.

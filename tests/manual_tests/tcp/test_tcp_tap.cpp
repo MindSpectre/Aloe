@@ -61,9 +61,9 @@
 // resends, for information only, since the counter is system-wide and other traffic moves it too.
 //
 // `BrickServerProbesAKernelClientThatStopsReading` is the probe against Linux: a kernel client with an 8 KB
-// `SO_RCVBUF` sends 50 000 bytes and reads none of the echo until the brick has sent a zero-window probe, so the
-// kernel's window closes and the brick probes it; the connection must stay open, and once the client reads, the
-// echo completes and both sides close cleanly.
+// `SO_RCVBUF` sends 50 000 bytes and reads none of the echo until the brick has sent two zero-window probes, so
+// the kernel's window closes and the brick probes it, and the kernel's answer to the first probe is seen accepted;
+// the connection must stay open, and once the client reads, the echo completes and both sides close cleanly.
 //
 // The kernel's SYN carries SACK-permitted, timestamps and window scale, which the option parser skips; the tap
 // offers no offloads, so every checksum is software on our side and verified by the kernel.
@@ -810,9 +810,9 @@ TEST_F(TcpTap, BrickServerProbesAKernelClientThatStopsReading) {
     const auto payload = message(lossy_size);
     BrickLoop<Port> loop{*port_, true, {}};
     kernel_client_stalled_round_trip(payload, [&loop](const int fd) {
-        EXPECT_TRUE(eventually([&loop] { return loop.zero_window_probes() >= 1; }))
-            << "the brick sent no zero-window probe within " << patience().count()
-            << " ms: the kernel's window never closed";
+        EXPECT_TRUE(eventually([&loop] { return loop.zero_window_probes() >= 2; }))
+            << "the brick sent fewer than two zero-window probes within " << patience().count()
+            << " ms: the kernel's window never closed, or its answer to the first probe was not accepted";
         EXPECT_FALSE(loop.ended()) << "the connection stays open while the kernel's window is closed";
         int error            = 0;
         socklen_t error_size = sizeof(error);
@@ -825,7 +825,7 @@ TEST_F(TcpTap, BrickServerProbesAKernelClientThatStopsReading) {
     EXPECT_EQ(loop.counters().connections_accepted, 1U);
     EXPECT_EQ(loop.counters().connections_closed, 1U) << "both FINs acknowledged";
     EXPECT_EQ(loop.counters().connections_timed_out, 0U);
-    EXPECT_GE(loop.counters().zero_window_probes, 1U);
+    EXPECT_GE(loop.counters().zero_window_probes, 2U);
     EXPECT_TRUE(loop.clean_close());
 }
 
