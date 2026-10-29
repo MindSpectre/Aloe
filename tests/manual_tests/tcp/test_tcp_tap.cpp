@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <optional>
 #include <span>
@@ -44,23 +45,48 @@
 // The kernel listens for the client tests, so the host firewall must accept inbound TCP on the tap: Fedora's
 // firewalld puts `aloe-tcp` in its default zone, which opens only ports 1025-65535, hence an echo port above 1024.
 //
+// The cases of `TcpTapLoss` repeat the four echoes with 50 000 bytes under loss in both directions. Their fixture runs
+//
+//     tc qdisc replace dev aloe-tcp root netem loss 5%
+//
+// on the tap, so the kernel loses 5% of what it sends the stack, and removes the qdisc afterwards; it skips when `tc`
+// or `sch_netem` is missing. The stack's own transmits go through a `LossyDevice`, which frees every tenth packet and
+// reports it sent. Each case needs at least one retransmission on the stack's side and the clean close; the brick
+// cases need timestamps negotiated, which the kernel offers by default. Waits are 30 s there.
+//
 // The kernel's SYN carries SACK-permitted, timestamps and window scale, which the option parser skips; the tap
 // offers no offloads, so every checksum is software on our side and verified by the kernel.
 namespace {
 
     using namespace std::chrono_literals;
-    using Port    = aloe::ethdev::Port;
-    using Ipv4    = aloe::net::Ipv4<Port>;
-    using Tcp     = aloe::tcp::Stack<Ipv4>;
-    using Stack   = aloe::runtime::TcpStack<Port>;
-    using Runtime = aloe::runtime::Runtime<Port, Stack>;
+    using Port = aloe::ethdev::Port;
+    template <typename Device>
+    using Ipv4T = aloe::net::Ipv4<Device>;
+    template <typename Device>
+    using TcpT = aloe::tcp::Stack<Ipv4T<Device>>;
+    template <typename Device>
+    using StackT = aloe::runtime::TcpStack<Device>;
+    template <typename Device>
+    using RuntimeT = aloe::runtime::Runtime<Device, StackT<Device>>;
 
     constexpr std::string_view interface = "aloe-tcp";
     constexpr aloe::wire::Ipv4Address kernel_ip{10, 78, 0, 1};
     constexpr aloe::wire::Ipv4Address stack_ip{10, 78, 0, 2};
     constexpr aloe::wire::Ipv4Address netmask{255, 255, 255, 0};
-    constexpr std::uint16_t echo_port = 7007;
-    constexpr auto patience           = 5000ms;
+    constexpr std::uint16_t echo_port  = 7007;
+    constexpr auto default_patience    = 5000ms;
+    constexpr auto lossy_patience      = 30000ms;
+    constexpr std::size_t lossy_size   = 50000;
+    constexpr std::uint64_t drop_every = 10;
+
+    /// How long a wait lasts: the cases under loss widen it for their duration.
+    [[nodiscard]] std::atomic<std::chrono::milliseconds>& patience_storage() {
+        static std::atomic<std::chrono::milliseconds> value{default_patience};
+        return value;
+    }
+    [[nodiscard]] std::chrono::milliseconds patience() {
+        return patience_storage().load();
+    }
 
     const auto* const environment =
         ::testing::AddGlobalTestEnvironment(new aloe::testing::EalEnvironment{"net_tap0,iface=aloe-tcp"});
@@ -130,7 +156,7 @@ namespace {
 
     /// Reads exactly `out.size()` bytes within `patience`, or returns false.
     [[nodiscard]] bool recv_all(const int fd, std::span<std::byte> out) {
-        const auto deadline = std::chrono::steady_clock::now() + patience;
+        const auto deadline = std::chrono::steady_clock::now() + patience();
         while (!out.empty()) {
             if (!readable_by(fd, deadline)) {
                 return false;
@@ -150,7 +176,7 @@ namespace {
     /// True when the peer closed: a zero-length read within `patience`.
     [[nodiscard]] bool recv_eof(const int fd) {
         std::array<std::byte, 1> one{};
-        if (!readable_by(fd, std::chrono::steady_clock::now() + patience)) {
+        if (!readable_by(fd, std::chrono::steady_clock::now() + patience())) {
             return false;
         }
         return ::recv(fd, one.data(), one.size(), 0) == 0;
@@ -159,7 +185,7 @@ namespace {
     /// Polls `done` until it holds or `patience` runs out; true when it held.
     template <typename Predicate>
     [[nodiscard]] bool eventually(Predicate done) {
-        const auto deadline = std::chrono::steady_clock::now() + patience;
+        const auto deadline = std::chrono::steady_clock::now() + patience();
         while (!done()) {
             if (std::chrono::steady_clock::now() >= deadline) {
                 return false;
@@ -169,10 +195,82 @@ namespace {
         return true;
     }
 
-    /// The hand-written echo over the bricks on its own thread: server when `listen`, client to `peer` otherwise.
-    class BrickLoop {
+    /// The port seen through a device that loses every tenth packet it is handed, as a wire that drops a frame
+    /// would: the packet is freed and counted as accepted, so the stack sees a transmit that succeeded.
+    template <aloe::device::IsDevice Device>
+    class LossyDevice {
     public:
-        BrickLoop(Port& port, const bool listen, const std::span<const std::byte> to_send)
+        using Packet = typename Device::Packet;
+
+        explicit LossyDevice(Device& owner) noexcept
+            : device_{&owner} {
+        }
+
+        [[nodiscard]] std::uint64_t dropped() const noexcept {
+            return dropped_;
+        }
+        [[nodiscard]] std::uint16_t queue_count() const noexcept {
+            return device_->queue_count();
+        }
+        [[nodiscard]] aloe::wire::MacAddress mac() const noexcept {
+            return device_->mac();
+        }
+        [[nodiscard]] std::uint16_t mtu() const noexcept {
+            return device_->mtu();
+        }
+        [[nodiscard]] bool link_up() const noexcept {
+            return device_->link_up();
+        }
+        [[nodiscard]] const aloe::device::Capabilities& capabilities() const noexcept {
+            return device_->capabilities();
+        }
+        [[nodiscard]] const aloe::device::RssDescription& steering() const noexcept {
+            return device_->steering();
+        }
+        [[nodiscard]] std::optional<Packet> allocate(const std::uint16_t queue) noexcept {
+            return device_->allocate(queue);
+        }
+        [[nodiscard]] std::size_t receive(const std::uint16_t queue, std::span<Packet> out) noexcept {
+            return device_->receive(queue, out);
+        }
+
+        /// Hands the packets over one at a time; every tenth is freed instead. Returns the accepted prefix.
+        [[nodiscard]] std::size_t transmit(const std::uint16_t queue, std::span<Packet> in) noexcept {
+            for (std::size_t index = 0; index < in.size(); ++index) {
+                if ((seen_ + 1) % drop_every == 0) {
+                    in[index] = Packet{};
+                    ++dropped_;
+                } else if (device_->transmit(queue, in.subspan(index, 1)) == 0) {
+                    return index;
+                }
+                ++seen_;
+            }
+            return in.size();
+        }
+
+        [[nodiscard]] std::size_t reclaim(const std::uint16_t queue) noexcept {
+            return device_->reclaim(queue);
+        }
+        [[nodiscard]] aloe::device::QueueCounters counters(const std::uint16_t queue) const noexcept {
+            return device_->counters(queue);
+        }
+
+    private:
+        Device* device_;
+        std::uint64_t seen_    = 0;
+        std::uint64_t dropped_ = 0;
+    };
+
+    static_assert(aloe::device::IsDevice<LossyDevice<Port>>);
+
+    /// The hand-written echo over the bricks on its own thread: server when `listen`, client to `peer` otherwise.
+    template <typename Device>
+    class BrickLoop {
+        using Ipv4 = Ipv4T<Device>;
+        using Tcp  = TcpT<Device>;
+
+    public:
+        BrickLoop(Device& port, const bool listen, const std::span<const std::byte> to_send)
             : thread_{
                   [this, &port, listen, to_send](const std::stop_token& stop) { run(port, listen, to_send, stop); }} {
         }
@@ -200,19 +298,23 @@ namespace {
         [[nodiscard]] bool clean_close() const noexcept {
             return clean_close_.load(std::memory_order_acquire);
         }
+        [[nodiscard]] bool timestamps_negotiated() const noexcept {
+            return timestamps_.load(std::memory_order_acquire);
+        }
         std::atomic<bool> connected{false};
 
     private:
-        void run(Port& port, const bool listen, const std::span<const std::byte> to_send, const std::stop_token& stop) {
+        void
+        run(Device& port, const bool listen, const std::span<const std::byte> to_send, const std::stop_token& stop) {
             aloe::ethdev::register_thread();
             aloe::loop::ShardCounters shard_counters;
-            aloe::loop::ShardQueue<Port> queue{port, 0, 64, shard_counters};
+            aloe::loop::ShardQueue<Device> queue{port, 0, 64, shard_counters};
             Ipv4 ip{
                 queue, {.address = stack_ip, .prefix = 24}
             };
             aloe::loop::TimerWheel wheel{1ms, aloe::core::Clock::now()};
             Tcp tcp{ip, wheel, {}};
-            std::vector<Port::Packet> burst(64);
+            std::vector<typename Device::Packet> burst(64);
             std::size_t offered = 0;
             if (listen) {
                 std::ignore = tcp.listen(echo_port);
@@ -222,12 +324,13 @@ namespace {
             while (!stop.stop_requested()) {
                 const auto now             = aloe::core::Clock::now();
                 const std::size_t received = queue.receive(burst);
-                ip.process(std::span<Port::Packet>{burst}.first(received), now);
+                ip.process(std::span<typename Device::Packet>{burst}.first(received), now);
                 tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);
                 std::ignore = wheel.advance(now);
                 while (const auto event = tcp.poll_event()) {
                     auto& c = *event->connection;
                     if (event->events.connected() || event->events.accepted()) {
+                        timestamps_.store(c.timestamps(), std::memory_order_release);
                         connected.store(true);
                     }
                     if ((event->events.connected() || event->events.writable()) && !listen) {
@@ -267,7 +370,7 @@ namespace {
             queue.discard();
         }
 
-        static void echo(Tcp::ConnectionType& c) {
+        static void echo(typename Tcp::ConnectionType& c) {
             while (!c.unread().empty()) {
                 const std::span<const std::byte> chunk = c.unread().front();
                 const auto out                         = c.prepare(chunk.size());
@@ -284,12 +387,14 @@ namespace {
 
         aloe::tcp::TcpCounters counters_{};
         std::vector<std::byte> received_;
+        std::atomic<bool> timestamps_{false};
         std::atomic<bool> clean_close_{false};  ///< Written by the loop thread, polled by the test thread.
         std::jthread thread_;
     };
 
     /// The echo as tasks over the runtime.
-    aloe::runtime::task<void> echo_task(Stack::StreamType stream, std::atomic<int>* closed) {
+    template <typename Device>
+    aloe::runtime::task<void> echo_task(typename StackT<Device>::StreamType stream, std::atomic<int>* closed) {
         for (;;) {
             const auto readable = co_await stream.readable(1);
             if (!readable) {
@@ -311,7 +416,8 @@ namespace {
     /// Counts the connections it accepts and the echoes that closed cleanly. `listening` is set just before the
     /// first `accept` starts: the sender creates the listener synchronously on this shard thread, before the shard
     /// processes another frame, so once the flag is visible a kernel SYN finds the listener.
-    aloe::runtime::task<void> serve_task(Stack::StreamsType* streams,
+    template <typename Device>
+    aloe::runtime::task<void> serve_task(typename StackT<Device>::StreamsType* streams,
                                          aloe::runtime::Scheduler scheduler,
                                          std::atomic<bool>* listening,
                                          std::atomic<int>* served,
@@ -323,11 +429,12 @@ namespace {
                 break;
             }
             served->fetch_add(1);
-            scheduler.spawn(echo_task(std::move(*stream), closed));
+            scheduler.spawn(echo_task<Device>(std::move(*stream), closed));
         }
     }
 
-    aloe::runtime::task<void> client_task(Stack::StreamsType* streams,
+    template <typename Device>
+    aloe::runtime::task<void> client_task(typename StackT<Device>::StreamsType* streams,
                                           const std::span<const std::byte> to_send,
                                           std::vector<std::byte>* received,
                                           std::atomic<int>* outcome) {
@@ -380,8 +487,8 @@ namespace {
 
     /// A kernel server: accepts one connection, echoes until EOF, then closes.
     void kernel_server_echo(const int listener, std::size_t expected) {
-        ASSERT_TRUE(readable_by(listener, std::chrono::steady_clock::now() + patience))
-            << "no connection from the stack within " << patience.count() << " ms";
+        ASSERT_TRUE(readable_by(listener, std::chrono::steady_clock::now() + patience()))
+            << "no connection from the stack within " << patience().count() << " ms";
         const int fd = accept(listener, nullptr, nullptr);
         ASSERT_GE(fd, 0) << std::strerror(errno);
         std::vector<std::byte> buffer(4096);
@@ -456,85 +563,180 @@ namespace {
         }
     };
 
+    /// Runs `tc` with `arguments`; true when it ran and succeeded.
+    [[nodiscard]] bool tc(const std::string_view arguments) {
+        return std::system(("tc " + std::string{arguments} + " >/dev/null 2>&1").c_str()) == 0;
+    }
+
+    /// The tap with the kernel's egress to it shaped by netem: 5% of what the kernel sends the stack is lost, and the
+    /// cases wrap the port in a `LossyDevice`, which loses every tenth frame the stack sends. Waits are 30 s.
+    class TcpTapLoss : public TcpTap {
+    protected:
+        void SetUp() override {
+            TcpTap::SetUp();
+            if (IsSkipped() || HasFatalFailure()) {
+                return;
+            }
+            if (!tc("qdisc replace dev aloe-tcp root netem loss 5%")) {
+                GTEST_SKIP() << "`tc qdisc replace dev aloe-tcp root netem loss 5%` failed: tc or sch_netem is missing";
+            }
+            shaped_ = true;
+            patience_storage().store(lossy_patience);
+        }
+
+        void TearDown() override {
+            patience_storage().store(default_patience);
+            if (shaped_) {
+                std::ignore = tc("qdisc del dev aloe-tcp root");
+            }
+        }
+
+    private:
+        bool shaped_ = false;
+    };
+
+    template <typename Device>
+    void brick_server(Device& device, const std::size_t size, const bool lossy) {
+        const auto payload = message(size);
+        BrickLoop<Device> loop{device, true, {}};
+        kernel_client_round_trip(payload);
+        EXPECT_TRUE(eventually([&] { return loop.clean_close(); }))
+            << "the brick saw no clean close within " << patience().count()
+            << " ms: the kernel's last ACK went missing";
+        loop.stop();
+        EXPECT_EQ(loop.counters().connections_accepted, 1U);
+        EXPECT_EQ(loop.counters().connections_closed, 1U) << "both FINs acknowledged";
+        EXPECT_EQ(loop.counters().dropped_bad_checksum, 0U);
+        EXPECT_EQ(loop.counters().dropped_bad_header, 0U) << "the kernel's options were skipped";
+        EXPECT_TRUE(loop.clean_close());
+        EXPECT_TRUE(loop.timestamps_negotiated()) << "the kernel offers timestamps by default";
+        if (lossy) {
+            EXPECT_GE(loop.counters().retransmits + loop.counters().fast_retransmits, 1U);
+        }
+    }
+
+    template <typename Device>
+    void brick_client(Device& device, const std::size_t size, const bool lossy) {
+        const auto payload = message(size);
+        const int listener = kernel_listener();
+        ASSERT_GE(listener, 0);
+        BrickLoop<Device> loop{device, false, payload};
+        kernel_server_echo(listener, payload.size());
+        EXPECT_TRUE(eventually([&] { return loop.clean_close(); }))
+            << "the brick saw no clean close within " << patience().count() << " ms";
+        loop.stop();
+        close(listener);
+        EXPECT_EQ(loop.received(), payload);
+        EXPECT_EQ(loop.counters().connections_opened, 1U);
+        EXPECT_EQ(loop.counters().connections_closed, 1U);
+        EXPECT_TRUE(loop.timestamps_negotiated()) << "the kernel offers timestamps by default";
+        if (lossy) {
+            EXPECT_TRUE(loop.clean_close());
+            EXPECT_GE(loop.counters().retransmits + loop.counters().fast_retransmits, 1U);
+        }
+    }
+
+    template <typename Device>
+    void runtime_server(Device& device, const std::size_t size, const bool lossy) {
+        const auto payload = message(size);
+        std::atomic<bool> listening{false};
+        std::atomic<int> served{0};
+        std::atomic<int> closed{0};
+        RuntimeT<Device> runtime{
+            {.shard = {}, .threads = {}, .thread_hook = aloe::ethdev::register_thread},
+            device,
+            aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24},
+            aloe::tcp::TcpConfig{}
+        };
+        runtime.start();
+        runtime.spawn(0,
+                      serve_task<Device>(
+                          &runtime.shard(0).stack().streams(), runtime.scheduler(0), &listening, &served, &closed));
+        ASSERT_TRUE(eventually([&] { return listening.load(std::memory_order_acquire); }))
+            << "the runtime never started listening within " << patience().count() << " ms";
+        kernel_client_round_trip(payload);
+        EXPECT_TRUE(eventually([&] { return closed.load(std::memory_order_acquire) == 1; }))
+            << "the runtime's echo saw no clean close within " << patience().count() << " ms";
+        runtime.stop();
+        runtime.join();
+        EXPECT_EQ(served.load(), 1);
+        const auto& counters = runtime.shard(0).stack().tcp().counters();
+        EXPECT_EQ(counters.connections_closed, 1U);
+        EXPECT_EQ(counters.dropped_bad_header, 0U);
+        if (lossy) {
+            EXPECT_EQ(closed.load(), 1);
+            EXPECT_GE(counters.retransmits + counters.fast_retransmits, 1U);
+        }
+    }
+
+    template <typename Device>
+    void runtime_client(Device& device, const std::size_t size, const bool lossy) {
+        const auto payload = message(size);
+        const int listener = kernel_listener();
+        ASSERT_GE(listener, 0);
+        std::vector<std::byte> received;
+        std::atomic<int> outcome{0};
+        RuntimeT<Device> runtime{
+            {.shard = {}, .threads = {}, .thread_hook = aloe::ethdev::register_thread},
+            device,
+            aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24},
+            aloe::tcp::TcpConfig{}
+        };
+        runtime.start();
+        runtime.spawn(0, client_task<Device>(&runtime.shard(0).stack().streams(), payload, &received, &outcome));
+        kernel_server_echo(listener, payload.size());
+        EXPECT_TRUE(eventually([&] { return outcome.load() != 0; }))
+            << "the client task did not finish within " << patience().count() << " ms";
+        runtime.stop();
+        runtime.join();
+        close(listener);
+        EXPECT_EQ(outcome.load(), 1);
+        EXPECT_EQ(received, payload);
+        const auto& counters = runtime.shard(0).stack().tcp().counters();
+        EXPECT_EQ(counters.connections_closed, 1U);
+        if (lossy) {
+            EXPECT_GE(counters.retransmits + counters.fast_retransmits, 1U);
+        }
+    }
+
 }  // namespace
 
 TEST_F(TcpTap, BrickServer) {
-    const auto payload = message(5000);  // larger than the MSS, combined with FIN by the kernel at the end
-    BrickLoop loop{*port_, true, {}};
-    kernel_client_round_trip(payload);
-    EXPECT_TRUE(eventually([&] { return loop.clean_close(); }))
-        << "the brick saw no clean close within " << patience.count() << " ms: the kernel's last ACK went missing";
-    loop.stop();
-    EXPECT_EQ(loop.counters().connections_accepted, 1U);
-    EXPECT_EQ(loop.counters().connections_closed, 1U) << "both FINs acknowledged";
-    EXPECT_EQ(loop.counters().dropped_bad_checksum, 0U);
-    EXPECT_EQ(loop.counters().dropped_bad_header, 0U) << "the kernel's options were skipped";
-    EXPECT_TRUE(loop.clean_close());
+    brick_server(*port_, 5000, false);  // larger than the MSS, combined with FIN by the kernel at the end
 }
 
 TEST_F(TcpTap, BrickClient) {
-    const auto payload = message(3000);
-    const int listener = kernel_listener();
-    ASSERT_GE(listener, 0);
-    BrickLoop loop{*port_, false, payload};
-    kernel_server_echo(listener, payload.size());
-    EXPECT_TRUE(eventually([&] { return loop.clean_close(); }))
-        << "the brick saw no clean close within " << patience.count() << " ms";
-    loop.stop();
-    close(listener);
-    EXPECT_EQ(loop.received(), payload);
-    EXPECT_EQ(loop.counters().connections_opened, 1U);
-    EXPECT_EQ(loop.counters().connections_closed, 1U);
+    brick_client(*port_, 3000, false);
 }
 
 TEST_F(TcpTap, RuntimeServer) {
-    const auto payload = message(5000);
-    std::atomic<bool> listening{false};
-    std::atomic<int> served{0};
-    std::atomic<int> closed{0};
-    Runtime runtime{
-        {.shard = {}, .threads = {}, .thread_hook = aloe::ethdev::register_thread},
-        *port_,
-        aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24},
-        aloe::tcp::TcpConfig{}
-    };
-    runtime.start();
-    runtime.spawn(0,
-                  serve_task(&runtime.shard(0).stack().streams(), runtime.scheduler(0), &listening, &served, &closed));
-    ASSERT_TRUE(eventually([&] { return listening.load(std::memory_order_acquire); }))
-        << "the runtime never started listening within " << patience.count() << " ms";
-    kernel_client_round_trip(payload);
-    EXPECT_TRUE(eventually([&] { return closed.load(std::memory_order_acquire) == 1; }))
-        << "the runtime's echo saw no clean close within " << patience.count() << " ms";
-    runtime.stop();
-    runtime.join();
-    EXPECT_EQ(served.load(), 1);
-    const auto& counters = runtime.shard(0).stack().tcp().counters();
-    EXPECT_EQ(counters.connections_closed, 1U);
-    EXPECT_EQ(counters.dropped_bad_header, 0U);
+    runtime_server(*port_, 5000, false);
 }
 
 TEST_F(TcpTap, RuntimeClient) {
-    const auto payload = message(3000);
-    const int listener = kernel_listener();
-    ASSERT_GE(listener, 0);
-    std::vector<std::byte> received;
-    std::atomic<int> outcome{0};
-    Runtime runtime{
-        {.shard = {}, .threads = {}, .thread_hook = aloe::ethdev::register_thread},
-        *port_,
-        aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24},
-        aloe::tcp::TcpConfig{}
-    };
-    runtime.start();
-    runtime.spawn(0, client_task(&runtime.shard(0).stack().streams(), payload, &received, &outcome));
-    kernel_server_echo(listener, payload.size());
-    EXPECT_TRUE(eventually([&] { return outcome.load() != 0; }))
-        << "the client task did not finish within " << patience.count() << " ms";
-    runtime.stop();
-    runtime.join();
-    close(listener);
-    EXPECT_EQ(outcome.load(), 1);
-    EXPECT_EQ(received, payload);
-    EXPECT_EQ(runtime.shard(0).stack().tcp().counters().connections_closed, 1U);
+    runtime_client(*port_, 3000, false);
+}
+
+TEST_F(TcpTapLoss, BrickServer) {
+    LossyDevice<Port> device{*port_};
+    brick_server(device, lossy_size, true);
+    EXPECT_GE(device.dropped(), 1U);
+}
+
+TEST_F(TcpTapLoss, BrickClient) {
+    LossyDevice<Port> device{*port_};
+    brick_client(device, lossy_size, true);
+    EXPECT_GE(device.dropped(), 1U);
+}
+
+TEST_F(TcpTapLoss, RuntimeServer) {
+    LossyDevice<Port> device{*port_};
+    runtime_server(device, lossy_size, true);
+    EXPECT_GE(device.dropped(), 1U);
+}
+
+TEST_F(TcpTapLoss, RuntimeClient) {
+    LossyDevice<Port> device{*port_};
+    runtime_client(device, lossy_size, true);
+    EXPECT_GE(device.dropped(), 1U);
 }
