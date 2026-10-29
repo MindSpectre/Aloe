@@ -13,6 +13,8 @@ add_unit_test(${UNIT_TESTING_TARGET}.Tcp
         test_tcp_two_stacks.cpp
         test_tcp_placement.cpp
         test_tcp_policy.cpp
+        test_tcp_send_queue.cpp
+        test_tcp_template.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Tcp
         PRIVATE

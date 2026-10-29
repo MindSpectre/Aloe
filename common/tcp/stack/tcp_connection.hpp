@@ -9,6 +9,7 @@
 
 #include <congestion_control.hpp>
 #include <flow_table.hpp>
+#include <frame_template.hpp>
 #include <read_view.hpp>
 #include <stream.hpp>
 #include <stream_events.hpp>
@@ -82,7 +83,8 @@ namespace aloe::tcp {
             return peer_closed_;
         }
 
-        /// `min(mss, peer window - in flight)` in Established or CloseWait with no prepare open, else zero.
+        /// `min(mss, peer window - in flight)` in Established or CloseWait with no prepare open and the queue below the
+        /// send cap, else zero.
         [[nodiscard]] std::size_t writable() const noexcept {
             return stack_->writable(*this);
         }
@@ -108,6 +110,14 @@ namespace aloe::tcp {
         }
         [[nodiscard]] std::size_t unacknowledged() const noexcept {
             return snd_nxt_.value - snd_una_.value;
+        }
+        /// Segments in the retransmission queue: sent, or waiting to be, and not yet acknowledged whole.
+        [[nodiscard]] std::size_t queued_segments() const noexcept {
+            return queue_count_;
+        }
+        /// Payload bytes the peer acknowledged, counted as their entries are freed, or trimmed for a resend.
+        [[nodiscard]] std::uint64_t delivered() const noexcept {
+            return delivered_;
         }
 
         /// FIN after what was committed; no more sends. Nothing outside Established and CloseWait.
@@ -158,7 +168,9 @@ namespace aloe::tcp {
             key_       = {};
             base_hash_ = 0;
             events_    = {};
-            assert(!event_link_.linked && !ack_link_.linked && !retry_link_.linked);
+            assert(!event_link_.linked && !ack_link_.linked && !retry_link_.linked && !deferred_link_.linked);
+            assert(queue_head_ == detail::no_node && queue_tail_ == detail::no_node && queue_count_ == 0 &&
+                   "the stack drops the queue first");
             ack_pending_    = false;
             finish_pending_ = false;
             rcv_nxt_        = {};
@@ -175,8 +187,11 @@ namespace aloe::tcp {
             prepared_.reset();
             prepared_size_    = 0;
             fin_sent_         = false;
-            fin_sequence_     = {};
+            template_         = {};
+            last_send_        = {};
             snd_una_          = {};
+            delivered_        = 0;
+            delivered_time_   = {};
             snd_wnd_          = 0;
             peer_mss_         = default_peer_mss;
             wl1_              = {};
@@ -203,7 +218,8 @@ namespace aloe::tcp {
         detail::Link<Connection> event_link_{};
         detail::Link<Connection> ack_link_{};
         detail::Link<Connection> retry_link_{};
-        bool ack_pending_    = false;  ///< An ordinary ACK waits for flush.
+        detail::Link<Connection> deferred_link_{};  ///< A resend found its packet lent; the next flush tries again.
+        bool ack_pending_    = false;               ///< An ordinary ACK waits for flush.
         bool finish_pending_ = false;  ///< The protocol is done; Closed is raised once the last ACK is queued.
 
         // Receive: acceptance, consumption and acknowledgement state.
@@ -222,8 +238,14 @@ namespace aloe::tcp {
         Sequence snd_nxt_{};
         std::optional<Packet> prepared_{};
         std::size_t prepared_size_ = 0;
-        bool fin_sent_             = false;
-        Sequence fin_sequence_{};
+        bool fin_sent_             = false;  ///< The FIN took its number, `snd_nxt - 1`; its entry carries it.
+
+        // The retransmission queue: every segment that occupies sequence space, oldest first, and the frame template.
+        std::uint32_t queue_head_  = detail::no_node;
+        std::uint32_t queue_tail_  = detail::no_node;
+        std::uint32_t queue_count_ = 0;
+        detail::FrameTemplate template_{};
+        core::TimePoint last_send_{};  ///< The last segment of any kind that left.
 
         // Peer feedback: what the ACKs told us.
         Sequence snd_una_{};
@@ -231,6 +253,8 @@ namespace aloe::tcp {
         std::uint16_t peer_mss_ = default_peer_mss;
         Sequence wl1_{};
         Sequence wl2_{};
+        std::uint64_t delivered_ = 0;       ///< Payload bytes acknowledged, entry by entry.
+        core::TimePoint delivered_time_{};  ///< The ACK that last advanced `delivered_`.
 
         // Maintenance: the control retransmit timer.
         TimerNode timer_;

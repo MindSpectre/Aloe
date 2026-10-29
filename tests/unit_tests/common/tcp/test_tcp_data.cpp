@@ -410,6 +410,7 @@ TEST_P(TcpSend, CommitZeroCancelsAndEmptySendPreparesNothing) {
 TEST_P(TcpSend, CommitAfterAbortIsRefusedAndCounted) {
     auto* c = open_active(peer_);
     ASSERT_NE(c, nullptr);
+    advance(0ms);  // the handshake's segments were lent to the device: the step below would bring them back
     const std::size_t initial = free_packets(port);
     const TcpSequence before  = c->committed();
     const auto out            = c->prepare(5);

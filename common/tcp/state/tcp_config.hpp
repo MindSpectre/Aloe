@@ -30,7 +30,7 @@ namespace aloe::tcp {
     };
 
     enum class ConnectError : std::uint8_t {
-        TableFull,    ///< No free connection slot.
+        TableFull,    ///< No free connection slot, or no retransmission-queue node for the SYN.
         NoPort,       ///< The ephemeral range has no free port that lands on this queue.
         Unplaceable,  ///< The card hashes addresses only, or steers nothing, and this is not the queue it picks.
         NoRoute,      ///< Off the subnet with no gateway.
