@@ -34,14 +34,21 @@ only make sense inside Aloe's own test binaries, such as the EAL as a gtest envi
   (`Wrong` corrupts the TCP checksum only, so the IPv4 header stays right). `tcp_segment` gives the bytes after
   the IPv4 header; `tcp_payload` the bytes after the TCP header of a parsed frame, and `tcp_options_of` the
   option bytes between the fixed header and the data. `ParsedFrame::tcp` is the parsed TCP header, when the
-  frame carries one.
+  frame carries one. `mss_option(mss)` and `timestamps_option(value, echo)` are the four-byte MSS option and the
+  twelve-byte `nop, nop, TS` block, and `joined(blocks)` puts blocks one after the other, a SYN's MSS then its
+  timestamps, for `spec.options`.
 - **`aloe::frames::TcpPeer`** -- the other end of a connection, scripted by the test. Built from a `TcpSpec`
   in the peer's outbound orientation and its initial sequence number. `syn()`, `syn_ack(seen)`, `ack()`,
   `ack(seen)`, `data(bytes)`, `fin()` and `rst()` each return one frame with the right numbers and advance the
   peer's sequence; `segment(flags, payload, sequence, acknowledgement, with_mss)` builds any segment at explicit
   numbers without changing state, for duplicates and gaps; `rewind(count)` moves the peer's sequence back to
   script a retransmission. `see(frame)` observes a frame the stack transmitted and never replies: it advances
-  `rcv_nxt()`, `snd_una()`, `stack_window()` and `stack_mss()`, and on a SYN without ACK adopts its ports.
+  `rcv_nxt()`, `snd_una()`, `stack_window()` and `stack_mss()`, records the timestamp value it carries as
+  `ts_seen()`, and on a SYN without ACK adopts its ports. `set_timestamps(value)` makes every segment the peer
+  builds carry a timestamp option with `value` and the last value seen as its echo, behind the MSS on a SYN, and
+  `std::nullopt` stops it; a peer that never sets it offers no timestamps, so the stack's connection runs without
+  them and its `mss()` is the whole MSS. `set_window(window)` sets the window every later segment offers, zero to
+  make the stack probe.
 - **`aloe::frames::fill(packet, bytes)`**, **`bytes_of(packet)`** -- bytes into and out of a packet of any
   backend. `flow_of(spec)` gives the `device::FlowTuple` a card would hash.
 
@@ -115,7 +122,8 @@ transmitted mbuf on a later burst; `reclaim(queue)` releases every loan of its q
 and returns the count. On a `Held` port nothing finishes on its own and `reclaim` returns zero;
 `Port::return_loans(queue)`, on the queue's thread, releases them. `Port::loans_outstanding(queue)` counts the
 handles not yet released. A test that needs a packet still lent long after its frame was delivered uses `Held`:
-no CI driver does that.
+no CI driver does that. TCP lends every segment it keeps from `commit` on, so a `Held` port is how a unit test
+reaches the busy rule's deferral and copy (see the [TCP page](tcp.md)).
 
 ```cpp
 aloe::fabric::Fabric fabric;

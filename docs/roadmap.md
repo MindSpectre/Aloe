@@ -47,10 +47,11 @@ WebSocket path this roadmap follows, and waits until after it.
 
 Done when an echo client and server written as a hand-written loop over the bricks, with no coroutine and
 no sender on the data path, interoperate with the Linux kernel stack over a tap device; the same echo
-written as runtime tasks does too; and the simulation tests pass on a loss-free fabric within the resource
-envelope the TCP page states: at most `receive_segments` segments in flight to a connection, and a pool sized
-for the connections that hold data at once. Outside it a drop between two Aloe peers is final until phase 2.
-The simulation tests and the tap suite pass; the examples build and wait for a run on a machine with root.
+written as runtime tasks does too; and the simulation tests pass on a loss-free fabric within phase 1's resource
+envelope: at most `receive_segments` segments in flight to a connection, and a pool sized for the connections
+that hold data at once. Outside it a drop between two Aloe peers was final until step 3 of phase 2 made the
+send side reliable. The simulation tests and the tap suite pass; the examples build and wait for a run on a
+machine with root.
 
 ## 2. Full TCP
 
@@ -72,13 +73,21 @@ does; the scenario scripts are Aloe's own. The steps, in order:
    packet still on loan is never rewritten: as in Linux and lwIP, a retransmit waits until the first copy has
    left the host. Scripted loss, duplication, reordering and delay in the fabric, and a runner for scenario
    scripts in packetdrill's syntax: Aloe's own scripts, with Linux's corpus as the reference for what Linux
-   does. TCP's behaviour does not change in this step. Landed; the loan is a device and loop capability until
-   step 3 lends from `commit`. See the [device layer](architecture/device.md), the
-   [fixtures](architecture/fixtures.md) and the [scenario runner](architecture/scenario.md).
-3. **Reliable send.** The retransmission queue over lent packets, patched in place when they come back; RTO
-   estimation (RFC 6298); timestamps for RTT measurement and PAWS (RFC 7323); zero-window probes; fast
-   retransmit and NewReno (RFC 5681, RFC 6582) behind a pluggable congestion-control policy. Pre-built segment
-   headers per connection, so a send patches sequence, acknowledgement, timestamp and checksum and posts.
+   does. TCP's behaviour does not change in this step. Landed; step 3 lends from `commit`. See the
+   [device layer](architecture/device.md), the [fixtures](architecture/fixtures.md) and the
+   [scenario runner](architecture/scenario.md).
+3. **Reliable send.** Every segment that occupies sequence space stays with its connection, as the packet it
+   left in, lent to the device, until the peer acknowledges it, and is resent from that packet once the device
+   has let go; a driver that will not let go costs a resend one deferred tick, then one counted copy. RTO
+   estimation (RFC 6298, with Linux's 200 ms floor); timestamps for RTT measurement and PAWS (RFC 7323);
+   zero-window probes; fast retransmit with limited transmit and NewReno's recovery (RFC 5681, RFC 3042,
+   RFC 6582) behind a congestion-control policy that is a template parameter, `NewReno` or
+   `NoCongestionControl`; and bounded recovery, a retransmit cap and a user timeout, both ending in `TimedOut`.
+   Each connection keeps its link and network headers pre-built by the IP brick, so a send writes the TCP header
+   behind them and posts. Leaving the fast path shows in the counters, `retransmits`, `fast_retransmits`,
+   `retransmits_deferred`, `retransmits_copied`, `zero_window_probes` and `dropped_paws`, until step 6 adds an
+   event for it. Landed; the tap run under netem loss and the benchmark's rerun wait for a machine with root and
+   hugepages. See the [TCP brick](architecture/tcp.md).
 4. **Receive side.** Out-of-order segments held as the received packets, without copying; SACK blocks
    (RFC 2018); window scaling (RFC 7323) with a receive pool sized for it; delayed ACK; receiver-side silly
    window avoidance (RFC 1122).

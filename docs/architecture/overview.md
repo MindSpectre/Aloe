@@ -9,11 +9,11 @@ API in the spirit of Boost.Beast, for the code that waits. Three goals rank ever
 
 This page describes the design the stack is built towards. Today the repository holds the build skeleton, the
 [`core`](core.md), [`execution`](execution.md) and [`log`](log.md) modules, the protocol formats in
-[`wire`](wire.md), the [device layer](device.md), the [loop bricks](loop.md),
-the [shard runtime](runtime.md), the IP base ([`net`](net.md)), the [stream](stream.md) contract, minimal
-[TCP](tcp.md) with its senders in the runtime and, apart from the stack, the [fixtures](fixtures.md) for
-testing code written over the bricks; the rest arrives phase by phase, as the [roadmap](../roadmap.md) lays
-out. Each section says what exists and what is still design.
+[`wire`](wire.md), the [device layer](device.md), the [loop bricks](loop.md), the [shard runtime](runtime.md),
+the IP base ([`net`](net.md)), the [stream](stream.md) contract, [TCP](tcp.md) with a reliable send side and its
+senders in the runtime and, apart from the stack, the [fixtures](fixtures.md) for testing code written over the
+bricks; the rest arrives phase by phase, as the [roadmap](../roadmap.md) lays out. Each section says what exists
+and what is still design.
 
 ## The shard, as a rule
 
@@ -70,7 +70,7 @@ for (;;) {
     const std::size_t n = queue.receive(burst);
     ip.process(std::span{burst}.first(n), now);                      // ARP and ping answered; datagrams sorted per transport
     tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);   // segments in; immediate ACKs queued
-    std::ignore = wheel.advance(now);                                // control retransmits, before the drain
+    std::ignore = wheel.advance(now);                                // retransmits and probes, before the drain
 
     while (const auto event = tcp.poll_event()) {                    // the explicit drain: a connection and its flags
         Tcp::ConnectionType& c = *event->connection;
@@ -83,7 +83,7 @@ for (;;) {
         if (!room || !session->commit(encode(*order, *room))) break; // no window or no packet: keep the order
         orders.pop();                                                // one order, one segment
     }
-    tcp.flush(now);                                                  // the ACKs no data carried
+    tcp.flush(now);                                                  // resends that waited; the ACKs no data carried
     std::ignore = queue.flush();                                     // to the transmit burst, now
 }
 ```
@@ -129,9 +129,9 @@ data path by construction, not by review.
 
 Two goals for TCP follow from the gateway case and are stated here so phase 1 leaves room for them. A send
 of many small messages in one tick posts them as one transmit burst of as many segments, never coalesced
-into one. A connection may keep pre-built segment headers, so a send patches sequence, acknowledgement,
-timestamp and checksum and posts; the header layout chosen in phase 1 must allow it, and the feature itself
-is phase 2.
+into one. A connection keeps pre-built headers, so a send writes the segment's own fields behind them and
+posts: since step 3 of phase 2 each connection holds its link and network headers from the IP brick, and a
+first send and a resend run the same code.
 
 The device layer has two backends: DPDK's ethdev for real network cards and for tap devices, and an
 in-memory fabric for deterministic tests. The fabric scripts loss, duplication, reordering and delay on a
@@ -142,9 +142,9 @@ Network cards vary, so offloads such as checksums and segmentation are queried f
 and every offload has a software fallback. Steering is a pure function of what the card reports, so a
 program can predict which queue any flow lands on.
 
-Status: the device layer, the loop, the IP base and minimal TCP exist, see [device](device.md),
-[loop](loop.md), [net](net.md) and [tcp](tcp.md). Full TCP arrives in phase 2, TLS in phase 3, HTTP/1.1
-and WebSocket in phase 4; UDP waits until after them.
+Status: the device layer, the loop, the IP base and TCP with a reliable send side exist, see
+[device](device.md), [loop](loop.md), [net](net.md) and [tcp](tcp.md). The rest of full TCP arrives in phase 2,
+TLS in phase 3, HTTP/1.1 and WebSocket in phase 4; UDP waits until after them.
 
 ## Senders and receivers
 

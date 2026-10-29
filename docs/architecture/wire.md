@@ -32,7 +32,9 @@ bricks read and write its formats.
 - **`aloe::wire::TcpSequence`**, **`TcpFlag`**/**`TcpFlags`**, **`TcpHeader`**, **`TcpOptions`** -- `TcpSequence`
   is a sequence number with serial arithmetic (`a - b` is the wrapped signed distance, `before`, `after`);
   `TcpFlags` is the flag byte as a set; `TcpHeader` keeps the data offset in bytes and leaves the options to
-  `TcpOptions`, which reads the MSS only and reports a malformed list so the brick can drop the segment.
+  `TcpOptions`, which reads the MSS and the RFC 7323 timestamps, skips every other kind, and reports a
+  malformed list so the brick can drop the segment; `write_mss` and `write_timestamps` write the four-byte MSS
+  option and the twelve-byte `nop, nop, TS` block.
 - **`aloe::wire::internet_checksum`** and friends -- the Internet checksum; in `ipv4/`, the IPv4 header
   checksum and the pseudo-header sum that transmit checksum offload starts from.
 - **`aloe::wire::load_be16`**, **`store_be16`**, and the 32-bit pair -- network byte order over spans.

@@ -118,17 +118,18 @@ ctest --preset debug
 one label. The integration tests start DPDK with no hugepages, no PCI scan and one virtual
 device, so they need neither root nor a network card. `Aloe.Tests.Integration.Tcp.Ring` is one:
 the TCP brick over DPDK's ring driver on real mbufs, with a scripted peer at another address,
-software checksums and no root.
+software checksums and no root, and a lost segment resent from the very mbuf it first left in.
 
 `Aloe.Tests.Unit.Scenarios` runs the scenario scripts under `tests/scenarios/` against the TCP brick on
-the fabric. It finds the scripts at run time and registers one test per script and per checksum mode of
-the fabric, `Scenario.tcp/<area>/<name>/NoOffloads` and `.../Checksums`; as for every test binary, CTest lists one entry.
-Run one area or one script with `--gtest_filter` on the binary; a `-` in a filter starts the excluded
-patterns, so match a dash in a name with `?`:
+the fabric. It finds the scripts at run time and registers one test per script, per congestion-control policy
+the script allows and per checksum mode of the fabric, `Scenario.tcp/<area>/<name>/<policy>/<mode>` with
+`NewReno` or `NoCongestion` for the policy and `NoOffloads` or `Checksums` for the mode; as for every test
+binary, CTest lists one entry. Run one area or one script with `--gtest_filter` on the binary; a `-` in a filter
+starts the excluded patterns, so match a dash in a name with `?`:
 
 ```bash
 ./build/debug/tests/unit_tests/scenarios/Aloe.Tests.Unit.Scenarios --gtest_filter='Scenario.tcp/close/*'
-./build/debug/tests/unit_tests/scenarios/Aloe.Tests.Unit.Scenarios --gtest_filter='Scenario.tcp/close/fin?retransmitted*'
+./build/debug/tests/unit_tests/scenarios/Aloe.Tests.Unit.Scenarios --gtest_filter='Scenario.tcp/rto/fin?retransmitted*'
 ```
 
 [docs/architecture/scenario.md](../architecture/scenario.md) describes the script language and how to
@@ -154,8 +155,12 @@ The TCP suite needs DPDK's tap driver, which every Aloe build links, and root. I
 `aloe-tcp`, puts the kernel at 10.78.0.1/24 and Aloe at 10.78.0.2/24, and gives the kernel end its address
 itself, as `ip addr add 10.78.0.1/24 dev aloe-tcp` and `ip link set aloe-tcp up` would. Port 7007 carries an
 echo in four scenarios: a kernel client against the brick and against the runtime, and the brick and the
-runtime as clients of a kernel listener. Without root every case is skipped. To watch the traffic while it
-runs, `sudo tcpdump -ni aloe-tcp tcp` in another shell; the interface goes away when the suite exits.
+runtime as clients of a kernel listener. `TcpTapLoss` repeats the four with 50 000 bytes under loss in both
+directions: `tc qdisc replace dev aloe-tcp root netem loss 5%` makes the kernel lose 5% of what it sends the
+stack, and skips the cases when `tc` or `sch_netem` is missing, while a wrapper device frees every tenth frame
+the stack sends; each case needs at least one retransmission on the stack's side and a clean close. Without root
+every case is skipped. To watch the traffic while it runs, `sudo tcpdump -ni aloe-tcp tcp` in another shell; the
+interface goes away when the suite exits.
 
 The client scenarios need the host firewall to let a SYN reach the kernel listener through the tap. Fedora's
 firewalld puts a new interface in its default zone, which opens only TCP ports 1025-65535, so a kernel
