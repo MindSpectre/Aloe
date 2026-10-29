@@ -158,9 +158,12 @@ echo in four scenarios: a kernel client against the brick and against the runtim
 runtime as clients of a kernel listener. `TcpTapLoss` repeats the four with 50 000 bytes under loss in both
 directions: `tc qdisc replace dev aloe-tcp root netem loss 5%` makes the kernel lose 5% of what it sends the
 stack, and skips the cases when `tc` or `sch_netem` is missing, while a wrapper device frees every tenth frame
-the stack sends; each case needs at least one retransmission on the stack's side and a clean close. Without root
-every case is skipped. To watch the traffic while it runs, `sudo tcpdump -ni aloe-tcp tcp` in another shell; the
-interface goes away when the suite exits.
+the stack sends; each case needs at least one retransmission on the stack's side and a clean close, and prints how
+far the kernel's `RetransSegs` rose, for information, since that counter is system-wide. A ninth case has a kernel
+client with an 8 KB receive buffer stop reading until the brick has sent a zero-window probe, then read the echo
+and close: the connection must stay open while the kernel's window is closed. Without root every case is skipped. To
+watch the traffic while it runs, `sudo tcpdump -ni aloe-tcp tcp` in another shell; the interface goes away when the
+suite exits.
 
 The client scenarios need the host firewall to let a SYN reach the kernel listener through the tap. Fedora's
 firewalld puts a new interface in its default zone, which opens only TCP ports 1025-65535, so a kernel

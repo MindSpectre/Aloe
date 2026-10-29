@@ -34,8 +34,9 @@ link `Aloe::Common::Tcp`. It depends on [`net`](net.md), [`stream`](stream.md), 
   transmit side; `close()`, `abort()` and `release()`. TCP adds `state()`, `local()`, `remote()`, `mss()`,
   `timestamps()`, `committed()`, `acknowledged()` and `unacknowledged()`. For tests and monitoring it reports
   the send side: `queued_segments()` (the retransmission queue's length), `delivered()` (payload bytes the peer
-  acknowledged), `srtt()` and `rto()` (the estimator, the backoff included), `retransmit_count()` (timer-driven
-  resends since the last ACK of new data), `congestion_window()` and `congestion_state()` (the policy's),
+  acknowledged), `srtt()` and `rto()` (the estimator, the backoff included), `retransmit_count()` (expiries of
+  the retransmission timer since the last ACK of new data, a deferred or refused resend included),
+  `congestion_window()` and `congestion_state()` (the policy's),
   `in_recovery()` and `duplicate_acks()` (fast recovery), and `probing()` (zero-window probes running).
 - **`aloe::tcp::ConnectionEvent<Ip, CongestionControl>`** -- what `poll_event` returns: the connection and the
   `stream::Events` taken from it. The flags are edges; `poll_event` and `release` are the only things that
@@ -421,7 +422,12 @@ expiry resends the head, counts one retry, doubles the RTO up to `rto_max` and r
 every ACK that advances. The SYN and SYN-ACK are on the same timer and keep phase 1's schedule, which was an
 initial RTO of one second doubling: with the defaults they go again 1, 3, 7, 15 and 31 seconds after the first
 send and the connection times out at 63. Data and the FIN back off from the measured RTO, from 200 ms after a
-handshake on a short path.
+handshake on a short path. Two of the RFCs' rules for a lost SYN or SYN-ACK are departed from, where Linux keeps
+both in its own form. The connection starts with the full initial window, where RFC 5681 §3.1 asks for one segment
+after a lost SYN or SYN-ACK; Linux cuts it to one after more than one handshake retransmission
+(`tcp_init_transfer`). And when the handshake gave no round-trip sample, which after a resend only a connection
+without timestamps lacks, the RTO stays where the handshake's backoff left it, where RFC 6298 §5.7 asks for 3
+seconds, as Linux's `TCP_TIMEOUT_FALLBACK` in `tcp_init_metrics` gives.
 
 **Recovery is bounded.** `retries` caps the timer-driven resends of the SYN and SYN-ACK, `data_retries` those of
 data and the FIN, 15 by default as Linux's `tcp_retries2`. Running out ends an owned connection with `TimedOut`
@@ -432,9 +438,12 @@ the oldest unacknowledged segment was first sent at least `user_timeout` ago, th
 whatever the retry count, and the timer is never armed later than that first transmission plus the timeout, so
 the connection ends at the configured instant rather than at the next backoff (`tcp_clamp_rto_to_user_timeout`).
 Such an end counts `connections_timed_out` and `connections_user_timed_out`. The user timeout bounds the
-synchronized states and zero-window probing, not the handshake: Linux's `tcp_write_timeout` bounds `SynSent` and
-`SynReceived` by the retry count alone, and the runtime's `connect(peer, deadline)` gives a caller a shorter
-bound there.
+synchronized states and zero-window probing, not the handshake, which `retries` bounds; the runtime's
+`connect(peer, deadline)` gives a caller a shorter bound there. Linux's `TCP_USER_TIMEOUT` differs in three ways
+(`tcp_write_timeout`): it counts from the first retransmission (`retrans_stamp`), not the first transmission, so it
+ends a connection up to one RTO later and only after a resend; with the timeout set it ignores `tcp_retries2`,
+where Aloe ends at whichever of `data_retries` and the timeout comes first; and since Linux 5.4 it bounds the
+handshake too, once the retry count has not ended it.
 
 **A next hop that never answers.** A SYN, SYN-ACK or FIN that finds no next hop on its first send, with nothing
 else queued, keeps its entry with the packet unsent, and the timer polls every `unresolved_retry` (10 ms by
@@ -492,16 +501,21 @@ that leaves re-arms it too, as Linux's `tcp_xmit_retransmit_queue` does on resen
 first send armed does not fire before the resend's ACK can return. The first timeout since an ACK of new data
 leaves fast recovery, records `recover`, tells the policy, and starts a loss episode: every entry sent before the
 timeout is treated as lost, and each ACK of new data short of `recover` resends the next head at once, counted in
-`retransmits`. That is Linux's loss marking without RACK, which step 5 brings. A send into a queue that has been
-empty for longer than an RTO tells the policy of the idle period first, RFC 5681's restart after idle, which
-Linux enables by default. A fast retransmit resends the head only, as Linux's does.
+`retransmits`. That is close to Linux's loss state without RACK, which step 5 brings, but slower: the loss episode
+resends one head per ACK of new data, where Linux's loss state resends as many marked segments as `cwnd` allows.
+A send into a queue that has been empty for longer than an RTO tells the policy of the idle period first, RFC 5681's
+restart after idle, which Linux enables by default. A fast retransmit resends the head only, as Linux's does.
 
 **A silent peer holds what the caps allow.** A peer that never acknowledges keeps a connection's entries, and
 their packets, until `data_retries` or the user timeout ends the connection. `send_segments` bounds what one
 connection holds and `send_pool` what the shard's connections hold together. When the pool is empty a `connect`
 fails `TableFull`, a SYN to a listener is dropped as `dropped_no_node`, a commit is refused with a retry hint and
 counted in `allocation_failures`, and a `close` gives its FIN a sequence number and lets the timer find the FIN a
-node at a later expiry.
+node at a later expiry. So `send_pool / send_segments` stalled connections, 64 with the defaults, can hold the
+whole of a shard's pool, and with the user timeout off each holds its share for about fifteen minutes, the
+`data_retries` backoff, while the shard's other connections can send no data and open none. A program that talks
+to peers it does not trust sets `user_timeout`, which bounds that hold to the timeout, or sizes `send_pool` for the
+connections it expects to stall.
 
 **Two limits on what is held, independent of each other.** The receive window is a byte window: the stack offers
 `rcv_nxt + (B - unread)`, where `B` is `min(receive_segments * mss, 65535)`, and only extends the edge it

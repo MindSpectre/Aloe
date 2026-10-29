@@ -1236,7 +1236,7 @@ namespace aloe::tcp {
             const auto acknowledged = static_cast<std::uint32_t>(first - node.first);
             assert((acknowledged == 0 || acknowledged < node.payload) && "only data is acknowledged in part");
             const auto payload                     = static_cast<std::uint16_t>(node.payload - acknowledged);
-            const std::span<const std::byte> frame = node.packet.data();  // read only: the device holds the packet
+            const std::span<const std::byte> frame = std::as_const(node.packet).data();  // the device holds the packet
             const std::size_t header_size          = frame.size() - node.payload;
             std::optional<Packet> copy             = ip_->allocate();
             if (!copy) {
@@ -1451,8 +1451,9 @@ namespace aloe::tcp {
          * an empty queue more than an RTO after the last data left tells the policy of the idle period first. A refusal
          * returns the packet to the pool, leaves every number as it was, marks a retry hint and returns false. A
          * connection that left Established and CloseWait since the prepare drops the packet and refuses the commit
-         * with no hint: the events say why. A peer whose window no longer covers `count`, because it retracted its
-         * right edge since the prepare, refuses the commit with a hint: prepare again for what `writable()` allows.
+         * with no hint: the events say why. A window that no longer covers `count`, because the peer retracted its
+         * right edge or a loss shrank the congestion window since the prepare, refuses the commit with a hint: prepare
+         * again for what `writable()` allows. No queue node free refuses it with a hint too.
          */
         [[nodiscard]] bool commit(ConnectionType& conn, const std::size_t count) noexcept {
             assert(conn.prepared_ && "commit without a prepare");

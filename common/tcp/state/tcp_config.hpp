@@ -47,9 +47,10 @@ namespace aloe::tcp {
     struct TcpConfig {
         std::size_t connections       = 1024;  ///< Slots per shard.
         std::size_t listeners         = 8;
-        std::size_t receive_segments  = 32;     ///< Hard cap on held packets per connection; sizes the byte budget too.
-        std::size_t receive_pool      = 2048;   ///< Shared retained-packet nodes per shard.
-        std::size_t send_segments     = 32;     ///< Hard cap on queued segments per connection: the send cap.
+        std::size_t receive_segments  = 32;    ///< Hard cap on held packets per connection; sizes the byte budget too.
+        std::size_t receive_pool      = 2048;  ///< Shared retained-packet nodes per shard.
+        /// Hard cap on queued data segments per connection: the send cap. The FIN may take one entry beyond it.
+        std::size_t send_segments     = 32;
         std::size_t send_pool         = 2048;   ///< Shared retransmission-queue nodes per shard.
         std::uint16_t ephemeral_first = 32768;  ///< `connect`'s local ports, inclusive.
         std::uint16_t ephemeral_last  = 60999;

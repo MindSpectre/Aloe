@@ -11,11 +11,15 @@ namespace aloe::tcp {
         std::uint64_t pure_acks_sent        = 0;
         std::uint64_t control_segments_sent = 0;  ///< SYN, SYN-ACK, FIN, first sends and retransmits alike.
         std::uint64_t resets_sent           = 0;
-        std::uint64_t retransmits = 0;  ///< Timer-driven resends of any kept segment: SYN, SYN-ACK, data and FIN.
+        /// Timer-driven resends of any kept segment, SYN, SYN-ACK, data and FIN: one per expiry, whether the resend
+        /// left, waited or was refused, and one per ACK of the loss episode after a timeout.
+        std::uint64_t retransmits           = 0;
         std::uint64_t fast_retransmits =
             0;  ///< Resends driven by duplicate ACKs: the third, and partial ACKs in recovery.
         std::uint64_t recoveries           = 0;  ///< Fast-recovery episodes entered.
-        std::uint64_t retransmits_deferred = 0;  ///< A resend that found its packet lent and waited for the next flush.
+        /// A resend that found its packet lent and waited for the next flush: one per deferral, and one per stamp while
+        /// a segment's packet and its copy both stay lent.
+        std::uint64_t retransmits_deferred = 0;
         std::uint64_t retransmits_copied   = 0;  ///< A resend sent as a copy, after the deferral bound.
         std::uint64_t zero_window_probes   = 0;
         std::uint64_t duplicate_acks       = 0;
@@ -46,8 +50,10 @@ namespace aloe::tcp {
 
         std::uint64_t send_refused        = 0;
         std::uint64_t send_unresolved     = 0;
-        std::uint64_t commits_refused     = 0;  ///< A commit after the connection left Established and CloseWait.
-        /// A packet the pool could not supply for a prepare; the retry hint says when to try again.
+        /// A commit after the connection left Established and CloseWait, or whose count the windows no longer cover.
+        std::uint64_t commits_refused     = 0;
+        /// A packet the pool could not supply for a prepare, or a queue node for a commit, both with a retry hint that
+        /// says when to try again; and a copy fallback whose packet the pool could not supply.
         std::uint64_t allocation_failures = 0;
 
         friend constexpr bool operator==(const TcpCounters&, const TcpCounters&) noexcept = default;

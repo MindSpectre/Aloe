@@ -1,6 +1,7 @@
 // A send cap of two segments: a write of 3000 takes two segments of 988, the peer's MSS of 1000 less the timestamp
 // option, and write reports what was accepted; the rest waits for the ACK, which frees both entries, so the next
-// write's 1024 bytes leave as a segment of 988 and one of 36.
+// write's 1024 bytes leave as a segment of 988 and one of 36. Linux has no segment cap: its write copies all 3000
+// bytes into the socket's send buffer and sends what the windows allow.
 --tcp_send_segments=2
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0

@@ -179,7 +179,7 @@ namespace aloe::tcp {
         [[nodiscard]] core::Duration rto() const noexcept {
             return rto_;
         }
-        /// Timer-driven resends since the last ACK of new data.
+        /// Expiries of the retransmission timer since the last ACK of new data, a resend deferred or refused included.
         [[nodiscard]] std::uint8_t retransmit_count() const noexcept {
             return retransmit_count_;
         }
@@ -339,7 +339,7 @@ namespace aloe::tcp {
         std::optional<core::Duration> srtt_{};                    ///< Empty until the first sample.
         core::Duration rttvar_{};
         core::Duration rto_{};  ///< `rto_initial` until the first sample; doubled by each expiry up to `rto_max`.
-        std::uint8_t retransmit_count_  = 0;  ///< Expiries that resent since the last ACK of new data; capped.
+        std::uint8_t retransmit_count_  = 0;  ///< Expiries since the last ACK of new data, deferred and refused too.
         std::uint16_t unresolved_polls_ = 0;  ///< Polls since the last send that left; the config bounds them.
         std::uint8_t probes_out_ = 0;  ///< Zero-window probes since the last acceptable ACK; `data_retries` caps.
         std::optional<core::TimePoint> probe_started_{};  ///< The first unanswered probe: the user timeout's start.

@@ -10,8 +10,8 @@ namespace aloe::tcp::detail {
     /**
      * @brief A connection's link and network headers from `Ipv4::prebuild`, with when they stop being valid.
      *
-     * Plan's call: the TCP header is written per segment by `TcpHeader::write`, which costs the same as a copy and a
-     * patch and keeps one path for every segment kind; the option block per kind is the stack's.
+     * The TCP header is not part of it: it is written per segment by `TcpHeader::write`, which costs the same as a copy
+     * and a patch and keeps one path for every segment kind; the option block per kind is the stack's.
      */
     struct FrameTemplate {
         net::Prebuilt headers{};
