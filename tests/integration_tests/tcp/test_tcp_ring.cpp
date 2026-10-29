@@ -97,6 +97,22 @@ namespace {
             ASSERT_TRUE(burst_[0].empty()) << "taken or freed";
         }
 
+        /// The handshake as the first case does it: listen, SYN, SYN-ACK read back, ACK; the Accepted connection.
+        [[nodiscard]] Tcp::ConnectionType* accepted_connection() {
+            if (!tcp_.listen(7).has_value()) {
+                return nullptr;
+            }
+            receive(peer_.syn());
+            const auto frames = collect();
+            if (frames.size() != 1U) {
+                return nullptr;
+            }
+            peer_.see(frames[0]);
+            receive(peer_.ack());
+            const auto event = tcp_.poll_event();
+            return event.has_value() && event->events.accepted() ? event->connection : nullptr;
+        }
+
         [[nodiscard]] static std::vector<std::byte> text(const char* s) {
             std::vector<std::byte> out;
             for (; *s != '\0'; ++s) {
@@ -203,4 +219,26 @@ TEST_F(TcpRing, ActiveOpenToScriptedPeer) {
     (*connected)->release();
     std::ignore = collect();
     EXPECT_EQ(wheel_.pending(), 0U);
+}
+
+TEST_F(TcpRing, ALostSegmentIsResentOnRealMbufsAndTheRingReadsACopy) {
+    auto* c = accepted_connection();
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    tcp_.flush(now_);
+    std::ignore = queue_.flush();
+    EXPECT_TRUE(tcp_.sent_segment(*c, 0).packet.lent()) << "the ring never frees: the receiver does";
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 1U);
+    EXPECT_FALSE(tcp_.sent_segment(*c, 0).packet.lent()) << "the ring read a copy and dropped the shared mbuf";
+    now_              += 200ms;
+    std::ignore        = wheel_.advance(now_);
+    const auto resent  = collect();
+    ASSERT_EQ(resent.size(), 1U) << "resent from the same mbuf, read back as a copy";
+    EXPECT_EQ(resent[0].l4.size(), sent[0].l4.size());
+    EXPECT_TRUE(std::ranges::equal(aloe::frames::tcp_payload(resent[0]), aloe::frames::tcp_payload(sent[0])));
+    EXPECT_EQ(tcp_.counters().retransmits, 1U);
+    EXPECT_EQ(tcp_.counters().retransmits_copied, 0U);
+    receive(peer_.ack(resent[0]));
+    EXPECT_EQ(c->queued_segments(), 0U);
 }
