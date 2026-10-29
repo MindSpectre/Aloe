@@ -160,7 +160,7 @@ TEST_P(TcpLoan, WhenTheCopyReturnsFirstItTakesTheOriginalsPlace) {
     EXPECT_EQ(entry.first, first[0].tcp->sequence + 400U);
     EXPECT_EQ(entry.payload, 600U);
     EXPECT_EQ(entry.length, 600U);
-    EXPECT_EQ(c->delivered(), 400U) << "the front the copy left out counts as delivered, as a trim counts it";
+    EXPECT_EQ(c->delivered(), 400U) << "the front the copy left out, counted once by the ACK that covered it";
     receive(peer_.ack(resent[0]));
     EXPECT_EQ(c->queued_segments(), 0U);
     EXPECT_EQ(c->delivered(), 1000U);

@@ -1,0 +1,29 @@
+// Congestion avoidance: a timeout with one segment in flight sets ssthresh = max(988 / 2, 2 * 988) = 1976 and the
+// window to one segment. The ACK of the resend, whose echo gives a sample of 0 and which passes recover, ends the loss
+// episode and grows the window to the threshold in slow start, so a write sends two segments. From there each ACK adds
+// its bytes to a count, and a full window of them, 1976 after the second, adds one segment: the next write sends three.
+// Linux's reno counts the same way in packets.
+--congestion=newreno
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1000,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 988) = 988
++0 > P. 1:989(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0.2 > P. 1:989(988) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0 < . 1:1(0) ack 989 win 65535 <nop,nop,TS val 100 ecr 200>
++0 write(4, ..., 9880) = 1976
++0 > P. 989:1977(988) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0 > P. 1977:2965(988) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0 < . 1:1(0) ack 1977 win 65535 <nop,nop,TS val 100 ecr 200>
++0 < . 1:1(0) ack 2965 win 65535 <nop,nop,TS val 100 ecr 200>
++0 write(4, ..., 9880) = 2964
++0 > P. 2965:3953(988) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0 > P. 3953:4941(988) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0 > P. 4941:5929(988) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0 < . 1:1(0) ack 5929 win 65535 <nop,nop,TS val 100 ecr 200>

@@ -105,8 +105,8 @@ namespace aloe::tcp {
             return peer_closed_;
         }
 
-        /// `min(mss, peer window - in flight)` in Established or CloseWait with no prepare open and the queue below the
-        /// send cap, else zero.
+        /// `min(mss, min(peer window, congestion window + limited transmit's allowance) - in flight)` in Established or
+        /// CloseWait with no prepare open and the queue below the send cap, else zero.
         [[nodiscard]] std::size_t writable() const noexcept {
             return stack_->writable(*this);
         }
@@ -137,7 +137,7 @@ namespace aloe::tcp {
         [[nodiscard]] std::size_t queued_segments() const noexcept {
             return queue_count_;
         }
-        /// Payload bytes the peer acknowledged, counted as their entries are freed, or trimmed for a resend.
+        /// Payload bytes the peer acknowledged, counted as each ACK advances `acknowledged()`.
         [[nodiscard]] std::uint64_t delivered() const noexcept {
             return delivered_;
         }
@@ -158,6 +158,18 @@ namespace aloe::tcp {
         /// The congestion window the policy allows, in bytes.
         [[nodiscard]] std::uint32_t congestion_window() const noexcept {
             return CongestionControl::window(congestion_);
+        }
+        /// For tests and monitoring: the policy's per-connection state.
+        [[nodiscard]] const typename CongestionControl::State& congestion_state() const noexcept {
+            return congestion_;
+        }
+        /// Fast recovery: entered on the third duplicate ACK, left on the ACK past `recover` or a timeout.
+        [[nodiscard]] bool in_recovery() const noexcept {
+            return in_recovery_;
+        }
+        /// Duplicate ACKs since the last ACK of new data, saturating.
+        [[nodiscard]] std::uint8_t duplicate_acks() const noexcept {
+            return dupacks_;
         }
         /// RFC 6298's smoothed round-trip time; nothing before the first sample.
         [[nodiscard]] std::optional<core::Duration> srtt() const noexcept {
@@ -226,7 +238,7 @@ namespace aloe::tcp {
             prepared_size_    = 0;
             fin_sent_         = false;
             template_         = {};
-            last_send_        = {};
+            last_data_send_   = std::nullopt;
             snd_una_          = {};
             delivered_        = 0;
             delivered_time_   = {};
@@ -234,6 +246,11 @@ namespace aloe::tcp {
             peer_mss_         = default_peer_mss;
             wl1_              = {};
             wl2_              = {};
+            dupacks_          = 0;
+            recover_          = {};
+            in_recovery_      = false;
+            loss_episode_     = false;
+            limited_transmit_ = 0;
             srtt_             = std::nullopt;
             rttvar_           = {};
             rto_              = {};
@@ -295,7 +312,7 @@ namespace aloe::tcp {
         std::uint32_t queue_tail_  = detail::no_node;
         std::uint32_t queue_count_ = 0;
         detail::FrameTemplate template_{};
-        core::TimePoint last_send_{};  ///< The last segment of any kind that left.
+        std::optional<core::TimePoint> last_data_send_{};  ///< The last transmission with payload; nothing before one.
 
         // Peer feedback: what the ACKs told us.
         Sequence snd_una_{};
@@ -303,8 +320,16 @@ namespace aloe::tcp {
         std::uint16_t peer_mss_ = default_peer_mss;
         Sequence wl1_{};
         Sequence wl2_{};
-        std::uint64_t delivered_ = 0;       ///< Payload bytes acknowledged, entry by entry.
+        std::uint64_t delivered_ = 0;       ///< Payload bytes acknowledged: what each ACK covers less SYN and FIN.
         core::TimePoint delivered_time_{};  ///< The ACK that last advanced `delivered_`.
+
+        // Loss recovery (RFC 5681, RFC 3042, RFC 6582): the duplicate count, limited transmit's allowance, the recover
+        // point, one before the ISS until an episode sets it, and which episode the connection is in.
+        std::uint8_t dupacks_ = 0;            ///< Duplicate ACKs since the last ACK of new data; saturates.
+        Sequence recover_{};                  ///< RFC 6582's `recover`: the last sequence sent as an episode began.
+        bool in_recovery_  = false;           ///< Fast recovery, from the third duplicate to the ACK past `recover_`.
+        bool loss_episode_ = false;           ///< After a timeout: each ACK short of `recover_` resends the new head.
+        std::uint32_t limited_transmit_ = 0;  ///< Bytes beyond the windows the first two duplicates allow; RFC 3042.
 
         // Maintenance: the retransmission timer and the round-trip estimator.
         TimerNode timer_;
