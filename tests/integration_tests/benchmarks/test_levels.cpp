@@ -74,7 +74,7 @@ namespace {
         expect_closed_loop(state, device, peer);
         EXPECT_EQ(peer.counters().arp_replies_sent > 0, arp_on_wire) << "learned unless ARP is on the wire";
         // Every order carries the ACK of its tick, and the brick's count of full segments restarts at each ACK it
-        // sends, so with one tick in flight no second-segment ACK leaves, at 1460 either.
+        // sends, so with one tick in flight no second-segment ACK leaves, at 1448 either.
         EXPECT_EQ(peer.counters().pure_acks_seen, 0U);
         if (config.gap > aloe::core::Duration::zero()) {
             const std::uint64_t gap = ticks_for(config.gap);
@@ -108,7 +108,7 @@ TEST(Levels, BricksTickSameCore) {
 }
 
 TEST(Levels, BricksTickSameCoreFullSegment) {
-    run_level0(small(Round::Tick, Level::Bricks, Topology::SameCore, 1460), "lv0-tick-1460");
+    run_level0(small(Round::Tick, Level::Bricks, Topology::SameCore, 1448), "lv0-tick-1448");
 }
 
 TEST(Levels, BricksTickSameCoreHonoursTheGap) {
@@ -179,7 +179,7 @@ TEST(Levels, RuntimeTickCrossCore) {
 }
 
 TEST(Levels, RuntimeTickFullSegment) {
-    run_level1(small(Round::Tick, Level::Runtime, Topology::CrossCore, 1460), "lv1-tick-1460");
+    run_level1(small(Round::Tick, Level::Runtime, Topology::CrossCore, 1448), "lv1-tick-1448");
 }
 
 TEST(Levels, RuntimeTickWithArpOnTheWire) {

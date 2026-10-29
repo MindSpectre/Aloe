@@ -35,6 +35,8 @@ namespace aloe::benchmarks {
     }
 
     std::expected<void, PeerError> VenuePeer::open_active() {
+        handshaken_ = true;
+        stamp();
         inject(script_.syn());
         return {};
     }
@@ -49,12 +51,14 @@ namespace aloe::benchmarks {
             !parsed->tcp->flags.has(wire::TcpFlag::Ack)) {
             return std::unexpected{PeerError::Unexpected};
         }
+        stamp();
         inject(script_.ack(*parsed));
         carrier_ = std::move(*packet);
         return {};
     }
 
     std::expected<void, PeerError> VenuePeer::answer_passive_open() {
+        handshaken_                  = true;
         std::optional<Packet> packet = collect();
         if (!packet) {
             return std::unexpected{PeerError::Timeout};
@@ -65,6 +69,7 @@ namespace aloe::benchmarks {
             return std::unexpected{PeerError::Unexpected};
         }
         carrier_ = std::move(*packet);  // the SYN's mbuf carries the SYN-ACK back: the stack frees it on its core
+        stamp();
         if (prepare_carrier(script_.syn_ack(*parsed))) {
             send_carrier();
         }
@@ -93,6 +98,7 @@ namespace aloe::benchmarks {
             }
             carrier_ = std::move(*fresh);
         }
+        stamp();
         tick_ = script_.data(tick_payload(payload, round));  // frees the last tick's frame, before the stamp
         if (!prepare_carrier(tick_)) {
             return;
@@ -142,9 +148,17 @@ namespace aloe::benchmarks {
     }
 
     void VenuePeer::send_bare_ack() {
+        stamp();
         if (prepare_carrier(script_.ack())) {
             send_carrier();
         }
+    }
+
+    void VenuePeer::stamp() noexcept {
+        if (!handshaken_) {
+            return;  // the floor has no handshake, no option was negotiated, and its fixed offsets expect none
+        }
+        script_.set_timestamps(++ts_);  // a venue on Linux offers and echoes timestamps; the value only has to rise
     }
 
     std::optional<VenuePeer::Packet> VenuePeer::collect() {

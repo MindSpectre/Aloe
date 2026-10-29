@@ -62,7 +62,8 @@ back onto its receive.
 **The venue.** `VenuePeer` is a `frames::TcpPeer` scripted on a thread of its own. It runs the handshake both
 ways, as the deployments do: the stack listens in the tick round and connects in the gateway round. At levels 0
 and 1 it checks every order's IPv4 and TCP checksums, its sequence number and its round number. Every frame it
-sends is built outside the timed window, on its own core.
+sends is built outside the timed window, on its own core. It offers RFC 7323 timestamps in its SYN or SYN-ACK and
+echoes the stack's on every frame, as a venue running Linux would, with a value that rises by one per frame.
 
 **Mbufs are recycled, never freed across cores.** DPDK's per-thread mempool cache does not amortise a one-way
 flow: with the 512-entry cache these pools get, a thread that only allocates refills it with a bulk dequeue of
@@ -84,8 +85,8 @@ nanoseconds, stripped of the warm-up and sorted only after the run.
 
 **Sanity.** A run fails with a message, and writes no result file, when:
 
-- any drop, refusal or allocation-failure counter of the stack, TCP's, IP's or the shard's, or TCP's count of
-  retransmissions, is not zero at the end of a configuration; only the waits for ARP and IP's refusal of
+- any drop, refusal or allocation-failure counter of the stack, TCP's, IP's or the shard's, or TCP's counts of
+  retransmissions (timeout, fast, deferred and copied), zero-window probes and PAWS drops, is not zero at the end of a configuration; only the waits for ARP and IP's refusal of
   unsolicited ARP replies are allowed;
 - the venue sees an order for another round or, at levels 0 and 1, one with a bad checksum or out of sequence;
 - a round outlasts the deadline, one second or twice `--gap`, whichever is longer;
@@ -179,7 +180,7 @@ mask.
 
 - `--round tick|gateway|both` and `--level floor|0|1|all` choose the rounds and the levels, by default every
   round and every level.
-- `--payload` lists the tick payloads, from 8 to 1460 bytes, `64,256,1024,1448,1460` by default. The gateway
+- `--payload` lists the tick payloads, from 8 to 1448 bytes, `64,256,1024,1448` by default. The gateway
   round's payload is the 128-byte order.
 - `--rounds N` and `--warmup N` set the measured rounds and the discarded rounds before them, 100 000 and
   10 000 by default.
@@ -207,10 +208,10 @@ sudo ./build/release/benchmarks/tick_to_trade/tick_to_trade --topology both --ho
 sudo ./build/release/benchmarks/tick_to_trade/tick_to_trade --level 0 --breakdown --out /tmp/baseline-breakdown.json
 ```
 
-The first is the headline. With the default cores, payloads and counts it is 30 configurations, 25 of
-tick-to-trade (the floor and level 0 in both topologies and level 1 cross-core, five payloads each) and 5 of the
+The first is the headline. With the default cores, payloads and counts it is 25 configurations, 20 of
+tick-to-trade (the floor and level 0 in both topologies and level 1 cross-core, four payloads each) and 5 of the
 gateway round, then the hop. It runs without `--breakdown`, because the phase stamps cost level 0 time of their
-own. The second carries the legs: level 0, cross-core, the five tick payloads and the gateway round, six
+own. The second carries the legs: level 0, cross-core, the four tick payloads and the gateway round, five
 configurations with `--breakdown`. Each takes a few seconds.
 
 ### The result file
@@ -286,9 +287,10 @@ grows with the payload.
   own latency and its interrupt moderation are absent.
 - **The ring port's zero MAC.** A port from `rte_eth_from_rings` has the MAC `00:00:00:00:00:00`. The venue
   addresses its frames to whatever `port.mac()` returns, and `Ipv4::process` accepts them.
-- **The 1460 and 1448 rows.** 1460 bytes is a full segment at the MSS of 1460. 1448 is what a full segment
-  becomes once phase 2's timestamps option takes 12 bytes of it, so it is the row later steps compare against.
-  The 1460 row carries no second-segment ACK: `tcp::Stack` resets its count of full segments whenever it sends
+- **The 1460 and 1448 rows.** 1460 bytes is a full segment at the MSS of 1460, and 1448 is what a full segment
+  becomes once the timestamps option takes 12 bytes of it. The venue now offers timestamps, so a tick of 1460
+  bytes would pass the Ethernet MTU and the sweep ends at 1448, the full-segment row; the 1460 rows of the
+  recorded run below were taken before. The 1460 row carried no second-segment ACK: `tcp::Stack` resets its count of full segments whenever it sends
   an ACK, and every order carries one, so in a closed loop RFC 5681's ACK of every second full-sized segment
   never fires. The venue still skips pure ACKs when it matches an order to its tick, as a defence.
 - **Level 1 is cross-core only.** `--topology same` covers the floor and level 0, because a `Runtime` owns its
@@ -326,6 +328,12 @@ grows with the payload.
   several runs, never from one run's p50. Cross-core the slower mode sits in the `receive` and `tcp` legs, the first
   touch of the frame's cache lines, while the application leg runs the same in both modes. The cause is not
   identified; the raw samples of a run, written with `--samples`, show it as a histogram and in round order.
+- **The venue's pool sees a one-way flow.** Once the stack lends its orders until they are acknowledged, the venue's
+  `ethdev::Port::receive` copies each order into the venue's pool and drops the shared handle, so the venue's core
+  only allocates from its pool and the stack's core only frees to it. After its cache has filled, the stack's core
+  returns 256 mbufs in bulk every 256 rounds, which lands inside the window when the tick's `consume` precedes the
+  order's transmit. It is accepted: the stack's own pool stays balanced. The step 3 rerun is owed, so no number
+  is recorded here yet.
 
 ## Results
 
@@ -497,6 +505,14 @@ level 0, cross-core, for the tick round at 64 bytes and for the gateway round.
 | Date    | Revision | Step                  | Tick, 64 B, p50 | Tick, 64 B, p99.9 | Gateway, p50 | Gateway, p99.9 |
 |---------|----------|-----------------------|-----------------|-------------------|--------------|----------------|
 | pending | pending  | 1. Baseline benchmark | pending         | pending           | pending      | pending        |
+ 
+Step 3 (reliable send) gates on the 64-byte tick at level 0, cross-core: p50 and p99 within 50 ns of a run of `main`
+at the branch's merge base (`git worktree add ../aloe-base $(git merge-base main HEAD)`, built with the `release`
+preset), taken on the same day and machine as the branch's run. The recorded baseline of 2026-10-21 is not the
+comparison point, because it predates #24's copy of shared mbufs on receive. A delta over 50 ns at p50 or p99 is
+investigated before the pull request, and the finding goes in this page either way. The step 3 rerun is owed: it
+needs hugepages and root. Both result files go to `docs/benchmarks/results/<date>-<sha>-<host>.json`, one named
+for the base revision and one for the branch's.
 
 ## What comes next
 

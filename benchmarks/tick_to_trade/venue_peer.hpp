@@ -114,12 +114,16 @@ namespace aloe::benchmarks {
         [[nodiscard]] bool prepare_carrier(std::span<const std::byte> frame);
         /// The prepared carrier out; a refused transmit keeps it as the carrier.
         void send_carrier() noexcept;
+        /// Sets the timestamp the next frame carries, one above the last: PAWS on the stack's side drops a lower one.
+        void stamp() noexcept;
         void answer_arp(const frames::ParsedFrame& request);
         [[nodiscard]] static bool is_pure_ack(const frames::ParsedFrame& parsed) noexcept;
 
         ethdev::Port* port_;
         PeerConfig config_;
         frames::TcpPeer script_;
+        std::uint32_t ts_{0};
+        bool handshaken_{false};  ///< A handshake began, so timestamps are offered and echoed.
         std::span<std::uint64_t> starts_;
         Packet carrier_;
         std::vector<std::byte> tick_;  ///< The last tick's frame, kept so no free falls between its stamps.

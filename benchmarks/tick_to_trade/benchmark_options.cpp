@@ -12,7 +12,7 @@ namespace aloe::benchmarks {
 
     namespace {
 
-        constexpr std::size_t max_payload = 1460;  ///< A full segment.
+        constexpr std::size_t max_payload = 1448;  ///< A full segment: the timestamps option takes 12 of the 1460.
 
         template <typename T>
         [[nodiscard]] std::optional<T> parse_number(const std::string_view text) {
@@ -50,7 +50,7 @@ namespace aloe::benchmarks {
                 const std::size_t comma = rest.find(',');
                 const auto payload      = parse_number<std::size_t>(rest.substr(0, comma));
                 if (!payload || *payload < round_prefix || *payload > max_payload) {
-                    return bad("--payload", "expects byte counts from 8 to 1460, comma separated");
+                    return bad("--payload", "expects byte counts from 8 to 1448, comma separated");
                 }
                 payloads.push_back(*payload);
                 if (comma == std::string_view::npos) {
@@ -78,7 +78,7 @@ namespace aloe::benchmarks {
         return "usage: tick_to_trade [options] [-- <EAL arguments>]\n"
                "  --round tick|gateway|both     which critical path (both)\n"
                "  --level floor|0|1|all         the floor, the loop over the bricks, the runtime (all)\n"
-               "  --payload <bytes,...>         tick payloads, 8..1460 (64,256,1024,1448,1460)\n"
+               "  --payload <bytes,...>         tick payloads, 8..1448 (64,256,1024,1448)\n"
                "  --rounds N                    measured rounds per configuration (100000)\n"
                "  --warmup N                    rounds discarded before them (10000)\n"
                "  --gap NS                      pause between rounds, nanoseconds (0)\n"
