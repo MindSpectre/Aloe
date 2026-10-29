@@ -7,6 +7,7 @@
 #include <optional>
 #include <span>
 
+#include <congestion_control.hpp>
 #include <flow_table.hpp>
 #include <read_view.hpp>
 #include <stream.hpp>
@@ -27,7 +28,7 @@ namespace aloe::tcp {
      * state is owned by the stack; the public members are the stream contract plus the TCP
      * queries. Construction takes the stack's private tag: slots exist only inside a `Stack`.
      */
-    template <typename Ip>
+    template <typename Ip, typename CongestionControl>
     class Connection {
     public:
         using Packet   = Ip::Packet;
@@ -122,8 +123,14 @@ namespace aloe::tcp {
             stack_->release(*this);
         }
 
+        /// The congestion window the policy allows, in bytes.
+        [[nodiscard]] std::uint32_t congestion_window() const noexcept {
+            return CongestionControl::window(congestion_);
+        }
+
     private:
-        friend class Stack<Ip>;  // forms the pointers to the link members; using them needs no access
+        friend class Stack<Ip,
+                           CongestionControl>;  // forms the pointers to the link members; using them needs no access
 
         /// The wheel's node, carrying the way back to its connection.
         struct TimerNode : loop::Timer {
@@ -177,14 +184,15 @@ namespace aloe::tcp {
             tries_            = 0;
             unresolved_wait_  = false;
             unresolved_polls_ = 0;
+            congestion_       = {};
         }
 
         // Identity and ownership.
-        Stack<Ip>* stack_    = nullptr;
-        std::uint32_t index_ = 0;
-        State state_         = State::Closed;
-        bool owned_          = false;  ///< An application holds it: after Accepted, or from connect.
-        bool indexed_        = false;  ///< Its key is in the flow table.
+        Stack<Ip, CongestionControl>* stack_ = nullptr;
+        std::uint32_t index_                 = 0;
+        State state_                         = State::Closed;
+        bool owned_                          = false;  ///< An application holds it: after Accepted, or from connect.
+        bool indexed_                        = false;  ///< Its key is in the flow table.
         Endpoint local_{};
         Endpoint remote_{};
         FlowKey key_{};
@@ -226,15 +234,18 @@ namespace aloe::tcp {
 
         // Maintenance: the control retransmit timer.
         TimerNode timer_;
-        std::uint8_t tries_   = 0;
+        std::uint8_t tries_ = 0;
+        typename CongestionControl::State
+            congestion_{};  ///< The policy's state; reset where the connection is Established.
+
         bool unresolved_wait_ = false;  ///< The last control send waited for ARP; the next fire is a poll, not a try.
         std::uint16_t unresolved_polls_ = 0;  ///< Polls since the last send that left; the config bounds them.
     };
 
     /// One notification from `poll_event`: the connection and the flags taken from it.
-    template <typename Ip>
+    template <typename Ip, typename CongestionControl>
     struct ConnectionEvent {
-        Connection<Ip>* connection = nullptr;  ///< Valid until the owner releases it.
+        Connection<Ip, CongestionControl>* connection = nullptr;  ///< Valid until the owner releases it.
         stream::Events events{};
     };
 

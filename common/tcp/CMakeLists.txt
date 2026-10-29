@@ -22,6 +22,9 @@ target_link_libraries(${TCP}.Table PUBLIC
 add_library(${TCP}.Stack INTERFACE
         state/tcp_config.hpp
         state/tcp_counters.hpp
+        congestion/congestion_control.hpp
+        congestion/newreno.hpp
+        congestion/no_congestion_control.hpp
         buffer/tcp_node_pool.hpp
         buffer/read_view.hpp
         stack/tcp_fwd.hpp
@@ -30,6 +33,7 @@ add_library(${TCP}.Stack INTERFACE
 )
 target_include_directories(${TCP}.Stack INTERFACE
         state/
+        congestion/
         buffer/
         stack/
 )

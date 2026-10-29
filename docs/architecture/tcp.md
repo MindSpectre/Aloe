@@ -37,7 +37,7 @@ nothing here names the asynchronous model, logs, reads a clock or blocks.
   `consume` and by the next `process`.
 - **`aloe::tcp::TcpConfig`** -- slots per shard (`connections`), `listeners`, the per-connection packet cap
   `receive_segments` (which also sizes the byte window), the shard's shared `receive_pool` of held-packet
-  nodes, the ephemeral port range, and the retry schedule: `retry_initial`, `retries` and
+  nodes, the ephemeral port range, and the retry schedule: `rto_initial`, `retries` and
   `unresolved_retry`.
 - **`aloe::tcp::TcpCounters`** -- monotonic, one per drop reason and one per send failure: what was sent by
   kind, connections opened, accepted, closed, reset and timed out, every reason a segment was dropped, and
@@ -239,8 +239,16 @@ cannot run. Every shard gets the same config.
 | `receive_segments`                  | 32           | Packets one connection may hold; also sizes the byte window, `min(receive_segments * mss, 65535)`. | zero                                                                         |
 | `receive_pool`                      | 2048         | Held-packet nodes shared by every connection of the shard.                                         | zero                                                                         |
 | `ephemeral_first`, `ephemeral_last` | 32768, 60999 | `connect`'s local ports, inclusive.                                                                | empty, or containing port 0                                                  |
-| `retry_initial`                     | 1 s          | The first control retransmit's delay; it doubles per try.                                          | not positive, or too large to double `retries` times within `core::Duration` |
-| `retries`                           | 5            | Control retransmits before `TimedOut`.                                                             | zero, or 63 and more                                                         |
+| `send_segments`                     | 32           | Queued segments one connection may hold: the send cap. | zero |
+| `send_pool`                         | 2048         | Retransmission-queue nodes shared by every connection of the shard. | zero |
+| `rto_initial`                       | 1 s          | The RTO before the first round-trip sample; the SYN and SYN-ACK delay doubles per try. | not positive, outside `rto_min..rto_max`, or too large to double `retries` times within `core::Duration` |
+| `rto_min`                           | 200 ms       | The RTO floor, Linux's `TCP_RTO_MIN`. | not positive, or below the wheel's resolution |
+| `rto_max`                           | 120 s        | The RTO ceiling, Linux's `TCP_RTO_MAX`. | above a quarter of `core::Duration`'s range |
+| `retries`                           | 5            | SYN and SYN-ACK retransmits before `TimedOut`. | zero, or 63 and more |
+| `data_retries`                      | 15           | Data and FIN retransmits, and unanswered zero-window probes, before `TimedOut`. | zero, or 63 and more |
+| `user_timeout`                      | 0 (off)      | RFC 5482: unacknowledged this long ends the connection. | negative, or above a quarter of `core::Duration`'s range |
+| `timestamps`                        | true         | Offer and use RFC 7323 timestamps. | never |
+| `retransmit_defers`                 | 1            | Deferred resends of one segment before the copy fallback. | never |
 | `unresolved_retry`                  | 10 ms        | The poll interval while a control segment waits for ARP; not a try.                                | not positive                                                                 |
 | `unresolved_polls`                  | 300          | Polls before `Unresolved`: 3 s by default, the bound Linux's three ARP probes give.                | zero                                                                         |
 
@@ -310,7 +318,7 @@ connection whose replies go elsewhere. With steering off that is every queue but
 every reply lands on queue 0.
 
 **Control segments retry on the wheel.** SYN, SYN-ACK and FIN are retransmitted from the connection's timer,
-the delay doubling from `retry_initial` each try: with the defaults at 1, 3, 7, 15 and 31 seconds after the first
+the delay doubling from `rto_initial` each try: with the defaults at 1, 3, 7, 15 and 31 seconds after the first
 send, keeping their sequence numbers, and the connection times out at 63 seconds. A connection the application
 owns raises `TimedOut`. While IP waits for ARP the timer polls every `unresolved_retry` (10 ms by default)
 instead, and those polls are not tries. After `unresolved_polls` of them, 3 seconds by default, the connection

@@ -11,16 +11,25 @@ namespace aloe::tcp {
         std::uint64_t pure_acks_sent        = 0;
         std::uint64_t control_segments_sent = 0;  ///< SYN, SYN-ACK, FIN, first sends and retransmits alike.
         std::uint64_t resets_sent           = 0;
-        std::uint64_t retransmits           = 0;  ///< Timer-driven control retransmits.
-        std::uint64_t window_updates        = 0;  ///< Segments that extended the advertised edge.
+        std::uint64_t retransmits = 0;  ///< Timer-driven resends of any kept segment: SYN, SYN-ACK, data and FIN.
+        std::uint64_t fast_retransmits =
+            0;  ///< Resends driven by duplicate ACKs: the third, and partial ACKs in recovery.
+        std::uint64_t recoveries           = 0;  ///< Fast-recovery episodes entered.
+        std::uint64_t retransmits_deferred = 0;  ///< A resend that found its packet lent and waited for the next flush.
+        std::uint64_t retransmits_copied   = 0;  ///< A resend sent as a copy, after the deferral bound.
+        std::uint64_t zero_window_probes   = 0;
+        std::uint64_t duplicate_acks       = 0;
+        std::uint64_t rtt_samples          = 0;
+        std::uint64_t window_updates       = 0;  ///< Segments that extended the advertised edge.
 
-        std::uint64_t connections_opened     = 0;  ///< Active opens that reached ESTABLISHED.
-        std::uint64_t connections_accepted   = 0;
-        std::uint64_t connections_closed     = 0;  ///< Normal closes, both FINs acknowledged.
-        std::uint64_t connections_reset      = 0;  ///< RST received on a connection we own.
-        std::uint64_t connections_timed_out  = 0;
-        std::uint64_t connections_unresolved = 0;  ///< Owned connections whose next hop never answered ARP.
-        std::uint64_t handshakes_failed      = 0;  ///< A passive open nobody owned yet was reset or timed out.
+        std::uint64_t connections_opened         = 0;  ///< Active opens that reached ESTABLISHED.
+        std::uint64_t connections_accepted       = 0;
+        std::uint64_t connections_closed         = 0;  ///< Normal closes, both FINs acknowledged.
+        std::uint64_t connections_reset          = 0;  ///< RST received on a connection we own.
+        std::uint64_t connections_timed_out      = 0;
+        std::uint64_t connections_user_timed_out = 0;  ///< Of connections_timed_out, those the user timeout ended.
+        std::uint64_t connections_unresolved     = 0;  ///< Owned connections whose next hop never answered ARP.
+        std::uint64_t handshakes_failed          = 0;  ///< A passive open nobody owned yet was reset or timed out.
 
         std::uint64_t dropped_bad_header    = 0;
         std::uint64_t dropped_bad_checksum  = 0;
@@ -33,6 +42,7 @@ namespace aloe::tcp {
         std::uint64_t dropped_no_slot       = 0;
         std::uint64_t dropped_no_node       = 0;
         std::uint64_t dropped_table_full    = 0;
+        std::uint64_t dropped_paws = 0;  ///< Segments whose timestamp was older than TS.Recent; acknowledged, not kept.
 
         std::uint64_t send_refused        = 0;
         std::uint64_t send_unresolved     = 0;

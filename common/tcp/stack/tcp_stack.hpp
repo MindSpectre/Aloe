@@ -18,10 +18,12 @@
 #include <vector>
 
 #include <checksum.hpp>
+#include <congestion_control.hpp>
 #include <datagram.hpp>
 #include <flow_table.hpp>
 #include <ipv4.hpp>
 #include <ipv4_checksum.hpp>
+#include <newreno.hpp>
 #include <rss.hpp>
 #include <stream_events.hpp>
 #include <tcp_config.hpp>
@@ -44,22 +46,25 @@ namespace aloe::tcp {
      * does in between. Everything is allocated at construction; nothing here logs, blocks or
      * names a clock.
      */
-    template <typename Ip>
+    template <typename Ip, typename CongestionControl>
     class Stack {
         static_assert(IsIp<Ip>, "tcp::Stack needs net::Ipv4<Device>, or an IP brick with the same members");
+        static_assert(IsCongestionControl<CongestionControl>,
+                      "tcp::Stack needs a congestion control: a State and the reset, window and on_* hooks");
 
     public:
         using Device         = Ip::Device;
         using Packet         = Ip::Packet;
-        using ConnectionType = Connection<Ip>;
-        using EventType      = ConnectionEvent<Ip>;
+        using Policy         = CongestionControl;
+        using ConnectionType = Connection<Ip, CongestionControl>;
+        using EventType      = ConnectionEvent<Ip, CongestionControl>;
         using Sequence       = wire::TcpSequence;
 
         /// Validates and throws std::invalid_argument; allocates everything; sends nothing.
         Stack(Ip& ip, loop::TimerWheel& wheel, const TcpConfig& config)
             : ip_{&ip},
               wheel_{&wheel},
-              config_{validated(config, ip.max_l4_size())},
+              config_{validated(config, ip.max_l4_size(), wheel.resolution())},
               mss_{static_cast<std::uint16_t>(ip.max_l4_size() - wire::TcpHeader::size)},
               byte_budget_{static_cast<std::uint32_t>(std::min<std::uint64_t>(
                   std::uint64_t{config_.receive_segments} * mss_, std::numeric_limits<std::uint16_t>::max()))},
@@ -232,7 +237,7 @@ namespace aloe::tcp {
         }
 
     private:
-        friend class Connection<Ip>;
+        friend class Connection<Ip, CongestionControl>;
 
         using Datagram  = net::Datagram<Packet>;
         using EventList = detail::ConnectionList<ConnectionType, &ConnectionType::event_link_>;
@@ -409,6 +414,7 @@ namespace aloe::tcp {
             conn.wl1_      = header.sequence;
             conn.wl2_      = header.acknowledgement;
             conn.state_    = State::Established;
+            CongestionControl::reset(conn.congestion_, conn.mss());
             wheel_->cancel(conn.timer_);
             conn.tries_           = 0;
             conn.unresolved_wait_ = false;
@@ -519,7 +525,8 @@ namespace aloe::tcp {
                 }
                 conn.snd_una_ = ack;
                 conn.state_   = State::Established;
-                conn.owned_   = true;
+                CongestionControl::reset(conn.congestion_, conn.mss());
+                conn.owned_ = true;
                 wheel_->cancel(conn.timer_);
                 conn.tries_           = 0;
                 conn.unresolved_wait_ = false;
@@ -1039,9 +1046,8 @@ namespace aloe::tcp {
         }
 
         void arm_retry(ConnectionType& conn) noexcept {
-            const core::Duration delay = conn.unresolved_wait_
-                                             ? config_.unresolved_retry
-                                             : config_.retry_initial * (std::int64_t{1} << conn.tries_);
+            const core::Duration delay = conn.unresolved_wait_ ? config_.unresolved_retry
+                                                               : config_.rto_initial * (std::int64_t{1} << conn.tries_);
             wheel_->arm(conn.timer_, now_ + delay);
         }
 
@@ -1191,11 +1197,15 @@ namespace aloe::tcp {
             free_slot(conn);
         }
 
-        [[nodiscard]] static TcpConfig validated(const TcpConfig& config, const std::uint16_t max_l4_size) {
+        [[nodiscard]] static TcpConfig
+        validated(const TcpConfig& config, const std::uint16_t max_l4_size, const core::Duration resolution) {
             if (config.connections == 0 || config.listeners == 0 || config.receive_segments == 0 ||
                 config.receive_pool == 0) {
                 throw std::invalid_argument{
                     "TcpConfig: connections, listeners, receive_segments and receive_pool must be positive"};
+            }
+            if (config.send_segments == 0 || config.send_pool == 0) {
+                throw std::invalid_argument{"TcpConfig: send_segments and send_pool must be positive"};
             }
             if (config.connections > (std::size_t{1} << 30U)) {
                 throw std::invalid_argument{"TcpConfig: too many connections for a 32-bit index"};
@@ -1203,21 +1213,38 @@ namespace aloe::tcp {
             if (config.ephemeral_first == 0 || config.ephemeral_first > config.ephemeral_last) {
                 throw std::invalid_argument{"TcpConfig: the ephemeral range must be non-empty and exclude port 0"};
             }
-            if (config.retry_initial <= core::Duration::zero() || config.unresolved_retry <= core::Duration::zero()) {
-                throw std::invalid_argument{"TcpConfig: retry_initial and unresolved_retry must be positive"};
+            if (config.rto_initial <= core::Duration::zero() || config.unresolved_retry <= core::Duration::zero()) {
+                throw std::invalid_argument{"TcpConfig: rto_initial and unresolved_retry must be positive"};
             }
-            if (config.retries == 0) {
-                throw std::invalid_argument{"TcpConfig: retries must be positive"};
+            if (config.rto_min <= core::Duration::zero() || config.rto_min < resolution) {
+                throw std::invalid_argument{
+                    "TcpConfig: rto_min must be positive and at least the timer wheel's resolution"};
+            }
+            if (config.rto_min > config.rto_initial || config.rto_initial > config.rto_max) {
+                throw std::invalid_argument{"TcpConfig: rto_min <= rto_initial <= rto_max must hold"};
+            }
+            if (config.rto_max.count() > core::Duration::max().count() / 4) {
+                throw std::invalid_argument{"TcpConfig: rto_max must fit a quarter of core::Duration"};
+            }
+            if (config.user_timeout < core::Duration::zero() || config.user_timeout > core::Duration::max() / 4) {
+                throw std::invalid_argument{
+                    "TcpConfig: user_timeout must not be negative and must fit a quarter of core::Duration"};
+            }
+            if (config.retries == 0 || config.data_retries == 0) {
+                throw std::invalid_argument{"TcpConfig: retries and data_retries must be positive"};
+            }
+            if (config.data_retries >= 63) {
+                throw std::invalid_argument{"TcpConfig: data_retries must be below 63"};
             }
             if (config.unresolved_polls == 0) {
                 throw std::invalid_argument{"TcpConfig: unresolved_polls must be positive"};
             }
-            // Bounds the longest delay, retry_initial * 2^retries, and the whole schedule, retry_initial *
+            // Bounds the longest delay, rto_initial * 2^retries, and the whole schedule, rto_initial *
             // (2^(retries+1) - 1), to a quarter of core::Duration's range, so neither arm_retry's shift nor now + delay
             // can overflow.
             if (config.retries >= 63 ||
-                config.retry_initial.count() > (core::Duration::max().count() / 4) >> config.retries) {
-                throw std::invalid_argument{"TcpConfig: retry_initial doubled retries times must fit core::Duration"};
+                config.rto_initial.count() > (core::Duration::max().count() / 4) >> config.retries) {
+                throw std::invalid_argument{"TcpConfig: rto_initial doubled retries times must fit core::Duration"};
             }
             if (max_l4_size <= wire::TcpHeader::size) {
                 throw std::invalid_argument{"TcpConfig: the MTU leaves no room for a TCP segment"};

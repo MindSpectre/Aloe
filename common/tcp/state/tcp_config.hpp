@@ -45,14 +45,24 @@ namespace aloe::tcp {
     inline constexpr std::uint16_t default_peer_mss = 536;
 
     struct TcpConfig {
-        std::size_t connections         = 1024;  ///< Slots per shard.
-        std::size_t listeners           = 8;
-        std::size_t receive_segments    = 32;  ///< Hard cap on held packets per connection; sizes the byte budget too.
-        std::size_t receive_pool        = 2048;   ///< Shared retained-packet nodes per shard.
-        std::uint16_t ephemeral_first   = 32768;  ///< `connect`'s local ports, inclusive.
-        std::uint16_t ephemeral_last    = 60999;
-        core::Duration retry_initial    = std::chrono::seconds{1};        ///< SYN, SYN-ACK, FIN: doubles per try.
-        std::uint8_t retries            = 5;                              ///< Retransmissions before TimedOut.
+        std::size_t connections       = 1024;  ///< Slots per shard.
+        std::size_t listeners         = 8;
+        std::size_t receive_segments  = 32;     ///< Hard cap on held packets per connection; sizes the byte budget too.
+        std::size_t receive_pool      = 2048;   ///< Shared retained-packet nodes per shard.
+        std::size_t send_segments     = 32;     ///< Hard cap on queued segments per connection: the send cap.
+        std::size_t send_pool         = 2048;   ///< Shared retransmission-queue nodes per shard.
+        std::uint16_t ephemeral_first = 32768;  ///< `connect`'s local ports, inclusive.
+        std::uint16_t ephemeral_last  = 60999;
+        core::Duration rto_initial    = std::chrono::seconds{1};  ///< The RTO before the first round-trip sample.
+        core::Duration rto_min        = std::chrono::milliseconds{200};  ///< Linux's TCP_RTO_MIN.
+        core::Duration rto_max        = std::chrono::seconds{120};       ///< Linux's TCP_RTO_MAX.
+        std::uint8_t retries          = 5;  ///< SYN and SYN-ACK retransmits before TimedOut.
+        std::uint8_t data_retries =
+            15;  ///< Data and FIN retransmits, and unanswered zero-window probes, before TimedOut.
+        core::Duration user_timeout =
+            core::Duration::zero();  ///< RFC 5482: unacknowledged this long ends the connection; zero is off.
+        bool timestamps                 = true;  ///< Offer and use RFC 7323 timestamps.
+        std::uint8_t retransmit_defers  = 1;     ///< Deferred resends of one segment before the copy fallback.
         core::Duration unresolved_retry = std::chrono::milliseconds{10};  ///< A SYN waiting for ARP; not a try.
         std::uint16_t unresolved_polls  = 300;  ///< Polls before Unresolved: 3 s by default, Linux's ARP bound.
     };

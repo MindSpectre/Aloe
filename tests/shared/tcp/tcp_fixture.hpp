@@ -11,9 +11,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -23,6 +25,77 @@
 #include <tcp_test_device.hpp>
 
 namespace aloe::testing {
+
+    /// A congestion control that only records what the stack told it: for tests of which hook fires when, with what.
+    struct RecordingCongestionControl {
+        struct State {
+            std::uint32_t calls = 0;
+            std::string_view last_hook{};
+            std::uint32_t last_flight = 0;
+            std::uint32_t last_acked  = 0;
+            std::optional<core::Duration> last_rtt{};
+            std::uint64_t last_delivered         = 0;
+            std::uint64_t last_delivered_at_send = 0;
+            bool last_app_limited                = false;
+        };
+
+        static constexpr void reset(State& state, const std::uint16_t /*mss*/) noexcept {
+            state           = State{};
+            state.last_hook = "reset";
+        }
+
+        [[nodiscard]] static constexpr std::uint32_t window(const State& /*state*/) noexcept {
+            return std::numeric_limits<std::uint32_t>::max();
+        }
+
+        static constexpr void on_ack(State& state, const tcp::AckInfo& info) noexcept {
+            ++state.calls;
+            state.last_hook              = "on_ack";
+            state.last_acked             = info.acked;
+            state.last_flight            = info.flight;
+            state.last_rtt               = info.rtt;
+            state.last_delivered         = info.delivered;
+            state.last_delivered_at_send = info.delivered_at_send;
+            state.last_app_limited       = info.app_limited;
+        }
+
+        static constexpr void on_loss(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook   = "on_loss";
+            state.last_flight = flight;
+        }
+
+        static constexpr void on_dupack(State& state, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook = "on_dupack";
+        }
+
+        static constexpr void
+        on_partial_ack(State& state, const std::uint32_t acked, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook  = "on_partial_ack";
+            state.last_acked = acked;
+        }
+
+        static constexpr void
+        on_recovery_end(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook   = "on_recovery_end";
+            state.last_flight = flight;
+        }
+
+        static constexpr void
+        on_timeout(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook   = "on_timeout";
+            state.last_flight = flight;
+        }
+
+        static constexpr void on_idle(State& state, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook = "on_idle";
+        }
+    };
 
     inline constexpr std::uint16_t tcp_listen_port   = 7;
     inline constexpr std::uint16_t tcp_peer_port     = 40000;
@@ -81,12 +154,12 @@ namespace aloe::testing {
      * fabric, runs a receive pass over what it delivered and advances the wheel; `collect` flushes TCP and the queue
      * and returns what the harness port received. No fatal assertion lives in a helper that returns a value.
      */
-    template <device::IsDevice Device>
+    template <device::IsDevice Device, typename CongestionControl = tcp::NewReno>
     class TcpHarness {
     public:
         using Packet     = typename Device::Packet;
         using Ipv4       = net::Ipv4<Device>;
-        using Tcp        = tcp::Stack<Ipv4>;
+        using Tcp        = tcp::Stack<Ipv4, CongestionControl>;
         using Connection = typename Tcp::ConnectionType;
         using Event      = typename Tcp::EventType;
         using TimePoint  = core::TimePoint;

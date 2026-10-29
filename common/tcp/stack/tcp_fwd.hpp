@@ -16,13 +16,15 @@
 
 namespace aloe::tcp {
 
-    template <typename Ip>
+    struct NewReno;
+
+    template <typename Ip, typename CongestionControl>
     class Connection;
 
-    template <typename Ip>
+    template <typename Ip, typename CongestionControl>
     struct ConnectionEvent;
 
-    template <typename Ip>
+    template <typename Ip, typename CongestionControl = NewReno>
     class Stack;
 
     /// What the brick asks of the IP layer below it: `net::Ipv4<Device>`, or anything with these members.
