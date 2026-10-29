@@ -1,3 +1,4 @@
+#include <aloe/frames>
 #include <aloe/scenario>
 #include <aloe/wire>
 #include <cstddef>
@@ -70,4 +71,13 @@ TEST(Match, LengthAndRangeBothCount) {
     };
     EXPECT_EQ(match(line_of("+0 > P. 1:1001(1000) ack 1\n"), data, TcpSequence{}), std::nullopt);
     EXPECT_EQ(match(line_of("+0 > P. 1:501(500) ack 1\n"), data, TcpSequence{}), "sequence differs");
+}
+
+TEST(Match, ATimestampLineMatchesTheValueTheSegmentCarries) {
+    auto seen       = syn_ack();
+    seen.options    = aloe::frames::timestamps_option(200, 777);
+    const auto line = line_of("+0 > S. 0:0(0) ack 1 <nop,nop,TS val 200 ecr 777>\n");
+    EXPECT_EQ(match(line, seen, TcpSequence{}), std::nullopt);
+    seen.options = aloe::frames::timestamps_option(201, 777);
+    EXPECT_EQ(match(line, seen, TcpSequence{}), "options differ");
 }

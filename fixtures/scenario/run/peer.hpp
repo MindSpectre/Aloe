@@ -44,9 +44,16 @@ namespace aloe::scenario {
         /// The base an inbound packet line's sack blocks are relative to: the stack's ISN, or zero until it is known.
         [[nodiscard]] wire::TcpSequence inbound_sack_base() const noexcept;
 
+        /// The timestamp value of the first segment the stack sent with the option; script times are relative to it.
+        [[nodiscard]] std::optional<std::uint32_t> stack_timestamp_base() const noexcept;
+
+        /// The base an inbound line's `ecr` is relative to: the stack's first timestamp value, or zero until known.
+        [[nodiscard]] std::uint32_t inbound_timestamp_base() const noexcept;
+
     private:
         wire::TcpSequence isn_;
         std::optional<wire::TcpSequence> stack_isn_{};
+        std::optional<std::uint32_t> timestamp_base_{};
         std::uint16_t peer_port_;
         std::uint16_t stack_port_;
     };

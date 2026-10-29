@@ -175,7 +175,9 @@ namespace aloe::scenario {
         if (auto reached = reach(event); !reached) {
             return reached;
         }
-        auto options = encode_options(line.options, peer_.inbound_sack_base());  // the base the steps may have fixed
+        auto options = encode_options(line.options,
+                                      peer_.inbound_sack_base(),
+                                      peer_.inbound_timestamp_base());  // the base the steps may have fixed
         if (options.size() % option_alignment != 0) {
             return fail(event, "inbound options must be a multiple of 4 bytes; pad with nop");
         }

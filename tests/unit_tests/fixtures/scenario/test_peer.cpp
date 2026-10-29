@@ -28,7 +28,8 @@ namespace {
                                          const TcpSequence acknowledgement,
                                          const std::uint16_t stack_port,
                                          const std::vector<std::byte>& payload = {},
-                                         const bool with_mss                   = false) {
+                                         const bool with_mss                   = false,
+                                         const std::vector<std::byte>& options = {}) {
         aloe::frames::TcpSpec spec{.destination_mac  = peer_mac,
                                    .source_mac       = stack_mac,
                                    .source           = stack_ip,
@@ -39,7 +40,9 @@ namespace {
                                    .acknowledgement  = acknowledgement,
                                    .flags            = flags,
                                    .window           = 46720};
-        if (with_mss) {
+        if (!options.empty()) {
+            spec.options = options;
+        } else if (with_mss) {
             spec.mss = 1460;
         }
         return aloe::frames::parse_frame(aloe::frames::tcp_frame(spec, payload)).value();
@@ -102,4 +105,23 @@ TEST(Peer, ANonTcpFrameIsNotObserved) {
         aloe::frames::arp_request(stack_mac, stack_ip, peer_ip), aloe::wire::MacAddress::broadcast()));
     ASSERT_TRUE(arp.has_value());
     EXPECT_FALSE(peer.observe(*arp).has_value());
+}
+
+TEST(Peer, TheFirstTimestampFixesTheBaseAndLaterValuesBecomeRelative) {
+    Peer peer{peer_isn, 40000, 8080};
+    EXPECT_FALSE(peer.stack_timestamp_base().has_value());
+    EXPECT_EQ(peer.inbound_timestamp_base(), 0U);
+    auto syn_options = aloe::frames::mss_option(1460);
+    const auto ts    = aloe::frames::timestamps_option(123456, 0);
+    syn_options.insert(syn_options.end(), ts.begin(), ts.end());
+    const auto seen =
+        peer.observe(from_stack({TcpFlag::Syn, TcpFlag::Ack}, stack_isn, peer_isn + 1, 8080, {}, false, syn_options));
+    ASSERT_TRUE(seen.has_value());
+    EXPECT_EQ(peer.stack_timestamp_base(), 123456U);
+    EXPECT_EQ(peer.inbound_timestamp_base(), 123456U);
+    EXPECT_EQ(aloe::scenario::describe_options(seen->options, peer_isn), "mss 1460,nop,nop,TS val 0 ecr 0");
+    const auto later = peer.observe(from_stack(
+        {TcpFlag::Ack}, stack_isn + 1, peer_isn + 1, 8080, {}, false, aloe::frames::timestamps_option(123656, 777)));
+    ASSERT_TRUE(later.has_value());
+    EXPECT_EQ(aloe::scenario::describe_options(later->options, peer_isn), "nop,nop,TS val 200 ecr 777");
 }

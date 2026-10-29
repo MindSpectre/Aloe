@@ -3,6 +3,7 @@
 #include <aloe/core>
 #include <aloe/wire>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <string>
 #include <vector>
@@ -11,9 +12,11 @@
 
 namespace aloe::scenario {
 
-    /// The option list as header bytes, in the order written; sack blocks get `sack_base` added. `any` has no
+    /// The option list as header bytes, in the order written; sack blocks get `sack_base` added and a timestamp's echo
+    /// `timestamp_echo_base`. `any` has no
     /// encoding (asserted).
-    [[nodiscard]] std::vector<std::byte> encode_options(const Options& options, wire::TcpSequence sack_base);
+    [[nodiscard]] std::vector<std::byte>
+    encode_options(const Options& options, wire::TcpSequence sack_base, std::uint32_t timestamp_echo_base = 0);
 
     /// Header bytes back into the script's words, sack blocks minus `sack_base`; an unknown kind as `kind N`;
     /// malformed bytes as `bad options`.

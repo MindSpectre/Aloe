@@ -67,7 +67,8 @@ namespace aloe::scenario {
 
     }  // namespace
 
-    std::vector<std::byte> encode_options(const Options& options, const wire::TcpSequence sack_base) {
+    std::vector<std::byte>
+    encode_options(const Options& options, const wire::TcpSequence sack_base, const std::uint32_t timestamp_echo_base) {
         assert(!options.any);
         std::vector<std::byte> out;
         for (const TcpOption& option : options.list) {
@@ -105,7 +106,7 @@ namespace aloe::scenario {
                     put(out, kind_timestamps);
                     put(out, static_cast<std::uint8_t>(timestamps_size));
                     put32(out, option.value);
-                    put32(out, option.echo);
+                    put32(out, option.echo + timestamp_echo_base);
                     break;
             }
         }
