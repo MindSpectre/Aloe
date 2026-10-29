@@ -28,6 +28,10 @@ written from the RFCs and from what Aloe does, and its opening comment says wher
   `inject`, `step`, `flush` and `collect` are the parts the runner composes; a `Collected` is one frame the
   peer's port received, parsed, with a verdict on each checksum the stack wrote.
 - **`aloe::scenario::Runner`**, **`RunnerConfig`**, **`Failure`**, **`format(failure, path)`** --
+  `Harness` and `Runner` run the brick under `tcp::NewReno`; `NoCongestionHarness` and `NoCongestionRunner` are the
+  same classes over `tcp::NoCongestionControl` (`BasicHarness` and `BasicRunner` are the templates). The scripts
+  binary registers each script once per policy its `--congestion` line allows and once per checksum mode, as
+  `<path>/<NewReno|NoCongestion>/<NoOffloads|Checksums>`.
   `Runner{harness, script, config}.run()` executes the script once and returns `std::expected<void, Failure>`.
   `RunnerConfig` holds the `tolerance`, one millisecond unless the script's `--tolerance_usecs` says otherwise,
   and `any_bound`, how long a `*` line waits, 120 seconds. A `Failure` is the script line and a message in the
@@ -77,8 +81,12 @@ The runner accepts this subset of packetdrill's syntax and fails a script at par
 the column, for anything outside it:
 
 - **Comments and blank lines.** `//` to the end of the line, inside a quoted string too.
-- **Option lines** before the first event: `--tolerance_usecs=n`. Any other name is a parse error, and so is an
-  option line after the first event, so the dialect grows deliberately.
+- **Option lines** before the first event, each at most once: `--tolerance_usecs=n`; `--tcp_rto_min_ms`,
+  `--tcp_rto_max_ms`, `--tcp_rto_initial_ms`, `--tcp_user_timeout_ms` (milliseconds), `--tcp_retries`,
+  `--tcp_data_retries`, `--tcp_retransmit_defers` (0 to 255), `--tcp_send_segments` and `--tcp_timestamps=0|1`, which
+  set the harness's `TcpConfig` for that script (`configured(config, script)` applies them); and
+  `--congestion=newreno|none|both`, the policies the script runs under (`both` when absent). Any other name is a
+  parse error, and so is an option line after the first event, so the dialect grows deliberately.
 - **Backtick lines** are a parse error: the runner has no shell, and what a corpus script sets that way is the
   harness's configuration.
 - **Event times.** `+t` after the previous event, `t` since the script's start, a window `t1~t2` or `+a~+b`, and
@@ -113,7 +121,7 @@ and line, never silently:
 | `listen(n, backlog) = 0`                                                 | `tcp.listen(port)` on a bound socket, which becomes a listener. A `ListenError` fails with its name.                                                                                         |
 | `accept(n, ..., ...) = m`                                                | Takes the oldest connection the stack raised `Accepted` for and makes it descriptor `m`. With none pending the call is unsatisfied.                                                          |
 | `connect(n, ..., ...) = 0`, or `= -1 EINPROGRESS (...)`                  | `tcp.connect` to the harness's peer at the call's stamp; `n` becomes the connection. A `ConnectError` fails with its name.                                                                   |
-| `write(n, ..., count) = count`, `send(n, ..., count, 0) = count`         | `prepare` and `commit` until `count` bytes are committed, each segment as large as `prepare` allows, filled with `frames::pattern`. Fewer fails with the count accepted.                     |
+| `write(n, ..., count) = count`, `send(n, ..., count, 0) = count`         | `prepare` and `commit` until `count` bytes are committed, each segment as large as `prepare` allows, filled with `frames::pattern`. A `write` passes when the bytes accepted equal its expected result, so a send cap that accepts fewer than `count` is written `= accepted`; any other result fails with the count accepted.                     |
 | `read(n, ..., count) = m`, `recv(n, ..., count, 0) = m`                  | `m > 0` needs `min(unread, count) == m` and consumes `m` bytes; `m == 0` needs the peer's FIN with nothing unread; `-1` needs its errno word's condition. Nothing unread yet is unsatisfied. |
 | `close(n) = 0`                                                           | On a listener, `unlisten`. On a connection, `close()`, a FIN after what was committed; the slot is released at the connection's terminal event.                                              |
 | `shutdown(n, SHUT_WR) = 0`                                               | `close()` on the connection, which stays readable.                                                                                                                                           |

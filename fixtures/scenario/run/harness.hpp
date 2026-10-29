@@ -13,6 +13,8 @@
 #include <span>
 #include <vector>
 
+#include <script.hpp>
+
 namespace aloe::scenario {
 
     struct HarnessConfig {
@@ -43,16 +45,17 @@ namespace aloe::scenario {
      *
      * Both MACs are learned, so no ARP is needed. The runner composes `inject`, `step`, `flush` and `collect`.
      */
-    class Harness {
+    template <typename CongestionControl>
+    class BasicHarness {
     public:
         using Packet     = fabric::Packet;
         using Ip         = net::Ipv4<fabric::Port>;
-        using Tcp        = tcp::Stack<Ip>;
+        using Tcp        = tcp::Stack<Ip, CongestionControl>;
         using Connection = Tcp::ConnectionType;
         using Event      = Tcp::EventType;
 
         /// Both MACs learned; nothing listening.
-        explicit Harness(const HarnessConfig& config);
+        explicit BasicHarness(const HarnessConfig& config);
 
         [[nodiscard]] const HarnessConfig& config() const noexcept {
             return config_;
@@ -114,5 +117,14 @@ namespace aloe::scenario {
         Tcp tcp_;
         std::vector<Packet> burst_;
     };
+
+    using Harness             = BasicHarness<tcp::NewReno>;
+    using NoCongestionHarness = BasicHarness<tcp::NoCongestionControl>;
+
+    extern template class BasicHarness<tcp::NewReno>;
+    extern template class BasicHarness<tcp::NoCongestionControl>;
+
+    /// `base` with every option the script's `--tcp_*` lines set applied to its `tcp`.
+    [[nodiscard]] HarnessConfig configured(HarnessConfig base, const Script& script);
 
 }  // namespace aloe::scenario

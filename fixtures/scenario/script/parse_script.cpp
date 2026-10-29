@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <aloe/core>
 #include <aloe/wire>
+#include <array>
 #include <charconv>
 #include <chrono>
 #include <cstddef>
@@ -615,28 +616,167 @@ namespace aloe::scenario {
                 return call;
             }
 
+            /// A number of milliseconds for a `--tcp_*_ms` line.
+            [[nodiscard]] std::expected<core::Duration, ParseError> take_milliseconds(Cursor& cursor) {
+                const auto millis = take_unsigned<std::int64_t>(cursor, "a number of milliseconds");
+                if (!millis) {
+                    return std::unexpected{millis.error()};
+                }
+                return std::chrono::duration_cast<core::Duration>(std::chrono::milliseconds{*millis});
+            }
+
+            /// Parses the value with `take` and stores it in `field`; a field already set is a repeat.
+            template <typename T, typename Take>
+            [[nodiscard]] std::expected<void, ParseError> set_option(Cursor& cursor,
+                                                                     std::optional<T>& field,
+                                                                     const std::size_t column,
+                                                                     const std::string_view name,
+                                                                     Take&& take) {
+                if (field) {
+                    return fail(column, "option '--" + std::string{name} + "' given twice");
+                }
+                auto value = take(cursor);
+                if (!value) {
+                    return std::unexpected{value.error()};
+                }
+                field = *value;
+                return {};
+            }
+
+            template <typename T>
+            [[nodiscard]] std::expected<void, ParseError>
+            set_count(Cursor& cursor, std::optional<T>& field, const std::size_t column, const std::string_view name) {
+                return set_option(
+                    cursor, field, column, name, [](Cursor& at) { return take_unsigned<T>(at, "a count"); });
+            }
+
+            [[nodiscard]] std::expected<void, ParseError> set_duration(Cursor& cursor,
+                                                                       std::optional<core::Duration>& field,
+                                                                       const std::size_t column,
+                                                                       const std::string_view name) {
+                return set_option(cursor, field, column, name, take_milliseconds);
+            }
+
+            [[nodiscard]] std::expected<bool, ParseError> take_flag(Cursor& cursor) {
+                const auto value = take_unsigned<std::uint8_t>(cursor, "0 or 1");
+                if (!value) {
+                    return std::unexpected{value.error()};
+                }
+                if (*value > 1) {
+                    return fail(cursor.column(), "expected 0 or 1");
+                }
+                return *value == 1;
+            }
+
+            [[nodiscard]] std::expected<CongestionChoice, ParseError> take_congestion(Cursor& cursor) {
+                const std::size_t column     = cursor.column();
+                const std::string_view value = cursor.take_word();
+                if (value == "newreno") {
+                    return CongestionChoice::NewReno;
+                }
+                if (value == "none") {
+                    return CongestionChoice::None;
+                }
+                if (value == "both") {
+                    return CongestionChoice::Both;
+                }
+                return fail(column, "expected newreno, none or both");
+            }
+
+            /// The value of `--name=`, applied to the script.
+            [[nodiscard]] std::expected<void, ParseError> apply_option(Cursor& cursor,
+                                                                       Script& script,
+                                                                       bool& congestion_given,
+                                                                       const std::size_t column,
+                                                                       const std::string_view name) {
+                ScriptTcpOptions& tcp = script.tcp;
+                if (name == "tolerance_usecs") {
+                    const auto micros = take_unsigned<std::int64_t>(cursor, "a number of microseconds");
+                    if (!micros) {
+                        return std::unexpected{micros.error()};
+                    }
+                    script.tolerance = std::chrono::duration_cast<core::Duration>(std::chrono::microseconds{*micros});
+                    return {};
+                }
+                if (name == "tcp_rto_min_ms") {
+                    return set_duration(cursor, tcp.rto_min, column, name);
+                }
+                if (name == "tcp_rto_max_ms") {
+                    return set_duration(cursor, tcp.rto_max, column, name);
+                }
+                if (name == "tcp_rto_initial_ms") {
+                    return set_duration(cursor, tcp.rto_initial, column, name);
+                }
+                if (name == "tcp_user_timeout_ms") {
+                    return set_duration(cursor, tcp.user_timeout, column, name);
+                }
+                if (name == "tcp_retries") {
+                    return set_count(cursor, tcp.retries, column, name);
+                }
+                if (name == "tcp_data_retries") {
+                    return set_count(cursor, tcp.data_retries, column, name);
+                }
+                if (name == "tcp_retransmit_defers") {
+                    return set_count(cursor, tcp.retransmit_defers, column, name);
+                }
+                if (name == "tcp_send_segments") {
+                    return set_count(cursor, tcp.send_segments, column, name);
+                }
+                if (name == "tcp_timestamps") {
+                    return set_option(cursor, tcp.timestamps, column, name, take_flag);
+                }
+                if (name == "congestion") {
+                    if (congestion_given) {
+                        return fail(column, "option '--congestion' given twice");
+                    }
+                    const auto choice = take_congestion(cursor);
+                    if (!choice) {
+                        return std::unexpected{choice.error()};
+                    }
+                    script.congestion = *choice;
+                    congestion_given  = true;
+                    return {};
+                }
+                return fail(column, "unknown option '--" + std::string{name} + "'");
+            }
+
+            constexpr std::array option_names{std::string_view{"tolerance_usecs"},
+                                              std::string_view{"tcp_rto_min_ms"},
+                                              std::string_view{"tcp_rto_max_ms"},
+                                              std::string_view{"tcp_rto_initial_ms"},
+                                              std::string_view{"tcp_user_timeout_ms"},
+                                              std::string_view{"tcp_retries"},
+                                              std::string_view{"tcp_data_retries"},
+                                              std::string_view{"tcp_retransmit_defers"},
+                                              std::string_view{"tcp_send_segments"},
+                                              std::string_view{"tcp_timestamps"},
+                                              std::string_view{"congestion"}};
+
+            [[nodiscard]] bool is_option(const std::string_view name) noexcept {
+                return std::ranges::find(option_names, name) != option_names.end();
+            }
+
             /// `--name=value`, applied to the script; only before its first event.
-            [[nodiscard]] std::expected<void, ParseError> parse_option_line(Cursor& cursor, Script& script) {
+            [[nodiscard]] std::expected<void, ParseError>
+            parse_option_line(Cursor& cursor, Script& script, bool& congestion_given) {
                 const std::size_t column = cursor.column();
                 if (!script.events.empty()) {
                     return fail(column, "an option line after the first event");
                 }
                 cursor.consume_text("--");
                 const std::string_view name = cursor.take_word();
-                if (name != "tolerance_usecs") {
+                if (!is_option(name)) {
                     return fail(column, "unknown option '--" + std::string{name} + "'");
                 }
                 if (!cursor.consume('=')) {
                     return fail(cursor.column(), "expected '=' after '--" + std::string{name} + "'");
                 }
-                const auto micros = take_unsigned<std::int64_t>(cursor, "a number of microseconds");
-                if (!micros) {
-                    return std::unexpected{micros.error()};
+                if (auto applied = apply_option(cursor, script, congestion_given, column, name); !applied) {
+                    return applied;
                 }
                 if (!cursor.at_end()) {
                     return fail(cursor.column(), "unexpected '" + std::string{cursor.rest()} + "'");
                 }
-                script.tolerance = std::chrono::duration_cast<core::Duration>(std::chrono::microseconds{*micros});
                 return {};
             }
 
@@ -687,6 +827,7 @@ namespace aloe::scenario {
         Script script;
         std::size_t line_number = 0;
         std::size_t start       = 0;
+        bool congestion_given   = false;
         while (start <= text.size()) {
             const std::size_t newline   = std::min(text.find('\n', start), text.size());
             const std::string_view line = detail::strip(text.substr(start, newline - start));
@@ -698,7 +839,7 @@ namespace aloe::scenario {
             detail::Cursor cursor{line};
             cursor.skip_spaces();
             if (cursor.rest().starts_with("--")) {
-                if (auto option = detail::parse_option_line(cursor, script); !option) {
+                if (auto option = detail::parse_option_line(cursor, script, congestion_given); !option) {
                     ParseError error = option.error();
                     error.line       = line_number;
                     return std::unexpected{std::move(error)};

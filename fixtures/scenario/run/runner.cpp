@@ -133,7 +133,8 @@ namespace aloe::scenario {
 
     }  // namespace
 
-    Runner::Runner(Harness& harness, const Script& script, const RunnerConfig& config)
+    template <typename HarnessT>
+    BasicRunner<HarnessT>::BasicRunner(HarnessT& harness, const Script& script, const RunnerConfig& config)
         : harness_{&harness},
           script_{&script},
           config_{config},
@@ -143,7 +144,8 @@ namespace aloe::scenario {
         }
     }
 
-    std::expected<void, Failure> Runner::run() {
+    template <typename HarnessT>
+    std::expected<void, Failure> BasicRunner<HarnessT>::run() {
         for (const Event& event : script_->events) {
             if (auto done = run_event(event); !done) {
                 return done;
@@ -152,7 +154,8 @@ namespace aloe::scenario {
         return check_end();
     }
 
-    Runner::Outcome Runner::run_event(const Event& event) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::run_event(const Event& event) {
         if (const auto* call = std::get_if<CallLine>(&event.action)) {
             return run_call(event, *call);
         }
@@ -160,7 +163,9 @@ namespace aloe::scenario {
         return line.direction == Direction::Inbound ? run_inbound(event, line) : run_outbound(event, line);
     }
 
-    Runner::Outcome Runner::run_inbound(const Event& event, const PacketLine& line) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::run_inbound(const Event& event,
+                                                                               const PacketLine& line) {
         if (line.options.any) {
             return fail(event, "inbound options must be written");
         }
@@ -192,7 +197,9 @@ namespace aloe::scenario {
         return settle(event);
     }
 
-    Runner::Outcome Runner::run_outbound(const Event& event, const PacketLine& line) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::run_outbound(const Event& event,
+                                                                                const PacketLine& line) {
         const Window window        = window_of(event);
         const core::TimePoint last = window.high + config_.tolerance;
         while (queue_.empty() && now_ <= last) {
@@ -215,7 +222,8 @@ namespace aloe::scenario {
             std::format("missing: expected \"{}\" in window [{}..{}]", expected, at(window.low), at(window.high)));
     }
 
-    Runner::Outcome Runner::run_call(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::run_call(const Event& event, const CallLine& call) {
         if (auto reached = reach(event); !reached) {
             return reached;
         }
@@ -225,7 +233,8 @@ namespace aloe::scenario {
         return settle(event);
     }
 
-    Runner::Outcome Runner::check_end() const {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::check_end() const {
         if (queue_.empty()) {
             return {};
         }
@@ -237,7 +246,8 @@ namespace aloe::scenario {
                                 at(head.stamp)));
     }
 
-    Runner::Outcome Runner::reach(const Event& event) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::reach(const Event& event) {
         const core::TimePoint low = window_of(event).low;
         if (event.time.kind == TimeSpec::Kind::Absolute && low < now_) {
             return fail(event, std::format("time goes backwards: {} is before {}", at(low), at(now_)));
@@ -250,7 +260,8 @@ namespace aloe::scenario {
         return {};
     }
 
-    Runner::Outcome Runner::settle(const Event& event) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::settle(const Event& event) {
         drain_events();
         harness_->flush(now_);
         if (auto collected = collect(event); !collected) {
@@ -260,7 +271,9 @@ namespace aloe::scenario {
         return {};
     }
 
-    Runner::Outcome Runner::take_head(const Event& event, const PacketLine& line, const Window window) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome
+    BasicRunner<HarnessT>::take_head(const Event& event, const PacketLine& line, const Window window) {
         const Seen& head             = queue_.front();
         const wire::TcpSequence base = peer_.outbound_sack_base();
         const std::string seen =
@@ -284,7 +297,8 @@ namespace aloe::scenario {
         return {};
     }
 
-    Runner::Outcome Runner::step(const Event& event) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::step(const Event& event) {
         now_ += harness_->config().resolution;
         harness_->step(now_);
         drain_events();
@@ -292,7 +306,8 @@ namespace aloe::scenario {
         return collect(event);
     }
 
-    Runner::Outcome Runner::collect(const Event& event) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::collect(const Event& event) {
         for (const Collected& item : harness_->collect()) {
             auto segment = peer_.observe(item.frame);
             if (!segment) {
@@ -305,14 +320,16 @@ namespace aloe::scenario {
         return {};
     }
 
-    void Runner::drain_events() {
+    template <typename HarnessT>
+    void BasicRunner<HarnessT>::drain_events() {
         while (const auto polled = harness_->tcp().poll_event()) {
             on_event(*polled);
         }
     }
 
-    void Runner::on_event(const Harness::Event& polled) {
-        Harness::Connection* connection             = polled.connection;
+    template <typename HarnessT>
+    void BasicRunner<HarnessT>::on_event(const typename HarnessT::Event& polled) {
+        typename HarnessT::Connection* connection   = polled.connection;
         const stream::Events events                 = polled.events;
         const std::optional<stream::Event> terminal = terminal_of(events);
         const auto bound                            = std::ranges::find_if(
@@ -348,7 +365,8 @@ namespace aloe::scenario {
         }
     }
 
-    Runner::Window Runner::window_of(const Event& event) const {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Window BasicRunner<HarnessT>::window_of(const Event& event) const {
         const TimeSpec& time = event.time;
         switch (time.kind) {
             case TimeSpec::Kind::Relative:
@@ -361,22 +379,23 @@ namespace aloe::scenario {
         std::unreachable();
     }
 
-    Runner::Outcome Runner::invoke(const Event& event, const CallLine& call) {
-        using Bound                 = Outcome (Runner::*)(const Event&, const CallLine&);
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::invoke(const Event& event, const CallLine& call) {
+        using Bound                 = Outcome (BasicRunner<HarnessT>::*)(const Event&, const CallLine&);
         static constexpr auto calls = std::to_array<std::pair<std::string_view, Bound>>({
-            {"socket",     &Runner::call_socket    },
-            {"setsockopt", &Runner::call_setsockopt},
-            {"fcntl",      &Runner::call_fcntl     },
-            {"bind",       &Runner::call_bind      },
-            {"listen",     &Runner::call_listen    },
-            {"accept",     &Runner::call_accept    },
-            {"connect",    &Runner::call_connect   },
-            {"write",      &Runner::call_write     },
-            {"send",       &Runner::call_write     },
-            {"read",       &Runner::call_read      },
-            {"recv",       &Runner::call_read      },
-            {"close",      &Runner::call_close     },
-            {"shutdown",   &Runner::call_shutdown  },
+            {"socket",     &BasicRunner<HarnessT>::call_socket    },
+            {"setsockopt", &BasicRunner<HarnessT>::call_setsockopt},
+            {"fcntl",      &BasicRunner<HarnessT>::call_fcntl     },
+            {"bind",       &BasicRunner<HarnessT>::call_bind      },
+            {"listen",     &BasicRunner<HarnessT>::call_listen    },
+            {"accept",     &BasicRunner<HarnessT>::call_accept    },
+            {"connect",    &BasicRunner<HarnessT>::call_connect   },
+            {"write",      &BasicRunner<HarnessT>::call_write     },
+            {"send",       &BasicRunner<HarnessT>::call_write     },
+            {"read",       &BasicRunner<HarnessT>::call_read      },
+            {"recv",       &BasicRunner<HarnessT>::call_read      },
+            {"close",      &BasicRunner<HarnessT>::call_close     },
+            {"shutdown",   &BasicRunner<HarnessT>::call_shutdown  },
         });
         for (const auto& [name, bound] : calls) {
             if (name == call.name) {
@@ -386,11 +405,15 @@ namespace aloe::scenario {
         return fail(event, std::format("unbound call {}", call.name));
     }
 
-    Runner::Outcome Runner::call_socket(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::call_socket(const Event& event,
+                                                                               const CallLine& call) {
         return open_descriptor(event, call, call.result, Binding{});
     }
 
-    Runner::Outcome Runner::call_setsockopt(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::call_setsockopt(const Event& event,
+                                                                                   const CallLine& call) {
         if (auto found = descriptor(event, call); !found) {
             return std::unexpected{std::move(found.error())};
         }
@@ -402,7 +425,9 @@ namespace aloe::scenario {
         return expect_zero(event, call);
     }
 
-    Runner::Outcome Runner::call_fcntl(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::call_fcntl(const Event& event,
+                                                                              const CallLine& call) {
         // Accepted and ignored: every verb is non-blocking.
         if (auto found = descriptor(event, call); !found) {
             return std::unexpected{std::move(found.error())};
@@ -410,7 +435,8 @@ namespace aloe::scenario {
         return expect_zero(event, call);
     }
 
-    Runner::Outcome Runner::call_bind(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::call_bind(const Event& event, const CallLine& call) {
         auto found = descriptor_of(event, call, Binding::Kind::Socket);
         if (!found) {
             return std::unexpected{std::move(found.error())};
@@ -422,7 +448,9 @@ namespace aloe::scenario {
         return {};
     }
 
-    Runner::Outcome Runner::call_listen(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::call_listen(const Event& event,
+                                                                               const CallLine& call) {
         auto found = descriptor_of(event, call, Binding::Kind::Socket);
         if (!found) {
             return std::unexpected{std::move(found.error())};
@@ -441,11 +469,15 @@ namespace aloe::scenario {
         return {};
     }
 
-    Runner::Outcome Runner::call_accept(const Event& event, const CallLine& call) {
-        return wait(event, call, &Runner::try_accept);
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::call_accept(const Event& event,
+                                                                               const CallLine& call) {
+        return wait(event, call, &BasicRunner<HarnessT>::try_accept);
     }
 
-    Runner::Outcome Runner::call_connect(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::call_connect(const Event& event,
+                                                                                const CallLine& call) {
         auto found = descriptor_of(event, call, Binding::Kind::Socket);
         if (!found) {
             return std::unexpected{std::move(found.error())};
@@ -466,7 +498,9 @@ namespace aloe::scenario {
         return {};
     }
 
-    Runner::Outcome Runner::call_write(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::call_write(const Event& event,
+                                                                              const CallLine& call) {
         auto found = live_connection(event, call);
         if (!found) {
             return std::unexpected{std::move(found.error())};
@@ -478,8 +512,8 @@ namespace aloe::scenario {
         if (auto flags = expect_no_flags(event, call); !flags) {
             return flags;
         }
-        Harness::Connection& connection = *(*found)->connection;
-        std::size_t written             = 0;
+        typename HarnessT::Connection& connection = *(*found)->connection;
+        std::size_t written                       = 0;
         while (written < *count) {
             const auto span = connection.prepare(*count - written);
             if (!span) {
@@ -498,11 +532,14 @@ namespace aloe::scenario {
         return {};
     }
 
-    Runner::Outcome Runner::call_read(const Event& event, const CallLine& call) {
-        return wait(event, call, &Runner::try_read);
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::call_read(const Event& event, const CallLine& call) {
+        return wait(event, call, &BasicRunner<HarnessT>::try_read);
     }
 
-    Runner::Outcome Runner::call_close(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::call_close(const Event& event,
+                                                                              const CallLine& call) {
         auto found = descriptor(event, call);
         if (!found) {
             return std::unexpected{std::move(found.error())};
@@ -527,7 +564,9 @@ namespace aloe::scenario {
         return {};
     }
 
-    Runner::Outcome Runner::call_shutdown(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::call_shutdown(const Event& event,
+                                                                                 const CallLine& call) {
         auto found = live_connection(event, call);
         if (!found) {
             return std::unexpected{std::move(found.error())};
@@ -543,7 +582,9 @@ namespace aloe::scenario {
         return {};
     }
 
-    Runner::Outcome Runner::wait(const Event& event, const CallLine& call, const Try attempt) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome
+    BasicRunner<HarnessT>::wait(const Event& event, const CallLine& call, const Try attempt) {
         const Window window = window_of(event);
         Attempt satisfied   = std::invoke(attempt, this, event, call);
         while (satisfied && !*satisfied && window.low != window.high && now_ < window.high) {
@@ -561,7 +602,9 @@ namespace aloe::scenario {
         return {};
     }
 
-    Runner::Attempt Runner::try_accept(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Attempt BasicRunner<HarnessT>::try_accept(const Event& event,
+                                                                              const CallLine& call) {
         if (auto found = descriptor_of(event, call, Binding::Kind::Listener); !found) {
             return std::unexpected{std::move(found.error())};
         }
@@ -579,7 +622,8 @@ namespace aloe::scenario {
         return true;
     }
 
-    Runner::Attempt Runner::try_read(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Attempt BasicRunner<HarnessT>::try_read(const Event& event, const CallLine& call) {
         // Data can be asked only of a live connection; an errno word may name the event that released it.
         auto found =
             call.result < 0 ? descriptor_of(event, call, Binding::Kind::Connection) : live_connection(event, call);
@@ -597,7 +641,7 @@ namespace aloe::scenario {
         if (call.result < 0) {
             return errno_holds(event, call, binding);
         }
-        Harness::Connection& connection = *binding.connection;
+        typename HarnessT::Connection& connection = *binding.connection;
         if (call.result == 0) {
             return connection.peer_closed() && connection.unread().empty();
         }
@@ -612,13 +656,15 @@ namespace aloe::scenario {
         return true;
     }
 
-    Runner::Attempt Runner::errno_holds(const Event& event, const CallLine& call, const Binding& binding) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Attempt
+    BasicRunner<HarnessT>::errno_holds(const Event& event, const CallLine& call, const Binding& binding) {
         if (call.result != -1) {
             return fail(event, std::format("{}: unsupported result {}", call.name, call.result));
         }
         const std::string_view word = call.error;
         if (word == "EAGAIN") {
-            const Harness::Connection* connection = binding.connection;
+            const typename HarnessT::Connection* connection = binding.connection;
             return connection != nullptr && connection->unread().empty() && !connection->peer_closed();
         }
         if (word == "ETIMEDOUT") {
@@ -636,7 +682,8 @@ namespace aloe::scenario {
         return fail(event, std::format("unbound errno {}", word));
     }
 
-    std::string Runner::found_at(const CallLine& call) const {
+    template <typename HarnessT>
+    std::string BasicRunner<HarnessT>::found_at(const CallLine& call) const {
         const auto found = descriptors_.find(call.arguments.front().integer);
         if (found == descriptors_.end()) {
             return "the descriptor is not open";
@@ -650,17 +697,18 @@ namespace aloe::scenario {
                                name_of(binding.terminal.value_or(stream::Event::Closed)),
                                binding.established ? "" : ", never established");
         }
-        const Harness::Connection& connection = *binding.connection;
+        const typename HarnessT::Connection& connection = *binding.connection;
         return std::format("{} unread, the peer {}, state {}",
                            connection.unread().size(),
                            connection.peer_closed() ? "closed" : "open",
                            name_of(connection.state()));
     }
 
-    Runner::Outcome Runner::open_descriptor(const Event& event,
-                                            const CallLine& call,
-                                            const std::int64_t number,
-                                            const Binding binding) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::open_descriptor(const Event& event,
+                                                                                   const CallLine& call,
+                                                                                   const std::int64_t number,
+                                                                                   const Binding binding) {
         if (number < 0) {
             return fail(event, std::format("{}: result {} is not a descriptor", call.name, number));
         }
@@ -670,7 +718,9 @@ namespace aloe::scenario {
         return {};
     }
 
-    std::expected<Runner::Binding*, Failure> Runner::descriptor(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    std::expected<typename BasicRunner<HarnessT>::Binding*, Failure>
+    BasicRunner<HarnessT>::descriptor(const Event& event, const CallLine& call) {
         if (call.arguments.empty() || call.arguments.front().kind != Argument::Kind::Integer) {
             return fail(event, std::format("{}: the first argument is not a descriptor", call.name));
         }
@@ -682,8 +732,9 @@ namespace aloe::scenario {
         return &found->second;
     }
 
-    std::expected<Runner::Binding*, Failure>
-    Runner::descriptor_of(const Event& event, const CallLine& call, const Binding::Kind kind) {
+    template <typename HarnessT>
+    std::expected<typename BasicRunner<HarnessT>::Binding*, Failure>
+    BasicRunner<HarnessT>::descriptor_of(const Event& event, const CallLine& call, const Binding::Kind kind) {
         auto found = descriptor(event, call);
         if (found && (*found)->kind != kind) {
             return fail(
@@ -694,7 +745,9 @@ namespace aloe::scenario {
         return found;
     }
 
-    std::expected<Runner::Binding*, Failure> Runner::live_connection(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    std::expected<typename BasicRunner<HarnessT>::Binding*, Failure>
+    BasicRunner<HarnessT>::live_connection(const Event& event, const CallLine& call) {
         auto found = descriptor_of(event, call, Binding::Kind::Connection);
         if (found && (*found)->connection == nullptr) {
             const stream::Event terminal = (*found)->terminal.value_or(stream::Event::Closed);
@@ -703,7 +756,8 @@ namespace aloe::scenario {
         return found;
     }
 
-    std::expected<std::size_t, Failure> Runner::count_of(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    std::expected<std::size_t, Failure> BasicRunner<HarnessT>::count_of(const Event& event, const CallLine& call) {
         constexpr std::size_t position = 2;  // write(n, ..., count)
         if (call.arguments.size() <= position || call.arguments[position].kind != Argument::Kind::Integer ||
             call.arguments[position].integer < 0) {
@@ -712,7 +766,9 @@ namespace aloe::scenario {
         return static_cast<std::size_t>(call.arguments[position].integer);
     }
 
-    Runner::Outcome Runner::expect_no_flags(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::expect_no_flags(const Event& event,
+                                                                                   const CallLine& call) {
         constexpr std::size_t position = 3;  // send(n, ..., count, flags)
         if (call.arguments.size() > position &&
             (call.arguments[position].kind != Argument::Kind::Integer || call.arguments[position].integer != 0)) {
@@ -721,7 +777,8 @@ namespace aloe::scenario {
         return {};
     }
 
-    std::string_view Runner::kind_name(const Binding::Kind kind) noexcept {
+    template <typename HarnessT>
+    std::string_view BasicRunner<HarnessT>::kind_name(const Binding::Kind kind) noexcept {
         switch (kind) {
             case Binding::Kind::Socket:
                 return "socket";
@@ -735,12 +792,15 @@ namespace aloe::scenario {
         std::unreachable();
     }
 
-    std::unexpected<Failure> Runner::fail(const Event& event, std::string message) {
+    template <typename HarnessT>
+    std::unexpected<Failure> BasicRunner<HarnessT>::fail(const Event& event, std::string message) {
         Failure failure{.line = event.line, .message = std::move(message)};
         return std::unexpected{std::move(failure)};
     }
 
-    Runner::Outcome Runner::expect_zero(const Event& event, const CallLine& call) {
+    template <typename HarnessT>
+    typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::expect_zero(const Event& event,
+                                                                               const CallLine& call) {
         if (call.result != 0) {
             return fail(event, std::format("{}: result {} is not 0", call.name, call.result));
         }
@@ -750,5 +810,8 @@ namespace aloe::scenario {
     std::string format(const Failure& failure, const std::string_view script_path) {
         return std::format("{}:{}: {}", script_path, failure.line, failure.message);
     }
+
+    template class BasicRunner<Harness>;
+    template class BasicRunner<NoCongestionHarness>;
 
 }  // namespace aloe::scenario

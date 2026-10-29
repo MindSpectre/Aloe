@@ -27,12 +27,13 @@ namespace {
                                                  "+0 bind(3, ..., ...) = 0\n"
                                                  "+0 listen(3, 1) = 0\n";
 
-    /// Parses and runs `text` on a fresh harness in the given checksum mode.
+    /// Parses and runs `text` on a fresh harness in the given checksum mode, over the given harness and runner types.
+    template <typename HarnessT, typename RunnerT>
     std::expected<void, Failure>
-    run_text(const std::string& text,
-             const aloe::fabric::EmulatedOffloads offloads = aloe::fabric::EmulatedOffloads::None,
-             const RunnerConfig& runner_config             = {},
-             HarnessConfig config                          = {}) {
+    run_text_over(const std::string& text,
+                  const aloe::fabric::EmulatedOffloads offloads = aloe::fabric::EmulatedOffloads::None,
+                  const RunnerConfig& runner_config             = {},
+                  HarnessConfig config                          = {}) {
         const auto script = parse_script(text);
         EXPECT_TRUE(script.has_value()) << script.error().message;
         if (!script) {
@@ -41,9 +42,23 @@ namespace {
             };
         }
         config.offloads = offloads;
-        Harness harness{config};
-        Runner runner{harness, *script, runner_config};
+        HarnessT harness{config};
+        RunnerT runner{harness, *script, runner_config};
         return runner.run();
+    }
+
+    std::expected<void, Failure>
+    run_text(const std::string& text,
+             const aloe::fabric::EmulatedOffloads offloads = aloe::fabric::EmulatedOffloads::None,
+             const RunnerConfig& runner_config             = {},
+             const HarnessConfig& config                   = {}) {
+        return run_text_over<Harness, Runner>(text, offloads, runner_config, config);
+    }
+
+    std::expected<void, Failure> run_text_without_congestion(const std::string& text,
+                                                             const aloe::fabric::EmulatedOffloads offloads) {
+        return run_text_over<aloe::scenario::NoCongestionHarness, aloe::scenario::NoCongestionRunner>(
+            text, offloads, {}, {});
     }
 
     bool mentions(const std::expected<void, Failure>& result, const std::string_view word) {
@@ -438,4 +453,46 @@ TEST_P(RunnerTest, ANegativeDescriptorOtherShutdownsAndFlagsFail) {
     const auto peek = run_text(std::string{passive_open} + "+0 recv(4, ..., 1000, MSG_PEEK) = -1 EAGAIN\n", GetParam());
     ASSERT_FALSE(peek.has_value());
     EXPECT_TRUE(mentions(peek, "recv: flags other than 0 are not supported")) << peek.error().message;
+}
+
+TEST_P(RunnerTest, APartialWriteWhoseResultIsTheAcceptedCountPasses) {
+    HarnessConfig config;
+    config.tcp.send_segments = 2;
+    const auto result        = run_text(std::string{listen_preamble} + "+0 < S 0:0(0) win 65535 <mss 1000>\n"
+                                                                       "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n"
+                                                                       "+0 < . 1:1(0) ack 1 win 65535\n"
+                                                                       "+0 accept(3, ..., ...) = 4\n"
+                                                                       "+0 write(4, ..., 3000) = 2000\n"
+                                                                       "+0 > P. 1:1001(1000) ack 1 win 46720\n"
+                                                                       "+0 > P. 1001:2001(1000) ack 1 win 46720\n"
+                                                                       "+0 < . 1:1(0) ack 1001 win 65535\n"
+                                                                       "+0 write(4, ..., 1000) = 1000\n"
+                                                                       "+0 > P. 2001:3001(1000) ack 1 win 46720\n",
+                                        GetParam(),
+                                        {},
+                                        config);
+    EXPECT_TRUE(result.has_value()) << result.error().message;
+}
+
+TEST_P(RunnerTest, AWriteWhoseResultIsNotTheAcceptedCountFailsWithBothCounts) {
+    HarnessConfig config;
+    config.tcp.send_segments = 1;
+    const auto result        = run_text(std::string{listen_preamble} + "+0 < S 0:0(0) win 65535 <mss 1000>\n"
+                                                                       "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n"
+                                                                       "+0 < . 1:1(0) ack 1 win 65535\n"
+                                                                       "+0 accept(3, ..., ...) = 4\n"
+                                                                       "+0 write(4, ..., 3000) = 3000\n",
+                                        GetParam(),
+                                        {},
+                                        config);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_TRUE(mentions(result, "accepted 1000 of 3000")) << result.error().message;
+}
+
+TEST_P(RunnerTest, TheNoCongestionRunnerRunsAScript) {
+    const auto result =
+        run_text_without_congestion(std::string{listen_preamble} + "+0 < S 0:0(0) win 65535 <mss 1460>\n"
+                                                                   "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n",
+                                    GetParam());
+    EXPECT_TRUE(result.has_value()) << result.error().message;
 }

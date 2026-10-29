@@ -24,7 +24,8 @@ namespace aloe::scenario {
 
     }  // namespace
 
-    Harness::Harness(const HarnessConfig& config)
+    template <typename CongestionControl>
+    BasicHarness<CongestionControl>::BasicHarness(const HarnessConfig& config)
         : config_{
               config
     },
@@ -44,7 +45,8 @@ namespace aloe::scenario {
         ip_.learn(config.peer_address, config.peer_mac, core::TimePoint{});
     }
 
-    void Harness::inject(const std::span<const std::byte> frame, const core::TimePoint now) {
+    template <typename CongestionControl>
+    void BasicHarness<CongestionControl>::inject(const std::span<const std::byte> frame, const core::TimePoint now) {
         auto packet = peer_port_->allocate(0);
         if (!packet || !frames::fill(*packet, frame)) {
             throw std::runtime_error{"the harness could not build the peer's frame"};
@@ -56,24 +58,28 @@ namespace aloe::scenario {
         receive(now);
     }
 
-    void Harness::step(const core::TimePoint now) {
+    template <typename CongestionControl>
+    void BasicHarness<CongestionControl>::step(const core::TimePoint now) {
         fabric_.advance(now);  // first, so a frame it delivers is received in this step
         receive(now);
         std::ignore = wheel_.advance(now);
     }
 
-    void Harness::receive(const core::TimePoint now) {
+    template <typename CongestionControl>
+    void BasicHarness<CongestionControl>::receive(const core::TimePoint now) {
         const std::size_t count = queue_.receive(burst_);
         ip_.process(std::span<Packet>{burst_}.first(count), now);
         tcp_.process(ip_.received(wire::Ipv4Protocol::Tcp), now);
     }
 
-    void Harness::flush(const core::TimePoint now) {
+    template <typename CongestionControl>
+    void BasicHarness<CongestionControl>::flush(const core::TimePoint now) {
         tcp_.flush(now);
         std::ignore = queue_.flush();
     }
 
-    std::vector<Collected> Harness::collect() {
+    template <typename CongestionControl>
+    std::vector<Collected> BasicHarness<CongestionControl>::collect() {
         std::vector<Collected> collected;
         std::array<Packet, collect_burst> out;
         for (std::size_t count = peer_port_->receive(0, out); count > 0; count = peer_port_->receive(0, out)) {
@@ -90,6 +96,42 @@ namespace aloe::scenario {
             }
         }
         return collected;
+    }
+
+    template class BasicHarness<tcp::NewReno>;
+    template class BasicHarness<tcp::NoCongestionControl>;
+
+    HarnessConfig configured(HarnessConfig base, const Script& script) {
+        const ScriptTcpOptions& options = script.tcp;
+        tcp::TcpConfig& tcp             = base.tcp;
+        if (options.rto_min) {
+            tcp.rto_min = *options.rto_min;
+        }
+        if (options.rto_max) {
+            tcp.rto_max = *options.rto_max;
+        }
+        if (options.rto_initial) {
+            tcp.rto_initial = *options.rto_initial;
+        }
+        if (options.user_timeout) {
+            tcp.user_timeout = *options.user_timeout;
+        }
+        if (options.retries) {
+            tcp.retries = *options.retries;
+        }
+        if (options.data_retries) {
+            tcp.data_retries = *options.data_retries;
+        }
+        if (options.retransmit_defers) {
+            tcp.retransmit_defers = *options.retransmit_defers;
+        }
+        if (options.send_segments) {
+            tcp.send_segments = *options.send_segments;
+        }
+        if (options.timestamps) {
+            tcp.timestamps = *options.timestamps;
+        }
+        return base;
     }
 
 }  // namespace aloe::scenario

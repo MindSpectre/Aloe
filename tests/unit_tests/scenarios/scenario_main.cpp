@@ -11,12 +11,14 @@
 
 #include <gtest/gtest.h>
 
-// Every .pkt under ALOE_SCENARIOS_DIR becomes one test per checksum mode of the fabric, named after its path:
+// Every .pkt under ALOE_SCENARIOS_DIR becomes one test per congestion-control policy its `--congestion` line allows
+// and per checksum mode of the fabric, named after its path:
 //
 //     ./Aloe.Tests.Unit.Scenarios --gtest_filter='Scenario.tcp/close/*'
 //
 namespace {
 
+    template <typename HarnessT, typename RunnerT>
     class ScriptTest : public ::testing::Test {
     public:
         ScriptTest(std::filesystem::path path, const aloe::fabric::EmulatedOffloads offloads)
@@ -31,10 +33,8 @@ namespace {
             const auto script = aloe::scenario::parse_script(text);
             ASSERT_TRUE(script.has_value()) << path_.string() << ":" << script.error().line << ":"
                                             << script.error().column << ": " << script.error().message;
-            aloe::scenario::HarnessConfig config;
-            config.offloads = offloads_;
-            aloe::scenario::Harness harness{config};
-            aloe::scenario::Runner runner{harness, *script};
+            HarnessT harness{aloe::scenario::configured(aloe::scenario::HarnessConfig{.offloads = offloads_}, *script)};
+            RunnerT runner{harness, *script};
             const auto result = runner.run();
             EXPECT_TRUE(result.has_value()) << aloe::scenario::format(result.error(), path_.string());
         }
@@ -43,6 +43,27 @@ namespace {
         std::filesystem::path path_;
         aloe::fabric::EmulatedOffloads offloads_;
     };
+
+    using NewRenoTest      = ScriptTest<aloe::scenario::Harness, aloe::scenario::Runner>;
+    using NoCongestionTest = ScriptTest<aloe::scenario::NoCongestionHarness, aloe::scenario::NoCongestionRunner>;
+
+    /// Registers `name` in both checksum modes of the fabric under the policy's name.
+    template <typename TestT>
+    void register_policy(const std::string& name, const std::string_view policy, const std::filesystem::path& path) {
+        for (const auto& [offloads, mode] : {
+                 std::pair{aloe::fabric::EmulatedOffloads::None,      "NoOffloads"},
+                 std::pair{aloe::fabric::EmulatedOffloads::Checksums, "Checksums" }
+        }) {
+            ::testing::RegisterTest(
+                "Scenario",
+                (name + "/" + std::string{policy} + "/" + mode).c_str(),
+                nullptr,
+                nullptr,
+                path.c_str(),
+                1,
+                [path, offloads = offloads]() -> ::testing::Test* { return new TestT{path, offloads}; });
+        }
+    }
 
     void register_scripts(const std::filesystem::path& root) {
         std::vector<std::filesystem::path> scripts;
@@ -54,18 +75,18 @@ namespace {
         std::ranges::sort(scripts);
         for (const auto& path : scripts) {
             const std::string name = std::filesystem::relative(path, root).replace_extension().generic_string();
-            for (const auto& [offloads, mode] : {
-                     std::pair{aloe::fabric::EmulatedOffloads::None,      "NoOffloads"},
-                     std::pair{aloe::fabric::EmulatedOffloads::Checksums, "Checksums" }
-            }) {
-                ::testing::RegisterTest(
-                    "Scenario",
-                    (name + "/" + mode).c_str(),
-                    nullptr,
-                    nullptr,
-                    path.c_str(),
-                    1,
-                    [path, offloads = offloads]() -> ::testing::Test* { return new ScriptTest{path, offloads}; });
+            const auto text        = [&path] {
+                std::ifstream file{path};
+                return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+            }();
+            // An unparsable script registers under both policies; its tests report the parse error.
+            const auto script = aloe::scenario::parse_script(text);
+            const auto choice = script ? script->congestion : aloe::scenario::CongestionChoice::Both;
+            if (choice != aloe::scenario::CongestionChoice::None) {
+                register_policy<NewRenoTest>(name, "NewReno", path);
+            }
+            if (choice != aloe::scenario::CongestionChoice::NewReno) {
+                register_policy<NoCongestionTest>(name, "NoCongestion", path);
             }
         }
     }
