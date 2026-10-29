@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <aloe/core>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -21,6 +22,17 @@
 #include <timer_wheel.hpp>
 
 namespace aloe::tcp {
+
+    namespace detail {
+
+        /// What the connection's one wheel timer does when it fires.
+        enum class TimerKind : std::uint8_t {
+            None,        ///< Not armed.
+            Retransmit,  ///< The RTO: the head of the retransmission queue goes again.
+            ArpPoll,     ///< A SYN, SYN-ACK or FIN whose first send found no next hop: the send is tried again.
+        };
+
+    }  // namespace detail
 
     /**
      * @brief One TCP connection as a zero-copy stream: a slot of its stack, stable until `release`.
@@ -137,6 +149,18 @@ namespace aloe::tcp {
         [[nodiscard]] std::uint32_t congestion_window() const noexcept {
             return CongestionControl::window(congestion_);
         }
+        /// RFC 6298's smoothed round-trip time; nothing before the first sample.
+        [[nodiscard]] std::optional<core::Duration> srtt() const noexcept {
+            return srtt_;
+        }
+        /// The retransmission timeout now, the backoff included.
+        [[nodiscard]] core::Duration rto() const noexcept {
+            return rto_;
+        }
+        /// Timer-driven resends since the last ACK of new data.
+        [[nodiscard]] std::uint8_t retransmit_count() const noexcept {
+            return retransmit_count_;
+        }
 
     private:
         friend class Stack<Ip,
@@ -196,8 +220,11 @@ namespace aloe::tcp {
             peer_mss_         = default_peer_mss;
             wl1_              = {};
             wl2_              = {};
-            tries_            = 0;
-            unresolved_wait_  = false;
+            srtt_             = std::nullopt;
+            rttvar_           = {};
+            rto_              = {};
+            retransmit_count_ = 0;
+            timer_kind_       = detail::TimerKind::None;
             unresolved_polls_ = 0;
             congestion_       = {};
         }
@@ -256,14 +283,16 @@ namespace aloe::tcp {
         std::uint64_t delivered_ = 0;       ///< Payload bytes acknowledged, entry by entry.
         core::TimePoint delivered_time_{};  ///< The ACK that last advanced `delivered_`.
 
-        // Maintenance: the control retransmit timer.
+        // Maintenance: the retransmission timer and the round-trip estimator.
         TimerNode timer_;
-        std::uint8_t tries_ = 0;
+        detail::TimerKind timer_kind_ = detail::TimerKind::None;  ///< What `timer_` does when it fires.
+        std::optional<core::Duration> srtt_{};                    ///< Empty until the first sample.
+        core::Duration rttvar_{};
+        core::Duration rto_{};  ///< `rto_initial` until the first sample; doubled by each expiry up to `rto_max`.
+        std::uint8_t retransmit_count_  = 0;  ///< Expiries that resent since the last ACK of new data; capped.
+        std::uint16_t unresolved_polls_ = 0;  ///< Polls since the last send that left; the config bounds them.
         typename CongestionControl::State
             congestion_{};  ///< The policy's state; reset where the connection is Established.
-
-        bool unresolved_wait_ = false;  ///< The last control send waited for ARP; the next fire is a poll, not a try.
-        std::uint16_t unresolved_polls_ = 0;  ///< Polls since the last send that left; the config bounds them.
     };
 
     /// One notification from `poll_event`: the connection and the flags taken from it.

@@ -282,8 +282,9 @@ TEST_F(StreamsTest, ClosedSeesUndrainedTimeout) {
     ASSERT_TRUE(stream.valid());
     std::ignore = on_the_wire();
     stream.connection().close();  // a FIN the peer never acknowledges
-    // The retransmit timer runs on the shard's wheel: tries until TimedOut inside run_once, with no wake after.
-    for (int second = 0; second < 128 && stream.state() != aloe::tcp::State::Closed; ++second) {
+    // The retransmission timer runs on the shard's wheel: the FIN goes again on the RTO, doubling up to rto_max, and
+    // TimedOut follows data_retries resends, about 930 s in these one-second steps, inside run_once with no wake after.
+    for (int second = 0; second < 1024 && stream.state() != aloe::tcp::State::Closed; ++second) {
         now_ += 1s;
         tcp_.process({}, now_);
         std::ignore = context_.run_once(now_);

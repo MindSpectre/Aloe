@@ -1,0 +1,16 @@
+// A partial acknowledgement, then the timeout: the resend carries only the unacknowledged bytes, as Linux trims
+// the head of its retransmit queue when it resends it.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1000>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460>
++0 < . 1:1(0) ack 1 win 65535
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 1000) = 1000
++0 > P. 1:1001(1000) ack 1 win 46720
++0 < . 1:1(0) ack 501 win 65535
++0.2 > P. 501:1001(500) ack 1 win 46720
++0 < . 1:1(0) ack 1001 win 65535

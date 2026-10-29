@@ -235,8 +235,8 @@ TEST_P(TcpTwoStacks, EchoAcrossMssAndClose) {
     EXPECT_EQ(server_.wheel.pending() + client_.wheel.pending(), 0U);
 }
 
-// The phase-1 reliability envelope the TCP page states: within it a loss-free fabric means no loss; beyond it a
-// drop between two Aloe peers is final, since nothing retransmits data until phase 2.
+// The receive slots between two Aloe peers: within them a loss-free fabric means no loss; a segment beyond them is
+// dropped by the receiver, and the sender's retransmission timer resends it once the slots are free again.
 
 TEST_P(TcpTwoStacksFourSlots, SmallSegmentsWithinTheSlotsLoseNothing) {
     Tcp::ConnectionType* c = nullptr;
@@ -260,7 +260,7 @@ TEST_P(TcpTwoStacksFourSlots, SmallSegmentsWithinTheSlotsLoseNothing) {
     s->release();
 }
 
-TEST_P(TcpTwoStacksFourSlots, SmallSegmentsBeyondTheSlotsAreDroppedForGood) {
+TEST_P(TcpTwoStacksFourSlots, SmallSegmentsBeyondTheSlotsRecoverAfterOneRto) {
     Tcp::ConnectionType* c = nullptr;
     Tcp::ConnectionType* s = establish(c);
     ASSERT_NE(s, nullptr);
@@ -271,18 +271,15 @@ TEST_P(TcpTwoStacksFourSlots, SmallSegmentsBeyondTheSlotsAreDroppedForGood) {
     EXPECT_EQ(s->unread().size(), 4U) << "the fifth found no slot";
     EXPECT_EQ(server_.tcp.counters().dropped_no_slot, 1U);
     EXPECT_EQ(c->unacknowledged(), 1U) << "the server acknowledged what it kept";
-    for (int tick = 0; tick < 100; ++tick) {
+    EXPECT_EQ(client_.tcp.counters().retransmits, 0U) << "nothing is resent before the RTO";
+    s->consume(4);
+    for (int tick = 0; tick < 150 && c->unacknowledged() > 0; ++tick) {  // one RTO of about 200 ms, then the resend
         exchange();
     }
-    EXPECT_EQ(client_.tcp.counters().retransmits, 0U) << "data is never retransmitted in this phase";
-    EXPECT_EQ(c->unacknowledged(), 1U) << "and so the gap stays";
-    s->consume(4);
-    exchange();  // the window update reopens the slots
-    EXPECT_EQ(c->send(aloe::frames::pattern(1)), 1U);
-    exchange();
-    EXPECT_TRUE(s->unread().empty()) << "everything after the gap is out of order for good";
-    EXPECT_EQ(server_.tcp.counters().dropped_out_of_order, 1U);
-    EXPECT_EQ(c->unacknowledged(), 2U);
+    EXPECT_EQ(c->unacknowledged(), 0U) << "the dropped byte arrived by retransmission";
+    EXPECT_EQ(s->unread().size(), 1U);
+    EXPECT_EQ(client_.tcp.counters().retransmits, 1U);
+    EXPECT_EQ(server_.tcp.counters().dropped_out_of_order, 0U);
     c->release();
     s->release();
 }

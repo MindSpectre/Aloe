@@ -210,29 +210,30 @@ TEST_P(TcpClose, SecondFinAfterTheFirstIsDropped) {
 }
 
 TEST_P(TcpClose, FinRetransmitKeepsItsSequenceThenTimesOut) {
+    configure_tcp({.data_retries = 2});
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
     c->close();
     const auto first = collect_queued();
     ASSERT_EQ(first.size(), 1U);
-    // The wheel re-arms from the stamp it fires at, so time moves in steps of one second: retransmissions at 1, 3, 7,
-    // 15 and 31 s, the timeout at 63 s.
+    // A handshake with a zero round trip leaves the RTO at rto_min, 200 ms, doubling from there: the FIN again at 200
+    // and 600 ms, the time-out at 1.4 s. The wheel fires a timer once per advance, so time moves in steps of 100 ms.
     std::uint64_t retransmits = 0;
-    for (std::int64_t second = 1; second < 63; ++second) {
-        advance(1s);
+    for (std::int64_t step = 1; step < 14; ++step) {
+        advance(100ms);
         const auto frames = collect();
-        if (second == 1 || second == 3 || second == 7 || second == 15 || second == 31) {
-            ASSERT_EQ(frames.size(), 1U) << "a retransmission at " << second << " s";
+        if (step == 2 || step == 6) {
+            ASSERT_EQ(frames.size(), 1U) << "a retransmission at " << step * 100 << " ms";
             EXPECT_EQ(frames[0].tcp->flags, (TcpFlags{TcpFlag::Fin, TcpFlag::Ack}));
             EXPECT_EQ(frames[0].tcp->sequence, first[0].tcp->sequence) << "the FIN keeps its number";
             ++retransmits;
         } else {
-            EXPECT_TRUE(frames.empty()) << "nothing at " << second << " s";
+            EXPECT_TRUE(frames.empty()) << "nothing at " << step * 100 << " ms";
         }
         EXPECT_EQ(tcp_->counters().retransmits, retransmits);
     }
-    EXPECT_EQ(c->state(), State::FinWait1) << "still waiting for the FIN's ACK before 63 s";
-    advance(1s);
+    EXPECT_EQ(c->state(), State::FinWait1) << "still waiting for the FIN's ACK before 1.4 s";
+    advance(100ms);
     EXPECT_EQ(c->state(), State::Closed);
     const auto event = poll();
     ASSERT_TRUE(event.has_value());
