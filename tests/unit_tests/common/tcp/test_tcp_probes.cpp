@@ -9,9 +9,9 @@
 #include <tcp_fixture.hpp>
 
 // Zero-window probes: a pure ACK at snd_una - 1 after one RTO, then at doubling intervals, while the peer's window is
-// zero and nothing is queued; unanswered probes count against data_retries, the user timeout bounds probing from the
-// first probe, as Linux's, and a window that opens ends it. A handshake with a zero round trip leaves the RTO at
-// rto_min, 200 ms.
+// zero and nothing is queued; unanswered probes count against data_retries, the user timeout bounds a run of
+// unanswered probes from the first of them, so a peer that answers keeps the connection open (RFC 9293), and a window
+// that opens ends probing. A handshake with a zero round trip leaves the RTO at rto_min, 200 ms.
 namespace {
 
     using namespace std::chrono_literals;
@@ -95,24 +95,31 @@ TEST_P(TcpProbes, UnansweredProbesEndInTimedOut) {
     EXPECT_EQ(tcp_->counters().connections_timed_out, 1U);
 }
 
-TEST_P(TcpProbes, TheUserTimeoutBoundsProbing) {
+TEST_P(TcpProbes, TheUserTimeoutBoundsUnansweredProbesOnly) {
     configure_tcp({.user_timeout = std::chrono::milliseconds{500}});
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
     peer_.set_window(0);
     receive(peer_.ack());
-    advance(200ms);  // the first probe: the user timeout counts from here
+    advance(200ms);  // the first probe
+    ASSERT_EQ(collect().size(), 1U);
+    receive(peer_.ack());  // answered: the user timeout counts again from the next probe
+    advance(400ms);        // 600 ms
     ASSERT_EQ(collect().size(), 1U);
     receive(peer_.ack());
-    advance(400ms);  // 400 ms since the first probe
-    EXPECT_EQ(collect().size(), 1U) << "within the timeout: the next probe goes";
+    advance(500ms);  // 1100 ms: the clamp from the second probe brings the third within the timeout
+    ASSERT_EQ(collect().size(), 1U);
+    receive(peer_.ack());
+    EXPECT_EQ(c->state(), aloe::tcp::State::Established)
+        << "1100 ms of probing, past the timeout, every probe answered";
+    advance(500ms);  // 1600 ms: the fourth probe, the first the peer leaves unanswered
+    ASSERT_EQ(collect().size(), 1U);
     EXPECT_EQ(c->state(), aloe::tcp::State::Established);
-    receive(peer_.ack());  // answered probes do not reset the user timeout
-    advance(800ms);
+    advance(500ms);  // 500 ms after it
     EXPECT_TRUE(poll()->events.timed_out());
     EXPECT_EQ(c->state(), aloe::tcp::State::Closed);
     EXPECT_EQ(tcp_->counters().connections_user_timed_out, 1U);
-    EXPECT_EQ(tcp_->counters().zero_window_probes, 2U);
+    EXPECT_EQ(tcp_->counters().zero_window_probes, 4U);
 }
 
 TEST_P(TcpProbes, ASendWhileTheWindowOpenedTakesTheTimerBack) {
@@ -136,16 +143,16 @@ TEST_P(TcpProbes, TheUserTimeoutClampsTheProbeTimerToItsDeadline) {
     ASSERT_NE(c, nullptr);
     peer_.set_window(0);
     receive(peer_.ack());
-    advance(200ms);  // the first probe, at 200 ms
+    advance(200ms);  // the first probe, at 200 ms, answered
     ASSERT_EQ(collect().size(), 1U);
     receive(peer_.ack());
-    advance(400ms);  // the second, at 600 ms
+    advance(400ms);  // the second, at 600 ms, left unanswered
     ASSERT_EQ(collect().size(), 1U);
-    receive(peer_.ack());
-    advance(99ms);
+    advance(499ms);
     EXPECT_EQ(c->state(), aloe::tcp::State::Established) << "the next probe was due at 1400 ms";
     advance(1ms);
-    EXPECT_EQ(c->state(), aloe::tcp::State::Closed) << "the deadline, 500 ms after the first probe, came first";
+    EXPECT_EQ(c->state(), aloe::tcp::State::Closed)
+        << "the deadline, 500 ms after the first unanswered probe, came first";
     EXPECT_TRUE(collect().empty()) << "no probe at the deadline";
     EXPECT_EQ(tcp_->counters().connections_user_timed_out, 1U);
 }

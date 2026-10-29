@@ -315,7 +315,7 @@ namespace aloe::tcp {
         std::uint8_t retransmit_count_  = 0;  ///< Expiries that resent since the last ACK of new data; capped.
         std::uint16_t unresolved_polls_ = 0;  ///< Polls since the last send that left; the config bounds them.
         std::uint8_t probes_out_ = 0;  ///< Zero-window probes since the last acceptable ACK; `data_retries` caps.
-        std::optional<core::TimePoint> probe_started_{};  ///< The first probe's stamp: the user timeout counts from it.
+        std::optional<core::TimePoint> probe_started_{};  ///< The first unanswered probe: the user timeout's start.
         core::Duration probe_interval_{};  ///< The next probe's delay: the RTO, doubled per probe up to `rto_max`.
         typename CongestionControl::State
             congestion_{};  ///< The policy's state; reset where the connection is Established.

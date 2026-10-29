@@ -766,11 +766,14 @@ namespace aloe::tcp {
 
         /**
          * The end of an acceptable ACK, after its window update. The peer answered, so the count of unanswered probes
-         * clears, as Linux's `tcp_ack` clears it on every acceptable ACK. A window that opened ends probing; a zero
-         * window with nothing queued in Established or CloseWait starts it, whether or not the application has data.
+         * clears, as Linux's `tcp_ack` clears it on every acceptable ACK, and so does the stamp of the first unanswered
+         * one: RFC 9293 keeps the connection open while the peer acknowledges probes, so the user timeout bounds a run
+         * of unanswered probes only. A window that opened ends probing; a zero window with nothing queued in
+         * Established or CloseWait starts it, whether or not the application has data.
          */
         void update_probing(ConnectionType& conn) noexcept {
-            conn.probes_out_ = 0;
+            conn.probes_out_    = 0;
+            conn.probe_started_ = std::nullopt;
             if (conn.probing()) {
                 if (conn.snd_wnd_ > 0) {
                     disarm(conn);
@@ -1631,9 +1634,10 @@ namespace aloe::tcp {
             wheel_->arm(conn.timer_, now_ + config_.unresolved_retry);
         }
 
-        /// The next probe, `probe_interval_` from now; under a user timeout, once the first probe stamped its start,
-        /// never later than that stamp plus the timeout, Linux's `tcp_clamp_probe0_to_user_timeout`, and never earlier
-        /// than now.
+        /// The next probe, `probe_interval_` from now; under a user timeout, while a probe is unanswered, never later
+        /// than the first unanswered probe plus the timeout, Linux's `tcp_clamp_probe0_to_user_timeout`, and never
+        /// earlier than now. An answer leaves the deadline as it was, so while the peer answers a probe goes at least
+        /// once per user timeout, and a peer that falls silent is found within about twice the timeout.
         void arm_probe(ConnectionType& conn) noexcept {
             core::TimePoint deadline = now_ + conn.probe_interval_;
             if (config_.user_timeout > core::Duration::zero() && conn.probe_started_) {
@@ -1643,8 +1647,8 @@ namespace aloe::tcp {
             wheel_->arm(conn.timer_, deadline);
         }
 
-        /// The peer's window is zero with nothing queued: no probe out yet, no start stamped until the first probe,
-        /// and that probe one RTO away.
+        /// The peer's window is zero with nothing queued: no probe out yet, nothing unanswered stamped, and the first
+        /// probe one RTO away.
         void start_probing(ConnectionType& conn) noexcept {
             conn.probes_out_     = 0;
             conn.probe_started_  = std::nullopt;
@@ -1799,11 +1803,12 @@ namespace aloe::tcp {
         }
 
         /**
-         * The probe timer ran out with the peer's window still zero. The first expiry stamps the start the user timeout
-         * counts from, as Linux's `tcp_probe_timer` stamps `icsk_probes_tstamp`; a later one ends the connection once
-         * the timeout passed since that stamp, answered probes or not. Then `data_retries` unanswered probes may end it
-         * instead; else one probe goes, it counts as unanswered until an acceptable ACK clears the count, and the
-         * interval doubles up to `rto_max`. A probe refused counts all the same: the next expiry tries again.
+         * The probe timer ran out with the peer's window still zero. The first expiry since the last acceptable ACK
+         * stamps the first unanswered probe, which the user timeout counts from, as Linux's `tcp_probe_timer` stamps
+         * `icsk_probes_tstamp` but cleared by every answer (`update_probing`); a later expiry ends the connection once
+         * the timeout passed since that stamp. Then `data_retries` unanswered probes may end it instead; else one probe
+         * goes, it counts as unanswered until an acceptable ACK clears the count, and the interval doubles up to
+         * `rto_max`. A probe refused counts all the same: the next expiry tries again.
          */
         void on_probe_timeout(ConnectionType& conn) noexcept {
             assert(conn.queue_count_ == 0 && conn.snd_wnd_ == 0 &&
