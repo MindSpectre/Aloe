@@ -1631,22 +1631,23 @@ namespace aloe::tcp {
             wheel_->arm(conn.timer_, now_ + config_.unresolved_retry);
         }
 
-        /// The next probe, `probe_interval_` from now; under a user timeout never later than the start of probing plus
-        /// the timeout, Linux's `tcp_clamp_probe0_to_user_timeout`, and never earlier than now.
+        /// The next probe, `probe_interval_` from now; under a user timeout, once the first probe stamped its start,
+        /// never later than that stamp plus the timeout, Linux's `tcp_clamp_probe0_to_user_timeout`, and never earlier
+        /// than now.
         void arm_probe(ConnectionType& conn) noexcept {
             core::TimePoint deadline = now_ + conn.probe_interval_;
-            if (config_.user_timeout > core::Duration::zero()) {
-                deadline = std::min(deadline, std::max(now_, conn.probe_started_ + config_.user_timeout));
+            if (config_.user_timeout > core::Duration::zero() && conn.probe_started_) {
+                deadline = std::min(deadline, std::max(now_, *conn.probe_started_ + config_.user_timeout));
             }
             conn.timer_kind_ = detail::TimerKind::Probe;
             wheel_->arm(conn.timer_, deadline);
         }
 
-        /// The peer's window is zero with nothing queued: no probe out yet, the user timeout counting from now, and
-        /// the first probe one RTO away.
+        /// The peer's window is zero with nothing queued: no probe out yet, no start stamped until the first probe,
+        /// and that probe one RTO away.
         void start_probing(ConnectionType& conn) noexcept {
             conn.probes_out_     = 0;
-            conn.probe_started_  = now_;
+            conn.probe_started_  = std::nullopt;
             conn.probe_interval_ = conn.rto_;
             arm_probe(conn);
         }
@@ -1798,16 +1799,20 @@ namespace aloe::tcp {
         }
 
         /**
-         * The probe timer ran out with the peer's window still zero. First the user timeout, counted from the start of
-         * probing, and then `data_retries` unanswered probes may end the connection instead; else one probe goes, it
-         * counts as unanswered until an acceptable ACK clears the count, and the interval doubles up to `rto_max`. A
-         * probe refused counts all the same: the next expiry tries again.
+         * The probe timer ran out with the peer's window still zero. The first expiry stamps the start the user timeout
+         * counts from, as Linux's `tcp_probe_timer` stamps `icsk_probes_tstamp`; a later one ends the connection once
+         * the timeout passed since that stamp, answered probes or not. Then `data_retries` unanswered probes may end it
+         * instead; else one probe goes, it counts as unanswered until an acceptable ACK clears the count, and the
+         * interval doubles up to `rto_max`. A probe refused counts all the same: the next expiry tries again.
          */
         void on_probe_timeout(ConnectionType& conn) noexcept {
             assert(conn.queue_count_ == 0 && conn.snd_wnd_ == 0 &&
                    (conn.state_ == State::Established || conn.state_ == State::CloseWait) &&
                    "a probe runs only while the window is zero and nothing is queued");
-            if (config_.user_timeout > core::Duration::zero() && now_ - conn.probe_started_ >= config_.user_timeout) {
+            if (!conn.probe_started_) {
+                conn.probe_started_ = now_;
+            } else if (config_.user_timeout > core::Duration::zero() &&
+                       now_ - *conn.probe_started_ >= config_.user_timeout) {
                 time_out(conn, /*by_user_timeout=*/true);
                 return;
             }
