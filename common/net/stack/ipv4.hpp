@@ -294,14 +294,18 @@ namespace aloe::net {
             }
             const std::span<std::byte> frame = packet.data();
             const std::span<std::byte> ip    = frame.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size);
-            wire::store_be16(ip.subspan(ipv4_total_length_offset, 2),
-                             static_cast<std::uint16_t>(frame_size - wire::EthernetHeader::size));
+            // The header as the Prebuilt wrote it, from what the caller holds rather than a parse of the frame: the
+            // checksums need the addresses, the protocol and the total length only.
+            const wire::Ipv4Header header{.total_length =
+                                              static_cast<std::uint16_t>(frame_size - wire::EthernetHeader::size),
+                                          .protocol    = request.protocol,
+                                          .source      = config_.address,
+                                          .destination = request.destination};
+            wire::store_be16(ip.subspan(ipv4_total_length_offset, 2), header.total_length);
             wire::store_be16(ip.subspan(ipv4_identification_offset, 2), next_identification());
             wire::store_be16(ip.subspan(wire::ipv4_checksum_offset, 2), 0);
-            const std::optional<wire::Ipv4Header> header =
-                wire::Ipv4Header::parse(frame.subspan(wire::EthernetHeader::size));
-            assert(header.has_value() && "the first bytes after Ethernet are not an IPv4 header from a Prebuilt");
-            packet.set_tx(finish_checksums(frame, *header, request.checksum));
+            assert(prebuilt_names(frame, header) && "the frame's IPv4 header is not the request's Prebuilt");
+            packet.set_tx(finish_checksums(frame, header, request.checksum));
             Packet handle = packet.lend();
             if (queue_->transmit(std::move(handle))) {
                 ++counters_.datagrams_sent;
@@ -320,6 +324,16 @@ namespace aloe::net {
             // NOLINTEND(bugprone-use-after-move)
             ++counters_.send_refused;
             return std::unexpected{SendError::Refused};
+        }
+
+        /// Whether the frame's IPv4 header names what `header` does: the check behind `send_frame`'s trust in the
+        /// caller's request, in an assertion only, so a release build never instantiates it.
+        [[nodiscard]] static bool prebuilt_names(const std::span<const std::byte> frame,
+                                                 const wire::Ipv4Header& header) noexcept {
+            const std::optional<wire::Ipv4Header> parsed =
+                wire::Ipv4Header::parse(frame.subspan(wire::EthernetHeader::size));
+            return parsed.has_value() && parsed->source == header.source && parsed->destination == header.destination &&
+                   parsed->protocol == header.protocol;
         }
 
         /// The next hop's MAC from the cache, or nothing with a request on its way: how a program pre-resolves its
