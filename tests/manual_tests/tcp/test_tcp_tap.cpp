@@ -608,38 +608,45 @@ namespace {
         return fd;
     }
 
-    /// The environment's `net_tap0`, opened once for the whole suite: a closed DPDK port cannot be reopened, and a
-    /// second tap cannot take the interface name the first one holds.
-    class TcpTap : public ::testing::Test {
-    protected:
-        static void SetUpTestSuite() {
+    /// The EAL's `net_tap0`, opened once per process, after the EAL and closed before it: a closed DPDK port cannot
+    /// be reopened, and a second tap cannot take the interface name the first one holds. Every suite takes the port
+    /// from here: gtest runs a fixture's suite setup and teardown once per suite name, so a port kept by the fixture
+    /// would be closed after `TcpTap`'s cases and opened again, in vain, for `TcpTapLoss`'s.
+    class TapPortEnvironment : public ::testing::Environment {
+    public:
+        void SetUp() override {
             if (geteuid() != 0) {
-                return;
+                return;  // every case skips
             }
             aloe::core::calibrate_clock();  // here, where a refusal is an exception, not on a loop's thread
-            shared_port().emplace(aloe::ethdev::PortConfig{.name = "net_tap0", .queues = 1, .pool_size = 1024});
+            port().emplace(aloe::ethdev::PortConfig{.name = "net_tap0", .queues = 1, .pool_size = 1024});
             configure_interface(interface, kernel_ip, netmask);
         }
 
-        static void TearDownTestSuite() {
-            shared_port().reset();
+        void TearDown() override {
+            port().reset();
         }
 
+        [[nodiscard]] static std::optional<Port>& port() {
+            static std::optional<Port> port;
+            return port;
+        }
+    };
+
+    // Registered after the EAL: environments are set up in this order and torn down in reverse.
+    const auto* const tap_port = ::testing::AddGlobalTestEnvironment(new TapPortEnvironment{});
+
+    class TcpTap : public ::testing::Test {
+    protected:
         void SetUp() override {
             if (geteuid() != 0) {
                 GTEST_SKIP() << "needs root for the tap device";
             }
-            ASSERT_TRUE(shared_port().has_value());
-            port_ = &*shared_port();
+            ASSERT_TRUE(TapPortEnvironment::port().has_value());
+            port_ = &*TapPortEnvironment::port();
         }
 
         Port* port_ = nullptr;
-
-    private:
-        [[nodiscard]] static std::optional<Port>& shared_port() {
-            static std::optional<Port> port;
-            return port;
-        }
     };
 
     /// Runs `tc` with `arguments`; true when it ran and succeeded.
