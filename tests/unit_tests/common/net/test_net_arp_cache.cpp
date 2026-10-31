@@ -199,3 +199,20 @@ TEST(ArpCache, TheGenerationMovesWhenAMacChangesOrGoes) {
     EXPECT_EQ(cache.lookup(peer, at(200s + 500ms)), (Lookup{.mac = std::nullopt, .send_request = false}));
     EXPECT_EQ(cache.generation(), 3U) << "a second look at an incomplete entry moves nothing";
 }
+
+TEST(ArpCache, EvictingAReachableEntryMovesTheGeneration) {
+    aloe::net::ArpCache cache{small};
+    for (std::uint8_t index = 0; index < 8; ++index) {
+        cache.learn(host(index), peer_mac, at(0s));
+    }
+    ASSERT_EQ(cache.size(), 8);
+    const std::uint64_t before = cache.generation();
+    // No free slot, none expired, none incomplete: the lookup of a ninth address evicts the oldest confirmation.
+    EXPECT_EQ(cache.lookup(host(8), at(1s)), (Lookup{.mac = std::nullopt, .send_request = true}));
+    EXPECT_TRUE(cache.contains(host(8)));
+    EXPECT_EQ(cache.size(), 8);
+    EXPECT_EQ(cache.generation(), before + 1) << "the evicted entry's MAC went: a Prebuilt of its generation is stale";
+    const std::uint64_t learned = cache.generation();
+    cache.learn(host(9), other_mac, at(2s));  // evicts another reachable entry and brings a MAC of its own
+    EXPECT_GT(cache.generation(), learned);
+}

@@ -66,7 +66,8 @@ namespace aloe::net {
         [[nodiscard]] std::optional<core::TimePoint> confirmed(wire::Ipv4Address address) const noexcept;
 
         /// Starts at zero; moves by one whenever an entry's MAC changes or goes: a `learn` of an address whose entry
-        /// was not reachable or held another MAC, and a `lookup` that finds a reachable entry expired.
+        /// was not reachable or held another MAC, a `lookup` that finds a reachable entry expired, and an insert that
+        /// evicts a reachable entry, expired or not.
         [[nodiscard]] std::uint64_t generation() const noexcept {
             return generation_;
         }
