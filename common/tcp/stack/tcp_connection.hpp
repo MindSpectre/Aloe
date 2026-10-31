@@ -160,7 +160,7 @@ namespace aloe::tcp {
             return CongestionControl::window(congestion_);
         }
         /// For tests and monitoring: the policy's per-connection state.
-        [[nodiscard]] const typename CongestionControl::State& congestion_state() const noexcept {
+        [[nodiscard]] const CongestionControl::State& congestion_state() const noexcept {
             return congestion_;
         }
         /// Fast recovery: entered on the third duplicate ACK, left on the ACK past `recover` or a timeout.
@@ -237,6 +237,7 @@ namespace aloe::tcp {
             prepared_.reset();
             prepared_size_    = 0;
             fin_sent_         = false;
+            fin_reserved_     = false;
             template_         = {};
             last_data_send_   = std::nullopt;
             snd_una_          = {};
@@ -306,6 +307,7 @@ namespace aloe::tcp {
         std::optional<Packet> prepared_{};
         std::size_t prepared_size_ = 0;
         bool fin_sent_             = false;  ///< The FIN took its number, `snd_nxt - 1`; its entry carries it.
+        bool fin_reserved_         = false;  ///< A node of the send pool is set aside for the FIN, since Established.
 
         // The retransmission queue: every segment that occupies sequence space, oldest first, and the frame template.
         std::uint32_t queue_head_  = detail::no_node;
@@ -344,8 +346,7 @@ namespace aloe::tcp {
         std::uint8_t probes_out_ = 0;  ///< Zero-window probes since the last acceptable ACK; `data_retries` caps.
         std::optional<core::TimePoint> probe_started_{};  ///< The first unanswered probe: the user timeout's start.
         core::Duration probe_interval_{};  ///< The next probe's delay: the RTO, doubled per probe up to `rto_max`.
-        typename CongestionControl::State
-            congestion_{};  ///< The policy's state; reset where the connection is Established.
+        CongestionControl::State congestion_{};  ///< The policy's state; reset where the connection is Established.
 
         // Timestamps (RFC 7323): the offer, the clock's offset, the echo and what PAWS compares against.
         bool send_timestamps_ = false;  ///< In SynSent the SYN's offer; from the handshake on, the negotiated option.

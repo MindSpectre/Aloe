@@ -1,6 +1,7 @@
 #pragma once
 
 #include <aloe/core>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -23,6 +24,8 @@ namespace aloe::tcp::detail {
      * Fixed at construction, never grown. Every node may keep a packet of the device's pool, and a second one while
      * the copy fallback has one out, so that pool covers the receive descriptors, `receive_pool` held packets,
      * `send_pool` kept packets and the copies out, the transmit ring, what the card holds and the open preparations.
+     * A free node may be set aside (`reserve`): `acquire` leaves it alone and only `acquire_reserved` takes it, so a
+     * connection's FIN has a node whatever the others hold.
      */
     template <device::IsPacket Packet>
     class SentSegmentPool {
@@ -57,17 +60,37 @@ namespace aloe::tcp::detail {
             free_head_ = 0;
         }
 
-        /// A blank node, or nothing when every node is taken.
+        /// A blank node, or nothing when every node is taken or set aside.
         [[nodiscard]] std::optional<std::uint32_t> acquire() noexcept {
-            if (free_head_ == no_node) {
+            if (available_ == reserved_) {
                 return std::nullopt;
             }
-            const std::uint32_t index = free_head_;
-            Node& node                = nodes_[index];
-            free_head_                = node.next;
-            node.next                 = no_node;
-            --available_;
-            return index;
+            return take();
+        }
+
+        /// Sets one free node aside: `acquire` cannot take it, `acquire_reserved` can. False when none is free to set
+        /// aside.
+        [[nodiscard]] bool reserve() noexcept {
+            if (available_ == reserved_) {
+                return false;
+            }
+            ++reserved_;
+            return true;
+        }
+
+        /// A reservation given back unused: the node is any node's again.
+        void unreserve() noexcept {
+            assert(reserved_ > 0 && "an unreserve without a reservation");
+            --reserved_;
+        }
+
+        /// A blank node from the ones set aside, spending one reservation; nothing when none is set aside.
+        [[nodiscard]] std::optional<std::uint32_t> acquire_reserved() noexcept {
+            if (reserved_ == 0) {
+                return std::nullopt;
+            }
+            --reserved_;
+            return take();
         }
 
         /// Drops both packets, which go back to their pool now or when the device returns them, and blanks the node.
@@ -87,8 +110,13 @@ namespace aloe::tcp::detail {
             return nodes_[index];
         }
 
+        /// The nodes an `acquire` may take: the free ones less those set aside.
         [[nodiscard]] std::size_t available() const noexcept {
-            return available_;
+            return available_ - reserved_;
+        }
+
+        [[nodiscard]] std::size_t reserved() const noexcept {
+            return reserved_;
         }
 
         [[nodiscard]] std::size_t capacity() const noexcept {
@@ -103,9 +131,21 @@ namespace aloe::tcp::detail {
             return count;
         }
 
+        /// The free head, which exists while `available_ > 0`.
+        [[nodiscard]] std::uint32_t take() noexcept {
+            assert(free_head_ != no_node && "a take from an empty pool");
+            const std::uint32_t index = free_head_;
+            Node& node                = nodes_[index];
+            free_head_                = node.next;
+            node.next                 = no_node;
+            --available_;
+            return index;
+        }
+
         std::vector<Node> nodes_;
         std::uint32_t free_head_ = no_node;
-        std::size_t available_   = 0;
+        std::size_t available_   = 0;  ///< Free nodes, the ones set aside included.
+        std::size_t reserved_    = 0;  ///< Free nodes set aside; never more than `available_`.
     };
 
 }  // namespace aloe::tcp::detail

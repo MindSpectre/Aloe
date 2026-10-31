@@ -300,6 +300,9 @@ basenames are unique across modules: `packet.hpp` is the concept,
   the same stamp matches whichever segment is at the head. A script that asserts the stack waits for an ACK before
   it sends gives that ACK a later stamp, as `fin-waits-behind-a-full-window.pkt` injects it at `+0.1`, so an early
   send fails the line.
+- `send_nodes_available()` on an open connection is one short of `send_pool`: Established sets a node aside for the
+  FIN, which only the close may take. A test that empties the pool for data sends until a send is refused, as
+  `CloseWithThePoolEmptySendsTheFinFromItsReservation` does, rather than counting to `send_pool`.
 
 ## Documentation
 

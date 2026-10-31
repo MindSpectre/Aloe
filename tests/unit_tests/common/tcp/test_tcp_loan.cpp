@@ -72,7 +72,7 @@ TEST_P(TcpLoan, AfterTheBoundACopyIsSentAndBothPacketsAreFreedOnce) {
     EXPECT_EQ(c->queued_segments(), 0U);
     return_loans();
     EXPECT_EQ(loans_outstanding(), 0U);
-    EXPECT_EQ(tcp_->send_nodes_available(), tcp_->config().send_pool);
+    EXPECT_EQ(tcp_->send_nodes_available(), tcp_->config().send_pool - 1) << "less the FIN's reserved node";
 }
 
 TEST_P(TcpLoan, TheCopyCarriesOnlyTheUnacknowledgedPart) {

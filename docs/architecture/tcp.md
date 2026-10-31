@@ -319,8 +319,8 @@ cannot run. Every shard gets the same config.
 | `listeners`                         | 8            | Listening ports per shard.                                                                                                                                           | zero                                                                                                                  |
 | `receive_segments`                  | 32           | Packets one connection may hold; also sizes the byte window, `min(receive_segments * mss, 65535)`.                                                                   | zero                                                                                                                  |
 | `receive_pool`                      | 2048         | Held-packet nodes shared by every connection of the shard.                                                                                                           | zero                                                                                                                  |
-| `send_segments`                     | 32           | Data segments one connection may keep in its retransmission queue: the send cap. The FIN may take one entry beyond it.                                               | zero                                                                                                                  |
-| `send_pool`                         | 2048         | Retransmission-queue nodes shared by every connection of the shard.                                                                                                  | zero                                                                                                                  |
+| `send_segments`                     | 32           | Data segments one connection may keep in its retransmission queue: the send cap. The FIN's entry, set aside at Established, is beyond it.                            | zero                                                                                                                  |
+| `send_pool`                         | 2048         | Retransmission-queue nodes shared by every connection of the shard; each synchronized connection has one set aside for its FIN.                                      | zero                                                                                                                  |
 | `ephemeral_first`, `ephemeral_last` | 32768, 60999 | `connect`'s local ports, inclusive.                                                                                                                                  | empty, or containing port 0                                                                                           |
 | `rto_initial`                       | 1 s          | The RTO before the first round-trip sample, Linux's `TCP_TIMEOUT_INIT`; the SYN and SYN-ACK back off from it.                                                        | not positive, outside `rto_min..rto_max`, or too large to double `retries` times within a quarter of `core::Duration` |
 | `rto_min`                           | 200 ms       | The floor of the RTO's deviation term, so the RTO is at least `srtt + rto_min`; Linux's `TCP_RTO_MIN`.                                                               | not positive, or below the wheel's resolution                                                                         |
@@ -449,9 +449,9 @@ handshake too, once the retry count has not ended it.
 **A next hop that never answers.** A SYN, SYN-ACK or FIN that finds no next hop on its first send, with nothing
 else queued, keeps its entry with the packet unsent, and the timer polls every `unresolved_retry` (10 ms by
 default) instead; those polls are not tries, and the RTO does not back off over them. The first send is the
-open's or the close's as a rule, but it can also be the RTO's, when the FIN that waited for a node gets one at an
-expiry and the next hop has gone meanwhile; the poll takes over the same way, and arms the RTO once the send
-leaves. After `unresolved_polls` of them, 3 seconds by default, the
+open's or the close's as a rule, but it can also be the RTO's, when the device refused the segment before and
+the next hop has gone by the expiry; the poll takes over the same way, and arms the RTO once the send leaves.
+After `unresolved_polls` of them, 3 seconds by default, the
 connection gives up: a passive open nobody owns is freed silently, an owned connection raises `Unresolved`, a
 failure of its own, as Linux reports a host unreachable rather than a timeout when ARP goes unanswered. A data
 segment that finds no next hop is not kept: its commit is refused with a retry hint. `abort` in SynSent sends
@@ -522,10 +522,11 @@ restart after idle, which Linux enables by default. A fast retransmit resends th
 **A silent peer holds what the caps allow.** A peer that never acknowledges keeps a connection's entries, and
 their packets, until `data_retries` or the user timeout ends the connection. `send_segments` bounds what one
 connection holds and `send_pool` what the shard's connections hold together. When the pool is empty a `connect`
-fails `TableFull`, a SYN to a listener is dropped as `dropped_no_node`, a commit is refused with a retry hint and
-counted in `allocation_failures`, and a `close` gives its FIN a sequence number and lets the timer find the FIN a
-node at a later expiry. So `send_pool / send_segments` stalled connections, 64 with the defaults, can hold the
-whole of a shard's pool, and with the user timeout off each holds its share for about fifteen minutes, the
+fails `TableFull`, a SYN to a listener is dropped as `dropped_no_node`, and a commit is refused with a retry hint
+and counted in `allocation_failures`; a `close` is never short of a node, since Established set one aside for its
+FIN, as Linux's FIN takes memory its accounting cannot refuse. So `send_pool / (send_segments + 1)` stalled
+connections, 62 with the defaults, can hold the whole of a shard's pool, and with the user timeout off each holds
+its share for about fifteen minutes, the
 `data_retries` backoff, while the shard's other connections can send no data and open none. A program that talks
 to peers it does not trust sets `user_timeout`, which bounds that hold to the timeout, or sizes `send_pool` for the
 connections it expects to stall.

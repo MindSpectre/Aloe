@@ -365,10 +365,12 @@ namespace aloe::testing {
                                protected detail::TestDeviceHolder,
                                protected TcpHarness<TcpTestDevice> {
     protected:
-        TcpRefusingFixture()
+        /// `ip_config` lets a derived fixture shorten the ARP cache's times; the stack is reconfigured with
+        /// `configure_tcp`.
+        explicit TcpRefusingFixture(const net::Ipv4Config& ip_config = stack_config())
             : FabricPair{GetParam()},
               TestDeviceHolder{port},
-              TcpHarness{fabric, harness, device, {}, stack_config(), 1} {
+              TcpHarness{fabric, harness, device, {}, ip_config, 1} {
         }
 
         /// From now on every send is refused: the device takes nothing, and an empty packet fills the one-slot ring

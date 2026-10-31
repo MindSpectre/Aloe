@@ -504,6 +504,7 @@ namespace aloe::tcp {
             conn.wl1_           = header.sequence;
             conn.wl2_           = header.acknowledgement;
             conn.state_         = State::Established;
+            reserve_fin_node(conn);
             CongestionControl::reset(conn.congestion_, conn.mss());
             update_probing(conn);  // a SYN-ACK offering no window starts probing as any ACK does
             ++counters_.connections_opened;
@@ -624,6 +625,7 @@ namespace aloe::tcp {
                 conn.snd_una_     = ack;
                 on_acknowledged(conn, freed, segment.ts_echo);  // a sample, and the timer stopped with the queue empty
                 conn.state_ = State::Established;
+                reserve_fin_node(conn);
                 CongestionControl::reset(conn.congestion_, conn.mss());
                 conn.owned_ = true;
                 ++counters_.connections_accepted;
@@ -1023,11 +1025,19 @@ namespace aloe::tcp {
             return {};
         }
 
+        /// Established: one node of the pool is set aside for the connection's FIN, so a close never finds the pool
+        /// empty, as Linux's FIN takes memory its accounting cannot refuse. The ACK that brought the connection here
+        /// freed the handshake's node, so one is free to set aside; the end of a connection that never closed gives
+        /// it back (`drop_queue`).
+        void reserve_fin_node(ConnectionType& conn) noexcept {
+            conn.fin_reserved_ = send_pool_.reserve();
+            assert(conn.fin_reserved_ && "the handshake's node just came back");
+        }
+
         /**
          * A blank entry for a segment about to leave, linked at the tail of the queue. `packet` is moved in, and may
-         * be empty for a SYN, SYN-ACK or FIN, which `transmit_entry` gives one. Nothing, with the packet still the
-         * caller's, when no node is free or a data segment would pass the send cap; the FIN is the stack's own and is
-         * not held to the cap, which bounds what the application queues.
+         * be empty for a SYN or SYN-ACK, which `transmit_entry` gives one. Nothing, with the packet still the
+         * caller's, when no node is free or a data segment would pass the send cap. The FIN's entry is `enqueue_fin`.
          */
         [[nodiscard]] std::optional<std::uint32_t> enqueue(ConnectionType& conn,
                                                            Packet&& packet,
@@ -1042,7 +1052,32 @@ namespace aloe::tcp {
             if (!index) {
                 return std::nullopt;
             }
-            SentNode& node         = send_pool_.node(*index);
+            link_tail(conn, *index, std::move(packet), payload, flags, first, length);
+            return index;
+        }
+
+        /// The FIN's entry, on the node Established set aside for it, which spends the reservation; the stack's own,
+        /// so the send cap does not hold it. With no node set aside, which construction rules out, any free node.
+        [[nodiscard]] std::optional<std::uint32_t> enqueue_fin(ConnectionType& conn, const Sequence fin) noexcept {
+            assert(conn.fin_reserved_ && "a FIN without the node Established set aside");
+            const std::optional<std::uint32_t> index =
+                std::exchange(conn.fin_reserved_, false) ? send_pool_.acquire_reserved() : send_pool_.acquire();
+            if (!index) {
+                return std::nullopt;
+            }
+            link_tail(conn, *index, Packet{}, 0, wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, fin, 1);
+            return index;
+        }
+
+        /// Fills the blank node `index` for a segment about to leave and links it at the tail of the queue.
+        void link_tail(ConnectionType& conn,
+                       const std::uint32_t index,
+                       Packet&& packet,
+                       const std::uint16_t payload,
+                       const wire::TcpFlags flags,
+                       const Sequence first,
+                       const std::uint32_t length) noexcept {
+            SentNode& node         = send_pool_.node(index);
             node.packet            = std::move(packet);
             node.first             = first;
             node.length            = length;
@@ -1051,13 +1086,12 @@ namespace aloe::tcp {
             node.delivered_at_send = conn.delivered_;
             node.app_limited       = send_room(conn) > payload;  // before the send: the windows allowed more
             if (conn.queue_tail_ == detail::no_node) {
-                conn.queue_head_ = *index;
+                conn.queue_head_ = index;
             } else {
-                send_pool_.node(conn.queue_tail_).next = *index;
+                send_pool_.node(conn.queue_tail_).next = index;
             }
-            conn.queue_tail_ = *index;
+            conn.queue_tail_ = index;
             ++conn.queue_count_;
-            return index;
         }
 
         /// Takes back the tail `enqueue` just linked after `previous`, the tail before it; its packet goes with it.
@@ -1128,7 +1162,7 @@ namespace aloe::tcp {
             conn.unresolved_polls_ = 0;
         }
 
-        /// Queues a SYN, SYN-ACK or FIN at `sequence` and transmits it. The entry stays when the send fails, for the
+        /// Queues a SYN or SYN-ACK at `sequence` and transmits it. The entry stays when the send fails, for the
         /// timer; `Refused`, counted, when no node is free.
         [[nodiscard]] std::expected<void, net::SendError>
         queue_control(ConnectionType& conn, const wire::TcpFlags flags, const Sequence sequence) noexcept {
@@ -1610,7 +1644,7 @@ namespace aloe::tcp {
         }
 
         /// Every entry back to the pool: the node now, its packet and a copy out now or when the device returns them,
-        /// each exactly once.
+        /// each exactly once; and the node set aside for a FIN that never came, any node's again.
         void drop_queue(ConnectionType& conn) noexcept {
             for (std::uint32_t index = conn.queue_head_; index != detail::no_node;) {
                 const std::uint32_t next = send_pool_.node(index).next;
@@ -1620,6 +1654,9 @@ namespace aloe::tcp {
             conn.queue_head_  = detail::no_node;
             conn.queue_tail_  = detail::no_node;
             conn.queue_count_ = 0;
+            if (std::exchange(conn.fin_reserved_, false)) {
+                send_pool_.unreserve();
+            }
             deferred_.remove(conn);
         }
 
@@ -1727,13 +1764,6 @@ namespace aloe::tcp {
             return head.transmits > 0 ? &head : nullptr;
         }
 
-        /// The FIN took its number but `close` found no node for its entry: the RTO keeps running until one frees.
-        [[nodiscard]] bool fin_unqueued(const ConnectionType& conn) const noexcept {
-            return conn.fin_sent_ && conn.snd_una_ != conn.snd_nxt_ &&
-                   (conn.queue_tail_ == detail::no_node ||
-                    !send_pool_.node(conn.queue_tail_).flags.has(wire::TcpFlag::Fin));
-        }
-
         /// Whether a segment the peer can acknowledge is out: the head left at least once. A queue whose head never
         /// left, held for the peer's window or the next hop, has nothing in flight; entries leave in order, so no
         /// later entry left before the head.
@@ -1770,10 +1800,10 @@ namespace aloe::tcp {
          * and `tcp_ack_update_rtt`: from the oldest entry the ACK freed, measured from its transmission, when no entry
          * it freed left more than once (Karn's rule); else, on a connection with timestamps, from the ACK's echo, which
          * names the transmission it answers, so the echo on the ACK of a resend ends the backoff too. An echo of zero
-         * or from the future gives none. The timer restarts from now while anything is in flight, or a FIN waits for
-         * a node, and stops when nothing is, RFC 6298's rule, which covers RFC 6582's re-arm on a partial ACK; a head
-         * that never left, the FIN a close holds for the window, is `send_unsent`'s or the probes'. A partial ACK
-         * frees nothing, samples only from its echo, and restarts the timer. Returns the sample taken, if any.
+         * or from the future gives none. The timer restarts from now while anything is in flight and stops when
+         * nothing is, RFC 6298's rule, which covers RFC 6582's re-arm on a partial ACK; a head that never left, the
+         * FIN a close holds for the window, is `send_unsent`'s or the probes'. A partial ACK frees nothing, samples
+         * only from its echo, and restarts the timer. Returns the sample taken, if any.
          */
         std::optional<core::Duration>
         on_acknowledged(ConnectionType& conn, const Freed& freed, const std::optional<std::uint32_t> echo) noexcept {
@@ -1790,7 +1820,7 @@ namespace aloe::tcp {
             if (sample) {
                 take_sample(conn, *sample);
             }
-            if (in_flight(conn) || fin_unqueued(conn)) {
+            if (in_flight(conn)) {
                 arm_retransmit(conn);
             } else {
                 disarm(conn);
@@ -1902,7 +1932,7 @@ namespace aloe::tcp {
         void fast_retransmit(ConnectionType& conn) noexcept {
             ++counters_.fast_retransmits;
             if (!in_flight(conn)) {
-                return;  // nothing left: a FIN that found no node, which the RTO sends, or one the window holds
+                return;  // nothing in flight: the head, if any, waits for the window
             }
             if (resend_head(conn) && !deferred_.contains(conn)) {
                 arm_retransmit(conn);
@@ -1934,13 +1964,13 @@ namespace aloe::tcp {
          * `data_retries` after it, may end the connection instead. The first expiry since an ACK of new data leaves
          * fast recovery, records `recover` and starts the loss episode, and tells the congestion control, with what
          * was in flight; each expiry doubles the RTO up to `rto_max` and re-arms. A resend deferred or refused counts
-         * as the retry all the same: the next expiry tries again. A first send, of the FIN that waited for a node,
-         * that finds no next hop arms the ARP poll instead (`transmit_entry`), and the expiry leaves the timer to it:
-         * nothing left, so no backoff; the poll arms the RTO once the send leaves, or ends the connection `Unresolved`.
+         * as the retry all the same: the next expiry tries again. A first send, of a SYN, SYN-ACK or FIN the device
+         * refused before, that finds no next hop arms the ARP poll instead (`transmit_entry`), and the expiry leaves
+         * the timer to it: nothing left, so no backoff; the poll arms the RTO once the send leaves, or ends the
+         * connection `Unresolved`.
          */
         void on_retransmit_timeout(ConnectionType& conn) noexcept {
-            assert((conn.queue_head_ != detail::no_node || fin_unqueued(conn)) &&
-                   "the RTO runs while something is due");
+            assert(conn.queue_head_ != detail::no_node && "the RTO runs while something is queued");
             if (const SentNode* head = user_timed_head(conn);
                 head != nullptr && now_ - head->first_sent >= config_.user_timeout) {
                 time_out(conn, /*by_user_timeout=*/true);
@@ -1961,20 +1991,7 @@ namespace aloe::tcp {
                 conn.limited_transmit_ = 0;
                 CongestionControl::on_timeout(conn.congestion_, conn.snd_nxt_.value - conn.snd_una_.value, conn.mss());
             }
-            if (fin_unqueued(conn)) {
-                // close found no node free: the FIN takes one now, behind what is still queued
-                std::ignore = enqueue(conn,
-                                      Packet{},
-                                      0,
-                                      wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack},
-                                      Sequence{conn.snd_nxt_.value - 1},
-                                      1);
-            }
-            if (conn.queue_head_ != detail::no_node) {
-                std::ignore = resend_head(conn);
-            } else {
-                ++counters_.send_refused;  // still no node for the FIN
-            }
+            std::ignore = resend_head(conn);
             ++counters_.retransmits;
             if (conn.timer_kind_ == detail::TimerKind::ArpPoll) {
                 return;  // a first send that found no next hop: the poll retries it, and arms the RTO once it leaves
@@ -2091,9 +2108,9 @@ namespace aloe::tcp {
 
         /// FIN after what was committed: Established moves to FinWait1, CloseWait to LastAck; elsewhere nothing. An
         /// open preparation stays the application's: its next commit refuses it, as the connection left the sendable
-        /// states. A FIN the peer's window does not cover, Linux's `tcp_snd_wnd_test`, waits in the queue, unsent,
-        /// for the ACK that opens the window (`send_unsent`), while the probes go on; a Linux peer drops a FIN sent
-        /// into its zero window.
+        /// states. The FIN's entry is the node Established set aside, so the pool never refuses it. A FIN the peer's
+        /// window does not cover, Linux's `tcp_snd_wnd_test`, waits in the queue, unsent, for the ACK that opens the
+        /// window (`send_unsent`), while the probes go on; a Linux peer drops a FIN sent into its zero window.
         void close(ConnectionType& conn) noexcept {
             switch (conn.state_) {
                 case State::Established:
@@ -2107,21 +2124,23 @@ namespace aloe::tcp {
             }
             const Sequence fin = conn.snd_nxt_;
             const bool idle    = !in_flight(conn);  // else the RTO already runs for the data
-            constexpr wire::TcpFlags flags{wire::TcpFlag::Fin, wire::TcpFlag::Ack};
-            conn.fin_sent_ = true;
-            conn.snd_nxt_  = fin + 1;  // the FIN takes its number whether or not it left: the timer resends it
-            if (covered(conn, fin + 1)) {
-                std::ignore = queue_control(conn, flags, fin);
-            } else if (enqueue(conn, Packet{}, 0, flags, fin, 1)) {
+            conn.fin_sent_     = true;
+            conn.snd_nxt_      = fin + 1;  // the FIN takes its number whether or not it left: the timer resends it
+            const std::optional<std::uint32_t> entry = enqueue_fin(conn, fin);
+            if (!entry) {
+                ++counters_.send_refused;  // unreachable by construction; a release build resets rather than hangs
+                abort(conn);
+                return;
+            }
+            if (!covered(conn, fin + 1)) {
                 if (idle && !conn.probing()) {
                     start_probing(conn);  // a zero window with nothing in flight is probed already, as a rule
                 }
                 return;
-            } else {
-                ++counters_.send_refused;  // no node: the RTO gives it one (fin_unqueued)
             }
+            std::ignore = transmit_entry(conn, *entry);
             if (idle && (!conn.timer_.armed() || conn.probing())) {
-                arm_retransmit(conn);  // refused, or no node: the RTO tries again, and takes the timer from a probe
+                arm_retransmit(conn);  // refused: the RTO tries again, and takes the timer from a probe
             }
         }
 
