@@ -1587,9 +1587,7 @@ namespace aloe::tcp {
             if (!receiving) {
                 return;  // the peer sends no more data, or the connection is closed: no offer to make
             }
-            if (const Sequence candidate =
-                    conn.rcv_nxt_ + (byte_budget_ - static_cast<std::uint32_t>(conn.unread_bytes_));
-                candidate.after(conn.rcv_adv_) && conn.chain_count_ < config_.receive_segments) {
+            if (offer_of(conn) != conn.rcv_adv_) {
                 queue_ack(conn);  // an ordinary window update, including the reopening of a zero window
             }
         }
