@@ -27,6 +27,7 @@ namespace aloe::wire {
         std::optional<std::uint16_t> mss;
         std::optional<std::uint32_t> timestamp_value;  ///< RFC 7323 TSval, set together with the echo.
         std::optional<std::uint32_t> timestamp_echo;   ///< RFC 7323 TSecr.
+        std::optional<std::size_t> timestamp_at;  ///< Where kind 8 starts in the bytes parsed: value at +2, echo at +6.
 
         [[nodiscard]] static constexpr std::optional<TcpOptions>
         parse(const std::span<const std::byte> options) noexcept {
@@ -59,6 +60,7 @@ namespace aloe::wire {
                     }
                     parsed.timestamp_value = load_be32(options.subspan(at + 2, 4));
                     parsed.timestamp_echo  = load_be32(options.subspan(at + 6, 4));
+                    parsed.timestamp_at    = at;
                 }
                 at += length;
             }

@@ -178,3 +178,15 @@ TEST(TcpOptions, ParsesTimestampsAndRejectsABadLength) {
     block[3] = std::byte{8};
     EXPECT_FALSE(aloe::wire::TcpOptions::parse(block).has_value()) << "a timestamp option of length 8 is malformed";
 }
+
+TEST(TcpOptions, RecordsWhereTheTimestampOptionStarts) {
+    const auto linux = TcpOptions::parse(bytes({2, 4, 0x05, 0xb4, 4, 2, 8, 10, 1, 2, 3, 4, 0, 0, 0, 0, 1, 3, 3, 7, 0}));
+    ASSERT_TRUE(linux.has_value());
+    EXPECT_EQ(linux->timestamp_at, 6U) << "kind 8 after the MSS and SACK-permitted options";
+    const auto aligned = TcpOptions::parse(bytes({1, 1, 8, 10, 0, 0, 0, 9, 0, 0, 0, 7}));
+    ASSERT_TRUE(aligned.has_value());
+    EXPECT_EQ(aligned->timestamp_at, 2U) << "behind the two nops of the aligned block";
+    const auto none = TcpOptions::parse(bytes({2, 4, 0x05, 0xb4}));
+    ASSERT_TRUE(none.has_value());
+    EXPECT_FALSE(none->timestamp_at.has_value());
+}
