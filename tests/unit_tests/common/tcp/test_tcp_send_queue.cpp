@@ -41,6 +41,37 @@ namespace {
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
 
+    /// The pool of two over an ARP cache whose entries are gone after 100 ms, so the FIN that waited for a node finds
+    /// no next hop when the RTO sends it first: the ARP poll's case reached from the RTO path. Three polls bound the
+    /// wait.
+    class TcpSendPoolExhaustedNextHopGone : public ::testing::TestWithParam<aloe::fabric::EmulatedOffloads>,
+                                            protected aloe::testing::detail::FabricPair,
+                                            protected aloe::testing::TcpHarness<aloe::fabric::Port> {
+    protected:
+        TcpSendPoolExhaustedNextHopGone()
+            : FabricPair{GetParam()},
+              TcpHarness{fabric, harness, port, pool_of_two(), arp_expiring()} {
+        }
+
+    private:
+        [[nodiscard]] static aloe::tcp::TcpConfig pool_of_two() {
+            return {.send_pool = 2, .unresolved_polls = 3};
+        }
+
+        [[nodiscard]] static aloe::net::Ipv4Config arp_expiring() {
+            aloe::net::Ipv4Config config = aloe::testing::stack_config();
+            config.arp_reachable         = 50ms;
+            config.arp_expire            = 100ms;
+            return config;
+        }
+    };
+
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpSendPoolExhaustedNextHopGone,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+
 }  // namespace
 
 TEST_P(TcpSendQueue, EachSentSegmentIsAnEntryUntilAcknowledged) {
@@ -323,4 +354,51 @@ TEST_P(TcpSendPoolExhausted, CloseWithThePoolEmptyQueuesTheFinBehindTheHeadAtThe
     receive(peer_.ack(fin[0]));
     EXPECT_EQ(c->state(), aloe::tcp::State::FinWait2);
     EXPECT_EQ(tcp_->send_nodes_available(), 2U);
+}
+
+TEST_P(TcpSendPoolExhaustedNextHopGone, TheFinsFirstSendFromTheRtoPollsAndFailsUnresolved) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 2U);
+    c->close();
+    EXPECT_EQ(tcp_->counters().send_refused, 1U) << "the FIN found no node";
+    receive(peer_.ack(sent[1]));  // both nodes free, the RTO restarted: the FIN waits for the expiry
+    const auto requests = ip_.counters().arp_requests_sent;
+    advance(200ms);  // the entry expired at 100 ms: the FIN's first send finds no next hop
+    EXPECT_EQ(ip_.counters().arp_requests_sent, requests + 1) << "the rebuild asked";
+    const auto at_rto = collect();
+    ASSERT_EQ(at_rto.size(), 1U) << "the request alone: no FIN without a next hop";
+    EXPECT_FALSE(at_rto[0].tcp.has_value());
+    EXPECT_EQ(c->state(), aloe::tcp::State::FinWait1);
+    advance(10ms);
+    advance(10ms);
+    EXPECT_EQ(c->state(), aloe::tcp::State::FinWait1) << "two polls, below the bound";
+    advance(10ms);
+    EXPECT_EQ(c->state(), aloe::tcp::State::Closed) << "the third poll is the bound: Unresolved, not the data retries";
+    EXPECT_EQ(tcp_->counters().connections_unresolved, 1U);
+    EXPECT_EQ(tcp_->counters().connections_timed_out, 0U);
+}
+
+TEST_P(TcpSendPoolExhaustedNextHopGone, TheFinLeavesAtTheNextPollOnceTheNextHopAnswers) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 2U);
+    c->close();
+    receive(peer_.ack(sent[1]));
+    advance(200ms);  // the expiry: the FIN's first send finds no next hop and asks
+    ASSERT_EQ(collect().size(), 1U) << "the request";
+    ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_);  // the reply
+    advance(10ms);
+    const auto fin = collect();
+    ASSERT_EQ(fin.size(), 1U) << "the poll sent the FIN, not the next RTO";
+    EXPECT_TRUE(aloe::testing::is_flags(fin[0], {aloe::wire::TcpFlag::Fin, aloe::wire::TcpFlag::Ack}));
+    EXPECT_EQ(c->rto(), 200ms) << "a send that never left lost nothing: no backoff";
+    receive(peer_.ack(fin[0]));
+    EXPECT_EQ(c->state(), aloe::tcp::State::FinWait2);
 }

@@ -448,7 +448,10 @@ handshake too, once the retry count has not ended it.
 
 **A next hop that never answers.** A SYN, SYN-ACK or FIN that finds no next hop on its first send, with nothing
 else queued, keeps its entry with the packet unsent, and the timer polls every `unresolved_retry` (10 ms by
-default) instead; those polls are not tries. After `unresolved_polls` of them, 3 seconds by default, the
+default) instead; those polls are not tries, and the RTO does not back off over them. The first send is the
+open's or the close's as a rule, but it can also be the RTO's, when the FIN that waited for a node gets one at an
+expiry and the next hop has gone meanwhile; the poll takes over the same way, and arms the RTO once the send
+leaves. After `unresolved_polls` of them, 3 seconds by default, the
 connection gives up: a passive open nobody owns is freed silently, an owned connection raises `Unresolved`, a
 failure of its own, as Linux reports a host unreachable rather than a timeout when ARP goes unanswered. A data
 segment that finds no next hop is not kept: its commit is refused with a retry hint. `abort` in SynSent sends

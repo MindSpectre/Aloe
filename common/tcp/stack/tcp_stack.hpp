@@ -263,7 +263,7 @@ namespace aloe::tcp {
             return table_.size();
         }
         /// For tests and monitoring: the entry at `position` of the connection's retransmission queue, 0 the head.
-        [[nodiscard]] const typename detail::SentSegmentPool<Packet>::Node&
+        [[nodiscard]] const detail::SentSegmentPool<Packet>::Node&
         sent_segment(const ConnectionType& conn, const std::size_t position) const noexcept {
             assert(position < conn.queue_count_ && "past the tail of the retransmission queue");
             std::uint32_t index = conn.queue_head_;
@@ -283,6 +283,7 @@ namespace aloe::tcp {
 
         /// For tests: the connection's RFC 6582 `recover` takes this value, as if an episode had recorded it.
         void force_recover(ConnectionType& conn, const wire::TcpSequence recover) noexcept {
+            core::force_non_static(this);
             conn.recover_ = recover;
         }
 
@@ -294,7 +295,7 @@ namespace aloe::tcp {
         using AckList      = detail::ConnectionList<ConnectionType, &ConnectionType::ack_link_>;
         using RetryList    = detail::ConnectionList<ConnectionType, &ConnectionType::retry_link_>;
         using DeferredList = detail::ConnectionList<ConnectionType, &ConnectionType::deferred_link_>;
-        using SentNode     = typename detail::SentSegmentPool<Packet>::Node;
+        using SentNode     = detail::SentSegmentPool<Packet>::Node;
 
         /// What the receive path parsed from one datagram.
         struct Segment {
@@ -813,8 +814,7 @@ namespace aloe::tcp {
                 conn.timer_kind_ == detail::TimerKind::ArpPoll) {
                 return;
             }
-            const SentNode& head = send_pool_.node(conn.queue_head_);
-            if (!covered(conn, head.first + head.length)) {
+            if (const SentNode& head = send_pool_.node(conn.queue_head_); !covered(conn, head.first + head.length)) {
                 return;
             }
             std::ignore = transmit_entry(conn, conn.queue_head_);
@@ -1177,8 +1177,7 @@ namespace aloe::tcp {
             if (freed.length > 0) {
                 deferred_.remove(conn);
             }
-            const auto covered = static_cast<std::uint32_t>(ack - conn.snd_una_);
-            if (covered > control) {
+            if (const auto covered = static_cast<std::uint32_t>(ack - conn.snd_una_); covered > control) {
                 conn.delivered_      += covered - control;
                 conn.delivered_time_  = now_;
             }
@@ -1935,7 +1934,9 @@ namespace aloe::tcp {
          * `data_retries` after it, may end the connection instead. The first expiry since an ACK of new data leaves
          * fast recovery, records `recover` and starts the loss episode, and tells the congestion control, with what
          * was in flight; each expiry doubles the RTO up to `rto_max` and re-arms. A resend deferred or refused counts
-         * as the retry all the same: the next expiry tries again.
+         * as the retry all the same: the next expiry tries again. A first send, of the FIN that waited for a node,
+         * that finds no next hop arms the ARP poll instead (`transmit_entry`), and the expiry leaves the timer to it:
+         * nothing left, so no backoff; the poll arms the RTO once the send leaves, or ends the connection `Unresolved`.
          */
         void on_retransmit_timeout(ConnectionType& conn) noexcept {
             assert((conn.queue_head_ != detail::no_node || fin_unqueued(conn)) &&
@@ -1945,8 +1946,8 @@ namespace aloe::tcp {
                 time_out(conn, /*by_user_timeout=*/true);
                 return;
             }
-            const bool handshake = conn.state_ == State::SynSent || conn.state_ == State::SynReceived;
-            if (conn.retransmit_count_ >= (handshake ? config_.retries : config_.data_retries)) {
+            if (const bool handshake = conn.state_ == State::SynSent || conn.state_ == State::SynReceived;
+                conn.retransmit_count_ >= (handshake ? config_.retries : config_.data_retries)) {
                 time_out(conn, /*by_user_timeout=*/false);
                 return;
             }
@@ -1975,6 +1976,9 @@ namespace aloe::tcp {
                 ++counters_.send_refused;  // still no node for the FIN
             }
             ++counters_.retransmits;
+            if (conn.timer_kind_ == detail::TimerKind::ArpPoll) {
+                return;  // a first send that found no next hop: the poll retries it, and arms the RTO once it leaves
+            }
             conn.rto_ = std::min(conn.rto_ * 2, config_.rto_max);
             arm_retransmit(conn);
         }
@@ -2103,7 +2107,7 @@ namespace aloe::tcp {
             }
             const Sequence fin = conn.snd_nxt_;
             const bool idle    = !in_flight(conn);  // else the RTO already runs for the data
-            const wire::TcpFlags flags{wire::TcpFlag::Fin, wire::TcpFlag::Ack};
+            constexpr wire::TcpFlags flags{wire::TcpFlag::Fin, wire::TcpFlag::Ack};
             conn.fin_sent_ = true;
             conn.snd_nxt_  = fin + 1;  // the FIN takes its number whether or not it left: the timer resends it
             if (covered(conn, fin + 1)) {
