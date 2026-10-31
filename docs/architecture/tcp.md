@@ -470,7 +470,7 @@ while the SYN's MSS option keeps the full value as RFC 6691 prescribes: with tim
 longer fits a 1500-byte MTU.
 
 **Zero-window probes, with or without data.** When an acceptable ACK leaves the peer's window at zero with
-nothing queued, in `Established` or `CloseWait`, the connection probes: the first probe after one RTO, then at
+nothing in flight, in `Established` or `CloseWait`, the connection probes: the first probe after one RTO, then at
 doubling intervals up to `rto_max`. A probe is Linux's `tcp_xmit_probe_skb`: a pure ACK at `acknowledged() - 1`,
 with the window and the timestamps every segment carries, which takes no entry; the peer, finding it outside its
 window, answers with its current window. An ACK that opens the window ends probing and raises `Writable`. Every
@@ -482,7 +482,15 @@ at least once per timeout. Here Aloe departs from Linux knowingly: Linux probes 
 behind the window (`tcp_probe_timer` returns without a send head), because its socket buffer tells it the
 application wants to send. Aloe holds no unsent data, so it probes while the window is zero whether or not the
 application has data, which RFC 9293 allows and which costs an idle connection one segment per doubled RTO, at
-most one every `rto_max`. The probe shares the connection's one timer, and a FIN takes the timer back.
+most one every `rto_max`. The probe shares the connection's one timer.
+
+**A FIN waits for the window.** `close` gives its FIN a sequence number and an entry at once but transmits it
+only when the peer's window covers it, Linux's `tcp_snd_wnd_test`: a Linux peer drops a FIN that arrives inside
+its zero window and answers with a duplicate ACK, after which only the RTO would resend it. A FIN the window does
+not cover, at a zero window or behind data that fills it, waits in the queue unsent; with nothing in flight the
+probes go on, in `FinWait1` or `LastAck` too, and the ACK that opens the window, or frees the data in front,
+sends the FIN at once and starts its RTO. The congestion window does not gate a FIN, as it does not in Linux. The
+peer's ACKs meanwhile are no duplicates, since nothing is in flight to be a duplicate of.
 
 **Loss recovery.** RFC 5681 and RFC 6582 as written, with RFC 3042's limited transmit, all three of which Linux
 runs. A duplicate ACK is an ACK with no payload, no SYN and no FIN, whose acknowledgement equals `acknowledged()`

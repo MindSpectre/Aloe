@@ -9,9 +9,10 @@
 #include <tcp_fixture.hpp>
 
 // Zero-window probes: a pure ACK at snd_una - 1 after one RTO, then at doubling intervals, while the peer's window is
-// zero and nothing is queued; unanswered probes count against data_retries, the user timeout bounds a run of
+// zero and nothing is in flight; unanswered probes count against data_retries, the user timeout bounds a run of
 // unanswered probes from the first of them, so a peer that answers keeps the connection open (RFC 9293), and a window
-// that opens ends probing. A handshake with a zero round trip leaves the RTO at rto_min, 200 ms.
+// that opens ends probing. A close while probing holds its FIN in the queue, unsent, until the window opens. A
+// handshake with a zero round trip leaves the RTO at rto_min, 200 ms.
 namespace {
 
     using namespace std::chrono_literals;
@@ -169,21 +170,43 @@ TEST_P(TcpProbes, AZeroWindowInTheSynAckStartsProbing) {
     EXPECT_EQ(tcp_->counters().zero_window_probes, 1U);
 }
 
-TEST_P(TcpProbes, ACloseWhileProbingGivesTheTimerToTheFin) {
+TEST_P(TcpProbes, ACloseWhileProbingHoldsTheFinUntilTheWindowOpens) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
     peer_.set_window(0);
     receive(peer_.ack());
     c->close();
+    EXPECT_EQ(c->state(), aloe::tcp::State::FinWait1);
+    EXPECT_TRUE(c->probing()) << "the FIN waits in the queue for the window: the probes go on";
+    EXPECT_TRUE(collect().empty()) << "no FIN into a zero window";
+    advance(200ms);
+    const auto probe = collect();
+    ASSERT_EQ(probe.size(), 1U);
+    EXPECT_FALSE(probe[0].tcp->flags.has(TcpFlag::Fin)) << "a probe, not the FIN";
+    EXPECT_EQ(tcp_->counters().zero_window_probes, 1U);
+    peer_.set_window(65535);
+    receive(peer_.ack());
     EXPECT_FALSE(c->probing());
     const auto fin = collect();
     ASSERT_EQ(fin.size(), 1U);
-    EXPECT_TRUE(fin[0].tcp->flags.has(TcpFlag::Fin));
-    advance(200ms);
-    const auto resent = collect();
-    ASSERT_EQ(resent.size(), 1U);
-    EXPECT_TRUE(resent[0].tcp->flags.has(TcpFlag::Fin)) << "the RTO resends the FIN";
-    EXPECT_EQ(tcp_->counters().zero_window_probes, 0U);
+    EXPECT_TRUE(fin[0].tcp->flags.has(TcpFlag::Fin)) << "the ACK that opened the window sent the FIN";
+    receive(peer_.ack(fin[0]));
+    EXPECT_EQ(c->state(), aloe::tcp::State::FinWait2);
+    EXPECT_EQ(tcp_->counters().retransmits, 0U) << "the FIN's first send is no retransmission";
+}
+
+TEST_P(TcpProbes, AcksAtAZeroWindowDoNotFastRetransmitAHeldFin) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    peer_.set_window(0);
+    receive(peer_.ack());
+    c->close();
+    for (int repeat = 0; repeat < 3; ++repeat) {
+        receive(peer_.ack());
+    }
+    EXPECT_TRUE(collect().empty()) << "nothing is in flight, so the peer's ACKs are no duplicates";
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 0U);
+    EXPECT_TRUE(c->probing());
 }
 
 TEST_P(TcpProbesRefusing, ARefusedProbeCountsAndTheIntervalDoublesAllTheSame) {
@@ -206,14 +229,17 @@ TEST_P(TcpProbesRefusing, ARefusedProbeCountsAndTheIntervalDoublesAllTheSame) {
     EXPECT_EQ(tcp_->counters().zero_window_probes, 1U);
 }
 
-TEST_P(TcpProbesRefusing, ARefusedFinWhileProbingStillTakesTheTimer) {
+TEST_P(TcpProbesRefusing, AHeldFinRefusedWhenTheWindowOpensWaitsForTheRto) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
     peer_.set_window(0);
     receive(peer_.ack());
-    refuse();
     c->close();
-    EXPECT_FALSE(c->probing()) << "the FIN's entry waits for the RTO";
+    EXPECT_TRUE(c->probing()) << "the FIN waits for the window, not for the device";
+    refuse();
+    peer_.set_window(65535);
+    receive(peer_.ack());
+    EXPECT_FALSE(c->probing()) << "the window opened: the refused FIN is the RTO's";
     allow();
     std::ignore = collect();
     advance(200ms);

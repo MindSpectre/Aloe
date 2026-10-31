@@ -31,7 +31,7 @@ namespace aloe::tcp {
             None,        ///< Not armed.
             Retransmit,  ///< The RTO: the head of the retransmission queue goes again.
             ArpPoll,     ///< A SYN, SYN-ACK or FIN whose first send found no next hop: the send is tried again.
-            Probe,       ///< The peer's window is zero and nothing is queued: a zero-window probe goes.
+            Probe,       ///< The peer's window is zero and nothing is in flight: a zero-window probe goes.
         };
 
     }  // namespace detail
@@ -183,7 +183,7 @@ namespace aloe::tcp {
         [[nodiscard]] std::uint8_t retransmit_count() const noexcept {
             return retransmit_count_;
         }
-        /// The peer's window is zero with nothing queued: the timer sends zero-window probes until it opens.
+        /// The peer's window is zero with nothing in flight: the timer sends zero-window probes until it opens.
         [[nodiscard]] bool probing() const noexcept {
             return timer_kind_ == detail::TimerKind::Probe;
         }

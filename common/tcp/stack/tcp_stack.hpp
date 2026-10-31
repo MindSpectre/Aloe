@@ -636,10 +636,11 @@ namespace aloe::tcp {
             }
             const std::size_t writable_before = writable(conn);
 
-            // RFC 5681's duplicate ACK, judged against the window as it stands, before this segment updates it.
+            // RFC 5681's duplicate ACK, of something in flight, judged against the window as it stands, before this
+            // segment updates it.
             const bool duplicate = segment.payload_length == 0 && !header.flags.has(wire::TcpFlag::Syn) &&
                                    !header.flags.has(wire::TcpFlag::Fin) && ack == conn.snd_una_ &&
-                                   header.window == conn.snd_wnd_ && conn.queue_count_ > 0;
+                                   header.window == conn.snd_wnd_ && in_flight(conn);
             if (ack.after(conn.snd_una_)) {
                 acknowledge_data(conn, ack, segment.ts_echo);
                 raise(conn, stream::Event::Acked);
@@ -663,6 +664,7 @@ namespace aloe::tcp {
             if (!ack.before(conn.snd_una_)) {
                 update_peer_window(conn, header);
                 update_probing(conn);  // a window that opened ends probing; the comparison below raises Writable
+                send_unsent(conn);     // and sends the FIN a close left waiting for it
             }
             if (writable(conn) > writable_before) {
                 raise(conn, stream::Event::Writable);
@@ -783,8 +785,9 @@ namespace aloe::tcp {
          * The end of an acceptable ACK, after its window update. The peer answered, so the count of unanswered probes
          * clears, as Linux's `tcp_ack` clears it on every acceptable ACK, and so does the stamp of the first unanswered
          * one: RFC 9293 keeps the connection open while the peer acknowledges probes, so the user timeout bounds a run
-         * of unanswered probes only. A window that opened ends probing; a zero window with nothing queued in
-         * Established or CloseWait starts it, whether or not the application has data.
+         * of unanswered probes only. A window that opened ends probing; a zero window with nothing in flight starts
+         * it: in Established or CloseWait whether or not the application has data, and in any state while a FIN the
+         * window did not cover waits in the queue (`close`). A head waiting for the next hop is the ARP poll's.
          */
         void update_probing(ConnectionType& conn) noexcept {
             conn.probes_out_    = 0;
@@ -795,9 +798,28 @@ namespace aloe::tcp {
                 }
                 return;
             }
-            if (conn.snd_wnd_ == 0 && conn.queue_count_ == 0 &&
-                (conn.state_ == State::Established || conn.state_ == State::CloseWait)) {
+            if (conn.snd_wnd_ == 0 && !in_flight(conn) && conn.timer_kind_ != detail::TimerKind::ArpPoll &&
+                (conn.queue_head_ != detail::no_node || conn.state_ == State::Established ||
+                 conn.state_ == State::CloseWait)) {
                 start_probing(conn);
+            }
+        }
+
+        /// The head that never left, the FIN of a close the peer's window did not cover: sent once the window covers
+        /// it, as Linux's `tcp_push_pending_frames` on an ACK. A head waiting for the next hop is the ARP poll's. The
+        /// send arms the RTO (`transmit_entry`); a refused one leaves the RTO to try again, as `close` does.
+        void send_unsent(ConnectionType& conn) noexcept {
+            if (conn.queue_head_ == detail::no_node || in_flight(conn) ||
+                conn.timer_kind_ == detail::TimerKind::ArpPoll) {
+                return;
+            }
+            const SentNode& head = send_pool_.node(conn.queue_head_);
+            if (!covered(conn, head.first + head.length)) {
+                return;
+            }
+            std::ignore = transmit_entry(conn, conn.queue_head_);
+            if (!conn.timer_.armed()) {
+                arm_retransmit(conn);
             }
         }
 
@@ -1681,8 +1703,8 @@ namespace aloe::tcp {
             wheel_->arm(conn.timer_, deadline);
         }
 
-        /// The peer's window is zero with nothing queued: no probe out yet, nothing unanswered stamped, and the first
-        /// probe one RTO away.
+        /// The peer's window is zero with nothing in flight: no probe out yet, nothing unanswered stamped, and the
+        /// first probe one RTO away.
         void start_probing(ConnectionType& conn) noexcept {
             conn.probes_out_     = 0;
             conn.probe_started_  = std::nullopt;
@@ -1713,6 +1735,19 @@ namespace aloe::tcp {
                     !send_pool_.node(conn.queue_tail_).flags.has(wire::TcpFlag::Fin));
         }
 
+        /// Whether a segment the peer can acknowledge is out: the head left at least once. A queue whose head never
+        /// left, held for the peer's window or the next hop, has nothing in flight; entries leave in order, so no
+        /// later entry left before the head.
+        [[nodiscard]] bool in_flight(const ConnectionType& conn) const noexcept {
+            return conn.queue_head_ != detail::no_node && send_pool_.node(conn.queue_head_).transmits > 0;
+        }
+
+        /// RFC 9293's send window test, Linux's `tcp_snd_wnd_test`: the peer's window covers a segment ending at
+        /// `end`. The congestion window does not gate a FIN, as it does not in Linux.
+        [[nodiscard]] static bool covered(const ConnectionType& conn, const Sequence end) noexcept {
+            return !end.after(conn.snd_una_ + conn.snd_wnd_);
+        }
+
         /**
          * One round-trip sample into RFC 6298's estimator: the first sets `srtt = R` and `rttvar = R / 2`, each later
          * one `rttvar = 3/4 rttvar + 1/4 |srtt - R|` and then `srtt = 7/8 srtt + 1/8 R`, in integer nanoseconds,
@@ -1736,9 +1771,10 @@ namespace aloe::tcp {
          * and `tcp_ack_update_rtt`: from the oldest entry the ACK freed, measured from its transmission, when no entry
          * it freed left more than once (Karn's rule); else, on a connection with timestamps, from the ACK's echo, which
          * names the transmission it answers, so the echo on the ACK of a resend ends the backoff too. An echo of zero
-         * or from the future gives none. The timer restarts from now while anything is still to be acknowledged and
-         * stops when nothing is, RFC 6298's rule, which covers RFC 6582's re-arm on a partial ACK. A partial ACK frees
-         * nothing, samples only from its echo, and restarts the timer. Returns the sample taken, if any.
+         * or from the future gives none. The timer restarts from now while anything is in flight, or a FIN waits for
+         * a node, and stops when nothing is, RFC 6298's rule, which covers RFC 6582's re-arm on a partial ACK; a head
+         * that never left, the FIN a close holds for the window, is `send_unsent`'s or the probes'. A partial ACK
+         * frees nothing, samples only from its echo, and restarts the timer. Returns the sample taken, if any.
          */
         std::optional<core::Duration>
         on_acknowledged(ConnectionType& conn, const Freed& freed, const std::optional<std::uint32_t> echo) noexcept {
@@ -1755,7 +1791,7 @@ namespace aloe::tcp {
             if (sample) {
                 take_sample(conn, *sample);
             }
-            if (conn.queue_head_ != detail::no_node || fin_unqueued(conn)) {
+            if (in_flight(conn) || fin_unqueued(conn)) {
                 arm_retransmit(conn);
             } else {
                 disarm(conn);
@@ -1866,8 +1902,8 @@ namespace aloe::tcp {
          */
         void fast_retransmit(ConnectionType& conn) noexcept {
             ++counters_.fast_retransmits;
-            if (conn.queue_head_ == detail::no_node) {
-                return;  // only a FIN that found no node is outstanding: the RTO resends it
+            if (!in_flight(conn)) {
+                return;  // nothing left: a FIN that found no node, which the RTO sends, or one the window holds
             }
             if (resend_head(conn) && !deferred_.contains(conn)) {
                 arm_retransmit(conn);
@@ -1969,9 +2005,10 @@ namespace aloe::tcp {
          * `rto_max`. A probe refused counts all the same: the next expiry tries again.
          */
         void on_probe_timeout(ConnectionType& conn) noexcept {
-            assert(conn.queue_count_ == 0 && conn.snd_wnd_ == 0 &&
-                   (conn.state_ == State::Established || conn.state_ == State::CloseWait) &&
-                   "a probe runs only while the window is zero and nothing is queued");
+            assert(!in_flight(conn) && conn.snd_wnd_ == 0 &&
+                   (conn.queue_head_ != detail::no_node || conn.state_ == State::Established ||
+                    conn.state_ == State::CloseWait) &&
+                   "a probe runs only while the window is zero and nothing is in flight");
             if (!conn.probe_started_) {
                 conn.probe_started_ = now_;
             } else if (config_.user_timeout > core::Duration::zero() &&
@@ -2050,7 +2087,9 @@ namespace aloe::tcp {
 
         /// FIN after what was committed: Established moves to FinWait1, CloseWait to LastAck; elsewhere nothing. An
         /// open preparation stays the application's: its next commit refuses it, as the connection left the sendable
-        /// states.
+        /// states. A FIN the peer's window does not cover, Linux's `tcp_snd_wnd_test`, waits in the queue, unsent,
+        /// for the ACK that opens the window (`send_unsent`), while the probes go on; a Linux peer drops a FIN sent
+        /// into its zero window.
         void close(ConnectionType& conn) noexcept {
             switch (conn.state_) {
                 case State::Established:
@@ -2063,10 +2102,20 @@ namespace aloe::tcp {
                     return;
             }
             const Sequence fin = conn.snd_nxt_;
-            const bool idle    = conn.queue_head_ == detail::no_node;  // else the RTO already runs for the data
-            conn.fin_sent_     = true;
-            conn.snd_nxt_      = fin + 1;  // the FIN takes its number whether or not it left: the timer resends it
-            std::ignore        = queue_control(conn, wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, fin);
+            const bool idle    = !in_flight(conn);  // else the RTO already runs for the data
+            const wire::TcpFlags flags{wire::TcpFlag::Fin, wire::TcpFlag::Ack};
+            conn.fin_sent_ = true;
+            conn.snd_nxt_  = fin + 1;  // the FIN takes its number whether or not it left: the timer resends it
+            if (covered(conn, fin + 1)) {
+                std::ignore = queue_control(conn, flags, fin);
+            } else if (enqueue(conn, Packet{}, 0, flags, fin, 1)) {
+                if (idle && !conn.probing()) {
+                    start_probing(conn);  // a zero window with nothing in flight is probed already, as a rule
+                }
+                return;
+            } else {
+                ++counters_.send_refused;  // no node: the RTO gives it one (fin_unqueued)
+            }
             if (idle && (!conn.timer_.armed() || conn.probing())) {
                 arm_retransmit(conn);  // refused, or no node: the RTO tries again, and takes the timer from a probe
             }

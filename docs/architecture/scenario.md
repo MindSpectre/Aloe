@@ -272,6 +272,8 @@ behind every number.
 | `data/above-a-gap-is-acked-not-stored`              | A segment above a gap is answered at once with the acknowledgement at the gap and not kept; `read` sees what came in order.                   |
 | `close/local-close-then-remote-fin`                 | `close`, FIN out, ACK in, the peer's FIN in, ACK out at once; no TIME_WAIT.                                                                   |
 | `close/remote-fin-then-local-close`                 | The peer's FIN in, ACK out at `+0`, `read` returns 0, `close`, FIN out, ACK in; a later segment is reset.                                     |
+| `close/close-at-zero-window-holds-fin`              | `close` at a zero window: no FIN, a probe at +0.2, the answer opens the window and the FIN leaves at once; the peer's ACK and FIN end it.     |
+| `close/fin-waits-behind-a-full-window`              | `close` with data filling the window: the FIN waits, unsent, until the ACK of the data, 100 ms later, makes room, then leaves at once.        |
 | `reset/rst-in-established`                          | `R.` in, without timestamps: `read` fails with `ECONNRESET`, the slot is released, and a later segment is answered with `R`.                  |
 | `reset/rst-to-syn-is-refused`                       | `connect`, SYN out, `R.` in: `read` reports `ECONNREFUSED`.                                                                                   |
 | `rto/data-retransmitted-after-rto`                  | One segment never acknowledged: resent at the RTO, 200 ms after a zero round trip, then at twice that; the ACK of the resend ends it.         |

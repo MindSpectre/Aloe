@@ -1,0 +1,20 @@
+// The peer's window is zero when we close: the FIN does not fit it, so it waits in the queue, unsent, and the
+// probes go on; the answer to the first probe opens the window, the FIN leaves at once and the close completes.
+// Linux holds the FIN the same way (tcp_snd_wnd_test); a FIN sent into a zero window is dropped by a Linux peer.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < . 1:1(0) ack 1 win 0 <nop,nop,TS val 100 ecr 0>
++0 close(4) = 0
++0.2 > . 0:0(0) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 200>
++0 > F. 1:1(0) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0 < . 1:1(0) ack 2 win 65535 <nop,nop,TS val 100 ecr 200>
++0 < F. 1:1(0) ack 2 win 65535 <nop,nop,TS val 100 ecr 200>
++0 > . 2:2(0) ack 2 win 46720 <nop,nop,TS val 200 ecr 100>

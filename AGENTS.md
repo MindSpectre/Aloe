@@ -296,6 +296,10 @@ basenames are unique across modules: `packet.hpp` is the concept,
   defaults, 15 data resends backing off from 200 ms to `rto_max`, not phase 1's 63 seconds. A test that waits for
   `TimedOut` on data or a FIN sets `data_retries` or `user_timeout`, or steps the clock that far, as
   `ClosedSeesUndrainedTimeout` does in 1024 one-second steps.
+- A script whose lines all carry `+0` cannot tell a segment sent early from one sent on time: an outbound line at
+  the same stamp matches whichever segment is at the head. A script that asserts the stack waits for an ACK before
+  it sends gives that ACK a later stamp, as `fin-waits-behind-a-full-window.pkt` injects it at `+0.1`, so an early
+  send fails the line.
 
 ## Documentation
 
