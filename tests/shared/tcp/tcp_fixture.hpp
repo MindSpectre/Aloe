@@ -391,4 +391,6 @@ namespace aloe::testing {
         }
     };
 
+    static_assert(tcp::IsCongestionControl<RecordingCongestionControl>);
+
 }  // namespace aloe::testing

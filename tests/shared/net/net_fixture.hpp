@@ -99,8 +99,6 @@ namespace aloe::testing {
         fabric::Port* inner_;
     };
 
-    static_assert(device::IsDevice<StuckPort>);
-
     /**
      * @brief A fabric with a harness port and a stack port, and the brick over queue 0 of the stack port.
      *
@@ -176,5 +174,7 @@ namespace aloe::testing {
                                        [](const Packet& packet) { return packet.empty(); });
         }
     };
+
+    static_assert(device::IsDevice<StuckPort>);
 
 }  // namespace aloe::testing

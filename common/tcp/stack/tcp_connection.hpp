@@ -11,13 +11,13 @@
 #include <congestion_control.hpp>
 #include <flow_table.hpp>
 #include <frame_template.hpp>
+#include <node_pool.hpp>
 #include <read_view.hpp>
 #include <stream.hpp>
 #include <stream_events.hpp>
 #include <tcp_config.hpp>
 #include <tcp_fwd.hpp>
 #include <tcp_header.hpp>
-#include <tcp_node_pool.hpp>
 #include <tcp_options.hpp>
 #include <tcp_sequence.hpp>
 #include <timer_wheel.hpp>
@@ -95,7 +95,7 @@ namespace aloe::tcp {
 
         /// The unconsumed payloads of the held packets, in order. Invalidated by `consume` and the next `process`.
         [[nodiscard]] View unread() const noexcept {
-            return View{stack_->pool_, chain_head_, unread_bytes_};
+            return View{stack_->pool_, chain_.head, unread_bytes_};
         }
         /// `count` at most `unread().size()`, asserted. Frees packets as they empty; may reopen the window.
         void consume(const std::size_t count) noexcept {
@@ -135,7 +135,7 @@ namespace aloe::tcp {
         }
         /// Segments in the retransmission queue: sent, or waiting to be, and not yet acknowledged whole.
         [[nodiscard]] std::size_t queued_segments() const noexcept {
-            return queue_count_;
+            return queue_.count;
         }
         /// Payload bytes the peer acknowledged, counted as each ACK advances `acknowledged()`.
         [[nodiscard]] std::uint64_t delivered() const noexcept {
@@ -219,8 +219,7 @@ namespace aloe::tcp {
             base_hash_ = 0;
             events_    = {};
             assert(!event_link_.linked && !ack_link_.linked && !retry_link_.linked && !deferred_link_.linked);
-            assert(queue_head_ == detail::no_node && queue_tail_ == detail::no_node && queue_count_ == 0 &&
-                   "the stack drops the queue first");
+            assert(queue_.empty() && queue_.count == 0 && "the stack drops the queue first");
             ack_pending_    = false;
             finish_pending_ = false;
             rcv_nxt_        = {};
@@ -229,9 +228,7 @@ namespace aloe::tcp {
             recovery_end_.reset();
             peer_closed_             = false;
             full_segments_since_ack_ = 0;
-            chain_head_              = detail::no_node;
-            chain_tail_              = detail::no_node;
-            chain_count_             = 0;
+            chain_                   = {};
             iss_                     = {};
             snd_nxt_                 = {};
             prepared_.reset();
@@ -297,9 +294,7 @@ namespace aloe::tcp {
         std::optional<Sequence> recovery_end_{};  ///< The furthest end of data dropped above a gap.
         bool peer_closed_                     = false;
         std::uint8_t full_segments_since_ack_ = 0;  ///< Saturates at two.
-        std::uint32_t chain_head_             = detail::no_node;
-        std::uint32_t chain_tail_             = detail::no_node;
-        std::uint32_t chain_count_            = 0;
+        detail::NodeChain chain_{};                 ///< The held segments, oldest first.
 
         // Transmit: preparation and outgoing sequence allocation.
         Sequence iss_{};
@@ -310,9 +305,7 @@ namespace aloe::tcp {
         bool fin_reserved_         = false;  ///< A node of the send pool is set aside for the FIN, since Established.
 
         // The retransmission queue: every segment that occupies sequence space, oldest first, and the frame template.
-        std::uint32_t queue_head_  = detail::no_node;
-        std::uint32_t queue_tail_  = detail::no_node;
-        std::uint32_t queue_count_ = 0;
+        detail::NodeChain queue_{};
         detail::FrameTemplate template_{};
         std::optional<core::TimePoint> last_data_send_{};  ///< The last transmission with payload; nothing before one.
 

@@ -25,7 +25,8 @@ add_library(${TCP}.Stack INTERFACE
         congestion/congestion_control.hpp
         congestion/newreno.hpp
         congestion/no_congestion_control.hpp
-        buffer/tcp_node_pool.hpp
+        buffer/node_pool.hpp
+        buffer/held_segment_pool.hpp
         buffer/sent_segment_pool.hpp
         buffer/read_view.hpp
         stack/frame_template.hpp

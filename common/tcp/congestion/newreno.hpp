@@ -89,4 +89,6 @@ namespace aloe::tcp {
         }
     };
 
+    static_assert(IsCongestionControl<NewReno>);
+
 }  // namespace aloe::tcp

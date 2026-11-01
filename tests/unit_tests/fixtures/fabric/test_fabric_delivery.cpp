@@ -195,7 +195,6 @@ TEST(FabricDelivery, ReportsItsConfiguration) {
     EXPECT_EQ(a.capabilities().max_mtu, 2048 - 14);
     EXPECT_FALSE(a.steering().enabled);
     EXPECT_EQ(fabric.port_count(), 1);
-    static_assert(aloe::device::IsDevice<aloe::fabric::Port>);
 }
 
 TEST(FabricDelivery, RejectsImpossiblePorts) {

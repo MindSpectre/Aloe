@@ -111,4 +111,6 @@ namespace aloe::ethdev {
         std::vector<device::QueueCounters> counters_;
     };
 
+    static_assert(device::IsDevice<Port>);
+
 }  // namespace aloe::ethdev

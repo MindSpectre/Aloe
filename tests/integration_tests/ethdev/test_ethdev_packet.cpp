@@ -36,7 +36,6 @@ namespace {
 }  // namespace
 
 TEST_F(EthdevPacket, WrapsOneMbufAndFreesItToItsPool) {
-    static_assert(aloe::device::IsPacket<aloe::ethdev::Packet>);
     const unsigned before       = rte_mempool_avail_count(pool_);
     aloe::ethdev::Packet packet = allocate();
     ASSERT_FALSE(packet.empty());

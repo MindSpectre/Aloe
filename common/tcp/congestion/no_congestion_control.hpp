@@ -45,4 +45,6 @@ namespace aloe::tcp {
         }
     };
 
+    static_assert(IsCongestionControl<NoCongestionControl>);
+
 }  // namespace aloe::tcp

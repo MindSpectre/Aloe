@@ -13,10 +13,6 @@ namespace {
     constexpr std::uint16_t mss = 1000;
     constexpr auto max_window   = std::numeric_limits<std::uint32_t>::max();
 
-    static_assert(aloe::tcp::IsCongestionControl<NewReno>);
-    static_assert(aloe::tcp::IsCongestionControl<NoCongestionControl>);
-    static_assert(aloe::tcp::IsCongestionControl<aloe::testing::RecordingCongestionControl>);
-
     class TcpNoCongestion : public ::testing::TestWithParam<aloe::fabric::EmulatedOffloads>,
                             protected aloe::testing::detail::FabricPair,
                             protected aloe::testing::TcpHarness<aloe::fabric::Port, NoCongestionControl> {

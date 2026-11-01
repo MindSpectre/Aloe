@@ -1,151 +1,52 @@
 #pragma once
 
 #include <aloe/core>
-#include <cassert>
-#include <cstddef>
 #include <cstdint>
-#include <optional>
-#include <stdexcept>
-#include <vector>
 
+#include <node_pool.hpp>
 #include <packet.hpp>
 #include <tcp_header.hpp>
-#include <tcp_node_pool.hpp>
 #include <tcp_sequence.hpp>
 
 namespace aloe::tcp::detail {
 
     /**
-     * @brief The per-shard pool of retransmission-queue nodes; a connection chains its sent segments on them, oldest
-     * first.
+     * @brief One entry of a connection's retransmission queue: a segment that occupies sequence space, SYN, SYN-ACK,
+     * data or FIN, from its first transmission until an ACK covers it.
      *
-     * A node is one segment that occupies sequence space, SYN, SYN-ACK, data or FIN, from its first transmission until
-     * an ACK covers it: the packet with the whole frame as it last left, and what a resend and a rate sample read.
-     * Fixed at construction, never grown. Every node may keep a packet of the device's pool, and a second one while
-     * the copy fallback has one out, so that pool covers the receive descriptors, `receive_pool` held packets,
-     * `send_pool` kept packets and the copies out, the transmit ring, what the card holds and the open preparations.
-     * A free node may be set aside (`reserve`): `acquire` leaves it alone and only `acquire_reserved` takes it, so a
-     * connection's FIN has a node whatever the others hold.
+     * The packet with the whole frame as it last left, and what a resend and a rate sample read.
      */
     template <device::IsPacket Packet>
-    class SentSegmentPool {
-    public:
-        struct Node {
-            Packet packet{};  ///< The frame as it last left, headers included; lent while the device reads it.
-            Packet copy{};    ///< The copy fallback's second packet while both are out; empty otherwise.
-            wire::TcpSequence first{};  ///< The segment's first sequence number.
-            std::uint32_t length  = 0;  ///< Sequence space: payload plus SYN and FIN.
-            std::uint16_t payload = 0;  ///< Payload bytes in the packet.
-            wire::TcpFlags flags{};     ///< As the segment carries them.
-            core::TimePoint sent{};     ///< The last transmission; the epoch while never transmitted.
-            core::TimePoint first_sent{};
-            wire::TcpSequence copy_first{};  ///< The copy's first sequence number while a copy is out.
-            std::uint16_t copy_payload = 0;  ///< The copy's payload bytes: the part not acknowledged when it left.
-            std::uint8_t deferrals     = 0;  ///< Resends deferred since the last one that left.
-            core::TimePoint deferred_at{};   ///< The last deferral: a later resend at the same stamp is the same one.
-            std::uint8_t transmits          = 0;
-            bool framed                     = false;  ///< The packet holds the frame headers in front of the payload.
-            std::uint64_t delivered_at_send = 0;
-            bool app_limited                = false;
-            std::uint32_t next              = no_node;
-        };
-
-        /// Throws std::invalid_argument for zero nodes or more than the index can name.
-        explicit SentSegmentPool(const std::size_t count)
-            : nodes_(validated(count)),
-              available_{count} {
-            for (std::size_t index = 0; index + 1 < count; ++index) {
-                nodes_[index].next = static_cast<std::uint32_t>(index + 1);
-            }
-            free_head_ = 0;
-        }
-
-        /// A blank node, or nothing when every node is taken or set aside.
-        [[nodiscard]] std::optional<std::uint32_t> acquire() noexcept {
-            if (available_ == reserved_) {
-                return std::nullopt;
-            }
-            return take();
-        }
-
-        /// Sets one free node aside: `acquire` cannot take it, `acquire_reserved` can. False when none is free to set
-        /// aside.
-        [[nodiscard]] bool reserve() noexcept {
-            if (available_ == reserved_) {
-                return false;
-            }
-            ++reserved_;
-            return true;
-        }
-
-        /// A reservation given back unused: the node is any node's again.
-        void unreserve() noexcept {
-            assert(reserved_ > 0 && "an unreserve without a reservation");
-            --reserved_;
-        }
-
-        /// A blank node from the ones set aside, spending one reservation; nothing when none is set aside.
-        [[nodiscard]] std::optional<std::uint32_t> acquire_reserved() noexcept {
-            if (reserved_ == 0) {
-                return std::nullopt;
-            }
-            --reserved_;
-            return take();
-        }
-
-        /// Drops both packets, which go back to their pool now or when the device returns them, and blanks the node.
-        void release(const std::uint32_t index) noexcept {
-            Node& node = nodes_[index];
-            node       = Node{};
-            node.next  = free_head_;
-            free_head_ = index;
-            ++available_;
-        }
-
-        [[nodiscard]] Node& node(const std::uint32_t index) noexcept {
-            return nodes_[index];
-        }
-
-        [[nodiscard]] const Node& node(const std::uint32_t index) const noexcept {
-            return nodes_[index];
-        }
-
-        /// The nodes an `acquire` may take: the free ones less those set aside.
-        [[nodiscard]] std::size_t available() const noexcept {
-            return available_ - reserved_;
-        }
-
-        [[nodiscard]] std::size_t reserved() const noexcept {
-            return reserved_;
-        }
-
-        [[nodiscard]] std::size_t capacity() const noexcept {
-            return nodes_.size();
-        }
-
-    private:
-        [[nodiscard]] static std::size_t validated(const std::size_t count) {
-            if (count == 0 || count >= no_node) {
-                throw std::invalid_argument{"SentSegmentPool needs between one node and 2^32 - 2"};
-            }
-            return count;
-        }
-
-        /// The free head, which exists while `available_ > 0`.
-        [[nodiscard]] std::uint32_t take() noexcept {
-            assert(free_head_ != no_node && "a take from an empty pool");
-            const std::uint32_t index = free_head_;
-            Node& node                = nodes_[index];
-            free_head_                = node.next;
-            node.next                 = no_node;
-            --available_;
-            return index;
-        }
-
-        std::vector<Node> nodes_;
-        std::uint32_t free_head_ = no_node;
-        std::size_t available_   = 0;  ///< Free nodes, the ones set aside included.
-        std::size_t reserved_    = 0;  ///< Free nodes set aside; never more than `available_`.
+    struct SentSegment {
+        Packet packet{};            ///< The frame as it last left, headers included; lent while the device reads it.
+        Packet copy{};              ///< The copy fallback's second packet while both are out; empty otherwise.
+        wire::TcpSequence first{};  ///< The segment's first sequence number.
+        std::uint32_t length  = 0;  ///< Sequence space: payload plus SYN and FIN.
+        std::uint16_t payload = 0;  ///< Payload bytes in the packet.
+        wire::TcpFlags flags{};     ///< As the segment carries them.
+        core::TimePoint sent{};     ///< The last transmission; the epoch while never transmitted.
+        core::TimePoint first_sent{};
+        wire::TcpSequence copy_first{};  ///< The copy's first sequence number while a copy is out.
+        std::uint16_t copy_payload = 0;  ///< The copy's payload bytes: the part not acknowledged when it left.
+        std::uint8_t deferrals     = 0;  ///< Resends deferred since the last one that left.
+        core::TimePoint deferred_at{};   ///< The last deferral: a later resend at the same stamp is the same one.
+        std::uint8_t transmits          = 0;
+        bool framed                     = false;  ///< The packet holds the frame headers in front of the payload.
+        std::uint64_t delivered_at_send = 0;
+        bool app_limited                = false;
+        std::uint32_t next              = no_node;
     };
+
+    /**
+     * @brief The per-shard pool of retransmission-queue entries; a connection chains its sent segments on them, oldest
+     * first.
+     *
+     * Every node may keep a packet of the device's pool, and a second one while the copy fallback has one out, so
+     * that pool covers the receive descriptors, `receive_pool` held packets, `send_pool` kept packets and the copies
+     * out, the transmit ring, what the card holds and the open preparations. A connection sets a node aside for its
+     * FIN (`reserve`), so a close finds one whatever the others hold.
+     */
+    template <device::IsPacket Packet>
+    using SentSegmentPool = NodePool<SentSegment<Packet>>;
 
 }  // namespace aloe::tcp::detail

@@ -23,20 +23,22 @@
 #include <datagram.hpp>
 #include <flow_table.hpp>
 #include <frame_template.hpp>
+#include <held_segment_pool.hpp>
 #include <ipv4.hpp>
 #include <ipv4_checksum.hpp>
 #include <newreno.hpp>
 #include <packet.hpp>
 #include <prebuilt.hpp>
+#include <read_view.hpp>
 #include <rss.hpp>
 #include <sent_segment_pool.hpp>
+#include <stream.hpp>
 #include <stream_events.hpp>
 #include <tcp_config.hpp>
 #include <tcp_connection.hpp>
 #include <tcp_counters.hpp>
 #include <tcp_fwd.hpp>
 #include <tcp_header.hpp>
-#include <tcp_node_pool.hpp>
 #include <tcp_options.hpp>
 #include <timer_wheel.hpp>
 
@@ -62,6 +64,9 @@ namespace aloe::tcp {
                               wire::TcpOptions::timestamps_size <=
                           device::packet_headroom,
                       "every frame's headers fit in front of the payload of a packet from allocate()");
+        // The connection and its view are templates over the IP brick: checked here, where they first have one.
+        static_assert(stream::IsStream<Connection<Ip, CongestionControl>>);
+        static_assert(stream::IsReadView<ReadView<typename Ip::Packet>>);
 
     public:
         using Device         = Ip::Device;
@@ -263,10 +268,10 @@ namespace aloe::tcp {
             return table_.size();
         }
         /// For tests and monitoring: the entry at `position` of the connection's retransmission queue, 0 the head.
-        [[nodiscard]] const detail::SentSegmentPool<Packet>::Node&
-        sent_segment(const ConnectionType& conn, const std::size_t position) const noexcept {
-            assert(position < conn.queue_count_ && "past the tail of the retransmission queue");
-            std::uint32_t index = conn.queue_head_;
+        [[nodiscard]] const detail::SentSegment<Packet>& sent_segment(const ConnectionType& conn,
+                                                                      const std::size_t position) const noexcept {
+            assert(position < conn.queue_.count && "past the tail of the retransmission queue");
+            std::uint32_t index = conn.queue_.head;
             for (std::size_t at = 0; at < position; ++at) {
                 index = send_pool_.node(index).next;
             }
@@ -295,7 +300,8 @@ namespace aloe::tcp {
         using AckList      = detail::ConnectionList<ConnectionType, &ConnectionType::ack_link_>;
         using RetryList    = detail::ConnectionList<ConnectionType, &ConnectionType::retry_link_>;
         using DeferredList = detail::ConnectionList<ConnectionType, &ConnectionType::deferred_link_>;
-        using SentNode     = detail::SentSegmentPool<Packet>::Node;
+        using HeldNode     = detail::HeldSegment<Packet>;
+        using SentNode     = detail::SentSegment<Packet>;
 
         /// What the receive path parsed from one datagram.
         struct Segment {
@@ -703,26 +709,20 @@ namespace aloe::tcp {
         }
 
         [[nodiscard]] bool accept_payload(ConnectionType& conn, Datagram& datagram, const Segment& segment) noexcept {
-            if (conn.chain_count_ >= config_.receive_segments) {
+            if (conn.chain_.count >= config_.receive_segments) {
                 ++counters_.dropped_no_slot;
                 return false;
             }
-            if (pool_.available() == 0) {
+            const std::optional<std::uint32_t> index = pool_.acquire();
+            if (!index) {
                 ++counters_.dropped_no_node;
                 return false;
             }
-            const auto offset =
-                static_cast<std::uint16_t>(datagram.l3_offset + datagram.l3_length + segment.payload_offset);
-            const std::optional<std::uint32_t> node =
-                pool_.acquire(std::move(datagram.packet), offset, segment.payload_length);
-            assert(node.has_value() && "a node was available");
-            if (conn.chain_tail_ == detail::no_node) {
-                conn.chain_head_ = *node;
-            } else {
-                pool_.node(conn.chain_tail_).next = *node;
-            }
-            conn.chain_tail_ = *node;
-            ++conn.chain_count_;
+            HeldNode& node = pool_.node(*index);
+            node.packet    = std::move(datagram.packet);
+            node.offset = static_cast<std::uint16_t>(datagram.l3_offset + datagram.l3_length + segment.payload_offset);
+            node.length = segment.payload_length;
+            pool_.push_back(conn.chain_, *index);
             conn.rcv_nxt_       = conn.rcv_nxt_ + segment.payload_length;
             conn.unread_bytes_ += segment.payload_length;
             raise(conn, stream::Event::Readable);
@@ -802,8 +802,7 @@ namespace aloe::tcp {
                 return;
             }
             if (conn.snd_wnd_ == 0 && !in_flight(conn) && conn.timer_kind_ != detail::TimerKind::ArpPoll &&
-                (conn.queue_head_ != detail::no_node || conn.state_ == State::Established ||
-                 conn.state_ == State::CloseWait)) {
+                (!conn.queue_.empty() || conn.state_ == State::Established || conn.state_ == State::CloseWait)) {
                 start_probing(conn);
             }
         }
@@ -812,14 +811,13 @@ namespace aloe::tcp {
         /// it, as Linux's `tcp_push_pending_frames` on an ACK. A head waiting for the next hop is the ARP poll's. The
         /// send arms the RTO (`transmit_entry`); a refused one leaves the RTO to try again, as `close` does.
         void send_unsent(ConnectionType& conn) noexcept {
-            if (conn.queue_head_ == detail::no_node || in_flight(conn) ||
-                conn.timer_kind_ == detail::TimerKind::ArpPoll) {
+            if (conn.queue_.empty() || in_flight(conn) || conn.timer_kind_ == detail::TimerKind::ArpPoll) {
                 return;
             }
-            if (const SentNode& head = send_pool_.node(conn.queue_head_); !covered(conn, head.first + head.length)) {
+            if (const SentNode& head = send_pool_.node(conn.queue_.head); !covered(conn, head.first + head.length)) {
                 return;
             }
-            std::ignore = transmit_entry(conn, conn.queue_head_);
+            std::ignore = transmit_entry(conn, conn.queue_.head);
             if (!conn.timer_.armed()) {
                 arm_retransmit(conn);
             }
@@ -912,7 +910,7 @@ namespace aloe::tcp {
         [[nodiscard]] Sequence offer_of(const ConnectionType& conn) const noexcept {
             if (const Sequence candidate =
                     conn.rcv_nxt_ + (byte_budget_ - static_cast<std::uint32_t>(conn.unread_bytes_));
-                candidate.after(conn.rcv_adv_) && conn.chain_count_ < config_.receive_segments) {
+                candidate.after(conn.rcv_adv_) && conn.chain_.count < config_.receive_segments) {
                 return candidate;
             }
             return conn.rcv_adv_;
@@ -1045,7 +1043,7 @@ namespace aloe::tcp {
                                                            const wire::TcpFlags flags,
                                                            const Sequence first,
                                                            const std::uint32_t length) noexcept {
-            if (payload > 0 && conn.queue_count_ >= config_.send_segments) {
+            if (payload > 0 && conn.queue_.count >= config_.send_segments) {
                 return std::nullopt;
             }
             const std::optional<std::uint32_t> index = send_pool_.acquire();
@@ -1085,25 +1083,7 @@ namespace aloe::tcp {
             node.flags             = flags;
             node.delivered_at_send = conn.delivered_;
             node.app_limited       = send_room(conn) > payload;  // before the send: the windows allowed more
-            if (conn.queue_tail_ == detail::no_node) {
-                conn.queue_head_ = index;
-            } else {
-                send_pool_.node(conn.queue_tail_).next = index;
-            }
-            conn.queue_tail_ = index;
-            ++conn.queue_count_;
-        }
-
-        /// Takes back the tail `enqueue` just linked after `previous`, the tail before it; its packet goes with it.
-        void unlink_tail(ConnectionType& conn, const std::uint32_t previous) noexcept {
-            send_pool_.release(conn.queue_tail_);
-            conn.queue_tail_ = previous;
-            if (previous == detail::no_node) {
-                conn.queue_head_ = detail::no_node;
-            } else {
-                send_pool_.node(previous).next = detail::no_node;
-            }
-            --conn.queue_count_;
+            send_pool_.push_back(conn.queue_, index);
         }
 
         /**
@@ -1117,7 +1097,7 @@ namespace aloe::tcp {
                                                                          const std::uint32_t index) noexcept {
             SentNode& node = send_pool_.node(index);
             assert(!node.packet.lent() && "a queued packet is written only once the device gave it back");
-            const bool first_into_empty = node.transmits == 0 && index == conn.queue_head_ && conn.queue_count_ == 1;
+            const bool first_into_empty = node.transmits == 0 && index == conn.queue_.head && conn.queue_.count == 1;
             if (node.packet.empty()) {
                 std::optional<Packet> fresh = ip_->allocate();
                 if (!fresh) {
@@ -1185,8 +1165,8 @@ namespace aloe::tcp {
         [[nodiscard]] Freed acknowledge(ConnectionType& conn, const Sequence ack) noexcept {
             Freed freed{};
             std::uint32_t control = 0;  // the SYN and FIN sequence space of the entries freed
-            while (conn.queue_head_ != detail::no_node) {
-                SentNode& node = send_pool_.node(conn.queue_head_);
+            while (!conn.queue_.empty()) {
+                SentNode& node = send_pool_.node(conn.queue_.head);
                 reconcile(node);
                 if ((node.first + node.length).after(ack)) {
                     break;
@@ -1194,19 +1174,13 @@ namespace aloe::tcp {
                 if (freed.length == 0) {
                     freed.sent = node.sent;  // the oldest entry freed
                 }
-                freed.length             += node.length;
-                freed.resent              = freed.resent || node.transmits != 1;
-                freed.newest_sent         = node.sent;
-                freed.delivered_at_send   = node.delivered_at_send;
-                freed.app_limited         = node.app_limited;
-                control                  += node.length - node.payload;
-                const std::uint32_t next  = node.next;
-                send_pool_.release(conn.queue_head_);
-                conn.queue_head_ = next;
-                --conn.queue_count_;
-            }
-            if (conn.queue_head_ == detail::no_node) {
-                conn.queue_tail_ = detail::no_node;
+                freed.length            += node.length;
+                freed.resent             = freed.resent || node.transmits != 1;
+                freed.newest_sent        = node.sent;
+                freed.delivered_at_send  = node.delivered_at_send;
+                freed.app_limited        = node.app_limited;
+                control                 += node.length - node.payload;
+                send_pool_.release_front(conn.queue_);
             }
             if (freed.length > 0) {
                 deferred_.remove(conn);
@@ -1226,8 +1200,8 @@ namespace aloe::tcp {
          * deferred. A send that failed leaves the deferred list too: the timer's next expiry tries again.
          */
         [[nodiscard]] std::expected<void, net::SendError> resend_head(ConnectionType& conn) noexcept {
-            assert(conn.queue_head_ != detail::no_node && "a resend with nothing queued");
-            SentNode& node = send_pool_.node(conn.queue_head_);
+            assert(!conn.queue_.empty() && "a resend with nothing queued");
+            SentNode& node = send_pool_.node(conn.queue_.head);
             reconcile(node);
             if (node.packet.lent() && ip_->queue().reclaim() > 0) {
                 reconcile(node);  // what the device let go of may be either packet
@@ -1246,7 +1220,7 @@ namespace aloe::tcp {
                 node.payload  = static_cast<std::uint16_t>(node.payload - acknowledged);
             }
             deferred_.remove(conn);  // the packet is back: whatever IP answers, this resend is not waiting any more
-            const std::expected<void, net::SendError> sent = transmit_entry(conn, conn.queue_head_);
+            const std::expected<void, net::SendError> sent = transmit_entry(conn, conn.queue_.head);
             if (sent) {
                 node.deferrals = 0;
             }
@@ -1450,7 +1424,7 @@ namespace aloe::tcp {
             if (conn.prepared_ || (conn.state_ != State::Established && conn.state_ != State::CloseWait)) {
                 return 0;
             }
-            if (conn.queue_count_ >= config_.send_segments) {
+            if (conn.queue_.count >= config_.send_segments) {
                 return 0;  // the send cap: the ACK that frees an entry raises Writable
             }
             return static_cast<std::size_t>(std::min<std::uint64_t>(conn.mss(), send_room(conn)));
@@ -1534,11 +1508,11 @@ namespace aloe::tcp {
                 return false;
             }
             packet.trim_back(prepared - count);
-            if (conn.queue_count_ == 0 && conn.last_data_send_ && now_ - *conn.last_data_send_ > conn.rto_) {
+            if (conn.queue_.count == 0 && conn.last_data_send_ && now_ - *conn.last_data_send_ > conn.rto_) {
                 CongestionControl::on_idle(conn.congestion_, conn.mss());  // RFC 5681's restart after an idle RTO
             }
             const auto payload                       = static_cast<std::uint16_t>(count);
-            const std::uint32_t previous_tail        = conn.queue_tail_;
+            const std::uint32_t previous_tail        = conn.queue_.tail;
             const std::optional<std::uint32_t> entry = enqueue(conn,
                                                                std::move(packet),
                                                                payload,
@@ -1551,8 +1525,8 @@ namespace aloe::tcp {
                 return false;
             }
             if (!transmit_entry(conn, *entry)) {
-                unlink_tail(conn, previous_tail);  // the packet goes back to the pool with the node
-                mark_retry(conn);                  // emit counted the refusal
+                send_pool_.release_back(conn.queue_, previous_tail);  // the packet goes back with the node
+                mark_retry(conn);                                     // emit counted the refusal
                 return false;
             }
             conn.snd_nxt_ = conn.snd_nxt_ + static_cast<std::uint32_t>(count);
@@ -1566,20 +1540,14 @@ namespace aloe::tcp {
             assert(count <= conn.unread_bytes_ && "consume past unread()");
             std::size_t remaining = count;
             while (remaining > 0) {
-                typename detail::TcpNodePool<Packet>::Node& node  = pool_.node(conn.chain_head_);
-                const std::size_t taken                           = std::min<std::size_t>(remaining, node.length);
-                node.offset                                       = static_cast<std::uint16_t>(node.offset + taken);
-                node.length                                       = static_cast<std::uint16_t>(node.length - taken);
-                remaining                                        -= taken;
-                conn.unread_bytes_                               -= taken;
+                HeldNode& node           = pool_.node(conn.chain_.head);
+                const std::size_t taken  = std::min<std::size_t>(remaining, node.length);
+                node.offset              = static_cast<std::uint16_t>(node.offset + taken);
+                node.length              = static_cast<std::uint16_t>(node.length - taken);
+                remaining               -= taken;
+                conn.unread_bytes_      -= taken;
                 if (node.length == 0) {
-                    const std::uint32_t next = node.next;
-                    pool_.release(conn.chain_head_);
-                    conn.chain_head_ = next;
-                    if (next == detail::no_node) {
-                        conn.chain_tail_ = detail::no_node;
-                    }
-                    --conn.chain_count_;
+                    pool_.release_front(conn.chain_);
                 }
             }
             const bool receiving =
@@ -1630,28 +1598,14 @@ namespace aloe::tcp {
         }
 
         void return_chain(ConnectionType& conn) noexcept {
-            for (std::uint32_t index = conn.chain_head_; index != detail::no_node;) {
-                const std::uint32_t next = pool_.node(index).next;
-                pool_.release(index);
-                index = next;
-            }
-            conn.chain_head_   = detail::no_node;
-            conn.chain_tail_   = detail::no_node;
-            conn.chain_count_  = 0;
+            pool_.release_all(conn.chain_);
             conn.unread_bytes_ = 0;
         }
 
         /// Every entry back to the pool: the node now, its packet and a copy out now or when the device returns them,
         /// each exactly once; and the node set aside for a FIN that never came, any node's again.
         void drop_queue(ConnectionType& conn) noexcept {
-            for (std::uint32_t index = conn.queue_head_; index != detail::no_node;) {
-                const std::uint32_t next = send_pool_.node(index).next;
-                send_pool_.release(index);
-                index = next;
-            }
-            conn.queue_head_  = detail::no_node;
-            conn.queue_tail_  = detail::no_node;
-            conn.queue_count_ = 0;
+            send_pool_.release_all(conn.queue_);
             if (std::exchange(conn.fin_reserved_, false)) {
                 send_pool_.unreserve();
             }
@@ -1755,10 +1709,10 @@ namespace aloe::tcp {
         /// connection, with the timeout set. Null otherwise: the handshake is bounded by `retries` alone.
         [[nodiscard]] const SentNode* user_timed_head(const ConnectionType& conn) const noexcept {
             if (config_.user_timeout <= core::Duration::zero() || conn.state_ == State::SynSent ||
-                conn.state_ == State::SynReceived || conn.queue_head_ == detail::no_node) {
+                conn.state_ == State::SynReceived || conn.queue_.empty()) {
                 return nullptr;
             }
-            const SentNode& head = send_pool_.node(conn.queue_head_);
+            const SentNode& head = send_pool_.node(conn.queue_.head);
             return head.transmits > 0 ? &head : nullptr;
         }
 
@@ -1766,7 +1720,7 @@ namespace aloe::tcp {
         /// left, held for the peer's window or the next hop, has nothing in flight; entries leave in order, so no
         /// later entry left before the head.
         [[nodiscard]] bool in_flight(const ConnectionType& conn) const noexcept {
-            return conn.queue_head_ != detail::no_node && send_pool_.node(conn.queue_head_).transmits > 0;
+            return !conn.queue_.empty() && send_pool_.node(conn.queue_.head).transmits > 0;
         }
 
         /// RFC 9293's send window test, Linux's `tcp_snd_wnd_test`: the peer's window covers a segment ending at
@@ -1878,7 +1832,7 @@ namespace aloe::tcp {
                 conn.loss_episode_ = false;
                 return;
             }
-            if (conn.queue_head_ != detail::no_node) {
+            if (!conn.queue_.empty()) {
                 std::ignore = resend_head(conn);
             }
             ++counters_.retransmits;
@@ -1968,7 +1922,7 @@ namespace aloe::tcp {
          * connection `Unresolved`.
          */
         void on_retransmit_timeout(ConnectionType& conn) noexcept {
-            assert(conn.queue_head_ != detail::no_node && "the RTO runs while something is queued");
+            assert(!conn.queue_.empty() && "the RTO runs while something is queued");
             if (const SentNode* head = user_timed_head(conn);
                 head != nullptr && now_ - head->first_sent >= config_.user_timeout) {
                 time_out(conn, /*by_user_timeout=*/true);
@@ -2002,8 +1956,8 @@ namespace aloe::tcp {
         /// device refuses it, the RTO takes over; a next hop still silent after `unresolved_polls` polls ends the
         /// connection with `Unresolved`.
         void on_arp_poll(ConnectionType& conn) noexcept {
-            assert(conn.queue_head_ != detail::no_node && "the poll retries an entry that never left");
-            if (const std::expected<void, net::SendError> sent = transmit_entry(conn, conn.queue_head_);
+            assert(!conn.queue_.empty() && "the poll retries an entry that never left");
+            if (const std::expected<void, net::SendError> sent = transmit_entry(conn, conn.queue_.head);
                 sent || sent.error() != net::SendError::Unresolved) {
                 arm_retransmit(conn);
                 return;
@@ -2025,8 +1979,7 @@ namespace aloe::tcp {
          */
         void on_probe_timeout(ConnectionType& conn) noexcept {
             assert(!in_flight(conn) && conn.snd_wnd_ == 0 &&
-                   (conn.queue_head_ != detail::no_node || conn.state_ == State::Established ||
-                    conn.state_ == State::CloseWait) &&
+                   (!conn.queue_.empty() || conn.state_ == State::Established || conn.state_ == State::CloseWait) &&
                    "a probe runs only while the window is zero and nothing is in flight");
             if (!conn.probe_started_) {
                 conn.probe_started_ = now_;
@@ -2225,7 +2178,7 @@ namespace aloe::tcp {
         TcpConfig config_          = {};
         std::uint16_t mss_         = 0;
         std::uint32_t byte_budget_ = 0;
-        detail::TcpNodePool<Packet> pool_;
+        detail::HeldSegmentPool<Packet> pool_;
         detail::SentSegmentPool<Packet> send_pool_;
         FlowTable table_;
         std::deque<ConnectionType> connections_ = {};
