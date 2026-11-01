@@ -342,6 +342,20 @@ preparations: neither node pool is carved out of it.
 
 ## Design notes
 
+**One class per concern.** `tcp::Stack` is the protocol's state machine and the shard's lists; what it drives
+are classes with state of their own, in `tcp::detail`, each in its own header with its members defined in its
+body. Per shard: `ConnectionTable` (free slots, the flow table, listeners, and the ephemeral port a connect takes
+so that the card steers its replies here), `SegmentWriter` (frames a segment over the connection's frame
+template, hands it to IP and counts what IP refused), `IsnGenerator`, and one `NodePool` each for held packets
+and retransmission-queue entries. Per connection: `ReceiveQueue` (RCV.NXT, the offered edge and the held
+packets), `AckPolicy` (RFC 5681's delayed and immediate ACKs), `SendSequence` (RFC 793's send variables),
+`RetransmissionQueue` (the sent segments and what the ACKs delivered), `LossRecovery` (RFC 5681, 3042 and 6582
+over the policy's state: it decides what to resend, the stack resends it), `RttEstimator` (RFC 6298),
+`ZeroWindowProbe` and `Timestamps` (RFC 7323 with PAWS). None of them reaches back into the stack; a connection
+resets each of them as a whole when its slot is freed. The folders follow the same split: `connection/` holds the
+connection and its parts, `stack/` the stack and its shard-level parts, `pool/` the node pools, `config/` the
+configuration and counters, `congestion/` the policies, and `table/` the flow table.
+
 **Zero-copy both ways.** A received segment's packet is held as it arrived and `unread()` points into it;
 `consume` advances through it and returns each packet to the pool once it is empty. A sent segment is written
 by the application into a fresh packet from IP; `commit` writes the frame's headers into its headroom, keeps

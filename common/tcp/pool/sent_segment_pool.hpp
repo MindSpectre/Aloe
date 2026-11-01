@@ -1,7 +1,12 @@
 #pragma once
 
 #include <aloe/core>
+#include <cassert>
 #include <cstdint>
+#include <cstring>
+#include <limits>
+#include <span>
+#include <utility>
 
 #include <node_pool.hpp>
 #include <packet.hpp>
@@ -35,6 +40,58 @@ namespace aloe::tcp::detail {
         std::uint64_t delivered_at_send = 0;
         bool app_limited                = false;
         std::uint32_t next              = no_node;
+
+        /// The SYN or the FIN: a control segment.
+        [[nodiscard]] bool control() const noexcept {
+            return flags.has(wire::TcpFlag::Syn) || flags.has(wire::TcpFlag::Fin);
+        }
+
+        /// A transmission left, from the packet or as a copy: stamped, the first one too, and counted, saturating.
+        void stamp(const core::TimePoint now) noexcept {
+            if (transmits == 0) {
+                first_sent = now;
+            }
+            sent = now;
+            if (transmits < std::numeric_limits<std::uint8_t>::max()) {
+                ++transmits;
+            }
+        }
+
+        /**
+         * Settles a copy out once either packet is back. The original back: the copy is dropped. The copy back first:
+         * it replaces the original, and the entry shrinks to the copy's range; the front it left out was counted as
+         * delivered by the ACK that passed it. A dropped handle's buffer goes back now or when the device returns it.
+         * Nothing with no copy out, or with both packets still lent.
+         */
+        void reconcile() noexcept {
+            if (copy.empty()) {
+                return;
+            }
+            if (!packet.lent()) {
+                copy = Packet{};
+                return;
+            }
+            if (copy.lent()) {
+                return;
+            }
+            packet  = std::exchange(copy, Packet{});
+            first   = copy_first;
+            payload = copy_payload;
+            length  = payload + (flags.has(wire::TcpFlag::Syn) ? 1U : 0U) + (flags.has(wire::TcpFlag::Fin) ? 1U : 0U);
+        }
+
+        /// The packet is back and `una` passed the first byte: the headers move forward over the acknowledged front,
+        /// which is trimmed off, so a resend carries only what the peer lacks.
+        void trim_to(const wire::TcpSequence una) noexcept {
+            const auto acknowledged = static_cast<std::uint32_t>(una - first);
+            assert(framed && !packet.lent() && acknowledged < payload && "only data is acknowledged in part");
+            const std::span<std::byte> frame = packet.data();
+            std::memmove(frame.subspan(acknowledged).data(), frame.data(), frame.size() - payload);
+            packet.trim_front(acknowledged);
+            first    = first + acknowledged;
+            length  -= acknowledged;
+            payload  = static_cast<std::uint16_t>(payload - acknowledged);
+        }
     };
 
     /**
