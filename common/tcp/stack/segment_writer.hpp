@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <aloe/core>
+#include <aloe/device>
+#include <aloe/net>
+#include <aloe/wire>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -10,15 +13,8 @@
 #include <span>
 #include <utility>
 
-#include <device.hpp>
 #include <frame_template.hpp>
-#include <ipv4.hpp>
-#include <ipv4_address.hpp>
-#include <ipv4_protocol.hpp>
-#include <prebuilt.hpp>
 #include <tcp_counters.hpp>
-#include <tcp_header.hpp>
-#include <tcp_options.hpp>
 
 namespace aloe::tcp::detail {
 

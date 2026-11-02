@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <aloe/core>
+#include <aloe/device>
+#include <aloe/loop>
+#include <aloe/net>
+#include <aloe/stream>
+#include <aloe/wire>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -13,33 +18,21 @@
 #include <tuple>
 #include <utility>
 
-#include <checksum.hpp>
 #include <congestion_control.hpp>
 #include <connection_table.hpp>
-#include <datagram.hpp>
 #include <flow_table.hpp>
 #include <held_segment_pool.hpp>
-#include <ipv4.hpp>
-#include <ipv4_checksum.hpp>
 #include <isn_generator.hpp>
 #include <loss_recovery.hpp>
 #include <newreno.hpp>
-#include <packet.hpp>
-#include <prebuilt.hpp>
 #include <read_view.hpp>
 #include <retransmission_queue.hpp>
-#include <rss.hpp>
 #include <segment_writer.hpp>
 #include <sent_segment_pool.hpp>
-#include <stream.hpp>
-#include <stream_events.hpp>
 #include <tcp_config.hpp>
 #include <tcp_connection.hpp>
 #include <tcp_counters.hpp>
 #include <tcp_fwd.hpp>
-#include <tcp_header.hpp>
-#include <tcp_options.hpp>
-#include <timer_wheel.hpp>
 
 namespace aloe::tcp {
 

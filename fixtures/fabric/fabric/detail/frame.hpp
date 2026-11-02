@@ -1,18 +1,13 @@
 #pragma once
 
 #include <algorithm>
+#include <aloe/device>
+#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <utility>
-
-#include <bytes.hpp>
-#include <device.hpp>
-#include <ethernet.hpp>
-#include <ipv4_address.hpp>
-#include <ipv4_protocol.hpp>
-#include <rss.hpp>
 
 namespace aloe::fabric::detail {
 

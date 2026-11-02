@@ -1,8 +1,10 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/device>
 #include <aloe/execution>
 #include <aloe/log>
+#include <aloe/loop>
 #include <atomic>
 #include <cassert>
 #include <cstddef>
@@ -22,12 +24,10 @@
 #include <utility>
 #include <vector>
 
-#include <device.hpp>
 #include <pthread.h>
 #include <sched.h>
 #include <scheduler.hpp>
 #include <shard.hpp>
-#include <work.hpp>
 
 namespace aloe::runtime {
 

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/device>
+#include <aloe/wire>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -8,9 +10,7 @@
 #include <utility>
 
 #include <node_pool.hpp>
-#include <packet.hpp>
 #include <sent_segment_pool.hpp>
-#include <tcp_sequence.hpp>
 
 namespace aloe::tcp::detail {
 

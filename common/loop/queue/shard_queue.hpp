@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <aloe/core>
+#include <aloe/device>
+#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -10,9 +12,6 @@
 #include <vector>
 
 #include <counters.hpp>
-#include <device.hpp>
-#include <mac_address.hpp>
-#include <rss.hpp>
 
 
 namespace aloe::loop {

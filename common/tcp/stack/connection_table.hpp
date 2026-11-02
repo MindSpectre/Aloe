@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <aloe/device>
+#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -8,9 +10,6 @@
 #include <vector>
 
 #include <flow_table.hpp>
-#include <ipv4_address.hpp>
-#include <ipv4_protocol.hpp>
-#include <rss.hpp>
 #include <tcp_config.hpp>
 
 namespace aloe::tcp::detail {

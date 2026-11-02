@@ -1,9 +1,8 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/net>
 #include <cstdint>
-
-#include <prebuilt.hpp>
 
 namespace aloe::tcp::detail {
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <aloe/device>
+#include <aloe/loop>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
@@ -10,10 +12,8 @@
 #include <utility>
 #include <vector>
 
-#include <device.hpp>
 #include <scheduler.hpp>
 #include <shard_context.hpp>
-#include <shard_queue.hpp>
 
 namespace aloe::runtime {
 

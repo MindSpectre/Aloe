@@ -1,14 +1,13 @@
 #pragma once
 
 #include <aloe/execution>
+#include <aloe/loop>
 #include <cassert>
 #include <chrono>
 #include <optional>
 #include <utility>
 
 #include <shard_context.hpp>
-#include <timer_wheel.hpp>
-#include <work.hpp>
 
 namespace aloe::runtime {
 

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <aloe/core>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -13,8 +14,6 @@
 #include <gtest/gtest.h>
 #include <machine_info.hpp>
 #include <run_state.hpp>
-#include <tsc_clock.hpp>
-#include <tsc_scale.hpp>
 
 // The whole matrix, small, under the test EAL: every configuration runs to a clean end over one ring pair, the rows
 // come out complete, and the stamp checks refuse a hole and an inverted pair. No root, no hugepages, no pinning.

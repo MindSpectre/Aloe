@@ -30,6 +30,8 @@ target_include_directories(${FABRIC}.Fabric PUBLIC
 target_link_libraries(${FABRIC}.Fabric PUBLIC
         ${FABRIC}.Packet
         Aloe::Common::Core
+        Aloe::Common::Device
+        Aloe::Common::Wire
         Threads::Threads
 )
 ##############################################################################

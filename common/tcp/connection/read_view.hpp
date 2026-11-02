@@ -1,5 +1,6 @@
 #pragma once
 
+#include <aloe/device>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -8,7 +9,6 @@
 #include <span>
 
 #include <held_segment_pool.hpp>
-#include <packet.hpp>
 
 namespace aloe::tcp {
 

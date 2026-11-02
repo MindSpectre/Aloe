@@ -52,6 +52,7 @@ target_link_libraries(${LOOP}.Queue INTERFACE
         ${LOOP}.Counters
         Aloe::Common::Device
         Aloe::Common::Core
+        Aloe::Common::Wire
 )
 ##############################################################################
 

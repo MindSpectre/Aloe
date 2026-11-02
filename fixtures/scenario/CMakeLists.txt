@@ -42,6 +42,9 @@ target_link_libraries(${SCENARIO}.Run PUBLIC
         Aloe::Common::Tcp
         Aloe::Common::Net
         Aloe::Common::Loop
+        Aloe::Common::Core
+        Aloe::Common::Stream
+        Aloe::Common::Wire
 )
 ##############################################################################
 

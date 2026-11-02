@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <aloe/core>
+#include <aloe/device>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -11,7 +12,6 @@
 #include <tuple>
 #include <utility>
 
-#include <packet.hpp>
 #include <rte_mbuf.h>
 
 namespace aloe::ethdev {

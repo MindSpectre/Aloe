@@ -2,6 +2,9 @@
 
 #include <aloe/core>
 #include <aloe/execution>
+#include <aloe/loop>
+#include <aloe/stream>
+#include <aloe/tcp>
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -12,11 +15,8 @@
 #include <vector>
 
 #include <shard_context.hpp>
-#include <stream_events.hpp>
 #include <stream_policies.hpp>
 #include <stream_wait.hpp>
-#include <tcp_config.hpp>
-#include <timer_wheel.hpp>
 
 namespace aloe::runtime {
 

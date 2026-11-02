@@ -2,6 +2,9 @@
 
 #include <algorithm>
 #include <aloe/core>
+#include <aloe/loop>
+#include <aloe/stream>
+#include <aloe/wire>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -17,14 +20,9 @@
 #include <retransmission_queue.hpp>
 #include <rtt_estimator.hpp>
 #include <send_sequence.hpp>
-#include <stream.hpp>
-#include <stream_events.hpp>
 #include <tcp_config.hpp>
 #include <tcp_fwd.hpp>
-#include <tcp_options.hpp>
-#include <tcp_sequence.hpp>
 #include <tcp_timestamps.hpp>
-#include <timer_wheel.hpp>
 #include <zero_window_probe.hpp>
 
 namespace aloe::tcp {

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/device>
+#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -11,11 +13,8 @@
 #include <span>
 #include <vector>
 
-#include <device.hpp>
 #include <fabric_packet.hpp>
 #include <impairment.hpp>
-#include <mac_address.hpp>
-#include <rss.hpp>
 
 namespace aloe::fabric {
 

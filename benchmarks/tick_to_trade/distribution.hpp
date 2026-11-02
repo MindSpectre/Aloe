@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <aloe/core>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -8,8 +9,6 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
-
-#include <tsc_scale.hpp>
 
 namespace aloe::benchmarks {
 

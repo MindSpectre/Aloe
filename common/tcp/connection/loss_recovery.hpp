@@ -1,12 +1,12 @@
 #pragma once
 
 #include <algorithm>
+#include <aloe/wire>
 #include <cstdint>
 #include <limits>
 
 #include <congestion_control.hpp>
 #include <send_sequence.hpp>
-#include <tcp_sequence.hpp>
 
 namespace aloe::tcp::detail {
 

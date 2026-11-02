@@ -1,5 +1,6 @@
 #pragma once
 
+#include <aloe/core>
 #include <string>
 #include <vector>
 
@@ -8,7 +9,6 @@
 #include <report.hpp>
 #include <round_config.hpp>
 #include <run_state.hpp>
-#include <tsc_scale.hpp>
 
 namespace aloe::benchmarks {
 

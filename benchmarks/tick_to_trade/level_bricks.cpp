@@ -1,5 +1,6 @@
 #include "level_bricks.hpp"
 
+#include <aloe/core>
 #include <aloe/loop>
 #include <aloe/stream>
 #include <aloe/tcp>
@@ -14,9 +15,7 @@
 #include <vector>
 
 #include <application_work.hpp>
-#include <clock.hpp>
 #include <stack_sanity.hpp>
-#include <tsc_clock.hpp>
 
 namespace aloe::benchmarks {
 

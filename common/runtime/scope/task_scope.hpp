@@ -2,6 +2,7 @@
 
 #include <aloe/execution>
 #include <aloe/log>
+#include <aloe/loop>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
@@ -11,8 +12,6 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
-
-#include <counters.hpp>
 
 namespace aloe::runtime {
 

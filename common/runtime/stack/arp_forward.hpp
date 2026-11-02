@@ -1,13 +1,12 @@
 #pragma once
 
+#include <aloe/loop>
+#include <aloe/wire>
 #include <cstddef>
 #include <new>
 #include <span>
 
-#include <ipv4_address.hpp>
-#include <mac_address.hpp>
 #include <shard_context.hpp>
-#include <work.hpp>
 
 namespace aloe::runtime::detail {
 
