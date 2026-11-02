@@ -219,4 +219,6 @@ namespace aloe::fabric {
         std::uint64_t delayed_sequence_ = 0;
     };
 
+    static_assert(device::IsDevice<Port>);
+
 }  // namespace aloe::fabric

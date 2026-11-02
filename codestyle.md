@@ -432,6 +432,23 @@ concept OneOf = (std::is_same_v<Args, T> || ...);
 | `Has*`    | Structural requirement — "T exposes members/ops" | `HasStaticNameMember`, `HasAcceptVisitor`, `HasToHttpResponse` |
 | no prefix | Generic operator-like / variadic relation        | `OneOf`, `OneOfDecayed`                                        |
 
+### Concept Conformance
+
+A class written to model a concept says so at the bottom of its header, inside its namespace, so the header fails
+to compile the moment the class stops modelling it:
+
+```cpp
+    class Port { /* ... */ };
+
+    static_assert(device::IsDevice<Port>);
+
+}  // namespace aloe::fabric
+```
+
+A class template has no type to check there; the template that first instantiates it with its real arguments
+checks it in its own body, as `tcp::Stack` checks `Connection` and `ReadView`. Tests keep the negative checks and
+the fakes, not a copy of the positive ones.
+
 ### Requires Clause Placement
 
 Place after template parameters, on own line with indent:

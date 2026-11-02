@@ -108,11 +108,13 @@ per packet.
 
 ### The ready-made TCP stack
 
-- **`aloe::runtime::TcpStack<Device>`** -- the IP brick, the TCP brick and the stream owner composed for one
-  shard, with the tick glue; it models `IsStack` with both hooks. It is constructed by the shard from the
-  context, the queue, a `net::Ipv4Config` and a `tcp::TcpConfig`, and names its parts `Ip`
-  (`net::Ipv4<Device>`), `Tcp` (`tcp::Stack<Ip>`), `StreamsType` (`Streams<Tcp>`) and `StreamType`
-  (`Stream<Tcp>`); `ip()`, `tcp()` and `streams()` reach them. The members are declared IP, TCP, Streams, so
+- **`aloe::runtime::TcpStack<Device, CongestionControl = tcp::NewReno>`** -- the IP brick, the TCP brick and the
+  stream owner composed for one shard, with the tick glue; it models `IsStack` with both hooks. It is constructed
+  by the shard from the context, the queue, a `net::Ipv4Config` and a `tcp::TcpConfig`, and names its parts `Ip`
+  (`net::Ipv4<Device>`), `Tcp` (`tcp::Stack<Ip, CongestionControl>`), `StreamsType` (`Streams<Tcp>`) and
+  `StreamType` (`Stream<Tcp>`); `ip()`, `tcp()` and `streams()` reach them. The congestion control passes
+  through to the TCP brick unchanged: `TcpStack<Device, tcp::NoCongestionControl>` runs every shard without one
+  (see the [TCP page](tcp.md#congestion-control)). The members are declared IP, TCP, Streams, so
   they are destroyed in the reverse order, and the destructor removes the ARP sink before any of them goes.
   On a device with more than one queue it copies the IP config and sets `accept_unsolicited_replies`, so
   queue 0 learns the replies its siblings solicited. `forwards_dropped()` counts the forwards that could
@@ -240,7 +242,8 @@ A stack with the hooks sees one step in this order:
 4. An early flush, so control segments and immediate ACKs leave before any task runs.
 5. `run_once(now)`: the inbox, due timers and one chain of ready work. Work queued while the chain runs
    waits for the next step; there is no recursive drain.
-6. `on_flush(now)`: drain the events timers and tasks raised, emit the remaining ordinary ACKs.
+6. `on_flush(now)`: drain the events timers and tasks raised, retry the resends that waited for their packet,
+   emit the remaining ordinary ACKs.
 7. The final flush.
 
 An event raised inside `run_once`, by a timer or a task, is drained by `on_flush`, and the waiter it wakes

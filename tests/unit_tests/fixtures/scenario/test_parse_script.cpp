@@ -247,3 +247,35 @@ TEST(ParseScript, ReportsCallLineErrors) {
     const auto unclosed = parse_script("+0 close(4 = 0\n");
     ASSERT_FALSE(unclosed.has_value());
 }
+
+TEST(ParseScript, ParsesTheTcpOptionLines) {
+    const auto script = parse_script("--tcp_rto_min_ms=5\n--tcp_rto_max_ms=1000\n--tcp_rto_initial_ms=300\n"
+                                     "--tcp_user_timeout_ms=500\n--tcp_retries=2\n--tcp_data_retries=3\n"
+                                     "--tcp_retransmit_defers=0\n--tcp_send_segments=2\n--tcp_timestamps=0\n"
+                                     "--congestion=newreno\n\n0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(script.has_value()) << script.error().message;
+    EXPECT_EQ(script->tcp,
+              (aloe::scenario::ScriptTcpOptions{.rto_min           = 5ms,
+                                                .rto_max           = 1000ms,
+                                                .rto_initial       = 300ms,
+                                                .user_timeout      = 500ms,
+                                                .retries           = 2,
+                                                .data_retries      = 3,
+                                                .retransmit_defers = 0,
+                                                .send_segments     = 2,
+                                                .timestamps        = false}));
+    EXPECT_EQ(script->congestion, aloe::scenario::CongestionChoice::NewReno);
+    EXPECT_EQ(parse_script("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n")->congestion,
+              aloe::scenario::CongestionChoice::Both);
+}
+
+TEST(ParseScript, RejectsBadTcpOptionLines) {
+    EXPECT_FALSE(parse_script("--tcp_timestamps=2\n").has_value());
+    EXPECT_FALSE(parse_script("--congestion=cubic\n").has_value());
+    EXPECT_FALSE(parse_script("--tcp_retries=300\n").has_value());
+    EXPECT_FALSE(parse_script("--tcp_rto_min_ms=\n").has_value());
+    const auto twice = parse_script("--tcp_retries=1\n--tcp_retries=2\n");
+    ASSERT_FALSE(twice.has_value());
+    EXPECT_EQ(twice.error().line, 2);
+    EXPECT_FALSE(parse_script("--tcp_rto_min=5\n").has_value()) << "the unit is in the name";
+}

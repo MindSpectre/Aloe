@@ -39,6 +39,11 @@ namespace aloe::benchmarks {
         expect_zero(tcp.commits_refused, "tcp.commits_refused");
         expect_zero(tcp.allocation_failures, "tcp.allocation_failures");
         expect_zero(tcp.retransmits, "tcp.retransmits");
+        expect_zero(tcp.fast_retransmits, "tcp.fast_retransmits");
+        expect_zero(tcp.retransmits_deferred, "tcp.retransmits_deferred");
+        expect_zero(tcp.retransmits_copied, "tcp.retransmits_copied");
+        expect_zero(tcp.zero_window_probes, "tcp.zero_window_probes");
+        expect_zero(tcp.dropped_paws, "tcp.dropped_paws");
         expect_zero(ip.transmit_refused, "ip.transmit_refused");
         expect_zero(ip.dropped_short, "ip.dropped_short");
         expect_zero(ip.dropped_not_for_us, "ip.dropped_not_for_us");

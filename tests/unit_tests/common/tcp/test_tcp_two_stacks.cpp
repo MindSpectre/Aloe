@@ -19,7 +19,6 @@ namespace {
 
     using namespace std::chrono_literals;
     using Ipv4      = aloe::net::Ipv4<aloe::fabric::Port>;
-    using Tcp       = aloe::tcp::Stack<Ipv4>;
     using Config    = aloe::tcp::TcpConfig;
     using TimePoint = aloe::core::TimePoint;
 
@@ -30,8 +29,11 @@ namespace {
     constexpr std::size_t message = 5000;  ///< More than three segments at MSS 1460.
 
     /// One brick with its loop state: what a program writes once per shard.
-    struct Brick {
-        Brick(aloe::fabric::Port& port, const aloe::wire::Ipv4Address address, const Config& config)
+    template <typename CongestionControl>
+    struct BasicBrick {
+        using Tcp = aloe::tcp::Stack<Ipv4, CongestionControl>;
+
+        BasicBrick(aloe::fabric::Port& port, const aloe::wire::Ipv4Address address, const Config& config)
             : queue{
                   port, 0, 64, counters
         },
@@ -59,9 +61,31 @@ namespace {
         }
     };
 
-    class TcpTwoStacks : public ::testing::TestWithParam<aloe::fabric::EmulatedOffloads> {
+    /// The echo's own copy: unread bytes go back out through prepare and commit, in place on the way out.
+    template <typename Connection>
+    void echo(Connection& c) {
+        while (!c.unread().empty()) {
+            const std::span<const std::byte> chunk = c.unread().front();
+            const auto out                         = c.prepare(chunk.size());
+            if (!out) {
+                return;  // resume on Writable
+            }
+            std::ranges::copy(chunk.first(out->size()), out->begin());
+            if (!c.commit(out->size())) {
+                return;
+            }
+            c.consume(out->size());
+        }
+    }
+
+    using Brick = BasicBrick<aloe::tcp::NewReno>;
+
+    template <typename CongestionControl>
+    class BasicTwoStacks : public ::testing::TestWithParam<aloe::fabric::EmulatedOffloads> {
     protected:
-        explicit TcpTwoStacks(const Config& server_config = {})
+        using Tcp = BasicBrick<CongestionControl>::Tcp;
+
+        explicit BasicTwoStacks(const Config& server_config = {})
             : server_{server_port_, server_ip, server_config} {
         }
 
@@ -70,12 +94,12 @@ namespace {
             fabric_.add_port({.mac = server_mac, .pool_size = 256, .offloads = GetParam()});
         aloe::fabric::Port& client_port_ =
             fabric_.add_port({.mac = client_mac, .pool_size = 256, .offloads = GetParam()});
-        Brick server_;
-        Brick client_{client_port_, client_ip, {}};
+        BasicBrick<CongestionControl> server_;
+        BasicBrick<CongestionControl> client_{client_port_, client_ip, {}};
         TimePoint now_{};
 
         /// Learns both MACs, listens, connects, and ticks until both ends are Established. Null on failure.
-        [[nodiscard]] Tcp::ConnectionType* establish(Tcp::ConnectionType*& client) {
+        [[nodiscard]] typename Tcp::ConnectionType* establish(typename Tcp::ConnectionType*& client) {
             server_.ip.learn(client_ip, client_mac, now_);
             client_.ip.learn(server_ip, server_mac, now_);
             if (!server_.tcp.listen(7).has_value()) {
@@ -85,8 +109,8 @@ namespace {
             if (!session.has_value()) {
                 return nullptr;
             }
-            client                      = *session;
-            Tcp::ConnectionType* server = nullptr;
+            client                               = *session;
+            typename Tcp::ConnectionType* server = nullptr;
             for (int tick = 0; tick < 10 && (server == nullptr || client->state() != aloe::tcp::State::Established);
                  ++tick) {
                 now_ += 1ms;
@@ -118,7 +142,79 @@ namespace {
             client_.receive(now_);
             while (client_.tcp.poll_event()) {}
         }
+
+        /// Connects, sends `bytes`, has the server echo them back and both sides close, within `ticks` of 1 ms.
+        /// Returns whether both closed and the echo matched.
+        [[nodiscard]] bool run_echo(const std::size_t bytes, const int ticks) {
+            server_.ip.learn(client_ip, client_mac, now_);
+            client_.ip.learn(server_ip, server_mac, now_);
+            if (!server_.tcp.listen(7).has_value()) {
+                return false;
+            }
+            const auto sent = aloe::frames::pattern(bytes);
+            std::vector<std::byte> echoed;
+            std::size_t offered = 0;
+            bool server_done    = false;
+            bool client_done    = false;
+
+            const auto session = client_.tcp.connect({.address = server_ip, .port = 7}, now_);
+            if (!session.has_value()) {
+                return false;
+            }
+            typename Tcp::ConnectionType& c = **session;
+
+            for (int tick = 0; tick < ticks && !(server_done && client_done); ++tick) {
+                now_ += 1ms;
+                fabric_.advance(now_);
+                server_.receive(now_);
+                while (const auto event = server_.tcp.poll_event()) {
+                    auto& s = *event->connection;
+                    if (event->events.readable() || event->events.writable()) {
+                        echo(s);
+                    }
+                    if (s.peer_closed() && s.unread().empty() && s.state() == aloe::tcp::State::CloseWait) {
+                        s.close();
+                    }
+                    if (event->events.closed() || event->events.reset() || event->events.timed_out()) {
+                        s.release();
+                        server_done = true;
+                    }
+                }
+                server_.flush(now_);
+
+                client_.receive(now_);
+                while (const auto event = client_.tcp.poll_event()) {
+                    if (event->events.connected() || event->events.writable()) {
+                        offered += c.send(std::span<const std::byte>{sent}.subspan(offered));
+                    }
+                    if (event->events.readable()) {
+                        for (const std::span<const std::byte> chunk : c.unread()) {
+                            echoed.insert(echoed.end(), chunk.begin(), chunk.end());
+                        }
+                        c.consume(c.unread().size());
+                        if (echoed.size() == bytes) {
+                            c.close();
+                        }
+                    }
+                    if (event->events.closed() || event->events.reset() || event->events.timed_out()) {
+                        c.release();
+                        client_done = true;
+                    }
+                }
+                client_.flush(now_);
+            }
+            return server_done && client_done && echoed == sent && offered == bytes;
+        }
     };
+
+    class TcpTwoStacks : public BasicTwoStacks<aloe::tcp::NewReno> {
+    protected:
+        explicit TcpTwoStacks(const Config& server_config = {})
+            : BasicTwoStacks(server_config) {
+        }
+    };
+
+    class TcpTwoStacksNoCongestion : public BasicTwoStacks<aloe::tcp::NoCongestionControl> {};
 
     /// The server holds four packets per connection: small segments reach that cap long before the byte window closes.
     class TcpTwoStacksFourSlots : public TcpTwoStacks {
@@ -134,87 +230,20 @@ namespace {
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
     INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpTwoStacksNoCongestion,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+    INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpTwoStacksFourSlots,
                              ::testing::Values(aloe::fabric::EmulatedOffloads::None,
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
 
-    /// The echo's own copy: unread bytes go back out through prepare and commit, in place on the way out.
-    void echo(Tcp::ConnectionType& c) {
-        while (!c.unread().empty()) {
-            const std::span<const std::byte> chunk = c.unread().front();
-            const auto out                         = c.prepare(chunk.size());
-            if (!out) {
-                return;  // resume on Writable
-            }
-            std::ranges::copy(chunk.first(out->size()), out->begin());
-            if (!c.commit(out->size())) {
-                return;
-            }
-            c.consume(out->size());
-        }
-    }
-
 }  // namespace
 
 TEST_P(TcpTwoStacks, EchoAcrossMssAndClose) {
-    server_.ip.learn(client_ip, client_mac, now_);
-    client_.ip.learn(server_ip, server_mac, now_);
-    ASSERT_TRUE(server_.tcp.listen(7).has_value());
-    const auto sent = aloe::frames::pattern(message);
-    std::vector<std::byte> echoed;
-    std::size_t offered = 0;
-    bool server_done    = false;
-    bool client_done    = false;
-
-    const auto session = client_.tcp.connect({.address = server_ip, .port = 7}, now_);
-    ASSERT_TRUE(session.has_value());
-    Tcp::ConnectionType& c = **session;
-
-    for (int tick = 0; tick < 200 && !(server_done && client_done); ++tick) {
-        now_ += 1ms;
-        fabric_.advance(now_);
-        server_.receive(now_);
-        while (const auto event = server_.tcp.poll_event()) {
-            auto& s = *event->connection;
-            if (event->events.readable() || event->events.writable()) {
-                echo(s);
-            }
-            if (s.peer_closed() && s.unread().empty() && s.state() == aloe::tcp::State::CloseWait) {
-                s.close();
-            }
-            if (event->events.closed() || event->events.reset() || event->events.timed_out()) {
-                s.release();
-                server_done = true;
-            }
-        }
-        server_.flush(now_);
-
-        client_.receive(now_);
-        while (const auto event = client_.tcp.poll_event()) {
-            if (event->events.connected() || event->events.writable()) {
-                offered += c.send(std::span<const std::byte>{sent}.subspan(offered));
-            }
-            if (event->events.readable()) {
-                for (const std::span<const std::byte> chunk : c.unread()) {
-                    echoed.insert(echoed.end(), chunk.begin(), chunk.end());
-                }
-                c.consume(c.unread().size());
-                if (echoed.size() == message) {
-                    c.close();
-                }
-            }
-            if (event->events.closed() || event->events.reset() || event->events.timed_out()) {
-                c.release();
-                client_done = true;
-            }
-        }
-        client_.flush(now_);
-    }
-
-    EXPECT_TRUE(server_done && client_done) << "both sides closed within 200 ticks";
-    EXPECT_EQ(echoed, sent);
-    EXPECT_EQ(offered, message);
+    EXPECT_TRUE(run_echo(message, 200)) << "both sides closed within 200 ticks and the echo matched";
     const auto& sc = server_.tcp.counters();
     const auto& cc = client_.tcp.counters();
     EXPECT_EQ(sc.connections_accepted, 1U);
@@ -235,8 +264,8 @@ TEST_P(TcpTwoStacks, EchoAcrossMssAndClose) {
     EXPECT_EQ(server_.wheel.pending() + client_.wheel.pending(), 0U);
 }
 
-// The phase-1 reliability envelope the TCP page states: within it a loss-free fabric means no loss; beyond it a
-// drop between two Aloe peers is final, since nothing retransmits data until phase 2.
+// The receive slots between two Aloe peers: within them a loss-free fabric means no loss; a segment beyond them is
+// dropped by the receiver, and the sender's retransmission timer resends it once the slots are free again.
 
 TEST_P(TcpTwoStacksFourSlots, SmallSegmentsWithinTheSlotsLoseNothing) {
     Tcp::ConnectionType* c = nullptr;
@@ -260,31 +289,88 @@ TEST_P(TcpTwoStacksFourSlots, SmallSegmentsWithinTheSlotsLoseNothing) {
     s->release();
 }
 
-TEST_P(TcpTwoStacksFourSlots, SmallSegmentsBeyondTheSlotsAreDroppedForGood) {
+TEST_P(TcpTwoStacksFourSlots, SmallSegmentsBeyondTheSlotsRecoverAfterOneRto) {
     Tcp::ConnectionType* c = nullptr;
     Tcp::ConnectionType* s = establish(c);
     ASSERT_NE(s, nullptr);
-    for (int i = 0; i < 5; ++i) {
-        EXPECT_EQ(c->send(aloe::frames::pattern(1)), 1U) << "the byte window still has credit for the fifth";
+    for (int i = 0; i < 6; ++i) {
+        EXPECT_EQ(c->send(aloe::frames::pattern(1)), 1U);
     }
     exchange();
-    EXPECT_EQ(s->unread().size(), 4U) << "the fifth found no slot";
-    EXPECT_EQ(server_.tcp.counters().dropped_no_slot, 1U);
-    EXPECT_EQ(c->unacknowledged(), 1U) << "the server acknowledged what it kept";
-    for (int tick = 0; tick < 100; ++tick) {
+    EXPECT_EQ(s->unread().size(), 4U);
+    EXPECT_EQ(server_.tcp.counters().dropped_no_slot, 1U) << "the fifth found no slot";
+    EXPECT_EQ(server_.tcp.counters().dropped_out_of_order, 1U) << "the sixth follows a hole";
+    s->consume(4);
+    for (int tick = 0; tick < 300 && s->unread().size() < 2; ++tick) {  // one RTO of 200 ms, then the resend
         exchange();
     }
-    EXPECT_EQ(client_.tcp.counters().retransmits, 0U) << "data is never retransmitted in this phase";
-    EXPECT_EQ(c->unacknowledged(), 1U) << "and so the gap stays";
-    s->consume(4);
-    exchange();  // the window update reopens the slots
-    EXPECT_EQ(c->send(aloe::frames::pattern(1)), 1U);
-    exchange();
-    EXPECT_TRUE(s->unread().empty()) << "everything after the gap is out of order for good";
-    EXPECT_EQ(server_.tcp.counters().dropped_out_of_order, 1U);
-    EXPECT_EQ(c->unacknowledged(), 2U);
+    EXPECT_EQ(s->unread().size(), 2U) << "the dropped bytes arrived by retransmission";
+    EXPECT_GE(client_.tcp.counters().retransmits, 1U);
     c->release();
     s->release();
+}
+
+TEST_P(TcpTwoStacks, ALostOrderIsResentAndTheEchoCompletes) {
+    client_port_.set_impairment(
+        {.script = [](const aloe::fabric::Egress& egress) -> std::optional<aloe::fabric::Verdict> {
+            return egress.index == 3 ? std::optional{aloe::fabric::Verdict{.action = aloe::fabric::Action::Drop}}
+                                     : std::nullopt;
+        }});
+    EXPECT_TRUE(run_echo(5000, 2000));
+    EXPECT_EQ(client_port_.impairment_counters().dropped, 1U);
+    EXPECT_GE(client_.tcp.counters().retransmits + client_.tcp.counters().fast_retransmits, 1U);
+}
+
+TEST_P(TcpTwoStacks, ALostEchoSegmentIsResentByTheServer) {
+    server_port_.set_impairment(
+        {.script = [](const aloe::fabric::Egress& egress) -> std::optional<aloe::fabric::Verdict> {
+            return egress.index == 4 ? std::optional{aloe::fabric::Verdict{.action = aloe::fabric::Action::Drop}}
+                                     : std::nullopt;
+        }});
+    EXPECT_TRUE(run_echo(5000, 2000));
+    EXPECT_GE(server_.tcp.counters().retransmits + server_.tcp.counters().fast_retransmits, 1U);
+}
+
+TEST_P(TcpTwoStacks, RandomLossBothWaysStillCompletesTheEcho) {
+    client_port_.set_impairment(
+        {.loss = 0.1, .seed = 7});  // NOLINT(cert-msc51-cpp): a fixed seed keeps the test reproducible
+    server_port_.set_impairment({.loss = 0.1, .seed = 11});  // NOLINT(cert-msc51-cpp)
+    EXPECT_TRUE(run_echo(20000, 20000)) << "20 s of virtual time covers the backoffs";
+    EXPECT_EQ(client_.tcp.counters().dropped_bad_checksum + server_.tcp.counters().dropped_bad_checksum, 0U);
+    EXPECT_GT(client_port_.impairment_counters().dropped, 0U) << "the seed loses some of the client's frames";
+    EXPECT_GT(server_port_.impairment_counters().dropped, 0U) << "and some of the server's";
+    EXPECT_GE(client_.tcp.counters().retransmits + client_.tcp.counters().fast_retransmits, 1U);
+    EXPECT_GE(server_.tcp.counters().retransmits + server_.tcp.counters().fast_retransmits, 1U);
+}
+
+TEST_P(TcpTwoStacks, DuplicationReorderingAndDelayAreAbsorbed) {
+    client_port_.set_impairment({.duplicate = 0.2,
+                                 .reorder   = 0.2,
+                                 .delay     = 5ms,
+                                 .seed      = 3});  // NOLINT(cert-msc51-cpp): a fixed seed keeps the test reproducible
+    EXPECT_TRUE(run_echo(5000, 4000));
+    EXPECT_GE(server_.tcp.counters().dropped_duplicate + server_.tcp.counters().dropped_out_of_order, 1U);
+}
+
+TEST_P(TcpTwoStacks, ADelayBeyondTheRtoCausesASpuriousResendThatIsHarmless) {
+    // The SYN and the handshake ACK go undelayed, so the RTO stays at 200 ms; everything after is 250 ms late.
+    client_port_.set_impairment(
+        {.script = [](const aloe::fabric::Egress& egress) -> std::optional<aloe::fabric::Verdict> {
+            return egress.index >= 2 ? std::optional{aloe::fabric::Verdict{.action = aloe::fabric::Action::Delay,
+                                                                           .delay  = 250ms}}
+                                     : std::nullopt;
+        }});
+    EXPECT_TRUE(run_echo(2000, 4000));
+    EXPECT_GE(client_.tcp.counters().retransmits, 1U);
+    EXPECT_GE(server_.tcp.counters().dropped_duplicate, 1U);
+}
+
+TEST_P(TcpTwoStacksNoCongestion, TheEchoCompletesUnderLossWithoutCongestionControl) {
+    client_port_.set_impairment(
+        {.loss = 0.1, .seed = 5});  // NOLINT(cert-msc51-cpp): a fixed seed keeps the test reproducible
+    EXPECT_TRUE(run_echo(20000, 20000));
+    EXPECT_GT(client_port_.impairment_counters().dropped, 0U) << "the seed loses some of the client's frames";
+    EXPECT_GE(client_.tcp.counters().retransmits + client_.tcp.counters().fast_retransmits, 1U);
 }
 
 TEST_P(TcpTwoStacks, ALostSynIsRetransmittedAndTheConnectionEstablishes) {

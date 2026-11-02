@@ -230,4 +230,6 @@ namespace aloe::ethdev {
         rte_mbuf* mbuf_ = nullptr;
     };
 
+    static_assert(device::IsPacket<Packet>);
+
 }  // namespace aloe::ethdev

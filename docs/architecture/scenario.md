@@ -16,36 +16,45 @@ written from the RFCs and from what Aloe does, and its opening comment says wher
 ## Key types
 
 - **`aloe::scenario::Script`**, **`parse_script(text)`**, **`ParseError`** -- the parsed model: the events in
-  order, each with its `TimeSpec`, its 1-based source `line` and either a `PacketLine` or a `CallLine`, and the
-  script's `tolerance` when it sets one. `parse_script` returns `std::expected<Script, ParseError>`; a
-  `ParseError` carries the line, the column and what was wrong.
+  order, each with its `TimeSpec`, its 1-based source `line` and either a `PacketLine` or a `CallLine`; the
+  script's `tolerance` when it sets one; the `TcpConfig` fields its `--tcp_*` lines set (`ScriptTcpOptions`);
+  and the policies it runs under (`CongestionChoice`: `NewReno`, `None` or `Both`). `parse_script` returns
+  `std::expected<Script, ParseError>`; a `ParseError` carries the line, the column and what was wrong.
 - **`aloe::scenario::Harness`**, **`HarnessConfig`** -- a fabric with the stack's port and the peer's port, and
   the bricks over queue 0 of the stack's port, `ShardQueue`, `Ipv4`, `TimerWheel` and `tcp::Stack`, with both
   MACs learned. The defaults put the stack at 10.0.0.2 with port 8080 for `bind` and the peer at 10.0.0.1 with
   port 40000 and the initial sequence number 1000000; they give the fabric no checksum offloads (`offloads`
   picks `EmulatedOffloads::None` or `Checksums`), the wheel a resolution of one millisecond, TCP its default
-  `TcpConfig`, and ARP a lifetime of an hour (`arp_lifetime` is `arp_reachable`; `arp_expire` is twice it).
+  `TcpConfig`, which `configured(config, script)` overrides with the script's `--tcp_*` lines, and ARP a
+  lifetime of an hour (`arp_lifetime` is `arp_reachable`; `arp_expire` is twice it).
   `inject`, `step`, `flush` and `collect` are the parts the runner composes; a `Collected` is one frame the
   peer's port received, parsed, with a verdict on each checksum the stack wrote.
-- **`aloe::scenario::Runner`**, **`RunnerConfig`**, **`Failure`**, **`format(failure, path)`** --
-  `Runner{harness, script, config}.run()` executes the script once and returns `std::expected<void, Failure>`.
-  `RunnerConfig` holds the `tolerance`, one millisecond unless the script's `--tolerance_usecs` says otherwise,
-  and `any_bound`, how long a `*` line waits, 120 seconds. A `Failure` is the script line and a message in the
-  script's notation; `format` writes it as `path:line: message`.
+- **`aloe::scenario::Runner`**, **`RunnerConfig`**, **`Failure`**, **`format(failure, path)`** -- `Harness` and
+  `Runner` run the brick under `tcp::NewReno`; `NoCongestionHarness` and `NoCongestionRunner` are the same
+  classes over `tcp::NoCongestionControl` (`BasicHarness` and `BasicRunner` are the templates). The scripts
+  binary registers each script once per policy its `--congestion` line allows and once per checksum mode, as
+  `<path>/<NewReno|NoCongestion>/<NoOffloads|Checksums>`. `Runner{harness, script, config}.run()` executes the
+  script once and returns `std::expected<void, Failure>`. `RunnerConfig` holds the `tolerance`, one millisecond
+  unless the script's `--tolerance_usecs` says otherwise, and `any_bound`, how long a `*` line waits, 120
+  seconds. A `Failure` is the script line and a message in the script's notation; `format` writes it as
+  `path:line: message`.
 - **`aloe::scenario::Peer`**, **`ObservedSegment`** -- the other end's sequence bookkeeping. `observe` turns a
   frame the stack sent into an `ObservedSegment` in the script's relative numbers, fixing the stack's initial
   sequence number and its port from the first segment it sends with SYN set, its SYN or SYN-ACK; `sequence` and
-  `acknowledgement` map a script's inbound relative numbers to absolute ones. `outbound_sack_base()` is the peer's initial sequence
-  number, the base of sack blocks in segments the stack sends; `inbound_sack_base()` is the stack's, or zero
-  until it is known, the base of sack blocks a script injects. `ObservedSegment` lives in `script.hpp`, beside
-  the packet line it is matched against.
+  `acknowledgement` map a script's inbound relative numbers to absolute ones. `outbound_sack_base()` is the
+  peer's initial sequence number, the base of sack blocks in segments the stack sends; `inbound_sack_base()` is
+  the stack's, or zero until it is known, the base of sack blocks a script injects. `observe` also fixes the
+  stack's timestamp base, `stack_timestamp_base()`, the value of the first segment the stack sends with the
+  option, and writes every outbound `TS val` relative to it; `inbound_timestamp_base()` is that base, or zero
+  until it is known, which an inbound line's `ecr` is relative to. `ObservedSegment` lives in `script.hpp`,
+  beside the packet line it is matched against.
 - **`aloe::scenario::match(line, seen, sack_base)`** -- nothing when the segment satisfies the line, else the
   first difference: `flags differ`, `sequence differs`, `ack differs`, `window differs`, `urgent differs` or
   `options differ`.
 - **The notation** -- `describe(line, sack_base)` and `describe(segment, sack_base)` write a packet line or a
-  segment the stack sent as a script would, `> S. 0:0(0) ack 1 win 46720 <mss 1460>`; `encode_options` and
-  `describe_options` turn an option list into header bytes and back; `format_time` writes a stamp as seconds
-  since the script's start, `+0.010000`.
+  segment the stack sent as a script would, `> S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>`;
+  `encode_options(options, sack_base, timestamp_echo_base)` and `describe_options` turn an option list into
+  header bytes and back; `format_time` writes a stamp as seconds since the script's start, `+0.010000`.
 
 ## Usage
 
@@ -77,8 +86,12 @@ The runner accepts this subset of packetdrill's syntax and fails a script at par
 the column, for anything outside it:
 
 - **Comments and blank lines.** `//` to the end of the line, inside a quoted string too.
-- **Option lines** before the first event: `--tolerance_usecs=n`. Any other name is a parse error, and so is an
-  option line after the first event, so the dialect grows deliberately.
+- **Option lines** before the first event, each at most once: `--tolerance_usecs=n`; `--tcp_rto_min_ms`,
+  `--tcp_rto_max_ms`, `--tcp_rto_initial_ms`, `--tcp_user_timeout_ms` (milliseconds), `--tcp_retries`,
+  `--tcp_data_retries`, `--tcp_retransmit_defers` (0 to 255), `--tcp_send_segments` and `--tcp_timestamps=0|1`, which
+  set the harness's `TcpConfig` for that script (`configured(config, script)` applies them); and
+  `--congestion=newreno|none|both`, the policies the script runs under (`both` when absent). Any other name is a
+  parse error, and so is an option line after the first event, so the dialect grows deliberately.
 - **Backtick lines** are a parse error: the runner has no shell, and what a corpus script sets that way is the
   harness's configuration.
 - **Event times.** `+t` after the previous event, `t` since the script's start, a window `t1~t2` or `+a~+b`, and
@@ -113,7 +126,7 @@ and line, never silently:
 | `listen(n, backlog) = 0`                                                 | `tcp.listen(port)` on a bound socket, which becomes a listener. A `ListenError` fails with its name.                                                                                         |
 | `accept(n, ..., ...) = m`                                                | Takes the oldest connection the stack raised `Accepted` for and makes it descriptor `m`. With none pending the call is unsatisfied.                                                          |
 | `connect(n, ..., ...) = 0`, or `= -1 EINPROGRESS (...)`                  | `tcp.connect` to the harness's peer at the call's stamp; `n` becomes the connection. A `ConnectError` fails with its name.                                                                   |
-| `write(n, ..., count) = count`, `send(n, ..., count, 0) = count`         | `prepare` and `commit` until `count` bytes are committed, each segment as large as `prepare` allows, filled with `frames::pattern`. Fewer fails with the count accepted.                     |
+| `write(n, ..., count) = m`, `send(n, ..., count, 0) = m`                 | `prepare` and `commit` while `prepare` allows, up to `count` bytes filled with `frames::pattern`. Passes when the bytes accepted equal `m`, which may be fewer than `count`.                 |
 | `read(n, ..., count) = m`, `recv(n, ..., count, 0) = m`                  | `m > 0` needs `min(unread, count) == m` and consumes `m` bytes; `m == 0` needs the peer's FIN with nothing unread; `-1` needs its errno word's condition. Nothing unread yet is unsatisfied. |
 | `close(n) = 0`                                                           | On a listener, `unlisten`. On a connection, `close()`, a FIN after what was committed; the slot is released at the connection's terminal event.                                              |
 | `shutdown(n, SHUT_WR) = 0`                                               | `close()` on the connection, which stays readable.                                                                                                                                           |
@@ -130,12 +143,19 @@ The peer's side follows from the harness. Inbound lines become frames from the p
 the stack's `stack_port`, or to the stack's ephemeral port once its SYN has been seen, with a window of 65535
 when the line writes none and a payload of `frames::pattern`. The peer's initial sequence number is not zero, so
 a stack that assumed zero would fail. Inbound sequence numbers are relative to it, and inbound acknowledgements
-to the stack's initial sequence number, read from its SYN or SYN-ACK. Outbound numbers are checked the other
-way round. Before the stack's number is known, an inbound acknowledgement and an outbound sequence number are
-taken as written, which is why a script that sees no handshake writes absolute numbers. An inbound line must write
-its options rather than `<...>`, as whole 32-bit words (`pad with nop`), and cannot carry `urg`, which the
-frame builder has no field for. ARP never appears in a script: both MACs are learned before it starts, with
-lifetimes of an hour, beyond the `*` bound and the longest retry schedule.
+to the stack's initial sequence number, read from its SYN or SYN-ACK. Outbound numbers are checked the other way
+round. Before the stack's number is known, an inbound acknowledgement and an outbound sequence number are taken
+as written, which is why a script that sees no handshake writes absolute numbers. An inbound line must write its
+options rather than `<...>`, as whole 32-bit words (`pad with nop`), and cannot carry `urg`, which the frame
+builder has no field for. ARP never appears in a script: both MACs are learned before it starts, with lifetimes
+of an hour, beyond the `*` bound and the longest retry schedule.
+
+Timestamps are relative too, to the value of the first segment the stack sent with the option, its SYN or
+SYN-ACK. An outbound `TS val` is matched less that base, so the SYN shows `TS val 0` and a segment sent 200 ms
+later `TS val 200`, exact on the virtual clock; an outbound `ecr` is matched as written, the value of the inbound
+line it echoes. An inbound `TS val` is injected as written, and an inbound `ecr` is written relative to the same
+base, zero until the stack has sent one, which the runner adds back, so a script echoes the stack's `TS val` as
+its outbound lines show it.
 
 ## Time and matching
 
@@ -176,7 +196,7 @@ A failure names the line, what was expected and what the stack sent, both in the
 in seconds since the start and the window as written, before the tolerance:
 
 ```
-tests/scenarios/tcp/close/remote-fin-then-local-close.pkt:13: expected "> F. 1:1(0) ack 2 win 46720" at +0.000000; the stack sent "> . 1:1(0) ack 2 win 46720" at +0.000000: flags differ
+tests/scenarios/tcp/close/remote-fin-then-local-close.pkt:13: expected "> F. 1:1(0) ack 2 win 46720 <nop,nop,TS val 0 ecr 100>" at +0.000000; the stack sent "> . 1:1(0) ack 2 win 46720 <nop,nop,TS val 0 ecr 100>" at +0.000000: flags differ
 ```
 
 A mismatch says so first: `early:`, `late:`, `missing:`, `unexpected:` or `bad checksum:`. A call failure (`unbound call ...`, `read: not satisfied: ...`) names the call instead.
@@ -194,60 +214,100 @@ What the runner does not model yet, which a script author needs to know:
 - `close` in SynSent does nothing, since the brick's `close()` acts in Established and CloseWait only; closing a
   listener leaves the connections it had accepted and `accept` had not taken where they are.
 - `close` on an established connection sends a FIN even with unread data. The reset Linux sends in that case
-  (RFC 2525, 2.17) is a question for the lifecycle step of phase 2, and no script in the first set closes with
-  unread data.
+  (RFC 2525, 2.17) is a question for the lifecycle step of phase 2, and no script closes with unread data.
 - The runner does not advance the clock after the script's last line, so a script that asserts the stack stays
   silent for a while needs a later line to take the clock there.
 - `send` and `recv` flags must be `0`, `shutdown` takes only `SHUT_WR`, and `setsockopt` binds only
   `SO_REUSEADDR` and `TCP_NODELAY`.
 - An inbound option list must fit TCP's 40 bytes; the runner does not check that yet, and the frame builder's
   assertion is what stops a longer one.
+- A script drives one connection: the peer takes the stack's initial sequence number, its port and its timestamp
+  base from the first SYN or SYN-ACK the stack sends.
+- A `write` cannot wait. The brick has no send buffer, so a `write` accepts what the windows and the send cap
+  allow at its stamp, the script says how much with its result, and it writes the rest after the ACK it injects;
+  a `write` that waited for a later line's ACK could never finish in a runner that runs every line in order.
+- The busy rule's deferral and copy cannot be scripted: they need a port that holds its loans and a
+  `return_loans` between lines. They are unit tests over a fabric port with `LoanReturn::Held`.
 
 ## Writing and running a script
 
 A script lives under `tests/scenarios/tcp/<area>/<name>.pkt`. It starts with a comment saying what it asserts
 and, where Linux would behave differently today, how. It writes `win` on outbound lines where the value is known,
 since a field a line leaves out is not checked. Nothing else registers it: the scripts binary finds every `.pkt`
-under `tests/scenarios/` at run time and registers two tests per script, one per checksum mode of the fabric,
-named `Scenario.tcp/<area>/<name>/NoOffloads` and `.../Checksums`. CTest lists one entry, the binary, as it does
-for every test binary; a gtest filter selects an area or a script:
+under `tests/scenarios/` at run time and registers one test per policy its `--congestion` line allows and per
+checksum mode of the fabric, named `Scenario.tcp/<area>/<name>/<NewReno|NoCongestion>/<NoOffloads|Checksums>`:
+four for a script that names no policy, two for one that names one. CTest lists one entry, the binary, as it does
+for every test binary; a gtest filter selects an area, a script or a policy:
 
 ```bash
 cmake --build --preset debug --target Aloe.Tests.Unit.Scenarios
 ./build/debug/tests/unit_tests/scenarios/Aloe.Tests.Unit.Scenarios --gtest_filter='Scenario.tcp/close/*'
-./build/debug/tests/unit_tests/scenarios/Aloe.Tests.Unit.Scenarios --gtest_filter='Scenario.tcp/close/fin?retransmitted*'
+./build/debug/tests/unit_tests/scenarios/Aloe.Tests.Unit.Scenarios --gtest_filter='Scenario.tcp/rto/fin?retransmitted*'
+./build/debug/tests/unit_tests/scenarios/Aloe.Tests.Unit.Scenarios --gtest_filter='Scenario.*/NoCongestion/*'
 ```
 
 In a filter, `-` starts the patterns to exclude, so a name with a dash in it is matched with `?` in its place. A
 failing script prints `path:line: message` with both segments in the script's notation, as above.
 
-## The first set of scripts
+## The scripts
 
-Each script asserts the TCP of today: `<mss 1460>` on SYNs and no options elsewhere, the retry schedule of 1, 3,
-7, 15 and 31 seconds after the first send with `TimedOut` at 63, and no delayed ACK.
+Each script asserts the TCP of today: `<mss 1460,nop,nop,TS val 0 ecr ...>` on SYNs and SYN-ACKs and
+`<nop,nop,TS ...>` on every later segment of a connection that negotiated timestamps; the SYN's schedule of 1, 3,
+7, 15 and 31 seconds after the first send with `TimedOut` at 63; data and the FIN resent on the measured RTO,
+from 200 ms after a handshake with no round trip; NewReno's windows where a script names it; and no delayed ACK.
+A script that names no policy runs under both. Its opening comment says what it pins, with the arithmetic
+behind every number.
 
-| Script                                        | What it pins                                                                                                                |
-|-----------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
-| `handshake/passive-open`                      | Listen, SYN in, SYN-ACK out with `<mss 1460>` and the whole byte window, ACK in, `accept`; then the listener closes.        |
-| `handshake/active-open`                       | `connect` returns `EINPROGRESS`, SYN out, SYN-ACK in, ACK out at the flush.                                                 |
-| `handshake/syn-retransmitted-on-schedule`     | No answer: the SYN again 1, 3, 7, 15 and 31 seconds after the first, and `read` reports `ETIMEDOUT` at 63.                  |
-| `handshake/syn-ack-retransmitted-on-schedule` | The passive side's schedule: the SYN-ACK again at 1, 3 and 7 seconds, then the late ACK completes the handshake.            |
-| `handshake/syn-to-closed-port-is-reset`       | No listener: `R.` with sequence 0, acknowledging the SYN.                                                                   |
-| `handshake/stray-ack-in-listen-is-reset`      | An ACK to a listening port with no connection: `R` at its acknowledgement number.                                           |
-| `data/inbound-data-is-acked-at-flush`         | Data in, a pure ACK out at `+0` with the window less what is unread; `read` reopens it and the update leaves at the flush.  |
-| `data/write-segments-by-peer-mss`             | The peer's SYN carried `mss 1000`: a `write` of 2500 leaves as three `P.` of 1000, 1000 and 500, acknowledged one by one.   |
-| `data/duplicate-is-acked-at-once`             | A segment that arrives twice is answered at once with the same acknowledgement, and `read` sees its bytes once.             |
-| `data/above-a-gap-is-acked-not-stored`        | A segment above a gap is answered at once with the acknowledgement at the gap and not kept; `read` sees what came in order. |
-| `close/local-close-then-remote-fin`           | `close`, FIN out, ACK in, the peer's FIN in, ACK out at once; no TIME_WAIT.                                                 |
-| `close/remote-fin-then-local-close`           | The peer's FIN in, ACK out at `+0`, `read` returns 0, `close`, FIN out, ACK in; a later segment is reset.                   |
-| `close/fin-retransmitted-on-schedule`         | The FIN unacknowledged: again at 1 and 3 seconds, then the peer's ACK.                                                      |
-| `reset/rst-in-established`                    | `R.` in: `read` fails with `ECONNRESET`, the slot is released, and a later segment from the peer is answered with `R`.      |
-| `reset/rst-to-syn-is-refused`                 | `connect`, SYN out, `R.` in: `read` reports `ECONNREFUSED`.                                                                 |
+| Script                                              | What it pins                                                                                                                                  |
+|-----------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
+| `handshake/passive-open`                            | Listen, SYN in, SYN-ACK out with `<mss 1460,nop,nop,TS val 0 ecr 100>` and the whole byte window, ACK in, `accept`; then the listener closes. |
+| `handshake/active-open`                             | `connect` returns `EINPROGRESS`, SYN out with the MSS and the timestamps, SYN-ACK in, ACK out at the flush echoing the peer's value.          |
+| `handshake/syn-retransmitted-on-schedule`           | No answer: the SYN again 1, 3, 7, 15 and 31 seconds after the first, each with the clock's value then, and `read` reports `ETIMEDOUT` at 63.  |
+| `handshake/syn-ack-retransmitted-on-schedule`       | The passive side's backoff: the SYN-ACK again 1, 2 and 4 seconds apart, then the late ACK, echoing the last, completes the handshake.         |
+| `handshake/syn-to-closed-port-is-reset`             | No listener: `R.` with sequence 0, acknowledging the SYN.                                                                                     |
+| `handshake/stray-ack-in-listen-is-reset`            | An ACK to a listening port with no connection: `R` at its acknowledgement number.                                                             |
+| `data/inbound-data-is-acked-at-flush`               | Data in, a pure ACK out at `+0` with the window less what is unread; `read` reopens it and the update leaves at the flush.                    |
+| `data/write-segments-by-peer-mss`                   | The peer's SYN carried `mss 1000`: a `write` of 2500 leaves as three `P.` of 988, 988 and 524, the MSS less the timestamp option.             |
+| `data/duplicate-is-acked-at-once`                   | A segment that arrives twice is answered at once with the same acknowledgement, and `read` sees its bytes once.                               |
+| `data/above-a-gap-is-acked-not-stored`              | A segment above a gap is answered at once with the acknowledgement at the gap and not kept; `read` sees what came in order.                   |
+| `close/local-close-then-remote-fin`                 | `close`, FIN out, ACK in, the peer's FIN in, ACK out at once; no TIME_WAIT.                                                                   |
+| `close/remote-fin-then-local-close`                 | The peer's FIN in, ACK out at `+0`, `read` returns 0, `close`, FIN out, ACK in; a later segment is reset.                                     |
+| `close/close-at-zero-window-holds-fin`              | `close` at a zero window: no FIN, a probe at +0.2, the answer opens the window and the FIN leaves at once; the peer's ACK and FIN end it.     |
+| `close/fin-waits-behind-a-full-window`              | `close` with data filling the window: the FIN waits, unsent, until the ACK of the data, 100 ms later, makes room, then leaves at once.        |
+| `reset/rst-in-established`                          | `R.` in, without timestamps: `read` fails with `ECONNRESET`, the slot is released, and a later segment is answered with `R`.                  |
+| `reset/rst-to-syn-is-refused`                       | `connect`, SYN out, `R.` in: `read` reports `ECONNREFUSED`.                                                                                   |
+| `rto/data-retransmitted-after-rto`                  | One segment never acknowledged: resent at the RTO, 200 ms after a zero round trip, then at twice that; the ACK of the resend ends it.         |
+| `rto/backoff-ends-in-timeout`                       | `--tcp_data_retries=3`: resends at +0.2, +0.4 and +0.8, and the fourth expiry, 1.6 s later, ends it; `read` reports `ETIMEDOUT`.              |
+| `rto/karn-skips-a-retransmitted-sample`             | `--tcp_timestamps=0`: the ACK of a resend gives no sample, so the next resend waits the backed-off 400 ms; a new ACK resets the RTO.          |
+| `rto/echo-sample-ends-the-backoff`                  | The Karn script with timestamps: the ACK of a resend echoes it and gives a sample, so the backoff ends and the next resend comes at +0.2.     |
+| `rto/partial-ack-resends-the-tail`                  | A partial ACK, then the timeout: the resend carries only the unacknowledged bytes.                                                            |
+| `rto/fin-retransmitted-on-rto`                      | The FIN unacknowledged: again at +0.2 and +0.4 on the measured RTO, then the peer's ACK leaves the connection in FIN-WAIT-2, silent.          |
+| `rto/user-timeout-aborts-at-the-deadline`           | `--tcp_user_timeout_ms=500`: a resend at +0.2, the next expiry clamped from +0.6 to +0.5, where the connection ends without a resend.         |
+| `timestamp/timestamps-off-without-the-option`       | A SYN without the option: the SYN-ACK offers the MSS alone, no segment carries the option, and a segment holds the whole MSS.                 |
+| `timestamp/timestamps-off-by-config`                | `--tcp_timestamps=0`: a SYN that offers timestamps is answered with the MSS alone, and no segment carries the option.                         |
+| `timestamp/paws-drops-an-old-timestamp`             | A segment with an older value is acknowledged at once and its bytes are never read; the same bytes with a fresh value are taken.              |
+| `timestamp/segment-without-timestamp-is-accepted`   | A segment without the option on a timestamped connection is taken, acknowledged and read, as Linux takes it.                                  |
+| `window/zero-window-is-probed`                      | The window closes with nothing in flight: probes, pure ACKs at `snd_una - 1`, at +0.2, then +0.4 and +0.8 after the one before.               |
+| `window/window-opens-ends-probing`                  | The answer to the first probe opens the window: no probe for two seconds, and the next `write` leaves at once.                                |
+| `window/probes-unanswered-time-out`                 | `--tcp_data_retries=3`: three probes without an answer, and the fourth expiry ends the connection; `read` reports `ETIMEDOUT`.                |
+| `window/send-cap-blocks-until-acked`                | `--tcp_send_segments=2`: `write(4, ..., 3000) = 1976`, two segments; their ACK frees both entries and the next `write` leaves.                |
+| `recovery/fast-retransmit-on-three-dupacks`         | `--congestion=newreno`: ten segments, the first lost; three duplicate ACKs resend it at once, before any timer.                               |
+| `recovery/limited-transmit-sends-two`               | `--congestion=newreno`: the first and second duplicates each let one more segment out beyond the window; the third resends the head.          |
+| `recovery/newreno-partial-ack`                      | Five segments, the first two lost: the ACK of the resent head is short of `recover`, so the next head goes at once; both policies.            |
+| `recovery/newreno-full-ack-exits`                   | `--congestion=newreno`: the full ACK sets the window to `min(ssthresh, max(flight, mss) + mss)`, two segments; slow start resumes.            |
+| `recovery/no-second-fast-retransmit-after-rto`      | After a timeout, three duplicates that do not cover more than `recover` resend nothing; the loss episode resends the next head.               |
+| `congestion/initial-window-is-ten`                  | `--congestion=newreno`: `write(4, ..., 20000) = 9880`, ten segments of 988; after the first ACK the next `write` accepts two.                 |
+| `congestion/slow-start-doubles-per-round`           | `--congestion=newreno`: ten segments acknowledged one by one double the window, and the next `write` accepts twenty.                          |
+| `congestion/congestion-avoidance-adds-one`          | `--congestion=newreno`: past the threshold, a window of acknowledged bytes adds one segment: two, then three.                                 |
+| `congestion/timeout-restarts-at-one`                | `--congestion=newreno`: after a timeout one segment, then slow start to the threshold while each ACK resends the next lost head.              |
+| `congestion/idle-restarts-the-window`               | `--congestion=newreno`: a `write` 300 ms after the last ACK, past the RTO with nothing in flight, restarts at ten segments.                   |
+| `congestion/no-congestion-control-sends-the-window` | `--congestion=none`, `--tcp_send_segments=64`: a `write` of forty segments leaves at once.                                                    |
 
-Where Linux differs today, the script's comment says how: Linux delays the ACK of in-order data and of a FIN by up
-to 40 ms, offers `sackOK`, `wscale` and `TS` on its SYNs, holds a segment above a gap and answers it with a SACK
-block, and retries a SYN six times. The later steps of phase 2 change these scripts as SACK, window scaling,
-timestamps and delayed ACKs land; the grammar already carries every option they need.
+Where Linux differs today, the script's comment says how: Linux delays the ACK of in-order data and of a FIN by
+up to 40 ms, offers `sackOK` and `wscale` beside the MSS and timestamps on its SYNs, holds a segment above a gap
+and answers it with a SACK block, retries a SYN six times, runs PRR in fast recovery, and probes a zero window
+only while it holds unsent data. The later steps of phase 2 change these scripts as SACK, window scaling and
+delayed ACKs land; the grammar already carries every option they need.
 
 ## Design notes
 
@@ -270,3 +330,14 @@ taken as close enough.
 **Strict matching.** An outbound line checks every field it writes and the checksums it does not, an unexpected
 segment fails the script wherever it lands, and every script runs in both checksum modes. A script cannot pass
 by asserting nothing.
+
+**The policy is an axis, as the checksum mode is.** A script that asserts nothing about the congestion window
+runs under `NewReno` and `NoCongestionControl` alike, so what the stack keeps under every policy, the RTO,
+timestamps, probes, fast retransmit and the `recover` guard, is pinned under both; a script that asserts a
+window names its policy. The harness and the runner are templates over the policy, so both runs drive the same
+code but the policy's.
+
+**A partial write is the brick's answer.** Packetdrill's scripts lean on the kernel's send buffer, which takes a
+whole `write` and sends it as the window opens. The brick has none: `prepare` offers what the windows and the
+send cap allow and nothing beyond, and `Writable` says when there is more, so a script that writes again after
+the ACK shows what a caller of `prepare` and `commit` sees.

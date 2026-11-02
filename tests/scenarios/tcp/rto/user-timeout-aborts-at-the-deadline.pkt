@@ -1,0 +1,19 @@
+// A user timeout of 500 ms: the segment goes at +0, is resent at +0.2, and the next RTO of 400 ms would fire at
+// +0.6, so the deadline clamps it to +0.5, where the connection ends without another resend. Linux counts its user
+// timeout from the first retransmission (retrans_stamp, tcp_write_timeout), here +0.2: it resends at +0.2 and +0.6,
+// clamps the next expiry to +0.7 (tcp_clamp_rto_to_user_timeout) and ends the connection there. With the timeout set
+// it also ignores tcp_retries2, where Aloe ends at whichever of data_retries and the timeout comes first.
+--tcp_user_timeout_ms=500
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 10) = 10
++0 > P. 1:11(10) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0.2 > P. 1:11(10) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0.3~+0.31 read(4, ..., 1) = -1 ETIMEDOUT

@@ -50,12 +50,12 @@ namespace aloe::runtime {
      * 0 learns what its siblings asked for. A program that wants another composition writes its own
      * IsStack over the same bricks.
      */
-    template <device::IsDevice Device>
+    template <device::IsDevice Device, typename CongestionControl = tcp::NewReno>
     class TcpStack {
     public:
         using Packet      = typename Device::Packet;
         using Ip          = net::Ipv4<Device>;
-        using Tcp         = tcp::Stack<Ip>;
+        using Tcp         = tcp::Stack<Ip, CongestionControl>;
         using StreamsType = Streams<Tcp>;
         using StreamType  = Stream<Tcp>;
 

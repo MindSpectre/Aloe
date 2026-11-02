@@ -162,3 +162,31 @@ TEST(TcpOptions, WritesMss) {
     ASSERT_TRUE(back.has_value());
     EXPECT_EQ(back->mss, 1460U);
 }
+
+TEST(TcpOptions, ParsesTimestampsAndRejectsABadLength) {
+    std::array<std::byte, 12> block{};
+    aloe::wire::TcpOptions::write_timestamps(block, 0x01020304U, 0x0a0b0c0dU);
+    EXPECT_EQ(block[0], std::byte{1});
+    EXPECT_EQ(block[1], std::byte{1});
+    EXPECT_EQ(block[2], std::byte{8});
+    EXPECT_EQ(block[3], std::byte{10});
+    const auto parsed = aloe::wire::TcpOptions::parse(block);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->timestamp_value, 0x01020304U);
+    EXPECT_EQ(parsed->timestamp_echo, 0x0a0b0c0dU);
+    EXPECT_FALSE(parsed->mss.has_value());
+    block[3] = std::byte{8};
+    EXPECT_FALSE(aloe::wire::TcpOptions::parse(block).has_value()) << "a timestamp option of length 8 is malformed";
+}
+
+TEST(TcpOptions, RecordsWhereTheTimestampOptionStarts) {
+    const auto linux = TcpOptions::parse(bytes({2, 4, 0x05, 0xb4, 4, 2, 8, 10, 1, 2, 3, 4, 0, 0, 0, 0, 1, 3, 3, 7, 0}));
+    ASSERT_TRUE(linux.has_value());
+    EXPECT_EQ(linux->timestamp_at, 6U) << "kind 8 after the MSS and SACK-permitted options";
+    const auto aligned = TcpOptions::parse(bytes({1, 1, 8, 10, 0, 0, 0, 9, 0, 0, 0, 7}));
+    ASSERT_TRUE(aligned.has_value());
+    EXPECT_EQ(aligned->timestamp_at, 2U) << "behind the two nops of the aligned block";
+    const auto none = TcpOptions::parse(bytes({2, 4, 0x05, 0xb4}));
+    ASSERT_TRUE(none.has_value());
+    EXPECT_FALSE(none->timestamp_at.has_value());
+}

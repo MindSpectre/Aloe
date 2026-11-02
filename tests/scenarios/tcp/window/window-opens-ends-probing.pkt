@@ -1,0 +1,18 @@
+// The peer's window closes, the first probe goes after one RTO, and the peer's answer opens the window: probing
+// ends, two quiet seconds pass without a probe, and the next write leaves at once. Linux probes only while it holds
+// unsent data, so there the same exchange needs a write waiting on the closed window; see the TCP page.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < . 1:1(0) ack 1 win 0 <nop,nop,TS val 100 ecr 0>
++0.2 > . 0:0(0) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 200>
++2 write(4, ..., 10) = 10
++0 > P. 1:11(10) ack 1 win 46720 <nop,nop,TS val 2200 ecr 100>
++0 < . 1:1(0) ack 11 win 65535 <nop,nop,TS val 100 ecr 2200>

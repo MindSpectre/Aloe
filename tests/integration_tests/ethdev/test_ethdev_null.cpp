@@ -11,8 +11,6 @@
 #include <gtest/gtest.h>
 #include <rte_ethdev.h>
 
-static_assert(aloe::device::IsDevice<aloe::ethdev::Port>);
-
 TEST(EthdevNull, ReportsCapabilitiesAndRoundRobinSteering) {
     const aloe::ethdev::Port port{
         {.name = aloe::testing::probe_vdev("net_null"), .queues = 4, .pool_size = 256}

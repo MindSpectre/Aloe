@@ -17,20 +17,40 @@ target_link_libraries(${TCP}.Table PUBLIC
 ##############################################################################
 
 ##############################################################################
-# The brick: configuration, counters, retained-packet storage and the stack over IP
+# The brick: its configuration and counters, the congestion policies, the shard's node pools, one connection's
+# parts and the stack that drives them
 ##############################################################################
 add_library(${TCP}.Stack INTERFACE
-        state/tcp_config.hpp
-        state/tcp_counters.hpp
-        buffer/tcp_node_pool.hpp
-        buffer/read_view.hpp
+        config/tcp_config.hpp
+        config/tcp_counters.hpp
+        congestion/congestion_control.hpp
+        congestion/newreno.hpp
+        congestion/no_congestion_control.hpp
+        pool/node_pool.hpp
+        pool/held_segment_pool.hpp
+        pool/sent_segment_pool.hpp
+        connection/ack_policy.hpp
+        connection/frame_template.hpp
+        connection/loss_recovery.hpp
+        connection/read_view.hpp
+        connection/receive_queue.hpp
+        connection/retransmission_queue.hpp
+        connection/rtt_estimator.hpp
+        connection/send_sequence.hpp
+        connection/tcp_timestamps.hpp
+        connection/zero_window_probe.hpp
+        connection/tcp_connection.hpp
+        stack/connection_table.hpp
+        stack/isn_generator.hpp
+        stack/segment_writer.hpp
         stack/tcp_fwd.hpp
-        stack/tcp_connection.hpp
         stack/tcp_stack.hpp
 )
 target_include_directories(${TCP}.Stack INTERFACE
-        state/
-        buffer/
+        config/
+        congestion/
+        pool/
+        connection/
         stack/
 )
 target_link_libraries(${TCP}.Stack INTERFACE

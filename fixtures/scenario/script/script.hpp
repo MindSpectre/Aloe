@@ -102,9 +102,28 @@ namespace aloe::scenario {
         std::variant<PacketLine, CallLine> action{};
     };
 
+    /// Which congestion-control models a script runs under; `Both` when the script names none.
+    enum class CongestionChoice : std::uint8_t { NewReno, None, Both };
+
+    /// `TcpConfig` fields a script overrides through `--tcp_*` option lines; absent means the harness's value.
+    struct ScriptTcpOptions {
+        std::optional<core::Duration> rto_min{};
+        std::optional<core::Duration> rto_max{};
+        std::optional<core::Duration> rto_initial{};
+        std::optional<core::Duration> user_timeout{};
+        std::optional<std::uint8_t> retries{};
+        std::optional<std::uint8_t> data_retries{};
+        std::optional<std::uint8_t> retransmit_defers{};
+        std::optional<std::size_t> send_segments{};
+        std::optional<bool> timestamps{};
+        friend bool operator==(const ScriptTcpOptions&, const ScriptTcpOptions&) = default;
+    };
+
     /// A parsed script.
     struct Script {
         std::optional<core::Duration> tolerance{};
+        ScriptTcpOptions tcp{};
+        CongestionChoice congestion = CongestionChoice::Both;
         std::vector<Event> events{};
     };
 

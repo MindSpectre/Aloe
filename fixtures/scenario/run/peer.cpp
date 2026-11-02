@@ -2,8 +2,10 @@
 
 #include <aloe/frames>
 #include <aloe/wire>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 
 #include <script.hpp>
 
@@ -52,7 +54,22 @@ namespace aloe::scenario {
         seen.urgent        = header.urgent_pointer;
         const auto options = frames::tcp_options_of(frame);
         seen.options.assign(options.begin(), options.end());
+        if (const auto parsed = wire::TcpOptions::parse(seen.options); parsed && parsed->timestamp_value) {
+            if (!timestamp_base_) {
+                timestamp_base_ = *parsed->timestamp_value;
+            }
+            wire::store_be32(std::span{seen.options}.subspan(*parsed->timestamp_at + 2, 4),
+                             *parsed->timestamp_value - *timestamp_base_);
+        }
         return seen;
+    }
+
+    std::optional<std::uint32_t> Peer::stack_timestamp_base() const noexcept {
+        return timestamp_base_;
+    }
+
+    std::uint32_t Peer::inbound_timestamp_base() const noexcept {
+        return timestamp_base_.value_or(0U);
     }
 
     wire::TcpSequence Peer::sequence(const std::uint32_t relative) const noexcept {

@@ -62,6 +62,15 @@ namespace aloe::net {
         void learn(wire::Ipv4Address address, wire::MacAddress mac, core::TimePoint now) noexcept;
         /// Any entry for the address, incomplete or expired included.
         [[nodiscard]] bool contains(wire::Ipv4Address address) const noexcept;
+        /// The confirmation stamp of a reachable entry, expired or not; nothing for an absent or incomplete one.
+        [[nodiscard]] std::optional<core::TimePoint> confirmed(wire::Ipv4Address address) const noexcept;
+
+        /// Starts at zero; moves by one whenever an entry's MAC changes or goes: a `learn` of an address whose entry
+        /// was not reachable or held another MAC, a `lookup` that finds a reachable entry expired, and an insert that
+        /// evicts a reachable entry, expired or not.
+        [[nodiscard]] std::uint64_t generation() const noexcept {
+            return generation_;
+        }
 
         [[nodiscard]] std::size_t size() const noexcept {
             return occupied_;
@@ -99,7 +108,8 @@ namespace aloe::net {
         ArpCacheConfig config_;
         std::vector<Entry> slots_;
         unsigned shift_;  ///< 32 minus log2(capacity): the high bits of the hash product pick the home slot.
-        std::size_t occupied_ = 0;
+        std::size_t occupied_     = 0;
+        std::uint64_t generation_ = 0;
     };
 
 }  // namespace aloe::net

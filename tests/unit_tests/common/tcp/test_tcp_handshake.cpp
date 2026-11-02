@@ -98,7 +98,7 @@ TEST_P(TcpHandshake, ActiveOpen) {
     EXPECT_GE(syn.tcp->source_port, 32768U);
     EXPECT_LE(syn.tcp->source_port, 60999U);
     EXPECT_EQ(c.local().port, syn.tcp->source_port);
-    EXPECT_EQ(syn.tcp->data_offset, 24U);
+    EXPECT_EQ(syn.tcp->data_offset, 36U) << "mss, nop, nop, TS: the SYN offers timestamps";
     EXPECT_EQ(mss_option(syn), aloe::testing::tcp_fabric_mss);
     EXPECT_EQ(syn.tcp->window, aloe::testing::tcp_fabric_budget);
     EXPECT_EQ(syn.tcp->acknowledgement, TcpSequence{});
@@ -122,7 +122,7 @@ TEST_P(TcpHandshake, ActiveOpen) {
     EXPECT_EQ(acks[0].tcp->sequence, iss + 1U);
     EXPECT_EQ(acks[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 1});
     EXPECT_EQ(acks[0].tcp->window, aloe::testing::tcp_fabric_budget);
-    EXPECT_EQ(acks[0].tcp->data_offset, 20U);
+    EXPECT_EQ(acks[0].tcp->data_offset, 20U) << "the peer's SYN-ACK carried no timestamps: off";
     EXPECT_EQ(tcp_->counters().connections_opened, 1U);
     EXPECT_EQ(tcp_->counters().pure_acks_sent, 1U);
     EXPECT_FALSE(poll().has_value());
@@ -442,6 +442,12 @@ TEST_P(TcpHandshake, ListenErrors) {
     EXPECT_TRUE(tcp_->listen(8).has_value());
 }
 
+TEST_P(TcpHandshake, APassiveOpenStartsAtTheInitialWindow) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->congestion_window(), 14600U) << "RFC 6928 at MSS 1460";
+}
+
 TEST_P(TcpHandshake, ConfigValidation) {
     using Config = aloe::tcp::TcpConfig;
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.connections = 0}}), std::invalid_argument);
@@ -454,18 +460,36 @@ TEST_P(TcpHandshake, ConfigValidation) {
     }),
                  std::invalid_argument);
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.ephemeral_first = 0}}), std::invalid_argument);
-    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.retry_initial = std::chrono::seconds{0}}}),
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.rto_initial = std::chrono::seconds{0}}}),
                  std::invalid_argument);
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.retries = 0}}), std::invalid_argument);
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.retries = 40}}), std::invalid_argument)
         << "the doubled delay would overflow core::Duration";
-    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.retry_initial = std::chrono::hours{24 * 365 * 100}}}),
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.rto_initial = std::chrono::hours{24 * 365 * 100}}}),
                  std::invalid_argument)
         << "five doublings of a century overflow core::Duration";
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.unresolved_retry = std::chrono::milliseconds{-1}}}),
                  std::invalid_argument);
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.unresolved_polls = 0}}), std::invalid_argument);
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.connections = std::size_t{1} << 31U}}), std::invalid_argument);
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.send_segments = 0}}), std::invalid_argument);
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.send_pool = 0}}), std::invalid_argument);
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.rto_min = std::chrono::microseconds{500}}}),
+                 std::invalid_argument)
+        << "below the wheel's 1 ms resolution";
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.rto_initial = std::chrono::milliseconds{100}}}),
+                 std::invalid_argument)
+        << "rto_min must not exceed rto_initial";
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.rto_max = std::chrono::milliseconds{500}}}),
+                 std::invalid_argument)
+        << "rto_initial must not exceed rto_max";
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.data_retries = 0}}), std::invalid_argument);
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, Config{.user_timeout = std::chrono::seconds{-1}}}),
+                 std::invalid_argument);
+    EXPECT_NO_THROW(
+        (std::ignore = Tcp{
+             ip_, wheel_, Config{.rto_min = std::chrono::milliseconds{1}, .user_timeout = std::chrono::seconds{2}}
+    }));
     const Tcp capped{ip_, wheel_, Config{.receive_segments = 1000}};
     EXPECT_EQ(capped.byte_budget(), 65535U) << "the byte budget never passes the wire window";
     EXPECT_EQ(capped.mss(), aloe::testing::tcp_fabric_mss);

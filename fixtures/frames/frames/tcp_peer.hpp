@@ -90,6 +90,12 @@ namespace aloe::frames {
             if (!with_mss) {
                 spec.mss = std::nullopt;
             }
+            if (timestamps_) {
+                const std::vector<std::byte> stamp = timestamps_option(*timestamps_, ts_seen_.value_or(0));
+                spec.options =
+                    spec.mss ? joined(std::vector<std::vector<std::byte>>{mss_option(*spec.mss), stamp}) : stamp;
+                spec.mss = std::nullopt;
+            }
             return tcp_frame(spec, payload);
         }
 
@@ -102,6 +108,10 @@ namespace aloe::frames {
             }
             const wire::TcpHeader& tcp = *frame.tcp;
             auto length                = static_cast<std::uint32_t>(frame.l4.size() - tcp.data_offset);
+            const auto options         = wire::TcpOptions::parse(tcp_options_of(frame));
+            if (options && options->timestamp_value) {
+                ts_seen_ = options->timestamp_value;
+            }
             if (tcp.flags.has(wire::TcpFlag::Syn)) {
                 ++length;
                 if (!tcp.flags.has(
@@ -109,8 +119,7 @@ namespace aloe::frames {
                     spec_.source_port      = tcp.destination_port;
                     spec_.destination_port = tcp.source_port;
                 }
-                if (const auto options = wire::TcpOptions::parse(std::span<const std::byte>{frame.l4}.subspan(
-                        wire::TcpHeader::size, tcp.data_offset - wire::TcpHeader::size))) {
+                if (options) {
                     stack_mss_ = options->mss;
                 }
                 synchronised_ = true;
@@ -153,6 +162,22 @@ namespace aloe::frames {
             return spec_;
         }
 
+        /// While engaged, every segment the peer builds carries a timestamp option with `value` and the last value
+        /// seen echoed (0 before any); a SYN or SYN-ACK keeps its MSS in front of it. `std::nullopt` disengages.
+        void set_timestamps(const std::optional<std::uint32_t> value) noexcept {
+            timestamps_ = value;
+        }
+
+        /// The window every segment the peer builds from now on offers; zero closes it, for probing.
+        void set_window(const std::uint16_t window) noexcept {
+            spec_.window = window;
+        }
+
+        /// The timestamp value of the last frame `see` was given that carried the option.
+        [[nodiscard]] std::optional<std::uint32_t> ts_seen() const noexcept {
+            return ts_seen_;
+        }
+
         /// Rewinds the peer's own sequence by `count` bytes, for scripting a retransmission.
         void rewind(const std::uint32_t count) noexcept {
             snd_nxt_ = wire::TcpSequence{snd_nxt_.value - count};
@@ -166,6 +191,8 @@ namespace aloe::frames {
         wire::TcpSequence snd_una_{};
         std::uint16_t stack_window_ = 0;
         std::optional<std::uint16_t> stack_mss_;
+        std::optional<std::uint32_t> timestamps_{};
+        std::optional<std::uint32_t> ts_seen_{};
         bool synchronised_ = false;
     };
 

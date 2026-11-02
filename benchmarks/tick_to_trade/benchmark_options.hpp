@@ -23,7 +23,7 @@ namespace aloe::benchmarks {
     struct Options {
         std::vector<Round> rounds{Round::Tick, Round::Gateway};
         std::vector<Level> levels{Level::Floor, Level::Bricks, Level::Runtime};
-        std::vector<std::size_t> payloads{64, 256, 1024, 1448, 1460};
+        std::vector<std::size_t> payloads{64, 256, 1024, 1448};
         std::size_t measured               = 100000;
         std::size_t warmup                 = 10000;
         core::Duration gap                 = core::Duration::zero();

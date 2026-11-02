@@ -172,3 +172,47 @@ TEST(ArpCache, ABadConfigThrows) {
         << "reachable must be below expire";
     EXPECT_NO_THROW((ArpCache{ArpCacheConfig{}}));
 }
+
+TEST(ArpCache, ConfirmedReportsTheStampOfAReachableOrStaleEntry) {
+    aloe::net::ArpCache cache{small};
+    EXPECT_EQ(cache.confirmed(peer), std::nullopt);
+    std::ignore = cache.lookup(peer, at(0s));  // incomplete
+    EXPECT_EQ(cache.confirmed(peer), std::nullopt);
+    cache.learn(peer, peer_mac, at(5s));
+    EXPECT_EQ(cache.confirmed(peer), at(5s));
+    std::ignore = cache.lookup(peer, at(70s));  // stale, still confirmed at 5 s
+    EXPECT_EQ(cache.confirmed(peer), at(5s));
+}
+
+TEST(ArpCache, TheGenerationMovesWhenAMacChangesOrGoes) {
+    aloe::net::ArpCache cache{small};
+    EXPECT_EQ(cache.generation(), 0U);
+    cache.learn(peer, peer_mac, at(0s));
+    EXPECT_EQ(cache.generation(), 1U) << "a MAC appeared";
+    cache.learn(peer, peer_mac, at(30s));
+    EXPECT_EQ(cache.generation(), 1U) << "a refresh of the same MAC changes nothing";
+    cache.learn(peer, other_mac, at(31s));
+    EXPECT_EQ(cache.generation(), 2U) << "a new MAC";
+    EXPECT_EQ(cache.lookup(peer, at(200s)), (Lookup{.mac = std::nullopt, .send_request = true}));
+    EXPECT_EQ(cache.generation(), 3U) << "expiry observed: the MAC went";
+    EXPECT_EQ(cache.confirmed(peer), std::nullopt) << "the entry is incomplete now";
+    EXPECT_EQ(cache.lookup(peer, at(200s + 500ms)), (Lookup{.mac = std::nullopt, .send_request = false}));
+    EXPECT_EQ(cache.generation(), 3U) << "a second look at an incomplete entry moves nothing";
+}
+
+TEST(ArpCache, EvictingAReachableEntryMovesTheGeneration) {
+    aloe::net::ArpCache cache{small};
+    for (std::uint8_t index = 0; index < 8; ++index) {
+        cache.learn(host(index), peer_mac, at(0s));
+    }
+    ASSERT_EQ(cache.size(), 8);
+    const std::uint64_t before = cache.generation();
+    // No free slot, none expired, none incomplete: the lookup of a ninth address evicts the oldest confirmation.
+    EXPECT_EQ(cache.lookup(host(8), at(1s)), (Lookup{.mac = std::nullopt, .send_request = true}));
+    EXPECT_TRUE(cache.contains(host(8)));
+    EXPECT_EQ(cache.size(), 8);
+    EXPECT_EQ(cache.generation(), before + 1) << "the evicted entry's MAC went: a Prebuilt of its generation is stale";
+    const std::uint64_t learned = cache.generation();
+    cache.learn(host(9), other_mac, at(2s));  // evicts another reachable entry and brings a MAC of its own
+    EXPECT_GT(cache.generation(), learned);
+}

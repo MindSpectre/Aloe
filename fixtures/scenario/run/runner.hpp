@@ -38,9 +38,10 @@ namespace aloe::scenario {
      * check its stamp against the line's window widened by the tolerance on both sides. An `accept`, `read` or `recv`
      * written with a window waits for its expected result, one step at a time, until the window closes.
      */
-    class Runner {
+    template <typename HarnessT>
+    class BasicRunner {
     public:
-        Runner(Harness& harness, const Script& script, const RunnerConfig& config = {});
+        BasicRunner(HarnessT& harness, const Script& script, const RunnerConfig& config = {});
 
         /// Runs the script to its end, or to the first failure. Call once.
         [[nodiscard]] std::expected<void, Failure> run();
@@ -58,17 +59,17 @@ namespace aloe::scenario {
         /// What a script descriptor stands for.
         struct Binding {
             enum class Kind : std::uint8_t { Socket, Listener, Connection, Closed };
-            Kind kind                       = Kind::Socket;
-            std::uint16_t port              = 0;  ///< Set by `bind`; zero until then.
+            Kind kind                                 = Kind::Socket;
+            std::uint16_t port                        = 0;  ///< Set by `bind`; zero until then.
             /// A connection's slot, or a closed one's until its terminal event; null once released.
-            Harness::Connection* connection = nullptr;
-            bool established                = false;  ///< `Connected` or `Accepted` was seen.
+            typename HarnessT::Connection* connection = nullptr;
+            bool established                          = false;  ///< `Connected` or `Accepted` was seen.
             std::optional<stream::Event> terminal{};  ///< `Closed`, `Reset`, `TimedOut` or `Unresolved`, once seen.
         };
 
         /// One try of a call that waits: true when its expected result holds, false while it does not yet.
         using Attempt = std::expected<bool, Failure>;
-        using Try     = Attempt (Runner::*)(const Event&, const CallLine&);
+        using Try     = Attempt (BasicRunner::*)(const Event&, const CallLine&);
 
         /// The stamps an event may happen between, both inclusive.
         struct Window {
@@ -96,7 +97,7 @@ namespace aloe::scenario {
 
         /// Binds the stack's events to the descriptors; a terminal event releases its connection.
         void drain_events();
-        void on_event(const Harness::Event& polled);
+        void on_event(const typename HarnessT::Event& polled);
         [[nodiscard]] Window window_of(const Event& event) const;
 
         [[nodiscard]] Outcome invoke(const Event& event, const CallLine& call);
@@ -151,7 +152,7 @@ namespace aloe::scenario {
         /// A call whose expected result is not zero fails: `<name>: result <r> is not 0`.
         [[nodiscard]] static Outcome expect_zero(const Event& event, const CallLine& call);
 
-        Harness* harness_     = nullptr;
+        HarnessT* harness_    = nullptr;
         const Script* script_ = nullptr;
         RunnerConfig config_{};
         Peer peer_;
@@ -159,8 +160,15 @@ namespace aloe::scenario {
         core::TimePoint previous_{};  ///< The previous event's actual time.
         std::deque<Seen> queue_{};
         std::map<std::int64_t, Binding> descriptors_{};
-        std::deque<Harness::Connection*> pending_accepts_{};  ///< Accepted, not yet taken by `accept`; oldest first.
+        std::deque<typename HarnessT::Connection*>
+            pending_accepts_{};  ///< Accepted, not yet taken by `accept`; oldest first.
     };
+
+    using Runner             = BasicRunner<Harness>;
+    using NoCongestionRunner = BasicRunner<NoCongestionHarness>;
+
+    extern template class BasicRunner<Harness>;
+    extern template class BasicRunner<NoCongestionHarness>;
 
     /// "<path>:<line>: <message>" for a report.
     [[nodiscard]] std::string format(const Failure& failure, std::string_view script_path);

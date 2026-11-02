@@ -154,4 +154,6 @@ namespace aloe::fabric {
         std::vector<detail::Block*> free_;
     };
 
+    static_assert(device::IsPacket<Packet>);
+
 }  // namespace aloe::fabric

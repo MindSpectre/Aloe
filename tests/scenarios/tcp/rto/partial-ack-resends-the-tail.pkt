@@ -1,0 +1,18 @@
+// A partial acknowledgement, then the timeout: the resend carries only the unacknowledged bytes, as Linux trims
+// the head of its retransmit queue when it resends it. The peer's MSS of 1000 less the timestamp option makes a
+// write of 1000 two segments, 988 and 12; the partial ACK falls inside the first, and only the first goes again.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1000,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 1000) = 1000
++0 > P. 1:989(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 > P. 989:1001(12) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 501 win 65535 <nop,nop,TS val 100 ecr 0>
++0.2 > P. 501:989(488) ack 1 win 46720 <nop,nop,TS val 200 ecr 100>
++0 < . 1:1(0) ack 1001 win 65535 <nop,nop,TS val 100 ecr 200>

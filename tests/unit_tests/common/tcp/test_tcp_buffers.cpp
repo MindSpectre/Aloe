@@ -1,6 +1,5 @@
 #include <aloe/fabric>
 #include <aloe/frames>
-#include <aloe/stream>
 #include <aloe/tcp>
 #include <cstddef>
 #include <cstdint>
@@ -17,10 +16,10 @@
 namespace {
 
     using Packet = aloe::fabric::Packet;
-    using Pool   = aloe::tcp::detail::TcpNodePool<Packet>;
+    using Pool   = aloe::tcp::detail::HeldSegmentPool<Packet>;
+    using Chain  = aloe::tcp::detail::NodeChain;
     using View   = aloe::tcp::ReadView<Packet>;
 
-    static_assert(aloe::stream::IsReadView<View>);
     static_assert(std::ranges::forward_range<View>);
     static_assert(!std::ranges::sized_range<View>, "size() counts bytes, not chunks");
 
@@ -39,22 +38,40 @@ namespace {
             EXPECT_TRUE(aloe::frames::fill(*out, aloe::frames::pattern(offset + length, offset)));
             return std::move(*out);
         }
+
+        /// Holds a packet as the stack does: a node first, then the packet moved in and the node chained.
+        [[nodiscard]] static std::uint32_t
+        hold(Pool& pool, Chain& chain, Packet&& held, const std::uint16_t offset, const std::uint16_t length) {
+            const std::uint32_t index = pool.acquire().value();  // throws, and fails the test, on a full pool
+            auto& node                = pool.node(index);
+            node.packet               = std::move(held);
+            node.offset               = offset;
+            node.length               = length;
+            pool.push_back(chain, index);
+            return index;
+        }
+    };
+
+    /// A node with nothing but its link: the pool's own behaviour, apart from what a node holds.
+    struct Bare {
+        std::uint32_t next = aloe::tcp::detail::no_node;
     };
 
 }  // namespace
 
 TEST_F(TcpBuffers, RetainsPacketsAndIteratesSpans) {
     Pool pool{4};
+    Chain chain;
     EXPECT_EQ(pool.capacity(), 4U);
     EXPECT_EQ(pool.available(), 4U);
-    const auto a = pool.acquire(packet(54, 3), 54, 3);
-    const auto b = pool.acquire(packet(54, 5), 54, 5);
-    const auto c = pool.acquire(packet(60, 2), 60, 2);
-    ASSERT_TRUE(a && b && c);
+    const std::uint32_t a = hold(pool, chain, packet(54, 3), 54, 3);
+    const std::uint32_t b = hold(pool, chain, packet(54, 5), 54, 5);
+    const std::uint32_t c = hold(pool, chain, packet(60, 2), 60, 2);
     EXPECT_EQ(pool.available(), 1U);
-    pool.node(*a).next = *b;
-    pool.node(*b).next = *c;
-    const View view{pool, *a, 10};
+    EXPECT_EQ(chain.head, a);
+    EXPECT_EQ(chain.tail, c);
+    EXPECT_EQ(chain.count, 3U);
+    const View view{pool, chain.head, 10};
     EXPECT_EQ(view.size(), 10U);
     EXPECT_FALSE(view.empty());
     EXPECT_EQ(view.front().size(), 3U);
@@ -65,9 +82,9 @@ TEST_F(TcpBuffers, RetainsPacketsAndIteratesSpans) {
         starts.push_back(chunk.data());
     }
     EXPECT_EQ(sizes, (std::vector<std::size_t>{3, 5, 2}));
-    EXPECT_EQ(starts[0], pool.node(*a).packet.data().data() + 54) << "a span into the packet, not a copy";
-    EXPECT_EQ(starts[1], pool.node(*b).packet.data().data() + 54);
-    EXPECT_EQ(starts[2], pool.node(*c).packet.data().data() + 60);
+    EXPECT_EQ(starts[0], pool.node(a).packet.data().data() + 54) << "a span into the packet, not a copy";
+    EXPECT_EQ(starts[1], pool.node(b).packet.data().data() + 54);
+    EXPECT_EQ(starts[2], pool.node(c).packet.data().data() + 60);
     // The pattern helper seeds byte i with offset + i, so the byte at index 54 of a seed-54 packet is 108.
     EXPECT_EQ(std::to_integer<int>(view.front()[0]), 108) << "the first payload byte, not the first packet byte";
     EXPECT_EQ(std::ranges::distance(view), 3) << "iteration counts chunks; size() counts bytes";
@@ -82,11 +99,11 @@ TEST_F(TcpBuffers, RetainsPacketsAndIteratesSpans) {
 
 TEST_F(TcpBuffers, PartialFrontOffsetAndEmptyView) {
     Pool pool{2};
-    const auto a = pool.acquire(packet(54, 6), 54, 6);
-    ASSERT_TRUE(a);
-    pool.node(*a).offset += 4;  // four bytes consumed
-    pool.node(*a).length -= 4;
-    const View view{pool, *a, 2};
+    Chain chain;
+    const std::uint32_t a  = hold(pool, chain, packet(54, 6), 54, 6);
+    pool.node(a).offset   += 4;  // four bytes consumed
+    pool.node(a).length   -= 4;
+    const View view{pool, a, 2};
     EXPECT_EQ(view.size(), 2U);
     EXPECT_EQ(view.front().size(), 2U);
     // Index 58 of a seed-54 packet holds 54 + 58 = 112.
@@ -99,30 +116,53 @@ TEST_F(TcpBuffers, PartialFrontOffsetAndEmptyView) {
     EXPECT_TRUE(none.empty());
 }
 
-TEST_F(TcpBuffers, ExhaustionKeepsThePacketAndReleaseRestoresTheCount) {
+TEST_F(TcpBuffers, ExhaustionRefusesAndReleaseReturnsThePacket) {
     Pool pool{1};
-    const auto a = pool.acquire(packet(54, 1), 54, 1);
-    ASSERT_TRUE(a);
+    Chain chain;
+    const std::uint32_t a = hold(pool, chain, packet(54, 1), 54, 1);
     EXPECT_EQ(pool.available(), 0U);
-    Packet kept    = packet(54, 1);
-    const auto* at = kept.data().data();
-    const auto b   = pool.acquire(std::move(kept), 54, 1);
-    EXPECT_FALSE(b);
-    // A refused acquire leaves the packet with the caller, so the uses below are right.
-    // NOLINTBEGIN(bugprone-use-after-move)
-    EXPECT_FALSE(kept.empty()) << "a failed acquire leaves the packet with the caller";
-    EXPECT_EQ(kept.data().data(), at);
-    // NOLINTEND(bugprone-use-after-move)
-    pool.release(*a);
+    EXPECT_FALSE(pool.acquire()) << "every node is taken";
+    pool.release_front(chain);
+    EXPECT_TRUE(chain.empty());
+    EXPECT_EQ(chain.tail, aloe::tcp::detail::no_node);
+    EXPECT_EQ(chain.count, 0U);
     EXPECT_EQ(pool.available(), 1U);
-    EXPECT_TRUE(pool.node(*a).packet.empty()) << "release returns the packet to its pool";
-    EXPECT_EQ(port_.counters(0).received, 0U);
-    const auto c = pool.acquire(std::move(kept), 54, 1);
-    EXPECT_TRUE(c);
-    EXPECT_EQ(pool.available(), 0U);
+    EXPECT_TRUE(pool.node(a).packet.empty()) << "release returns the packet to its pool";
+    EXPECT_TRUE(pool.acquire());
 }
 
-TEST_F(TcpBuffers, PoolRejectsZeroAndUnrepresentableCounts) {
+TEST(NodePool, ReleaseBackCutsTheLinkToTheOldTail) {
+    aloe::tcp::detail::NodePool<Bare> pool{3};
+    Chain chain;
+    const auto a = pool.acquire();
+    const auto b = pool.acquire();
+    ASSERT_TRUE(a && b);
+    pool.push_back(chain, *a);
+    pool.push_back(chain, *b);
+    pool.release_back(chain, *a);
+    EXPECT_EQ(chain.head, *a);
+    EXPECT_EQ(chain.tail, *a);
+    EXPECT_EQ(chain.count, 1U);
+    EXPECT_EQ(pool.node(*a).next, aloe::tcp::detail::no_node) << "the new tail links nowhere";
+    pool.release_back(chain, aloe::tcp::detail::no_node);
+    EXPECT_TRUE(chain.empty());
+    EXPECT_EQ(chain.tail, aloe::tcp::detail::no_node);
+    EXPECT_EQ(pool.available(), 3U);
+}
+
+TEST(NodePool, AReservedNodeIsLeftForAcquireReserved) {
+    aloe::tcp::detail::NodePool<Bare> pool{2};
+    ASSERT_TRUE(pool.reserve());
+    EXPECT_EQ(pool.available(), 1U);
+    EXPECT_TRUE(pool.acquire());
+    EXPECT_FALSE(pool.acquire()) << "the last free node is set aside";
+    EXPECT_FALSE(pool.reserve()) << "none is left to set aside";
+    EXPECT_TRUE(pool.acquire_reserved());
+    EXPECT_EQ(pool.reserved(), 0U);
+    EXPECT_FALSE(pool.acquire_reserved()) << "nothing set aside any more";
+}
+
+TEST(NodePool, RejectsZeroAndUnrepresentableCountsBeforeAllocating) {
     EXPECT_THROW((std::ignore = Pool{0}), std::invalid_argument);
     EXPECT_THROW((std::ignore = Pool{static_cast<std::size_t>(aloe::tcp::detail::no_node)}), std::invalid_argument);
 }

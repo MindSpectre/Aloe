@@ -11,9 +11,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -23,6 +25,77 @@
 #include <tcp_test_device.hpp>
 
 namespace aloe::testing {
+
+    /// A congestion control that only records what the stack told it: for tests of which hook fires when, with what.
+    struct RecordingCongestionControl {
+        struct State {
+            std::uint32_t calls = 0;
+            std::string_view last_hook{};
+            std::uint32_t last_flight = 0;
+            std::uint32_t last_acked  = 0;
+            std::optional<core::Duration> last_rtt{};
+            std::uint64_t last_delivered         = 0;
+            std::uint64_t last_delivered_at_send = 0;
+            bool last_app_limited                = false;
+        };
+
+        static constexpr void reset(State& state, const std::uint16_t /*mss*/) noexcept {
+            state           = State{};
+            state.last_hook = "reset";
+        }
+
+        [[nodiscard]] static constexpr std::uint32_t window(const State& /*state*/) noexcept {
+            return std::numeric_limits<std::uint32_t>::max();
+        }
+
+        static constexpr void on_ack(State& state, const tcp::AckInfo& info) noexcept {
+            ++state.calls;
+            state.last_hook              = "on_ack";
+            state.last_acked             = info.acked;
+            state.last_flight            = info.flight;
+            state.last_rtt               = info.rtt;
+            state.last_delivered         = info.delivered;
+            state.last_delivered_at_send = info.delivered_at_send;
+            state.last_app_limited       = info.app_limited;
+        }
+
+        static constexpr void on_loss(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook   = "on_loss";
+            state.last_flight = flight;
+        }
+
+        static constexpr void on_dupack(State& state, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook = "on_dupack";
+        }
+
+        static constexpr void
+        on_partial_ack(State& state, const std::uint32_t acked, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook  = "on_partial_ack";
+            state.last_acked = acked;
+        }
+
+        static constexpr void
+        on_recovery_end(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook   = "on_recovery_end";
+            state.last_flight = flight;
+        }
+
+        static constexpr void
+        on_timeout(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook   = "on_timeout";
+            state.last_flight = flight;
+        }
+
+        static constexpr void on_idle(State& state, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook = "on_idle";
+        }
+    };
 
     inline constexpr std::uint16_t tcp_listen_port   = 7;
     inline constexpr std::uint16_t tcp_peer_port     = 40000;
@@ -51,11 +124,15 @@ namespace aloe::testing {
         struct FabricPair {
             explicit FabricPair(const fabric::EmulatedOffloads offloads,
                                 const std::uint16_t stack_queues = 1,
-                                const std::size_t pool_size      = 64)
+                                const std::size_t pool_size      = 64,
+                                const fabric::LoanReturn loans   = fabric::LoanReturn::OnStep)
                 : harness{fabric.add_port(
                       {.mac = harness_mac, .pool_size = 256, .queue_depth = 4096, .offloads = offloads})},
-                  port{fabric.add_port(
-                      {.mac = stack_mac, .queues = stack_queues, .pool_size = pool_size, .offloads = offloads})} {
+                  port{fabric.add_port({.mac       = stack_mac,
+                                        .queues    = stack_queues,
+                                        .pool_size = pool_size,
+                                        .offloads  = offloads,
+                                        .loans     = loans})} {
             }
 
             fabric::Fabric fabric;
@@ -81,12 +158,12 @@ namespace aloe::testing {
      * fabric, runs a receive pass over what it delivered and advances the wheel; `collect` flushes TCP and the queue
      * and returns what the harness port received. No fatal assertion lives in a helper that returns a value.
      */
-    template <device::IsDevice Device>
+    template <device::IsDevice Device, typename CongestionControl = tcp::NewReno>
     class TcpHarness {
     public:
         using Packet     = typename Device::Packet;
         using Ipv4       = net::Ipv4<Device>;
-        using Tcp        = tcp::Stack<Ipv4>;
+        using Tcp        = tcp::Stack<Ipv4, CongestionControl>;
         using Connection = typename Tcp::ConnectionType;
         using Event      = typename Tcp::EventType;
         using TimePoint  = core::TimePoint;
@@ -105,6 +182,16 @@ namespace aloe::testing {
               ip_{queue_, ip_config},
               tcp_{std::make_unique<Tcp>(ip_, wheel_, config)} {
             ip_.learn(harness_ip, harness_mac, now_);
+        }
+
+        /// The next connection the stack opens takes `isn` as its initial sequence number.
+        void force_next_isn(const wire::TcpSequence isn) noexcept {
+            tcp_->force_next_isn(isn);
+        }
+
+        /// The connection's RFC 6582 `recover` takes `recover`, as if an episode had recorded it.
+        void force_recover(Connection& connection, const wire::TcpSequence recover) noexcept {
+            tcp_->force_recover(connection, recover);
         }
 
     protected:
@@ -248,16 +335,42 @@ namespace aloe::testing {
         }
     };
 
+    /// As `TcpFixture`, over a stack port whose driver never lets go of a lent packet until told: the fixture for
+    /// packets kept past their transmit.
+    class TcpHeldFixture : public ::testing::TestWithParam<fabric::EmulatedOffloads>,
+                           protected detail::FabricPair,
+                           protected TcpHarness<fabric::Port> {
+    protected:
+        TcpHeldFixture()
+            : FabricPair{GetParam(), 1, 64, fabric::LoanReturn::Held},
+              TcpHarness{fabric, harness, port} {
+        }
+
+        [[nodiscard]] std::size_t loans_outstanding() {
+            return port.loans_outstanding(0);
+        }
+
+        void return_loans() {
+            port.return_loans(0);
+        }
+
+        [[nodiscard]] static bool offloads() {
+            return GetParam() == fabric::EmulatedOffloads::Checksums;
+        }
+    };
+
     /// The brick over a device that can refuse: for refused sends and failed allocations.
     class TcpRefusingFixture : public ::testing::TestWithParam<fabric::EmulatedOffloads>,
                                protected detail::FabricPair,
                                protected detail::TestDeviceHolder,
                                protected TcpHarness<TcpTestDevice> {
     protected:
-        TcpRefusingFixture()
+        /// `ip_config` lets a derived fixture shorten the ARP cache's times; the stack is reconfigured with
+        /// `configure_tcp`.
+        explicit TcpRefusingFixture(const net::Ipv4Config& ip_config = stack_config())
             : FabricPair{GetParam()},
               TestDeviceHolder{port},
-              TcpHarness{fabric, harness, device, {}, stack_config(), 1} {
+              TcpHarness{fabric, harness, device, {}, ip_config, 1} {
         }
 
         /// From now on every send is refused: the device takes nothing, and an empty packet fills the one-slot ring
@@ -277,5 +390,7 @@ namespace aloe::testing {
             return GetParam() == fabric::EmulatedOffloads::Checksums;
         }
     };
+
+    static_assert(tcp::IsCongestionControl<RecordingCongestionControl>);
 
 }  // namespace aloe::testing

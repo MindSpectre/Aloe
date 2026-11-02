@@ -115,3 +115,19 @@ TEST_P(HarnessTest, TheArpCacheOutlivesAnyScript) {
     EXPECT_EQ(harness.ip().counters().arp_requests_sent, 0);
     EXPECT_EQ(harness.ip().counters().send_unresolved, 0);
 }
+
+TEST(Harness, ConfiguredAppliesTheScriptsTcpOptions) {
+    const auto script = aloe::scenario::parse_script("--tcp_rto_min_ms=5\n--tcp_data_retries=3\n--tcp_timestamps=0\n"
+                                                     "0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(script.has_value());
+    const HarnessConfig config = aloe::scenario::configured(HarnessConfig{}, *script);
+    EXPECT_EQ(config.tcp.rto_min, 5ms);
+    EXPECT_EQ(config.tcp.data_retries, 3);
+    EXPECT_FALSE(config.tcp.timestamps);
+    EXPECT_EQ(config.tcp.rto_max, aloe::tcp::TcpConfig{}.rto_max) << "untouched";
+}
+
+TEST(Harness, BothPoliciesBuild) {
+    aloe::scenario::NoCongestionHarness harness{HarnessConfig{}};
+    EXPECT_EQ(harness.tcp().capacity(), aloe::tcp::TcpConfig{}.connections);
+}

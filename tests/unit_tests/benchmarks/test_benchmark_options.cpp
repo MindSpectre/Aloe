@@ -36,7 +36,7 @@ namespace {
 TEST(BenchmarkOptions, DefaultsAreTheSpecsNumbers) {
     const auto options = parse({});
     ASSERT_TRUE(options.has_value()) << options.error();
-    EXPECT_EQ(options->payloads, (std::vector<std::size_t>{64, 256, 1024, 1448, 1460}));
+    EXPECT_EQ(options->payloads, (std::vector<std::size_t>{64, 256, 1024, 1448}));
     EXPECT_EQ(options->measured, 100000U);
     EXPECT_EQ(options->warmup, 10000U);
     EXPECT_EQ(options->gap.count(), 0);
@@ -53,7 +53,7 @@ TEST(BenchmarkOptions, DefaultsAreTheSpecsNumbers) {
 
 TEST(BenchmarkOptions, EveryOptionParses) {
     const auto options =
-        parse({"--round",     "tick",   "--level",       "0",           "--payload",   "64,1460",
+        parse({"--round",     "tick",   "--level",       "0",           "--payload",   "64,1448",
                "--rounds",    "10",     "--warmup",      "2",           "--gap",       "500",
                "--topology",  "cross",  "--stack-core",  "none",        "--peer-core", "5",
                "--breakdown", "--hop",  "--arp-on-wire", "--hugepages", "8",           "--keep-hugepages",
@@ -62,7 +62,7 @@ TEST(BenchmarkOptions, EveryOptionParses) {
     ASSERT_TRUE(options.has_value()) << options.error();
     EXPECT_EQ(options->rounds, (std::vector<Round>{Round::Tick}));
     EXPECT_EQ(options->levels, (std::vector<Level>{Level::Bricks}));
-    EXPECT_EQ(options->payloads, (std::vector<std::size_t>{64, 1460}));
+    EXPECT_EQ(options->payloads, (std::vector<std::size_t>{64, 1448}));
     EXPECT_EQ(options->measured, 10U);
     EXPECT_EQ(options->warmup, 2U);
     EXPECT_EQ(options->gap, std::chrono::nanoseconds{500});
@@ -130,8 +130,8 @@ TEST(BenchmarkOptions, RejectsArpOnTheWireWithTheSameCoreTopology) {
 
 TEST(BenchmarkOptions, DefaultMatrixIsEveryRoundLevelAndPayloadCrossCore) {
     const auto matrix = configurations(*parse({}));
-    EXPECT_EQ(matrix.size(), 18U) << "tick: 3 levels x 5 payloads; gateway: 3 levels";
-    EXPECT_EQ(count(matrix, Round::Tick, Level::Bricks, Topology::CrossCore), 5U);
+    EXPECT_EQ(matrix.size(), 15U) << "tick: 3 levels x 4 payloads; gateway: 3 levels";
+    EXPECT_EQ(count(matrix, Round::Tick, Level::Bricks, Topology::CrossCore), 4U);
     EXPECT_EQ(count(matrix, Round::Gateway, Level::Runtime, Topology::CrossCore), 1U);
     EXPECT_EQ(count(matrix, Round::Tick, Level::Floor, Topology::SameCore), 0U);
     const auto gateway = std::ranges::find_if(matrix, [](const RoundConfig& c) { return c.round == Round::Gateway; });
@@ -141,11 +141,11 @@ TEST(BenchmarkOptions, DefaultMatrixIsEveryRoundLevelAndPayloadCrossCore) {
 
 TEST(BenchmarkOptions, SameCoreAppliesToTheFloorAndLevelZeroOnly) {
     const auto both = configurations(*parse({"--topology", "both"}));
-    EXPECT_EQ(both.size(), 30U) << "tick: (2 levels x 2 topologies + 1) x 5; gateway: 2 x 2 + 1";
+    EXPECT_EQ(both.size(), 25U) << "tick: (2 levels x 2 topologies + 1) x 4; gateway: 2 x 2 + 1";
     EXPECT_EQ(count(both, Round::Tick, Level::Runtime, Topology::SameCore), 0U);
-    EXPECT_EQ(count(both, Round::Tick, Level::Floor, Topology::SameCore), 5U);
+    EXPECT_EQ(count(both, Round::Tick, Level::Floor, Topology::SameCore), 4U);
     const auto same = configurations(*parse({"--topology", "same"}));
-    EXPECT_EQ(same.size(), 12U) << "level 1 cannot share a thread with the peer and is left out";
+    EXPECT_EQ(same.size(), 10U) << "level 1 cannot share a thread with the peer and is left out";
     EXPECT_EQ(count(same, Round::Gateway, Level::Runtime, Topology::CrossCore), 0U);
 }
 

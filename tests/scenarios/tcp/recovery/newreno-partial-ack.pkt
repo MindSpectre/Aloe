@@ -1,0 +1,30 @@
+// RFC 6582's partial ACK: five segments, the first two lost. Three duplicates resend the head; the ACK of the head
+// alone does not reach recover, the last byte sent when recovery began, so the next head goes again at once rather than
+// after three more duplicates or the timer; the ACK of all five, past recover, ends recovery. The mechanics are the
+// stack's, so the script runs under both policies. Linux resends the same segment on a partial ACK, with PRR deciding
+// what new data goes with it.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1000,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 4940) = 4940
++0 > P. 1:989(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 > P. 989:1977(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 > P. 1977:2965(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 > P. 2965:3953(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 > P. 3953:4941(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > P. 1:989(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 989 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > P. 989:1977(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 4941 win 65535 <nop,nop,TS val 100 ecr 0>
++2 close(4) = 0
++0 > F. 4941:4941(0) ack 1 win 46720 <nop,nop,TS val 2000 ecr 100>
++0 < . 1:1(0) ack 4942 win 65535 <nop,nop,TS val 100 ecr 2000>

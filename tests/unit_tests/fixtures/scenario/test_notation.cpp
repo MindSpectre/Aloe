@@ -1,3 +1,4 @@
+#include <aloe/frames>
 #include <aloe/scenario>
 #include <aloe/wire>
 #include <chrono>
@@ -87,4 +88,14 @@ TEST(Notation, FormatsTimes) {
     EXPECT_EQ(format_time(10ms), "+0.010000");
     EXPECT_EQ(format_time(63s), "+63.000000");
     EXPECT_EQ(format_time(0s), "+0.000000");
+}
+
+TEST(Notation, TheEchoBaseShiftsOnlyTheEcho) {
+    aloe::scenario::Options options;
+    options.list.push_back({.kind = aloe::scenario::TcpOption::Kind::Nop});
+    options.list.push_back({.kind = aloe::scenario::TcpOption::Kind::Nop});
+    options.list.push_back({.kind = aloe::scenario::TcpOption::Kind::Timestamps, .value = 100, .echo = 7});
+    const auto bytes = aloe::scenario::encode_options(options, TcpSequence{}, 1000);
+    EXPECT_EQ(aloe::scenario::describe_options(bytes, TcpSequence{}), "nop,nop,TS val 100 ecr 1007");
+    EXPECT_EQ(aloe::scenario::encode_options(options, TcpSequence{}), aloe::frames::timestamps_option(100, 7));
 }

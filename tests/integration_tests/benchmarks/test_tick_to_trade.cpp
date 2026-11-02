@@ -61,7 +61,7 @@ TEST(TickToTrade, TheWholeMatrixRunsSmall) {
                                  "--warmup",
                                  "6",
                                  "--payload",
-                                 "64,1460",
+                                 "64,1448",
                                  "--topology",
                                  "both",
                                  "--stack-core",

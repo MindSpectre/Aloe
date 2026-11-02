@@ -7,8 +7,8 @@
 #include <ranges>
 #include <span>
 
+#include <held_segment_pool.hpp>
 #include <packet.hpp>
-#include <tcp_node_pool.hpp>
 
 namespace aloe::tcp {
 
@@ -29,7 +29,7 @@ namespace aloe::tcp {
     template <device::IsPacket Packet>
     class ReadView {
     public:
-        using Pool = detail::TcpNodePool<Packet>;
+        using Pool = detail::HeldSegmentPool<Packet>;
 
         class Iterator {
         public:

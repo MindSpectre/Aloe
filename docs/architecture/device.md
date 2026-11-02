@@ -192,10 +192,9 @@ the size, the offsets and every other byte stay as lent. The tap driver would br
 `tap_write_mbufs` answers a requested checksum fill by copying the headers into a new segment and trimming
 them off the original mbuf, which moves the lender's offsets. Ethdev therefore requests no transmit
 checksum offload from `net_tap`, and the stack checksums in software there, as it does on the ring. TCP
-does not lend yet. Step 3 of phase 2 on the [roadmap](../roadmap.md) keeps each segment as sent, headers
-included, lends it after IP has written its headers and the transmit metadata, and at a retransmit asks
-`lent()`, calls `reclaim()` and asks again before it defers, and copies the one segment only after a
-bound.
+lends from `commit`: it keeps each segment as sent, headers included, `net::Ipv4::send_frame` lends it once IP
+has written its headers and the transmit metadata, and at a resend the stack asks `lent()`, calls `reclaim()`
+and asks again before it defers, and copies the one segment only after a bound (see the [TCP page](tcp.md)).
 
 **A shared mbuf is copied on receive.** The ring driver's loopback hands the receiver the very mbuf a
 lender still holds, so a reader that trims the received packet would move the lender's offsets. In

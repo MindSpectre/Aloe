@@ -4,7 +4,8 @@ The net module (`common/net/`) is the first protocol brick: IPv4 over one device
 ICMP echo that serve it. One object per shard sits between the [loop](loop.md)'s `ShardQueue` and the
 transports. It answers ARP and ping, sorts incoming IPv4 datagrams into one list per transport for the
 layer above to drain, and sends a transport's segment by routing it, finding the next hop's MAC, writing
-both headers and handing the frame to the queue. Everything is reached through the umbrella
+both headers and handing the frame to the queue; for a transport that keeps its packets, it builds the headers
+once and finishes and lends each frame built from them. Everything is reached through the umbrella
 `#include <aloe/net>` (`export/aloe/net`), and targets link `Aloe::Common::Net`. It depends on
 [`loop`](loop.md), [`device`](device.md), [`wire`](wire.md) and [`core`](core.md), and not on [`execution`](execution.md) or
 [`log`](log.md): no header
@@ -18,9 +19,13 @@ here names the asynchronous model, logs, or reads a clock.
   slot of the burst is empty afterwards. `received(protocol)`, for TCP or UDP, and `resolved()` are the
   lists, valid until the next `process`. `allocate()` gives a packet with room for both headers;
   `send(packet, request, now)` routes it, prepends the headers, fills the checksums and queues it, or
-  returns a `SendError` and hands the packet back exactly as it was. `resolve(next_hop, now)` and
-  `learn(address, mac, now)` are the two ways into the ARP cache from outside. Nothing here blocks,
-  throws after construction, or allocates anything but packets after construction.
+  returns a `SendError` and hands the packet back exactly as it was. For a transport that keeps its packets,
+  `prebuild(destination, protocol, now)` returns the link and network headers to a destination as a
+  `Prebuilt`, and `send_frame(packet, request, now)` finishes a frame built from them, lends the packet to the
+  device and transmits the loan, leaving the packet with the caller; `generation()` says when headers built
+  earlier may name a stale next hop. `resolve(next_hop, now)` and `learn(address, mac, now)` are the two ways
+  into the ARP cache from outside. Nothing here blocks, throws after construction, or allocates anything but
+  packets after construction.
   **Transport access:** `Device` is the template parameter, `queue()` is the shard queue the brick was built
   over (its index, steering, ring and device), and `next_hop(destination)` answers the route question with no
   side effect: the destination on the subnet, the gateway off it, nothing with no gateway. `send` decides
@@ -36,11 +41,15 @@ here names the asynchronous model, logs, or reads a clock.
   the lists are sized to, and the ARP capacity and timings. The same config goes to every shard.
 - **`aloe::net::SendRequest`**, **`SendError`** -- the destination, the protocol and which L4 checksum to
   fill; `NoRoute`, `Unresolved`, `Oversized` or `Refused`.
+- **`aloe::net::Prebuilt`** -- the 34 bytes of an Ethernet and an IPv4 header to one destination, with the
+  IPv4 total length, identification and checksum zero; `valid_until`, the stamp from which they should be
+  built again; and `generation`, the brick's generation when they were built.
 - **`aloe::net::ArpResolution`** -- a mapping learned from an ARP frame, reported for the loop to forward
   to the other shards.
 - **`aloe::net::ArpCache`** -- the per-shard table of IPv4 address to MAC, a fixed open-addressing table
   with bounded linear probing, aged lazily against the stamp the caller passes. Reachable, then stale with
-  a background refresh, then expired.
+  a background refresh, then expired. `confirmed(address)` is a reachable entry's confirmation stamp, and
+  `generation()` counts the changes to its entries' MACs.
 - **`aloe::net::Ipv4Counters`** -- what happened, one counter per drop reason and per send error.
 - **The wire formats** -- `EthernetHeader`, `ArpPacket`, `Ipv4Header`, `IcmpHeader` and the addresses
   are the [wire](wire.md) module's; the brick reads and writes them and holds none of its own.
@@ -98,6 +107,23 @@ if (!sent) {
 }
 ```
 
+A transport that keeps its packets, as TCP keeps each segment until it is acknowledged, builds the headers
+once and sends every frame built from them by reference:
+
+```cpp
+auto built = ip.prebuild(peer, aloe::wire::Ipv4Protocol::Tcp, now);
+if (!built) {
+    // NoRoute, or Unresolved (a request is out: retry later), as send fails.
+}
+// frame: a packet from allocate() holding built->headers, then the segment with its checksum field zero ...
+const auto sent = ip.send_frame(frame, {.destination = peer, .protocol = aloe::wire::Ipv4Protocol::Tcp,
+                                        .checksum = aloe::device::L4Checksum::Tcp}, now);
+// Either way the packet is still yours: lent to the device on success, to be sent again once !frame.lent().
+if (now >= built->valid_until || ip.generation() != built->generation) {
+    built = ip.prebuild(peer, aloe::wire::Ipv4Protocol::Tcp, now);  // before the next frame
+}
+```
+
 ## Design notes
 
 **The seam is a list, not a call.** IPv4 cannot be templated on who reads it, so it does not call anyone.
@@ -107,14 +133,14 @@ gateway writes two, in the order it wants. The dispatch is explicit code the pro
 the bricks promise, and the runtime writes those lines once.
 
 **ARP is private to IP.** Nothing above the brick sees ARP, as nothing above a socket does. Three things
-leak, all for startup and the multi-shard case: `send` fails `Unresolved` while a request is out and the
-caller retries, which TCP's SYN and retransmit absorb; `resolved()` reports every mapping learned from the
-wire; `learn` seeds the cache with a static entry or another shard's resolution and reports nothing, so
-shards never echo each other. ARP frames carry no IP header, so a card puts them on its default queue,
-queue 0 on both backends; the loop that owns that queue forwards resolutions to the other shards. A
-request from another host for a third party refreshes an entry we already hold and never creates one, so a
-router's gratuitous ARP after a failover takes effect at once; a sender that cannot be a host (a zero,
-multicast or broadcast address) is answered when it asks for our address and never learned, which keeps
+leak, all for startup and the multi-shard case: `send` and `prebuild` fail `Unresolved` while a request is
+out and the caller retries, which TCP's ARP poll and retransmission timer absorb; `resolved()` reports every
+mapping learned from the wire; `learn` seeds the cache with a static entry or another shard's resolution and
+reports nothing, so shards never echo each other. ARP frames carry no IP header, so a card puts them on its
+default queue, queue 0 on both backends; the loop that owns that queue forwards resolutions to the other
+shards. A request from another host for a third party refreshes an entry we already hold and never creates
+one, so a router's gratuitous ARP after a failover takes effect at once; a sender that cannot be a host (a
+zero, multicast or broadcast address) is answered when it asks for our address and never learned, which keeps
 RFC 5227 probes working. A request from a group MAC is dropped as martian instead, since the reply would go
 to a group.
 
@@ -135,10 +161,26 @@ capacity is a power of two of at least eight.
 frame's source MAC: the last hop, which is the right next hop back whether the pinger is on the subnet or
 behind a router. That is what makes `ping` work on any shard without cross-shard ARP.
 
-**Checksums in one place.** `send` and the echo reply share one function: the IPv4 header checksum and,
-when asked, the L4 checksum, filled by the device when `capabilities()` offers it and in software when
-not. A transport never computes a checksum and never learns the offload convention. The fabric emulates
-the offload, so both paths run in CI.
+**A template knows when its next hop may have changed.** `prebuild` routes and looks the next hop up as `send`
+does, sends the ARP request when the cache asks for one, fails with `NoRoute` or `Unresolved` as `send` does,
+and says how long its headers hold: `valid_until` is the entry's confirmation plus `arp_reachable` while the
+entry is fresh, one `arp_request_interval` from now while it is stale and wants a refresh, and never for a
+broadcast or multicast destination. `generation()` is the cache's count of changes to a MAC: it moves by one when
+a `learn` makes an entry reachable or gives it another MAC, and when a lookup finds a reachable entry expired. A
+holder builds again when the stamp reaches `valid_until` or the generation moved, two compares per frame, and
+the rebuild is the lookup `send` would have run, so a live flow keeps its entry refreshed and follows a MAC
+that changed. `send_frame` takes the finished frame by reference: it writes the total length, a fresh
+identification and the IPv4 checksum, fills the L4 checksum or writes the pseudo-header sum and requests the
+offload, sets the transmit metadata, lends the packet and transmits the loan, so the packet stays with the
+caller for a resend once `lent()` is false. A refused transmit drops the loan, puts the per-datagram fields and
+the L4 checksum field back to zero and returns `Refused` with the frame as the caller built it; a frame longer
+than the MTU is `Oversized`. `datagrams_sent` and `send_refused` count as they do for `send`, which stays for
+ARP, ICMP and every caller that does not keep its packet.
+
+**Checksums in one place.** `send`, `send_frame` and the echo reply share one function: the IPv4 header
+checksum and, when asked, the L4 checksum, filled by the device when `capabilities()` offers it and in
+software when not. A transport never computes a checksum and never learns the offload convention. The fabric
+emulates the offload, so both paths run in CI.
 
 **Every slot empty.** `process` moves a packet into a list, transmits it as a reply, or releases it, so a
 hand-written loop resets nothing and the runtime's leftover sweep finds nothing. Datagrams whose source is a

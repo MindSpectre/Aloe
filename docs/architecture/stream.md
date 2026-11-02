@@ -75,6 +75,9 @@ return value does not cover.
   null `prepare` or false `commit`, never retries inline and never merges two calls into one segment. It is
   not POSIX `send(2)`.
 - `close` is half a close, `abort` tears the connection down, and `release` is the owner's last call.
+- `TimedOut` is the one event for a connection whose recovery ran out. On TCP that is the handshake's retries,
+  the retransmits of data or the FIN, unanswered zero-window probes, or the user timeout; TCP's counters tell
+  them apart, the event does not. The runtime's senders report it as `Error::TimedOut`.
 - Nothing in the contract blocks, allocates, logs or names a clock.
 
 ## In the runtime
