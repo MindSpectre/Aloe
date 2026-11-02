@@ -9,9 +9,11 @@ set -euo pipefail
 for binary in "$@"; do
     objdump -d -C --no-show-raw-insn "$binary"
 done |
-    # A call or jmp whose operand is "<symbol>"; a jump within a function is "<symbol+0x..>".
-    grep -E '^\s+[0-9a-f]+:\s+(call|jmp)[a-z]*\s+[0-9a-f]+ <[^>]+>$' |
-    sed -E 's/^.*<(.*)>$/\1/' |
+    # A call or jmp whose operand is "<symbol>". The name may itself contain < and >.
+    grep -E '^\s+[0-9a-f]+:\s+(call|jmp)[a-z]*\s+[0-9a-f]+ <.*>$' |
+    # Strip through the first " <" and the trailing ">".
+    sed -E 's/^[^<]*<//; s/>$//' |
+    # A jump within a function names an offset: <name+0x40>.
     { grep -v -E '\+0x[0-9a-f]+$' || true; } |
     { grep -v '^initializer for module ' || true; } |
     # The module attachment is the primary module's name: advance@probe.wire, TcpSequence@probe.wire::next.
@@ -19,5 +21,5 @@ done |
     { grep '^aloe::' || true; } |
     LC_ALL=C sort |
     uniq -c |
-    awk '{ count = $1; $1 = ""; sub(/^ /, ""); print count, $0 }' |
+    awk '{ count = $1; sub(/^ *[0-9]+ /, ""); print count, $0 }' |
     LC_ALL=C sort -k2
