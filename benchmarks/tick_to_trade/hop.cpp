@@ -1,12 +1,12 @@
 #include "hop.hpp"
 
+#include <aloe/core>
 #include <atomic>
 #include <cstdint>
 #include <exception>
 #include <thread>
 
 #include <thread_pinning.hpp>
-#include <tsc_clock.hpp>
 
 namespace aloe::benchmarks {
 

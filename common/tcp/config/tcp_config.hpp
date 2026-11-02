@@ -1,13 +1,11 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/wire>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
-
-#include <ipv4_address.hpp>
-#include <tcp_header.hpp>
 
 namespace aloe::tcp {
 

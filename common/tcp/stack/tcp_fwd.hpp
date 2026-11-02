@@ -1,6 +1,10 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/device>
+#include <aloe/loop>
+#include <aloe/net>
+#include <aloe/wire>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
@@ -8,13 +12,6 @@
 #include <expected>
 #include <optional>
 #include <utility>
-
-#include <device.hpp>
-#include <ipv4.hpp>
-#include <ipv4_address.hpp>
-#include <ipv4_protocol.hpp>
-#include <prebuilt.hpp>
-#include <shard_queue.hpp>
 
 namespace aloe::tcp {
 

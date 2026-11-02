@@ -1,5 +1,6 @@
 #pragma once
 
+#include <aloe/core>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -7,7 +8,6 @@
 #include <string>
 #include <utility>
 
-#include <fixed_string.hpp>
 #include <quill/Backend.h>
 #include <quill/Frontend.h>
 #include <quill/Logger.h>

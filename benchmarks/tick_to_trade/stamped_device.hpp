@@ -1,5 +1,6 @@
 #pragma once
 
+#include <aloe/core>
 #include <aloe/device>
 #include <aloe/wire>
 #include <cassert>
@@ -7,8 +8,6 @@
 #include <cstdint>
 #include <optional>
 #include <span>
-
-#include <tsc_clock.hpp>
 
 namespace aloe::benchmarks {
 

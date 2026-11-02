@@ -1,12 +1,12 @@
 #pragma once
 
+#include <aloe/wire>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
 
-#include <mac_address.hpp>
 #include <packet.hpp>
 #include <rss.hpp>
 

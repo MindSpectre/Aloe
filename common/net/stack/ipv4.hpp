@@ -1,6 +1,9 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/device>
+#include <aloe/loop>
+#include <aloe/wire>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -12,23 +15,9 @@
 #include <utility>
 #include <vector>
 
-#include <arp.hpp>
 #include <arp_cache.hpp>
-#include <bytes.hpp>
-#include <checksum.hpp>
 #include <datagram.hpp>
-#include <device.hpp>
-#include <ethernet.hpp>
-#include <icmp.hpp>
-#include <ipv4_address.hpp>
-#include <ipv4_checksum.hpp>
-#include <ipv4_header.hpp>
-#include <ipv4_protocol.hpp>
-#include <ipv4_subnet.hpp>
-#include <mac_address.hpp>
-#include <packet.hpp>
 #include <prebuilt.hpp>
-#include <shard_queue.hpp>
 
 namespace aloe::net {
 

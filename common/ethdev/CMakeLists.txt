@@ -44,6 +44,9 @@ target_include_directories(${ETHDEV}.Port PUBLIC
 target_link_libraries(${ETHDEV}.Port PUBLIC
         ${ETHDEV}.Eal
         ${ETHDEV}.Packet
+        Aloe::Common::Core
+        Aloe::Common::Device
+        Aloe::Common::Wire
 )
 ##############################################################################
 

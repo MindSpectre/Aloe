@@ -1,14 +1,12 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/wire>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <vector>
-
-#include <ipv4_address.hpp>
-#include <mac_address.hpp>
 
 namespace aloe::net {
 

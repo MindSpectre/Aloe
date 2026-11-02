@@ -1,5 +1,6 @@
 #pragma once
 
+#include <aloe/core>
 #include <aloe/ethdev>
 #include <aloe/frames>
 #include <aloe/wire>
@@ -13,7 +14,6 @@
 #include <string_view>
 #include <vector>
 
-#include <clock.hpp>
 #include <run_state.hpp>
 
 namespace aloe::benchmarks {

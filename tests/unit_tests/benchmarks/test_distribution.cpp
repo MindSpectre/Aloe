@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <aloe/core>
 #include <cstdint>
 #include <numeric>
 #include <random>
@@ -8,7 +9,6 @@
 
 #include <distribution.hpp>
 #include <gtest/gtest.h>
-#include <tsc_scale.hpp>
 
 namespace {
 

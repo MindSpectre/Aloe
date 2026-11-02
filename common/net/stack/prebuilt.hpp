@@ -1,12 +1,10 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/wire>
 #include <array>
 #include <cstddef>
 #include <cstdint>
-
-#include <ethernet.hpp>
-#include <ipv4_header.hpp>
 
 namespace aloe::net {
 

@@ -1,22 +1,18 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/device>
+#include <aloe/loop>
+#include <aloe/net>
+#include <aloe/tcp>
+#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
 #include <arp_forward.hpp>
-#include <datagram.hpp>
-#include <device.hpp>
-#include <ipv4.hpp>
-#include <ipv4_address.hpp>
-#include <ipv4_protocol.hpp>
-#include <mac_address.hpp>
 #include <shard_context.hpp>
-#include <shard_queue.hpp>
 #include <streams.hpp>
-#include <tcp_config.hpp>
-#include <tcp_stack.hpp>
 
 namespace aloe::runtime {
 

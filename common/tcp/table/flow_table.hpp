@@ -1,12 +1,11 @@
 #pragma once
 
+#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <vector>
-
-#include <ipv4_address.hpp>
 
 namespace aloe::tcp {
 

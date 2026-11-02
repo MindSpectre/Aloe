@@ -1,5 +1,6 @@
 #pragma once
 
+#include <aloe/core>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -9,9 +10,7 @@
 #include <utility>
 #include <vector>
 
-#include <clock.hpp>
 #include <round_config.hpp>
-#include <tsc_clock.hpp>
 
 namespace aloe::benchmarks {
 

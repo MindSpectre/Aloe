@@ -1,6 +1,7 @@
 #include "benchmark_run.hpp"
 
 #include <algorithm>
+#include <aloe/core>
 #include <aloe/ethdev>
 #include <cassert>
 #include <chrono>
@@ -20,7 +21,6 @@
 #include <utility>
 #include <vector>
 
-#include <clock.hpp>
 #include <distribution.hpp>
 #include <hop.hpp>
 #include <level_bricks.hpp>
@@ -29,7 +29,6 @@
 #include <ring_pair.hpp>
 #include <stamped_device.hpp>
 #include <thread_pinning.hpp>
-#include <tsc_clock.hpp>
 #include <venue_peer.hpp>
 
 namespace aloe::benchmarks {
