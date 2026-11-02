@@ -1,10 +1,12 @@
-#pragma once
+module;
 
 #include <algorithm>
 #include <cstddef>
 #include <string_view>
 
-namespace aloe::core {
+export module aloe.core:fixed_string;
+
+export namespace aloe::core {
 
     /**
      * @brief A string literal usable as a template parameter.

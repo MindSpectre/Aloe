@@ -1,8 +1,10 @@
-#pragma once
+module;
 
 #include <utility>
 
-namespace aloe::core {
+export module aloe.core:values;
+
+export namespace aloe::core {
 
     /**
      * @brief Discards values on purpose, where the discarding happens.

@@ -1,9 +1,11 @@
-#pragma once
+module;
 
 #include <cstddef>
 #include <type_traits>
 
-namespace aloe::core {
+export module aloe.core:guards;
+
+export namespace aloe::core {
 
     /**
      * @brief Pins a member function as mutating: `force_non_const(this)` does not compile inside a

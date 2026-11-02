@@ -1,4 +1,4 @@
-#include "tsc_clock.hpp"
+module;
 
 #include <cerrno>
 #include <chrono>
@@ -14,6 +14,8 @@
     #include <cpuid.h>
 
 #endif
+
+module aloe.core;
 
 namespace aloe::core {
 

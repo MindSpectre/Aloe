@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <chrono>
 #include <cstdint>
@@ -6,13 +6,14 @@
 #include <ratio>
 #include <string>
 
-#include <tsc_scale.hpp>
-
 #if defined(__x86_64__)
     #include <x86intrin.h>
 #endif
 
-namespace aloe::core {
+export module aloe.core:tsc_clock;
+import :tsc_scale;
+
+export namespace aloe::core {
 
     namespace detail {
 
@@ -75,12 +76,12 @@ namespace aloe::core {
         static constexpr bool is_steady = true;
 
         /// The current stamp.
-        [[nodiscard]] static time_point now() noexcept {
+        [[nodiscard]] static inline time_point now() noexcept {
             return time_point{duration{static_cast<rep>(scale().nanoseconds(get_ticks()))}};
         }
 
         /// The raw counter, read after every earlier load has completed.
-        [[nodiscard]] static std::uint64_t get_ticks() noexcept {
+        [[nodiscard]] static inline std::uint64_t get_ticks() noexcept {
 #if defined(__x86_64__)
             _mm_lfence();
             return __rdtsc();
@@ -91,7 +92,7 @@ namespace aloe::core {
 
         /// The process's scale, calibrated by the first call. Throws `std::runtime_error` when this machine's TSC
         /// cannot be trusted, and `std::invalid_argument` when its measurement cannot be scaled.
-        [[nodiscard]] static const TscScale& scale() {
+        [[nodiscard]] static inline const TscScale& scale() {
             static const TscScale calibrated = trust(probe());
             return calibrated;
         }

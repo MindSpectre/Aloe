@@ -1,10 +1,12 @@
-#pragma once
+module;
 
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
 
-namespace aloe::core {
+export module aloe.core:tsc_scale;
+
+export namespace aloe::core {
 
     /**
      * @brief Converts TSC ticks to nanoseconds as `(ticks * multiplier) >> shift`, the kernel's form.
@@ -21,7 +23,7 @@ namespace aloe::core {
         /// The scale of `ticks` against `nanoseconds`. Throws `std::invalid_argument` for a zero count, for a tick
         /// longer than an unshifted 32-bit multiplier holds (2^32 ns, 4.3 s), and for a tick so short that the
         /// multiplier would round to zero.
-        [[nodiscard]] static TscScale measured(const std::uint64_t ticks, const std::uint64_t nanoseconds) {
+        [[nodiscard]] static inline TscScale measured(const std::uint64_t ticks, const std::uint64_t nanoseconds) {
             if (ticks == 0 || nanoseconds == 0) {
                 throw std::invalid_argument{"a TSC scale needs a nonzero count of ticks and of nanoseconds"};
             }
@@ -42,7 +44,7 @@ namespace aloe::core {
         }
 
         /// `ticks` in nanoseconds, rounded down.
-        [[nodiscard]] std::uint64_t nanoseconds(const std::uint64_t ticks) const noexcept {
+        [[nodiscard]] inline std::uint64_t nanoseconds(const std::uint64_t ticks) const noexcept {
             const std::uint64_t low  = ticks & std::uint64_t{0xFFFF'FFFF};
             const std::uint64_t high = ticks >> 32U;
             std::uint64_t result     = (low * multiplier_) >> shift_;
@@ -53,7 +55,7 @@ namespace aloe::core {
         }
 
     private:
-        TscScale(const std::uint32_t multiplier, const unsigned shift) noexcept
+        inline TscScale(const std::uint32_t multiplier, const unsigned shift) noexcept
             : multiplier_{multiplier},
               shift_{shift} {
         }

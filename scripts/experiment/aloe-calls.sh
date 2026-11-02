@@ -17,7 +17,8 @@ done |
     { grep -v -E '\+0x[0-9a-f]+$' || true; } |
     { grep -v '^initializer for module ' || true; } |
     # The module attachment is the primary module's name: advance@probe.wire, TcpSequence@probe.wire::next.
-    sed -E 's/@aloe\.[a-z_]+//' |
+    # A signature can carry several (TscClock@aloe.core::trust(TscEvidence@aloe.core const&)), so strip each one.
+    sed -E 's/@aloe\.[a-z_]+(:[a-z_]+)?//g' |
     { grep '^aloe::' || true; } |
     LC_ALL=C sort |
     uniq -c |

@@ -1,8 +1,10 @@
-#pragma once
+module;
 
 #include <string_view>
 
-namespace aloe::core {
+export module aloe.core:version;
+
+export namespace aloe::core {
 
     /// Library version. Generated from the project() version in the root
     /// CMakeLists.txt, so the two cannot drift apart.

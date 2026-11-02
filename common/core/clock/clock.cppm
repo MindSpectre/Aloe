@@ -1,11 +1,12 @@
-#pragma once
+module;
 
 #include <chrono>
 #include <tuple>
 
-#include <tsc_clock.hpp>
+export module aloe.core:clock;
+import :tsc_clock;
 
-namespace aloe::core {
+export namespace aloe::core {
 
 #if defined(ALOE_USE_TSC_CLOCK)
     /// The clock every loop reads once per iteration and passes down as a stamp: `TscClock`, the default.
