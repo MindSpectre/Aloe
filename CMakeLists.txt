@@ -8,10 +8,13 @@ set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Aloe uses no C++ modules. With the scan left on, CMake compiles every file in
-# modules mode, which costs a scanning step per file and makes GCC 16 crash
-# inside the stdexec headers.
-set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+# The modules experiment (branch experiment/modules) converts Aloe's modules to
+# C++20 named modules, so CMake scans every file for module dependencies.
+set(CMAKE_CXX_SCAN_FOR_MODULES ON)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    message(FATAL_ERROR "This branch builds C++ modules with clang only: GCC 16.1.1 crashes in modules mode on any "
+            "file that contains stdexec (GCC PR 128318, ledger draft 01 in docs/superpowers/experiments/modules/issues/).")
+endif ()
 
 # clang-tidy replays the compiler's command line through the clang front end, so
 # it only runs when the compiler is clang. Under GCC it would reject GCC-only flags.
@@ -93,6 +96,9 @@ list(APPEND general_compile_options
 # The thread-safety analysis exists only in clang.
 if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     list(APPEND general_compile_options -Wthread-safety)
+    # CMake 4.3's BMI-only command passes flags clang then calls unused, which -Werror
+    # turns into an error (ledger 05).
+    list(APPEND general_compile_options -Wno-unused-command-line-argument)
 endif ()
 
 # Target compile options land after CMAKE_CXX_FLAGS on the command line, so a

@@ -26,7 +26,7 @@ ctest --preset debug -L unit     # or: integration, functional
 
 - Every configure, build and test preset shares one name. The full list is in
   `CMakePresets.json` and `docs/guides/getting-started.md`.
-- A change is done when `debug`, `gcc-debug`, `asan` and `tsan` all build and pass,
+- A change is done when `debug`, `asan` and `tsan` all build and pass,
   and the format check passes. PR CI builds the `ci` preset only, so the sanitizer
   and GCC runs are local. clang-tidy runs inside the clang builds and its
   warnings are errors, so a clean clang build is the lint check.
@@ -82,8 +82,7 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - **Dependencies.** Libraries come from `vcpkg.json` only: no system
   libraries, no fetched sources, no submodules. System packages are for build
   tools, installed by `scripts/install-linux.sh`.
-- **No C++ modules.** `CMAKE_CXX_SCAN_FOR_MODULES` stays `OFF`; with it on,
-  GCC 16 crashes inside stdexec.
+- **C++ modules (this branch).** The branch builds C++ modules with clang only: `CMAKE_CXX_SCAN_FOR_MODULES` is `ON` and GCC is refused (ledger 01).
 - **Public headers define no macros.** Implementation details go in a nested
   `detail` namespace.
 - **One class, one place.** A class's members are defined in its body, or in its

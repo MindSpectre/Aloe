@@ -1,4 +1,5 @@
 ---
+# readability-redundant-declaration is off: it fires falsely in every file that imports a module (ledger 02).
 Checks: '-*,
 bugprone-argument-comment,
 bugprone-assert-side-effect,
@@ -129,7 +130,6 @@ readability-misleading-indentation,
 readability-misplaced-array-index,
 readability-non-const-parameter,
 readability-redundant-control-flow,
-readability-redundant-declaration,
 readability-redundant-function-ptr-dereference,
 readability-redundant-smartptr-get,
 readability-redundant-string-cstr,

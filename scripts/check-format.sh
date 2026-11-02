@@ -25,7 +25,7 @@ esac
 
 is_checked_source() {
     local file=$1 directory
-    [[ $file == *.cpp || $file == *.hpp ]] || return 1
+    [[ $file == *.cpp || $file == *.hpp || $file == *.cppm ]] || return 1
     for directory in "${source_directories[@]}"; do
         [[ $file == "$directory"/* ]] && return 0
     done
@@ -45,7 +45,7 @@ else
         [[ -d $directory ]] || continue
         while IFS= read -r -d '' file; do
             files+=("$file")
-        done < <(find "$directory" -type f \( -name '*.cpp' -o -name '*.hpp' \) -print0 | sort -z)
+        done < <(find "$directory" -type f \( -name '*.cpp' -o -name '*.hpp' -o -name '*.cppm' \) -print0 | sort -z)
     done
 fi
 
