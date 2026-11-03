@@ -3,7 +3,25 @@
 /**
  * Public umbrella for the Aloe log module: named loggers over quill, the one
  * place that names quill. Consumers link Aloe::Common::Log and write
- * `#include <aloe/log>`.
+ * `#include <aloe/log>`, which imports the module aloe.log.
  */
 
-#include <log.hpp>
+#include <aloe/core>
+
+// Every standard, system and third-party header the module's interface unit includes, textually before the import:
+// clang 22 rejects libstdc++'s locale redeclarations included after an import (ledger 07).
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+
+#include <quill/Backend.h>
+#include <quill/Frontend.h>
+#include <quill/Logger.h>
+#include <quill/core/MacroMetadata.h>
+#include <quill/sinks/ConsoleSink.h>
+#include <quill/sinks/FileSink.h>
+
+import aloe.log;

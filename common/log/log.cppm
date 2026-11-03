@@ -1,6 +1,5 @@
-#pragma once
+module;
 
-#include <aloe/core>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -15,7 +14,11 @@
 #include <quill/sinks/ConsoleSink.h>
 #include <quill/sinks/FileSink.h>
 
-namespace aloe::log {
+export module aloe.log;
+
+import aloe.core;
+
+export namespace aloe::log {
 
     /// Severity, lowest first. `None` on a logger silences it.
     enum class LogLevel : std::uint8_t { Trace, Debug, Info, Warning, Error, Critical, None };
@@ -71,7 +74,7 @@ namespace aloe::log {
      */
     class Logger {
     public:
-        explicit Logger(quill::Logger* logger) noexcept
+        explicit inline Logger(quill::Logger* logger) noexcept
             : logger_{logger} {
         }
 
@@ -114,13 +117,13 @@ namespace aloe::log {
             log<LogLevel::Critical, Format>(std::forward<Args>(args)...);
         }
 
-        void set_level(const LogLevel level) const noexcept {
+        inline void set_level(const LogLevel level) const noexcept {
             logger_->set_log_level(detail::to_quill(level));
         }
 
         /// Blocks until the backend has written everything this logger queued. Cold path only, and only while a
         /// `Logging` is alive: quill spins until the backend acknowledges, so with no backend this never returns.
-        void flush() const {
+        inline void flush() const {
             logger_->flush_log();
         }
 
@@ -144,7 +147,7 @@ namespace aloe::log {
      */
     class Logging {
     public:
-        explicit Logging(const LoggingConfig& config = {}) {
+        explicit inline Logging(const LoggingConfig& config = {}) {
             quill::BackendOptions options;
             if (config.backend_cpu) {
                 options.cpu_affinity = {*config.backend_cpu};
@@ -168,7 +171,7 @@ namespace aloe::log {
         Logging(Logging&&)                 = delete;
         Logging& operator=(Logging&&)      = delete;
 
-        ~Logging() {
+        inline ~Logging() {
             quill::Backend::stop();
             detail::default_sink().reset();
             detail::default_level() = LogLevel::Info;
