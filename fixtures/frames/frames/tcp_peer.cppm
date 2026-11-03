@@ -1,6 +1,5 @@
-#pragma once
+module;
 
-#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -8,10 +7,12 @@
 #include <utility>
 #include <vector>
 
-#include <net_frames.hpp>
-#include <tcp_frames.hpp>
+export module aloe.frames:tcp_peer;
+import :net_frames;
+import :tcp_frames;
+import aloe.wire;
 
-namespace aloe::frames {
+export namespace aloe::frames {
 
     /**
      * @brief The other end of a connection, scripted by the test: builds each segment with the
@@ -23,14 +24,14 @@ namespace aloe::frames {
      */
     class TcpPeer {
     public:
-        TcpPeer(TcpSpec spec, const wire::TcpSequence initial) noexcept
+        inline TcpPeer(TcpSpec spec, const wire::TcpSequence initial) noexcept
             : spec_{std::move(spec)},
               iss_{initial},
               snd_nxt_{initial} {
         }
 
         /// SYN with the spec's MSS; takes one sequence number.
-        [[nodiscard]] std::vector<std::byte> syn() {
+        [[nodiscard]] inline std::vector<std::byte> syn() {
             std::vector<std::byte> frame =
                 segment(wire::TcpFlags{wire::TcpFlag::Syn}, {}, snd_nxt_, wire::TcpSequence{}, true);
             snd_nxt_ = snd_nxt_ + 1;
@@ -38,7 +39,7 @@ namespace aloe::frames {
         }
 
         /// Answers the stack's SYN: `see` adopts its ports, then SYN-ACK acknowledges it and takes one sequence number.
-        [[nodiscard]] std::vector<std::byte> syn_ack(const ParsedFrame& seen) {
+        [[nodiscard]] inline std::vector<std::byte> syn_ack(const ParsedFrame& seen) {
             see(seen);
             std::vector<std::byte> frame =
                 segment(wire::TcpFlags{wire::TcpFlag::Syn, wire::TcpFlag::Ack}, {}, snd_nxt_, rcv_nxt_, true);
@@ -47,17 +48,17 @@ namespace aloe::frames {
         }
 
         /// Sees `seen`, then a pure ACK of everything seen so far.
-        [[nodiscard]] std::vector<std::byte> ack(const ParsedFrame& seen) {
+        [[nodiscard]] inline std::vector<std::byte> ack(const ParsedFrame& seen) {
             see(seen);
             return ack();
         }
 
-        [[nodiscard]] std::vector<std::byte> ack() {
+        [[nodiscard]] inline std::vector<std::byte> ack() {
             return segment(wire::TcpFlags{wire::TcpFlag::Ack}, {}, snd_nxt_, rcv_nxt_, false);
         }
 
         /// PSH+ACK carrying `bytes`; takes their sequence space.
-        [[nodiscard]] std::vector<std::byte> data(const std::span<const std::byte> bytes) {
+        [[nodiscard]] inline std::vector<std::byte> data(const std::span<const std::byte> bytes) {
             std::vector<std::byte> frame =
                 segment(wire::TcpFlags{wire::TcpFlag::Psh, wire::TcpFlag::Ack}, bytes, snd_nxt_, rcv_nxt_, false);
             snd_nxt_ = snd_nxt_ + static_cast<std::uint32_t>(bytes.size());
@@ -65,7 +66,7 @@ namespace aloe::frames {
         }
 
         /// FIN+ACK; takes one sequence number.
-        [[nodiscard]] std::vector<std::byte> fin() {
+        [[nodiscard]] inline std::vector<std::byte> fin() {
             std::vector<std::byte> frame =
                 segment(wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, {}, snd_nxt_, rcv_nxt_, false);
             snd_nxt_ = snd_nxt_ + 1;
@@ -73,16 +74,16 @@ namespace aloe::frames {
         }
 
         /// RST+ACK at the current numbers.
-        [[nodiscard]] std::vector<std::byte> rst() {
+        [[nodiscard]] inline std::vector<std::byte> rst() {
             return segment(wire::TcpFlags{wire::TcpFlag::Rst, wire::TcpFlag::Ack}, {}, snd_nxt_, rcv_nxt_, false);
         }
 
         /// Any segment at explicit numbers, with no change to the peer's state: for duplicates and gaps.
-        [[nodiscard]] std::vector<std::byte> segment(const wire::TcpFlags flags,
-                                                     const std::span<const std::byte> payload,
-                                                     const wire::TcpSequence sequence,
-                                                     const wire::TcpSequence acknowledgement,
-                                                     const bool with_mss = false) const {
+        [[nodiscard]] inline std::vector<std::byte> segment(const wire::TcpFlags flags,
+                                                            const std::span<const std::byte> payload,
+                                                            const wire::TcpSequence sequence,
+                                                            const wire::TcpSequence acknowledgement,
+                                                            const bool with_mss = false) const {
             TcpSpec spec         = spec_;
             spec.sequence        = sequence;
             spec.acknowledgement = acknowledgement;
@@ -102,7 +103,7 @@ namespace aloe::frames {
         /// Observes a frame the stack transmitted, without replying. A SYN sets `rcv_nxt` outright and, when it
         /// carries no ACK, makes the peer adopt its ports to answer it; after that `rcv_nxt` only advances, so a
         /// retransmission past the SYN changes nothing. Also tracks the stack's ACK, window and MSS.
-        void see(const ParsedFrame& frame) noexcept {
+        inline void see(const ParsedFrame& frame) noexcept {
             if (!frame.tcp) {
                 return;
             }
@@ -137,49 +138,49 @@ namespace aloe::frames {
             stack_window_ = tcp.window;
         }
 
-        [[nodiscard]] wire::TcpSequence iss() const noexcept {
+        [[nodiscard]] inline wire::TcpSequence iss() const noexcept {
             return iss_;
         }
-        [[nodiscard]] wire::TcpSequence snd_nxt() const noexcept {
+        [[nodiscard]] inline wire::TcpSequence snd_nxt() const noexcept {
             return snd_nxt_;
         }
-        [[nodiscard]] wire::TcpSequence rcv_nxt() const noexcept {
+        [[nodiscard]] inline wire::TcpSequence rcv_nxt() const noexcept {
             return rcv_nxt_;
         }
-        [[nodiscard]] wire::TcpSequence snd_una() const noexcept {
+        [[nodiscard]] inline wire::TcpSequence snd_una() const noexcept {
             return snd_una_;
         }
-        [[nodiscard]] std::uint16_t stack_window() const noexcept {
+        [[nodiscard]] inline std::uint16_t stack_window() const noexcept {
             return stack_window_;
         }
-        [[nodiscard]] std::optional<std::uint16_t> stack_mss() const noexcept {
+        [[nodiscard]] inline std::optional<std::uint16_t> stack_mss() const noexcept {
             return stack_mss_;
         }
-        [[nodiscard]] TcpSpec& spec() noexcept {
+        [[nodiscard]] inline TcpSpec& spec() noexcept {
             return spec_;
         }
-        [[nodiscard]] const TcpSpec& spec() const noexcept {
+        [[nodiscard]] inline const TcpSpec& spec() const noexcept {
             return spec_;
         }
 
         /// While engaged, every segment the peer builds carries a timestamp option with `value` and the last value
         /// seen echoed (0 before any); a SYN or SYN-ACK keeps its MSS in front of it. `std::nullopt` disengages.
-        void set_timestamps(const std::optional<std::uint32_t> value) noexcept {
+        inline void set_timestamps(const std::optional<std::uint32_t> value) noexcept {
             timestamps_ = value;
         }
 
         /// The window every segment the peer builds from now on offers; zero closes it, for probing.
-        void set_window(const std::uint16_t window) noexcept {
+        inline void set_window(const std::uint16_t window) noexcept {
             spec_.window = window;
         }
 
         /// The timestamp value of the last frame `see` was given that carried the option.
-        [[nodiscard]] std::optional<std::uint32_t> ts_seen() const noexcept {
+        [[nodiscard]] inline std::optional<std::uint32_t> ts_seen() const noexcept {
             return ts_seen_;
         }
 
         /// Rewinds the peer's own sequence by `count` bytes, for scripting a retransmission.
-        void rewind(const std::uint32_t count) noexcept {
+        inline void rewind(const std::uint32_t count) noexcept {
             snd_nxt_ = wire::TcpSequence{snd_nxt_.value - count};
         }
 

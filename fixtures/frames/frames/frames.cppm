@@ -1,8 +1,6 @@
-#pragma once
+module;
 
 #include <algorithm>
-#include <aloe/device>
-#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -10,11 +8,15 @@
 #include <utility>
 #include <vector>
 
+export module aloe.frames:frames;
+import aloe.device;
+import aloe.wire;
+
 /**
  * Builders for the Ethernet frames the device tests exchange, and helpers to
  * move bytes in and out of packets of any backend.
  */
-namespace aloe::frames {
+export namespace aloe::frames {
 
     inline constexpr std::uint16_t ethertype_ipv4         = 0x0800;
     inline constexpr std::uint16_t ethertype_experimental = 0x88b5;  ///< Reserved for local experiments.

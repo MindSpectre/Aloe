@@ -1,7 +1,6 @@
-#pragma once
+module;
 
 #include <algorithm>
-#include <aloe/wire>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -9,14 +8,16 @@
 #include <span>
 #include <vector>
 
-#include <frames.hpp>
-#include <net_frames.hpp>
+export module aloe.frames:tcp_frames;
+import :frames;
+import :net_frames;
+import aloe.wire;
 
 /**
  * A TCP segment over IPv4 over Ethernet, built the way a peer would send it, and the payload of a
  * parsed one. Fixture allocation is fine here; nothing in `common` links this.
  */
-namespace aloe::frames {
+export namespace aloe::frames {
 
     struct TcpSpec {
         wire::MacAddress destination_mac{};

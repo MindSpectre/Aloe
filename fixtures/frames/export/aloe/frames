@@ -8,7 +8,18 @@
  * `#include <aloe/frames>`.
  */
 
-#include <frames.hpp>
-#include <net_frames.hpp>
-#include <tcp_frames.hpp>
-#include <tcp_peer.hpp>
+#include <aloe/device>
+#include <aloe/wire>
+
+// Every standard and system header the module's interface units include, textually before the import: clang 22
+// rejects libstdc++'s locale redeclarations included after an import (ledger 07).
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <utility>
+#include <vector>
+
+import aloe.frames;

@@ -1,21 +1,22 @@
-#pragma once
+module;
 
 #include <algorithm>
-#include <aloe/device>
-#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <vector>
 
-#include <frames.hpp>
+export module aloe.frames:net_frames;
+import :frames;
+import aloe.device;
+import aloe.wire;
 
 /**
  * Builders for the ARP and ICMP frames the net tests exchange with the brick, over the module's own
  * writers, and a parser for what the brick transmits.
  */
-namespace aloe::frames {
+export namespace aloe::frames {
 
     inline constexpr std::uint16_t ethertype_arp = 0x0806;
 
