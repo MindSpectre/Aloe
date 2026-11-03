@@ -1,52 +1,38 @@
 set(FABRIC ${FIXTURES}.Fabric)
 
 ##############################################################################
-# The fabric's packet and pool
+# Fabric: the module aloe.fabric, one partition per former header, in the
+# folder the header was in.
+#   fabric_packet: the packet and its pool.
+#   impairment: the scripted and modelled loss, duplication, reorder and delay.
+#   frame: what the fabric parses of an IPv4 frame (was detail/frame.hpp).
+#   fabric: the ports and the fabric that delivers between them.
+# The umbrella export/aloe/fabric imports it.
 ##############################################################################
-add_library(${FABRIC}.Packet STATIC
-        packet/fabric_packet.hpp
-        packet/fabric_packet.cpp
-)
-target_include_directories(${FABRIC}.Packet PUBLIC
-        packet/
-)
-target_link_libraries(${FABRIC}.Packet PUBLIC
-        Aloe::Common::Device
-)
-##############################################################################
-
-##############################################################################
-# Ports and delivery
-##############################################################################
-add_library(${FABRIC}.Fabric STATIC
-        fabric/fabric.hpp
+add_library(${FABRIC} STATIC
         fabric/fabric.cpp
-        fabric/impairment.hpp
-        fabric/detail/frame.hpp
+        packet/fabric_packet.cpp
+        export/aloe/fabric
 )
-target_include_directories(${FABRIC}.Fabric PUBLIC
-        fabric/
+target_sources(${FABRIC} PUBLIC
+        FILE_SET modules TYPE CXX_MODULES
+        BASE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        FILES
+        fabric.cppm
+        fabric/fabric.cppm
+        fabric/impairment.cppm
+        fabric/detail/frame.cppm
+        packet/fabric_packet.cppm
 )
-target_link_libraries(${FABRIC}.Fabric PUBLIC
-        ${FABRIC}.Packet
+target_include_directories(${FABRIC} PUBLIC
+        export
+)
+target_link_libraries(${FABRIC} PUBLIC
         Aloe::Common::Core
         Aloe::Common::Device
         Aloe::Common::Wire
         Threads::Threads
-)
-##############################################################################
-
-##############################################################################
-# Fabric exported library
-##############################################################################
-add_combined_library(${FABRIC}
-        DIRECTORIES
-        export
-        SOURCES
-        export/aloe/fabric
-        LIBRARIES
-        ${FABRIC}.Packet
-        ${FABRIC}.Fabric
 )
 
 add_library(Aloe::Fixtures::Fabric ALIAS ${FABRIC})

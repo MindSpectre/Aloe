@@ -1,8 +1,5 @@
-#pragma once
+module;
 
-#include <aloe/core>
-#include <aloe/device>
-#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -13,10 +10,14 @@
 #include <span>
 #include <vector>
 
-#include <fabric_packet.hpp>
-#include <impairment.hpp>
+export module aloe.fabric:fabric;
+import aloe.core;
+import aloe.device;
+import aloe.wire;
+import :fabric_packet;
+import :impairment;
 
-namespace aloe::fabric {
+export namespace aloe::fabric {
 
     class Fabric;
 
@@ -67,32 +68,32 @@ namespace aloe::fabric {
         Port& operator=(Port&&)      = delete;
         ~Port();
 
-        [[nodiscard]] std::uint16_t queue_count() const noexcept {
+        [[nodiscard]] inline std::uint16_t queue_count() const noexcept {
             return config_.queues;
         }
 
-        [[nodiscard]] wire::MacAddress mac() const noexcept {
+        [[nodiscard]] inline wire::MacAddress mac() const noexcept {
             return config_.mac;
         }
 
-        [[nodiscard]] std::uint16_t mtu() const noexcept {
+        [[nodiscard]] inline std::uint16_t mtu() const noexcept {
             return config_.mtu;
         }
 
         /// Always up: a fabric has no cables.
-        [[nodiscard]] bool link_up() const noexcept {
+        [[nodiscard]] inline bool link_up() const noexcept {
             return !queues_.empty();
         }
 
-        [[nodiscard]] const device::Capabilities& capabilities() const noexcept {
+        [[nodiscard]] inline const device::Capabilities& capabilities() const noexcept {
             return capabilities_;
         }
 
-        [[nodiscard]] const device::RssDescription& steering() const noexcept {
+        [[nodiscard]] inline const device::RssDescription& steering() const noexcept {
             return steering_;
         }
 
-        [[nodiscard]] const PortConfig& config() const noexcept {
+        [[nodiscard]] inline const PortConfig& config() const noexcept {
             return config_;
         }
 
@@ -121,7 +122,7 @@ namespace aloe::fabric {
         };
 
         struct Queue {
-            Queue(const std::size_t pool_size, const std::size_t data_capacity)
+            inline Queue(const std::size_t pool_size, const std::size_t data_capacity)
                 : pool{pool_size, data_capacity} {
             }
 
@@ -186,7 +187,7 @@ namespace aloe::fabric {
         /// Throws std::invalid_argument for a duplicate MAC, zero queues, or a data capacity below `mtu + 14`.
         Port& add_port(const PortConfig& config);
 
-        [[nodiscard]] std::size_t port_count() const noexcept {
+        [[nodiscard]] inline std::size_t port_count() const noexcept {
             return ports_.size();
         }
 

@@ -2,9 +2,27 @@
 
 /**
  * Public umbrella for the Aloe fabric module: the in-memory device backend.
- * Consumers link Aloe::Common::Fabric and write `#include <aloe/fabric>`.
+ * Consumers link Aloe::Fixtures::Fabric and write `#include <aloe/fabric>`.
  */
 
-#include <fabric.hpp>
-#include <fabric_packet.hpp>
-#include <impairment.hpp>
+#include <aloe/core>
+#include <aloe/device>
+#include <aloe/wire>
+
+// Every standard and system header the module's interface units include, textually before the import: clang 22
+// rejects libstdc++'s locale redeclarations included after an import (ledger 07).
+#include <algorithm>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <random>
+#include <span>
+#include <utility>
+#include <vector>
+
+import aloe.fabric;

@@ -1,5 +1,6 @@
+module;
+
 #include <algorithm>
-#include <aloe/wire>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -15,9 +16,10 @@
 #include <utility>
 #include <vector>
 
-#include <detail/frame.hpp>
-#include <fabric.hpp>
-#include <impairment.hpp>
+module aloe.fabric;
+import aloe.core;
+import aloe.device;
+import aloe.wire;
 
 namespace aloe::fabric {
 

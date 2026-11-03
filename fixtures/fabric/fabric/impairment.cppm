@@ -1,13 +1,15 @@
-#pragma once
+module;
 
-#include <aloe/core>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <span>
 
-namespace aloe::fabric {
+export module aloe.fabric:impairment;
+import aloe.core;
+
+export namespace aloe::fabric {
 
     /// What happens to one frame as it leaves a port. A drop still counts as transmitted.
     enum class Action : std::uint8_t {

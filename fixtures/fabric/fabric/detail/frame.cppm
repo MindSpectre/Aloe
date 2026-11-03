@@ -1,15 +1,17 @@
-#pragma once
+module;
 
 #include <algorithm>
-#include <aloe/device>
-#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <utility>
 
-namespace aloe::fabric::detail {
+export module aloe.fabric:frame;
+import aloe.device;
+import aloe.wire;
+
+export namespace aloe::fabric::detail {
 
     inline constexpr std::uint16_t ethertype_ipv4     = 0x0800;
     inline constexpr std::size_t ipv4_minimum_header  = 20;
@@ -32,16 +34,16 @@ namespace aloe::fabric::detail {
         std::uint16_t source_port      = 0;
         std::uint16_t destination_port = 0;
 
-        [[nodiscard]] std::span<const std::byte> header(const std::span<const std::byte> frame) const noexcept {
+        [[nodiscard]] inline std::span<const std::byte> header(const std::span<const std::byte> frame) const noexcept {
             return frame.subspan(wire::EthernetHeader::size, header_length);
         }
 
-        [[nodiscard]] std::span<const std::byte> l4(const std::span<const std::byte> frame) const noexcept {
+        [[nodiscard]] inline std::span<const std::byte> l4(const std::span<const std::byte> frame) const noexcept {
             return frame.subspan(l4_offset, l4_length);
         }
 
         /// The absolute offset of the L4 checksum field, when the segment is TCP or UDP with a whole header.
-        [[nodiscard]] std::optional<std::size_t> l4_checksum_offset() const noexcept {
+        [[nodiscard]] inline std::optional<std::size_t> l4_checksum_offset() const noexcept {
             if (fragment) {
                 return std::nullopt;
             }

@@ -1,6 +1,5 @@
-#pragma once
+module;
 
-#include <aloe/device>
 #include <cassert>
 #include <cstddef>
 #include <memory>
@@ -8,7 +7,10 @@
 #include <span>
 #include <vector>
 
-namespace aloe::fabric {
+export module aloe.fabric:fabric_packet;
+import aloe.device;
+
+export namespace aloe::fabric {
 
     class Pool;
     class Port;
@@ -42,18 +44,18 @@ namespace aloe::fabric {
         Packet& operator=(const Packet&) = delete;
         ~Packet();
 
-        [[nodiscard]] bool empty() const noexcept {
+        [[nodiscard]] inline bool empty() const noexcept {
             return block_ == nullptr;
         }
 
         [[nodiscard]] std::span<std::byte> data() noexcept;
         [[nodiscard]] std::span<const std::byte> data() const noexcept;
 
-        [[nodiscard]] std::size_t size() const noexcept {
+        [[nodiscard]] inline std::size_t size() const noexcept {
             return end_ - begin_;
         }
 
-        [[nodiscard]] std::size_t headroom() const noexcept {
+        [[nodiscard]] inline std::size_t headroom() const noexcept {
             return begin_;
         }
 
@@ -67,15 +69,15 @@ namespace aloe::fabric {
         void trim_front(std::size_t count) noexcept;
         void trim_back(std::size_t count) noexcept;
 
-        [[nodiscard]] device::RxMetadata rx() const noexcept {
+        [[nodiscard]] inline device::RxMetadata rx() const noexcept {
             return rx_;
         }
 
-        [[nodiscard]] device::TxMetadata tx() const noexcept {
+        [[nodiscard]] inline device::TxMetadata tx() const noexcept {
             return tx_;
         }
 
-        void set_tx(const device::TxMetadata& tx) noexcept {
+        inline void set_tx(const device::TxMetadata& tx) noexcept {
             assert(!lent() && "a lent packet is not written");
             tx_ = tx;
         }
@@ -83,11 +85,11 @@ namespace aloe::fabric {
         /// A second handle over the same block, for the port to transmit: the loan. One at a time; not empty.
         [[nodiscard]] Packet lend() noexcept;
         /// True while a handle from `lend()` is alive: in a ring, or in the port's in-flight list.
-        [[nodiscard]] bool lent() const noexcept {
+        [[nodiscard]] inline bool lent() const noexcept {
             return block_ != nullptr && block_->lent;
         }
         /// True on the handle `lend()` returned, false on the lender.
-        [[nodiscard]] bool borrowed() const noexcept {
+        [[nodiscard]] inline bool borrowed() const noexcept {
             return borrowed_;
         }
 
@@ -97,7 +99,7 @@ namespace aloe::fabric {
 
         Packet(Pool& pool, detail::Block& block) noexcept;
 
-        void set_rx(const device::RxMetadata& rx) noexcept {
+        inline void set_rx(const device::RxMetadata& rx) noexcept {
             rx_ = rx;
         }
 
@@ -131,15 +133,15 @@ namespace aloe::fabric {
         /// An empty packet with full headroom, or nothing when every block is out.
         [[nodiscard]] std::optional<Packet> allocate() noexcept;
 
-        [[nodiscard]] std::size_t available() const noexcept {
+        [[nodiscard]] inline std::size_t available() const noexcept {
             return free_.size();
         }
 
-        [[nodiscard]] std::size_t size() const noexcept {
+        [[nodiscard]] inline std::size_t size() const noexcept {
             return blocks_.size();
         }
 
-        [[nodiscard]] std::size_t data_capacity() const noexcept {
+        [[nodiscard]] inline std::size_t data_capacity() const noexcept {
             return data_capacity_;
         }
 

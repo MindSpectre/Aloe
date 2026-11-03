@@ -1,3 +1,5 @@
+module;
+
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -6,7 +8,8 @@
 #include <span>
 #include <utility>
 
-#include <fabric_packet.hpp>
+module aloe.fabric;
+import aloe.device;
 
 namespace aloe::fabric {
 
