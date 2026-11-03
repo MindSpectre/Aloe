@@ -1,13 +1,15 @@
-#pragma once
+module;
 
-#include <aloe/core>
 #include <array>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 
-namespace aloe::loop {
+export module aloe.loop:timer_wheel;
+import aloe.core;
+
+export namespace aloe::loop {
 
     /**
      * @brief An intrusive timer node: a deadline and what to call when it is reached.
@@ -30,11 +32,11 @@ namespace aloe::loop {
         Timer(Timer&&)                 = delete;
         Timer& operator=(Timer&&)      = delete;
 
-        ~Timer() {
+        inline ~Timer() {
             assert(!armed() && "a Timer is destroyed while armed; cancel it first");
         }
 
-        [[nodiscard]] bool armed() const noexcept {
+        [[nodiscard]] inline bool armed() const noexcept {
             return next != nullptr;
         }
 
@@ -77,11 +79,11 @@ namespace aloe::loop {
         /// due list.
         [[nodiscard]] std::size_t advance(core::TimePoint now) noexcept;
 
-        [[nodiscard]] std::size_t pending() const noexcept {
+        [[nodiscard]] inline std::size_t pending() const noexcept {
             return armed_;
         }
 
-        [[nodiscard]] core::Duration resolution() const noexcept {
+        [[nodiscard]] inline core::Duration resolution() const noexcept {
             return resolution_;
         }
 

@@ -1,10 +1,11 @@
-#pragma once
+module;
 
 #include <atomic>
 
-#include <work.hpp>
+export module aloe.loop:inbox;
+import :work;
 
-namespace aloe::loop {
+export namespace aloe::loop {
 
     /**
      * @brief Multi-producer, single-consumer intrusive queue of Work: a shard's inbox.
@@ -27,13 +28,13 @@ namespace aloe::loop {
         Inbox& operator=(Inbox&&)      = delete;
         ~Inbox()                       = default;
 
-        void push(Work& work) noexcept {
+        inline void push(Work& work) noexcept {
             work.next.store(nullptr, std::memory_order_relaxed);
             Work* previous = tail_.exchange(&work, std::memory_order_acq_rel);
             previous->next.store(&work, std::memory_order_release);
         }
 
-        [[nodiscard]] Work* pop() noexcept {
+        [[nodiscard]] inline Work* pop() noexcept {
             Work* front = head_;
             Work* next  = front->next.load(std::memory_order_acquire);
             if (front == &stub_) {
@@ -61,7 +62,7 @@ namespace aloe::loop {
         }
 
         /// Consumer thread only. False while anything is queued or on its way.
-        [[nodiscard]] bool empty() const noexcept {
+        [[nodiscard]] inline bool empty() const noexcept {
             return head_ == &stub_ && tail_.load(std::memory_order_acquire) == &stub_;
         }
 

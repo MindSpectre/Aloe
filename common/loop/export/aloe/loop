@@ -7,9 +7,22 @@
  * Consumers link Aloe::Common::Loop and write `#include <aloe/loop>`.
  */
 
-#include <counters.hpp>
-#include <inbox.hpp>
-#include <run_queue.hpp>
-#include <shard_queue.hpp>
-#include <timer_wheel.hpp>
-#include <work.hpp>
+#include <aloe/core>
+#include <aloe/device>
+#include <aloe/wire>
+
+// Every standard and system header the module's interface units include, textually before the import: clang 22
+// rejects libstdc++'s locale redeclarations included after an import (ledger 07).
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cassert>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <utility>
+#include <vector>
+
+import aloe.loop;

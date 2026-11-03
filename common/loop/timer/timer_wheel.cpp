@@ -1,9 +1,13 @@
+module;
+
 #include <cassert>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 
-#include <timer_wheel.hpp>
+module aloe.loop;
+import aloe.core;
 
 namespace aloe::loop {
 

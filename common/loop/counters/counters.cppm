@@ -1,8 +1,10 @@
-#pragma once
+module;
 
 #include <cstdint>
 
-namespace aloe::loop {
+export module aloe.loop:counters;
+
+export namespace aloe::loop {
 
     /// Per-shard counters, all monotonic. Read on the shard's thread, or after the shard has stopped.
     struct ShardCounters {

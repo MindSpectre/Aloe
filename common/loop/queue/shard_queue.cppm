@@ -1,9 +1,6 @@
-#pragma once
+module;
 
 #include <algorithm>
-#include <aloe/core>
-#include <aloe/device>
-#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -11,10 +8,13 @@
 #include <utility>
 #include <vector>
 
-#include <counters.hpp>
+export module aloe.loop:shard_queue;
+import aloe.core;
+import aloe.device;
+import aloe.wire;
+import :counters;
 
-
-namespace aloe::loop {
+export namespace aloe::loop {
 
     /**
      * @brief One queue of a device as the stack sees it: allocate, transmit, and the device's facts.

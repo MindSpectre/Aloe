@@ -1,8 +1,10 @@
-#pragma once
+module;
 
 #include <atomic>
 
-namespace aloe::loop {
+export module aloe.loop:work;
+
+export namespace aloe::loop {
 
     /**
      * @brief The intrusive node every unit of ready work is.
