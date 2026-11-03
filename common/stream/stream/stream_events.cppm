@@ -1,10 +1,12 @@
-#pragma once
+module;
 
 #include <cstdint>
 #include <initializer_list>
 #include <utility>
 
-namespace aloe::stream {
+export module aloe.stream:stream_events;
+
+export namespace aloe::stream {
 
     /// What a stream reports; each is an edge, raised when the condition becomes true.
     enum class Event : std::uint16_t {

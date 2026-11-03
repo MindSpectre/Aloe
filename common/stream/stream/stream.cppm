@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <algorithm>
 #include <concepts>
@@ -9,9 +9,10 @@
 #include <span>
 #include <tuple>
 
-#include <stream_events.hpp>
+export module aloe.stream:stream;
+import :stream_events;
 
-namespace aloe::stream {
+export namespace aloe::stream {
 
     /**
      * @brief A view over the unread bytes of a stream: a forward range of chunks, each a span into
