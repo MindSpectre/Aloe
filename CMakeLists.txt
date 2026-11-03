@@ -99,6 +99,9 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     # CMake 4.3's BMI-only command passes flags clang then calls unused, which -Werror
     # turns into an error (ledger 05).
     list(APPEND general_compile_options -Wno-unused-command-line-argument)
+    # quill's package adds this to every target that links it. Set for all targets, so quill's consumers do not differ
+    # from the modules they import by a flag, and CMake builds no synthesized BMIs for them (ledgers 08 and 10).
+    list(APPEND general_compile_options -Wno-gnu-zero-variadic-macro-arguments)
 endif ()
 
 # Target compile options land after CMAKE_CXX_FLAGS on the command line, so a

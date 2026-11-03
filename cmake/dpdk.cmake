@@ -56,7 +56,23 @@ if ("-march=native" IN_LIST ALOE_DPDK_STATIC_CFLAGS_OTHER)
             "Build it with -Dplatform=generic, as triplets/x64-linux-clang.cmake does.")
 endif ()
 
+# The include directories travel inside the compile options as well. CMake 4.4 builds a module a DPDK consumer
+# imports in a synthesized target that takes the consumer's compile options but not its include directories, and
+# the forced include is not found there without them (docs/superpowers/experiments/modules/issues, ledger 09).
+# The compiler's own directories (DPDK's pkg-config data names /usr/include) are left out: an explicit -isystem for
+# one of them puts it ahead of libstdc++'s, and <cstdlib>'s #include_next no longer finds <stdlib.h>.
+set(_aloe_dpdk_isystem "")
+foreach (_aloe_dpdk_include_dir IN LISTS ALOE_DPDK_STATIC_INCLUDE_DIRS)
+    cmake_path(NORMAL_PATH _aloe_dpdk_include_dir)
+    string(REGEX REPLACE "(.)/$" "\\1" _aloe_dpdk_include_dir "${_aloe_dpdk_include_dir}")
+    if (NOT _aloe_dpdk_include_dir IN_LIST CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
+        list(APPEND _aloe_dpdk_isystem "-isystem" "${_aloe_dpdk_include_dir}")
+    endif ()
+endforeach ()
+
+list(JOIN _aloe_dpdk_isystem " " _aloe_dpdk_isystem_flags)
 list(JOIN ALOE_DPDK_STATIC_CFLAGS_OTHER " " _aloe_dpdk_compile_flags)
+string(PREPEND _aloe_dpdk_compile_flags "${_aloe_dpdk_isystem_flags} ")
 
 add_library(Aloe.Dpdk INTERFACE)
 target_include_directories(Aloe.Dpdk SYSTEM INTERFACE ${ALOE_DPDK_STATIC_INCLUDE_DIRS})

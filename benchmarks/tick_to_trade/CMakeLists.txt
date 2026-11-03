@@ -51,6 +51,10 @@ target_link_libraries(${TICK_TO_TRADE}.Harness PUBLIC
         Aloe::Common::Wire
         Aloe::Fixtures::Frames
         Threads::Threads
+        # Runtime is an INTERFACE library that forwards Log. CMake 4.4 gives a target the plain BMIs of a module it
+        # reaches only through an INTERFACE library, beside the synthesized ones of the modules it links directly, and
+        # clang cannot use the mix (ledger 10). Linked directly, Log gets synthesized BMIs too.
+        Aloe::Common::Log
 )
 add_library(Aloe::Benchmarks::Harness ALIAS ${TICK_TO_TRADE}.Harness)
 ##############################################################################
