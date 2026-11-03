@@ -1,3 +1,5 @@
+#include "port.hpp"
+
 #include <algorithm>
 #include <aloe/core>
 #include <aloe/wire>
@@ -16,7 +18,6 @@
 #include <vector>
 
 #include <eal.hpp>
-#include <port.hpp>
 #include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_ether.h>

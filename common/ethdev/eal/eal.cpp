@@ -1,3 +1,5 @@
+#include "eal.hpp"
+
 #include <atomic>
 #include <format>
 #include <span>
@@ -5,7 +7,6 @@
 #include <string_view>
 #include <vector>
 
-#include <eal.hpp>
 #include <rte_eal.h>
 #include <rte_errno.h>
 #include <rte_lcore.h>

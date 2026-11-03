@@ -1,3 +1,5 @@
+#include "fabric.hpp"
+
 #include <algorithm>
 #include <aloe/wire>
 #include <cassert>
@@ -16,7 +18,6 @@
 #include <vector>
 
 #include <detail/frame.hpp>
-#include <fabric.hpp>
 #include <impairment.hpp>
 
 namespace aloe::fabric {

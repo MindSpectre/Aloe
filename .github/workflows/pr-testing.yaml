@@ -105,6 +105,15 @@ jobs:
             ${{ steps.container.outputs.image }} \
             ./scripts/check-format.sh
 
+      # The include rules of codestyle.md, which the pre-commit hook also checks on staged files.
+      - name: Include check
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            ${{ steps.container.outputs.image }} \
+            ./scripts/check-includes.sh
+
       # Both caches are populated on main by cache-warm.yaml. Actions caches are
       # branch-scoped: a PR can read its own ref and the default branch, nothing
       # else. Without that workflow every PR run is cold no matter what is saved

@@ -1,9 +1,9 @@
+#include "timer_wheel.hpp"
+
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
-
-#include <timer_wheel.hpp>
 
 namespace aloe::loop {
 

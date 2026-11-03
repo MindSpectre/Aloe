@@ -32,6 +32,8 @@ foreach (scenario IN ITEMS
         allows_deleting_a_source
         missing_clang_format_blocks_a_source_commit
         missing_clang_format_does_not_block_a_docs_commit
+        rejects_an_include_of_another_modules_header
+        accepts_an_include_of_another_modules_umbrella
         whole_tree_mode_checks_files_that_are_not_staged)
     add_test(
             NAME ${FUNCTIONAL_TESTING_TARGET}.Hooks.PreCommit.${scenario}

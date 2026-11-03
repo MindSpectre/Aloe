@@ -1,3 +1,5 @@
+#include "task_scope.hpp"
+
 #include <aloe/core>
 #include <aloe/log>
 #include <cassert>
@@ -6,8 +8,6 @@
 #include <string>
 #include <thread>
 #include <utility>
-
-#include <task_scope.hpp>
 
 namespace aloe::runtime {
 

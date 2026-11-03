@@ -22,18 +22,19 @@ cmake --build --preset debug
 ctest --preset debug             # all tests
 ctest --preset debug -L unit     # or: integration, functional
 ./scripts/check-format.sh        # every .cpp/.hpp against .clang-format
+./scripts/check-includes.sh      # every include against the rules in codestyle.md
 ```
 
 - Every configure, build and test preset shares one name. The full list is in
   `CMakePresets.json` and `docs/guides/getting-started.md`.
 - A change is done when `debug`, `gcc-debug`, `asan` and `tsan` all build and pass,
-  and the format check passes. PR CI builds the `ci` preset only, so the sanitizer
+  and the format and include checks pass. PR CI builds the `ci` preset only, so the sanitizer
   and GCC runs are local. clang-tidy runs inside the clang builds and its
   warnings are errors, so a clean clang build is the lint check.
 - A pre-commit hook (`.githooks/pre-commit`) runs `./scripts/check-format.sh --staged`
-  on the staged `.cpp`/`.hpp` files. The first configure switches it on by setting
-  `core.hooksPath`, unless one is already set. CI runs `./scripts/check-format.sh` on
-  every pull request, so `git commit --no-verify` does not get past it.
+  and `./scripts/check-includes.sh --staged` on the staged C++ files. The first configure
+  switches it on by setting `core.hooksPath`, unless one is already set. CI runs both
+  scripts on every pull request, so `git commit --no-verify` does not get past it.
 - Tests need no root, no hugepages and no network card. Keep it that way.
 - `build/` and `vcpkg/` are generated and git-ignored.
 
@@ -84,6 +85,11 @@ basenames are unique across modules: `packet.hpp` is the concept,
   tools, installed by `scripts/install-linux.sh`.
 - **No C++ modules.** `CMAKE_CXX_SCAN_FOR_MODULES` stays `OFF`; with it on,
   GCC 16 crashes inside stdexec.
+- **Includes.** A `.cpp` includes its own header as `#include "name.hpp"`, the only quoted include;
+  a header of the same module is `#include <file.hpp>`; anything from another module comes through
+  its umbrella, `#include <aloe/module>`, never one of its headers, and a module never includes its own
+  umbrella. Tests, examples and the benchmark are not modules: they take every module through its
+  umbrella. `./scripts/check-includes.sh` enforces this.
 - **Public headers define no macros.** Implementation details go in a nested
   `detail` namespace.
 - **One class, one place.** A class's members are defined in its body, or in its

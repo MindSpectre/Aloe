@@ -629,34 +629,36 @@ namespace aloe::net {
 
 ## Include Organization
 
-Order (separated by blank lines):
+Order (separated by blank lines), which `.clang-format` produces itself:
 
 1. Corresponding header (for .cpp files)
-2. Standard library headers
-3. Third-party libraries
-4. Framework headers (`<aloe/...>`)
-5. Local project headers
+2. Headers without an extension: the standard library and the umbrellas (`<aloe/...>`), sorted together
+3. Headers ending in `.hpp` or `.h`: third-party libraries and the same module's headers
+
+What it cannot decide is how each one is spelled:
+
+- **A `.cpp` includes its own header in quotes**, `#include "flow_table.hpp"`, first. No other include
+  uses quotes.
+- **A header of the same module is included by its basename**, `#include <tcp_stack.hpp>`, wherever it
+  sits in the module; one in a `detail/` folder is `#include <detail/frame.hpp>`.
+- **Anything from another module comes through its umbrella**, `#include <aloe/net>`, never one of its
+  headers, even when only one is needed. A module never includes its own umbrella.
+- Tests, examples and the benchmark are not modules: they include every module through its umbrella,
+  and their own helpers by basename.
 
 ```cpp
-#include "query_compiler.hpp"
+// a .cpp in tcp
+#include "flow_table.hpp"
 
 #include <algorithm>
-#include <string>
+#include <aloe/core>
+#include <aloe/wire>
+#include <cstdint>
 
-#include <stdexec/execution.hpp>
-
-#include <aloe/execution>
-
-#include <segment.hpp>
-#include "local_helper.hpp"
+#include <tcp_counters.hpp>
 ```
 
-Use angle brackets for library headers, quotes for same-directory:
-
-```cpp
-#include <strings.hpp>   // Library header
-#include "local_impl.hpp"      // Same directory
-```
+`./scripts/check-includes.sh` checks every source against these rules, in the pre-commit hook and in CI.
 
 ## Type Aliases
 
