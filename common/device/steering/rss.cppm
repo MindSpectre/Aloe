@@ -1,7 +1,6 @@
-#pragma once
+module;
 
 #include <algorithm>
-#include <aloe/wire>
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -11,7 +10,10 @@
 #include <stdexcept>
 #include <vector>
 
-namespace aloe::device {
+export module aloe.device:rss;
+import aloe.wire;
+
+export namespace aloe::device {
 
     /// Which fields of an IPv4 packet the hash covers.
     struct RssHashTypes {

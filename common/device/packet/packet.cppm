@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <concepts>
 #include <cstddef>
@@ -6,7 +6,9 @@
 #include <optional>
 #include <span>
 
-namespace aloe::device {
+export module aloe.device:packet;
+
+export namespace aloe::device {
 
     /// Bytes of headroom every freshly allocated packet has in front of its data, on every backend.
     inline constexpr std::size_t packet_headroom = 128;

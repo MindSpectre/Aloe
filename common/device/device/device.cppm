@@ -1,16 +1,17 @@
-#pragma once
+module;
 
-#include <aloe/wire>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
 
-#include <packet.hpp>
-#include <rss.hpp>
+export module aloe.device:device;
+import aloe.wire;
+import :packet;
+import :rss;
 
-namespace aloe::device {
+export namespace aloe::device {
 
     /**
      * @brief What a device can do, fixed after construction.

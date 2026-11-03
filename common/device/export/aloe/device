@@ -7,6 +7,19 @@
  * Aloe::Common::Device and write `#include <aloe/device>`.
  */
 
-#include <device.hpp>
-#include <packet.hpp>
-#include <rss.hpp>
+#include <aloe/wire>
+
+// Every standard and system header the module's interface units include, textually before the import: clang 22
+// rejects libstdc++'s locale redeclarations included after an import (ledger 07).
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <span>
+#include <stdexcept>
+#include <vector>
+
+import aloe.device;

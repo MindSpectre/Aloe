@@ -1,58 +1,31 @@
 set(DEVICE ${COMMON}.Device)
 
 ##############################################################################
-# Receive-side scaling: the Toeplitz hash and the steering rule
+# Device: the module aloe.device, one partition per former header, in the
+# folder the header was in.
+#   packet: the Packet concept and its metadata.
+#   steering: receive-side scaling, the Toeplitz hash and the steering rule.
+#   device: the Device concept, capabilities and counters.
+# The umbrella export/aloe/device imports it.
 ##############################################################################
-add_library(${DEVICE}.Steering INTERFACE
-        steering/rss.hpp
-)
-target_include_directories(${DEVICE}.Steering INTERFACE
-        steering/
-)
-target_link_libraries(${DEVICE}.Steering INTERFACE
-        Aloe::Common::Wire
-)
-##############################################################################
-
-##############################################################################
-# The Packet concept and its metadata
-##############################################################################
-add_library(${DEVICE}.Packet INTERFACE
-        packet/packet.hpp
-)
-target_include_directories(${DEVICE}.Packet INTERFACE
-        packet/
-)
-##############################################################################
-
-##############################################################################
-# The Device concept, capabilities and counters
-##############################################################################
-add_library(${DEVICE}.Device INTERFACE
-        device/device.hpp
-)
-target_include_directories(${DEVICE}.Device INTERFACE
-        device/
-)
-target_link_libraries(${DEVICE}.Device INTERFACE
-        ${DEVICE}.Packet
-        ${DEVICE}.Steering
-        Aloe::Common::Wire
-)
-##############################################################################
-
-##############################################################################
-# Device exported library
-##############################################################################
-add_combined_library(${DEVICE}
-        DIRECTORIES
-        export
-        SOURCES
+add_library(${DEVICE} STATIC
         export/aloe/device
-        LIBRARIES
-        ${DEVICE}.Steering
-        ${DEVICE}.Packet
-        ${DEVICE}.Device
+)
+target_sources(${DEVICE} PUBLIC
+        FILE_SET modules TYPE CXX_MODULES
+        BASE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        FILES
+        device.cppm
+        device/device.cppm
+        packet/packet.cppm
+        steering/rss.cppm
+)
+target_include_directories(${DEVICE} PUBLIC
+        export
+)
+target_link_libraries(${DEVICE} PUBLIC
+        Aloe::Common::Wire
 )
 
 add_library(Aloe::Common::Device ALIAS ${DEVICE})
