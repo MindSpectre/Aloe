@@ -1,0 +1,20 @@
+module       bare_same bare_cross umbrella imports   lines
+core                 3          0        0       0     313
+device               2          0        2       0     349
+ethdev               4          0        6       0     400
+execution            0          0        0       0      53
+log                  0          0        1       0     194
+loop                 4          0        4       0     448
+net                  4          0       10       0     956
+runtime             24          0       42       0    2621
+stream               1          0        0       0     195
+tcp                 46          0       45       0    4321
+wire                21          0        0       0    1090
+fabric               5          0        8       0     547
+frames               5          0        6       0     658
+scenario            24          0       34       0     569
+tests                0          0      276       0    1392
+benchmarks           0          0       39       0    1153
+examples             0          0       23       0       0
+
+total bare cross-module includes: 0
