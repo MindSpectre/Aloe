@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <algorithm>
 #include <array>
@@ -12,9 +12,10 @@
 #include <string>
 #include <string_view>
 
-#include <mac_address.hpp>
+export module aloe.wire:ipv4_address;
+import :mac_address;
 
-namespace aloe::wire {
+export namespace aloe::wire {
 
     /**
      * @brief A 32-bit IPv4 address, stored in network byte order.
@@ -135,7 +136,7 @@ namespace aloe::wire {
                     std::to_integer<std::uint8_t>(bytes_[3])};
         }
 
-        [[nodiscard]] std::string to_string() const {
+        [[nodiscard]] inline std::string to_string() const {
             return std::format("{}.{}.{}.{}",
                                std::to_integer<unsigned>(bytes_[0]),
                                std::to_integer<unsigned>(bytes_[1]),
@@ -147,7 +148,7 @@ namespace aloe::wire {
 
         friend constexpr std::strong_ordering operator<=>(const Ipv4Address&, const Ipv4Address&) noexcept = default;
 
-        friend std::ostream& operator<<(std::ostream& stream, const Ipv4Address& address) {
+        friend inline std::ostream& operator<<(std::ostream& stream, const Ipv4Address& address) {
             return stream << address.to_string();
         }
 

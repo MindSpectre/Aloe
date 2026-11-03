@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <cassert>
 #include <cstddef>
@@ -8,10 +8,11 @@
 #include <span>
 #include <utility>
 
-#include <bytes.hpp>
-#include <tcp_sequence.hpp>
+export module aloe.wire:tcp_header;
+import :bytes;
+import :tcp_sequence;
 
-namespace aloe::wire {
+export namespace aloe::wire {
 
     enum class TcpFlag : std::uint8_t {
         Fin = 0x01,

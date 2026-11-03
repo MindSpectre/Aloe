@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <cassert>
 #include <cstddef>
@@ -7,9 +7,10 @@
 #include <span>
 #include <utility>
 
-#include <bytes.hpp>
+export module aloe.wire:icmp;
+import :bytes;
 
-namespace aloe::wire {
+export namespace aloe::wire {
 
     /// The ICMP types the brick acts on. Any other byte is still representable, and dropped.
     enum class IcmpType : std::uint8_t {

@@ -1,112 +1,42 @@
 set(WIRE ${COMMON}.Wire)
 
 ##############################################################################
-# Bytes: big-endian loads and stores, and the Internet checksum
+# Wire: the module aloe.wire, one partition per former header, in the folder
+# the header was in.
+#   bytes, checksum: big-endian loads and stores, and the Internet checksum.
+#   ethernet: the MAC address and the Ethernet header.
+#   ipv4: the address, the protocol numbers, the header and its checksums.
+#   arp: requests and replies for Ethernet over IPv4.
+#   icmp: the header of an echo request and reply.
+#   tcp: sequence arithmetic, the header and the options the brick reads.
+# The umbrella export/aloe/wire imports it.
 ##############################################################################
-add_library(${WIRE}.Bytes INTERFACE
-        bytes/bytes.hpp
-        checksum/checksum.hpp
-)
-target_include_directories(${WIRE}.Bytes INTERFACE
-        bytes/
-        checksum/
-)
-##############################################################################
-
-##############################################################################
-# Ethernet: the MAC address and the Ethernet header
-##############################################################################
-add_library(${WIRE}.Ethernet INTERFACE
-        ethernet/mac_address.hpp
-        ethernet/ethernet.hpp
-)
-target_include_directories(${WIRE}.Ethernet INTERFACE
-        ethernet/
-)
-target_link_libraries(${WIRE}.Ethernet INTERFACE
-        ${WIRE}.Bytes
-)
-##############################################################################
-
-##############################################################################
-# IPv4: the address, the protocol numbers, the header and its checksums
-##############################################################################
-add_library(${WIRE}.Ipv4 INTERFACE
-        ipv4/ipv4_address.hpp
-        ipv4/ipv4_subnet.hpp
-        ipv4/ipv4_protocol.hpp
-        ipv4/ipv4_header.hpp
-        ipv4/ipv4_checksum.hpp
-)
-target_include_directories(${WIRE}.Ipv4 INTERFACE
-        ipv4/
-)
-target_link_libraries(${WIRE}.Ipv4 INTERFACE
-        ${WIRE}.Bytes
-        ${WIRE}.Ethernet
-)
-##############################################################################
-
-##############################################################################
-# ARP: requests and replies for Ethernet over IPv4
-##############################################################################
-add_library(${WIRE}.Arp INTERFACE
-        arp/arp.hpp
-)
-target_include_directories(${WIRE}.Arp INTERFACE
-        arp/
-)
-target_link_libraries(${WIRE}.Arp INTERFACE
-        ${WIRE}.Ethernet
-        ${WIRE}.Ipv4
-)
-##############################################################################
-
-##############################################################################
-# ICMP: the header of an echo request and reply
-##############################################################################
-add_library(${WIRE}.Icmp INTERFACE
-        icmp/icmp.hpp
-)
-target_include_directories(${WIRE}.Icmp INTERFACE
-        icmp/
-)
-target_link_libraries(${WIRE}.Icmp INTERFACE
-        ${WIRE}.Bytes
-)
-##############################################################################
-
-##############################################################################
-# TCP: sequence arithmetic, the header and the options the brick reads
-##############################################################################
-add_library(${WIRE}.Tcp INTERFACE
-        tcp/tcp_sequence.hpp
-        tcp/tcp_header.hpp
-        tcp/tcp_options.hpp
-)
-target_include_directories(${WIRE}.Tcp INTERFACE
-        tcp/
-)
-target_link_libraries(${WIRE}.Tcp INTERFACE
-        ${WIRE}.Bytes
-)
-##############################################################################
-
-##############################################################################
-# Wire exported library
-##############################################################################
-add_combined_library(${WIRE}
-        DIRECTORIES
-        export
-        SOURCES
+add_library(${WIRE} STATIC
         export/aloe/wire
-        LIBRARIES
-        ${WIRE}.Bytes
-        ${WIRE}.Ethernet
-        ${WIRE}.Ipv4
-        ${WIRE}.Arp
-        ${WIRE}.Icmp
-        ${WIRE}.Tcp
+)
+target_sources(${WIRE} PUBLIC
+        FILE_SET modules TYPE CXX_MODULES
+        BASE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        FILES
+        wire.cppm
+        bytes/bytes.cppm
+        checksum/checksum.cppm
+        ethernet/mac_address.cppm
+        ethernet/ethernet.cppm
+        ipv4/ipv4_address.cppm
+        ipv4/ipv4_subnet.cppm
+        ipv4/ipv4_protocol.cppm
+        ipv4/ipv4_header.cppm
+        ipv4/ipv4_checksum.cppm
+        arp/arp.cppm
+        icmp/icmp.cppm
+        tcp/tcp_sequence.cppm
+        tcp/tcp_header.cppm
+        tcp/tcp_options.cppm
+)
+target_include_directories(${WIRE} PUBLIC
+        export
 )
 
 add_library(Aloe::Common::Wire ALIAS ${WIRE})

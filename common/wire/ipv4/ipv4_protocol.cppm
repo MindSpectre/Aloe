@@ -1,8 +1,10 @@
-#pragma once
+module;
 
 #include <cstdint>
 
-namespace aloe::wire {
+export module aloe.wire:ipv4_protocol;
+
+export namespace aloe::wire {
 
     /**
      * @brief An IPv4 protocol number: the `protocol` byte of the header.

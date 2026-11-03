@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <cassert>
 #include <cstddef>
@@ -7,12 +7,13 @@
 #include <span>
 #include <utility>
 
-#include <bytes.hpp>
-#include <ipv4_address.hpp>
-#include <ipv4_checksum.hpp>
-#include <ipv4_protocol.hpp>
+export module aloe.wire:ipv4_header;
+import :bytes;
+import :ipv4_address;
+import :ipv4_checksum;
+import :ipv4_protocol;
 
-namespace aloe::wire {
+export namespace aloe::wire {
 
     namespace detail {
         inline constexpr unsigned ipv4_flag_dont_fragment   = 0x4000U;

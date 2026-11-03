@@ -1,11 +1,13 @@
-#pragma once
+module;
 
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
-namespace aloe::wire {
+export module aloe.wire:bytes;
+
+export namespace aloe::wire {
 
     /// Reads a big-endian 16-bit value from the first two bytes.
     [[nodiscard]] constexpr std::uint16_t load_be16(const std::span<const std::byte> bytes) noexcept {

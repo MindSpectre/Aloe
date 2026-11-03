@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <array>
 #include <cassert>
@@ -7,12 +7,13 @@
 #include <span>
 #include <utility>
 
-#include <bytes.hpp>
-#include <checksum.hpp>
-#include <ipv4_address.hpp>
-#include <ipv4_protocol.hpp>
+export module aloe.wire:ipv4_checksum;
+import :bytes;
+import :checksum;
+import :ipv4_address;
+import :ipv4_protocol;
 
-namespace aloe::wire {
+export namespace aloe::wire {
 
     inline constexpr std::size_t ipv4_checksum_offset = 10;
 

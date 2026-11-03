@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <algorithm>
 #include <array>
@@ -13,7 +13,9 @@
 #include <string>
 #include <string_view>
 
-namespace aloe::wire {
+export module aloe.wire:mac_address;
+
+export namespace aloe::wire {
     namespace detail {
         [[nodiscard]] constexpr std::optional<unsigned> hex_digit(const char character) noexcept {
             if (character >= '0' && character <= '9') {
@@ -104,7 +106,7 @@ namespace aloe::wire {
             return (std::to_integer<unsigned>(bytes_[0]) & 1U) != 0;
         }
 
-        [[nodiscard]] std::string to_string() const {
+        [[nodiscard]] inline std::string to_string() const {
             return std::format("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                                std::to_integer<unsigned>(bytes_[0]),
                                std::to_integer<unsigned>(bytes_[1]),
@@ -118,7 +120,7 @@ namespace aloe::wire {
 
         friend constexpr std::strong_ordering operator<=>(const MacAddress&, const MacAddress&) noexcept = default;
 
-        friend std::ostream& operator<<(std::ostream& stream, const MacAddress& address) {
+        friend inline std::ostream& operator<<(std::ostream& stream, const MacAddress& address) {
             return stream << address.to_string();
         }
 

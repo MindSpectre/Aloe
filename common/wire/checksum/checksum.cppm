@@ -1,12 +1,13 @@
-#pragma once
+module;
 
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
-#include <bytes.hpp>
+export module aloe.wire:checksum;
+import :bytes;
 
-namespace aloe::wire {
+export namespace aloe::wire {
 
     /**
      * @brief Adds the 16-bit big-endian words of `data` to a running ones-complement sum.

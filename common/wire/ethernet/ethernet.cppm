@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <cassert>
 #include <cstddef>
@@ -6,10 +6,11 @@
 #include <optional>
 #include <span>
 
-#include <bytes.hpp>
-#include <mac_address.hpp>
+export module aloe.wire:ethernet;
+import :bytes;
+import :mac_address;
 
-namespace aloe::wire {
+export namespace aloe::wire {
 
     /// The ethertypes the brick acts on. Any other value is a frame it drops and counts.
     enum class EtherType : std::uint16_t {

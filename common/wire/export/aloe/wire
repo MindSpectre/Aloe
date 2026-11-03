@@ -6,17 +6,21 @@
  * Consumers link Aloe::Common::Wire and write `#include <aloe/wire>`.
  */
 
-#include <arp.hpp>
-#include <bytes.hpp>
-#include <checksum.hpp>
-#include <ethernet.hpp>
-#include <icmp.hpp>
-#include <ipv4_address.hpp>
-#include <ipv4_checksum.hpp>
-#include <ipv4_header.hpp>
-#include <ipv4_protocol.hpp>
-#include <ipv4_subnet.hpp>
-#include <mac_address.hpp>
-#include <tcp_header.hpp>
-#include <tcp_options.hpp>
-#include <tcp_sequence.hpp>
+// Every standard and system header the module's interface units include, textually before the import: clang 22
+// rejects libstdc++'s locale redeclarations included after an import (ledger 07).
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <compare>
+#include <cstddef>
+#include <cstdint>
+#include <format>
+#include <initializer_list>
+#include <optional>
+#include <ostream>
+#include <span>
+#include <string>
+#include <string_view>
+#include <utility>
+
+import aloe.wire;

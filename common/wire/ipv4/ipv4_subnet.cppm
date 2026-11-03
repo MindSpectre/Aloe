@@ -1,11 +1,12 @@
-#pragma once
+module;
 
 #include <cassert>
 #include <cstdint>
 
-#include <ipv4_address.hpp>
+export module aloe.wire:ipv4_subnet;
+import :ipv4_address;
 
-namespace aloe::wire {
+export namespace aloe::wire {
 
     /**
      * @brief An address with its prefix length: an interface's place on a subnet.

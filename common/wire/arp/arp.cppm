@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <cassert>
 #include <cstddef>
@@ -7,12 +7,13 @@
 #include <span>
 #include <utility>
 
-#include <bytes.hpp>
-#include <ethernet.hpp>
-#include <ipv4_address.hpp>
-#include <mac_address.hpp>
+export module aloe.wire:arp;
+import :bytes;
+import :ethernet;
+import :ipv4_address;
+import :mac_address;
 
-namespace aloe::wire {
+export namespace aloe::wire {
 
     enum class ArpOperation : std::uint16_t {
         Request = 1,

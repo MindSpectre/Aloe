@@ -1,8 +1,10 @@
-#pragma once
+module;
 
 #include <cstdint>
 
-namespace aloe::wire {
+export module aloe.wire:tcp_sequence;
+
+export namespace aloe::wire {
 
     /**
      * @brief A TCP sequence number with RFC 793 serial arithmetic.

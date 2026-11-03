@@ -1,4 +1,4 @@
-#pragma once
+module;
 
 #include <cassert>
 #include <cstddef>
@@ -6,9 +6,10 @@
 #include <optional>
 #include <span>
 
-#include <bytes.hpp>
+export module aloe.wire:tcp_options;
+import :bytes;
 
-namespace aloe::wire {
+export namespace aloe::wire {
 
     /**
      * @brief The TCP options the brick reads and writes: the maximum segment size and the RFC 7323 timestamps.
