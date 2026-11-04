@@ -90,6 +90,9 @@ basenames are unique across modules: `packet.hpp` is the concept,
   its umbrella, `#include <aloe/module>`, never one of its headers, and a module never includes its own
   umbrella. Tests, examples and the benchmark are not modules: they take every module through its
   umbrella. `./scripts/check-includes.sh` enforces this.
+- **Members that refer to other objects.** `std::unique_ptr` for owned memory, `T&` for a link the constructor
+  sets that is never null and never changes, `T*` only for one that can be null or is set later; no
+  `std::shared_ptr`. The table is in `codestyle.md`.
 - **Public headers define no macros.** Implementation details go in a nested
   `detail` namespace.
 - **One class, one place.** A class's members are defined in its body, or in its

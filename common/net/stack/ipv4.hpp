@@ -107,7 +107,7 @@ namespace aloe::net {
         /// Validates and throws std::invalid_argument; transmits nothing.
         Ipv4(loop::ShardQueue<Device>& owner, const Ipv4Config& config)
             : queue_{
-                  &owner
+                  owner
         },
               config_{validated(config)},
               subnet_{config.address, config.prefix},
@@ -161,7 +161,7 @@ namespace aloe::net {
         /// A packet with nothing in it and room for both headers in front: append the segment, then `send`.
         [[nodiscard]] std::optional<Packet> allocate() noexcept {
             core::force_non_const(this);  // the brick's mutable view of the queue, though only the pointee is written
-            return queue_->allocate();
+            return queue_.allocate();
         }
 
         /**
@@ -200,11 +200,11 @@ namespace aloe::net {
                                           .source         = config_.address,
                                           .destination    = request.destination};
             wire::EthernetHeader{
-                .destination = hop_mac, .source = queue_->mac(), .ethertype = std::to_underlying(wire::EtherType::Ipv4)}
+                .destination = hop_mac, .source = queue_.mac(), .ethertype = std::to_underlying(wire::EtherType::Ipv4)}
                 .write(frame.first(wire::EthernetHeader::size));
             header.write(frame.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size));
             packet.set_tx(finish_checksums(frame, header, request.checksum));
-            if (queue_->transmit(std::move(packet))) {
+            if (queue_.transmit(std::move(packet))) {
                 ++counters_.datagrams_sent;
                 return {};
             }
@@ -237,7 +237,7 @@ namespace aloe::net {
             }
             Prebuilt prebuilt{};
             wire::EthernetHeader{
-                .destination = *mac, .source = queue_->mac(), .ethertype = std::to_underlying(wire::EtherType::Ipv4)}
+                .destination = *mac, .source = queue_.mac(), .ethertype = std::to_underlying(wire::EtherType::Ipv4)}
                 .write(std::span<std::byte>{prebuilt.headers}.first(wire::EthernetHeader::size));
             wire::Ipv4Header{.total_length   = 0,
                              .identification = 0,
@@ -277,7 +277,7 @@ namespace aloe::net {
                     packet.size() >= Prebuilt::size + checksum_offset(request.checksum) + 2) &&
                    "a segment shorter than its checksum field");
             const std::size_t frame_size = packet.size();
-            if (frame_size > queue_->mtu() + wire::EthernetHeader::size) {
+            if (frame_size > queue_.mtu() + wire::EthernetHeader::size) {
                 ++counters_.send_oversized;
                 return std::unexpected{SendError::Oversized};
             }
@@ -296,7 +296,7 @@ namespace aloe::net {
             assert(prebuilt_names(frame, header) && "the frame's IPv4 header is not the request's Prebuilt");
             packet.set_tx(finish_checksums(frame, header, request.checksum));
             Packet handle = packet.lend();
-            if (queue_->transmit(std::move(handle))) {
+            if (queue_.transmit(std::move(handle))) {
                 ++counters_.datagrams_sent;
                 return {};
             }
@@ -343,11 +343,11 @@ namespace aloe::net {
 
         /// The shard queue the brick was built over: a transport reads its index, steering, ring and device there.
         [[nodiscard]] loop::ShardQueue<Device>& queue() noexcept {
-            return *queue_;
+            return queue_;
         }
 
         [[nodiscard]] const loop::ShardQueue<Device>& queue() const noexcept {
-            return *queue_;
+            return queue_;
         }
 
         /**
@@ -377,12 +377,12 @@ namespace aloe::net {
         }
 
         [[nodiscard]] std::uint16_t mtu() const noexcept {
-            return queue_->mtu();
+            return queue_.mtu();
         }
 
         /// What one `send` may carry: the MTU less the IPv4 header. TCP's MSS starts here.
         [[nodiscard]] std::uint16_t max_l4_size() const noexcept {
-            return static_cast<std::uint16_t>(queue_->mtu() - wire::Ipv4Header::size);
+            return static_cast<std::uint16_t>(queue_.mtu() - wire::Ipv4Header::size);
         }
 
         [[nodiscard]] const Ipv4Counters& counters() const noexcept {
@@ -477,7 +477,7 @@ namespace aloe::net {
                 ++counters_.dropped_short;
                 return;
             }
-            if (ethernet->destination != queue_->mac() && !ethernet->destination.is_broadcast()) {
+            if (ethernet->destination != queue_.mac() && !ethernet->destination.is_broadcast()) {
                 ++counters_.dropped_not_for_us;
                 return;
             }
@@ -523,11 +523,11 @@ namespace aloe::net {
                     learn_from_wire(arp->sender_ip, arp->sender_mac, now);
                 }
                 wire::EthernetHeader{.destination = arp->sender_mac,
-                                     .source      = queue_->mac(),
+                                     .source      = queue_.mac(),
                                      .ethertype   = std::to_underlying(wire::EtherType::Arp)}
                     .write(frame.first(wire::EthernetHeader::size));
                 wire::ArpPacket{.operation  = wire::ArpOperation::Reply,
-                                .sender_mac = queue_->mac(),
+                                .sender_mac = queue_.mac(),
                                 .sender_ip  = config_.address,
                                 .target_mac = arp->sender_mac,
                                 .target_ip  = arp->sender_ip}
@@ -628,7 +628,7 @@ namespace aloe::net {
 
         /// A request for `target`: broadcast for an unresolved entry, unicast to `known` for a stale one.
         void request_arp(const wire::Ipv4Address target, const std::optional<wire::MacAddress> known) noexcept {
-            std::optional<Packet> packet = queue_->allocate();
+            std::optional<Packet> packet = queue_.allocate();
             if (!packet) {
                 ++counters_.transmit_refused;
                 return;
@@ -640,11 +640,11 @@ namespace aloe::net {
                 return;
             }
             wire::EthernetHeader{.destination = known.value_or(wire::MacAddress::broadcast()),
-                                 .source      = queue_->mac(),
+                                 .source      = queue_.mac(),
                                  .ethertype   = std::to_underlying(wire::EtherType::Arp)}
                 .write(room->first(wire::EthernetHeader::size));
             wire::ArpPacket{.operation  = wire::ArpOperation::Request,
-                            .sender_mac = queue_->mac(),
+                            .sender_mac = queue_.mac(),
                             .sender_ip  = config_.address,
                             .target_mac = {},
                             .target_ip  = target}
@@ -655,7 +655,7 @@ namespace aloe::net {
 
         /// Transmits a frame the brick built: counts it under `sent`, or as refused.
         void transmit_built(Packet&& packet, std::uint64_t& sent) noexcept {
-            if (queue_->transmit(std::move(packet))) {
+            if (queue_.transmit(std::move(packet))) {
                 ++sent;
             } else {
                 ++counters_.transmit_refused;
@@ -693,7 +693,7 @@ namespace aloe::net {
             if (l4 != device::L4Checksum::None) {
                 const std::span<std::byte> field = segment.subspan(checksum_offset(l4), 2);
                 assert(wire::load_be16(field) == 0 && "the caller leaves the L4 checksum field zero");
-                if (queue_->capabilities().tx_l4_checksum) {
+                if (queue_.capabilities().tx_l4_checksum) {
                     wire::store_be16(field,
                                      wire::ipv4_pseudo_header_sum(header.source,
                                                                   header.destination,
@@ -709,7 +709,7 @@ namespace aloe::net {
                     wire::store_be16(field, sum);
                 }
             }
-            if (queue_->capabilities().tx_ipv4_checksum) {
+            if (queue_.capabilities().tx_ipv4_checksum) {
                 tx.fill_ipv4_checksum = true;  // the field is already zero
             } else {
                 wire::store_be16(ip.subspan(wire::ipv4_checksum_offset, 2), wire::ipv4_header_checksum(ip));
@@ -749,7 +749,7 @@ namespace aloe::net {
                                                 .source         = config_.address,
                                                 .destination    = header.source};
             wire::EthernetHeader{.destination = ethernet.source,  // the last hop is the next hop back, router or not
-                                 .source      = queue_->mac(),
+                                 .source      = queue_.mac(),
                                  .ethertype   = std::to_underlying(wire::EtherType::Ipv4)}
                 .write(reply.first(wire::EthernetHeader::size));
             reply_header.write(reply.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size));
@@ -762,7 +762,7 @@ namespace aloe::net {
             transmit_built(std::move(packet), counters_.echo_replies_sent);
         }
 
-        loop::ShardQueue<Device>* queue_;
+        loop::ShardQueue<Device>& queue_;
         Ipv4Config config_;
         wire::Ipv4Subnet subnet_;
         ArpCache arp_;

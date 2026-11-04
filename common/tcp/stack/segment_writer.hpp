@@ -51,8 +51,8 @@ namespace aloe::tcp::detail {
         using Packet = Ip::Packet;
 
         SegmentWriter(Ip& ip, TcpCounters& counters) noexcept
-            : ip_{&ip},
-              counters_{&counters} {
+            : ip_{ip},
+              counters_{counters} {
         }
 
         /**
@@ -74,7 +74,7 @@ namespace aloe::tcp::detail {
                 framed ? std::optional{packet.data().first(header_size)} : packet.prepend(header_size);
             assert(headers.has_value() && "a packet from allocate() has room for the headers");
             if (!headers) {
-                ++counters_->send_refused;  // unreachable by construction; refused in a release build
+                ++counters_.send_refused;  // unreachable by construction; refused in a release build
                 return std::unexpected{net::SendError::Refused};
             }
             if (const std::expected<void, net::SendError> built = refresh(frame, destination, now); !built) {
@@ -83,7 +83,7 @@ namespace aloe::tcp::detail {
             }
             std::ranges::copy(frame.headers.headers, headers->begin());
             write(headers->subspan(net::Prebuilt::size), segment);
-            const std::expected<void, net::SendError> sent = ip_->send_frame(packet, request(destination), now);
+            const std::expected<void, net::SendError> sent = ip_.send_frame(packet, request(destination), now);
             if (!sent) {
                 count(sent.error());
             }
@@ -95,18 +95,18 @@ namespace aloe::tcp::detail {
         [[nodiscard]] std::expected<void, net::SendError> send_detached(const wire::Ipv4Address destination,
                                                                         const OutgoingSegment& segment,
                                                                         const core::TimePoint now) noexcept {
-            std::optional<Packet> packet = ip_->allocate();
+            std::optional<Packet> packet = ip_.allocate();
             if (!packet) {
-                ++counters_->send_refused;
+                ++counters_.send_refused;
                 return std::unexpected{net::SendError::Refused};
             }
             const std::optional<std::span<std::byte>> room = packet->append(segment.size());
             if (!room) {
-                ++counters_->send_refused;
+                ++counters_.send_refused;
                 return std::unexpected{net::SendError::Refused};
             }
             write(*room, segment);
-            const std::expected<void, net::SendError> sent = ip_->send(std::move(*packet), request(destination), now);
+            const std::expected<void, net::SendError> sent = ip_.send(std::move(*packet), request(destination), now);
             if (!sent) {
                 count(sent.error());  // the packet is still in `packet` and goes back to the pool with it
             }
@@ -123,7 +123,7 @@ namespace aloe::tcp::detail {
                                                  const std::size_t header_size,
                                                  const std::size_t skip,
                                                  const std::size_t payload) noexcept {
-            std::optional<Packet> fresh = ip_->allocate();
+            std::optional<Packet> fresh = ip_.allocate();
             if (!fresh) {
                 return std::nullopt;
             }
@@ -163,11 +163,11 @@ namespace aloe::tcp::detail {
         /// brick's generation moved. On a failure the old headers stay stale.
         [[nodiscard]] std::expected<void, net::SendError>
         refresh(FrameTemplate& frame, const wire::Ipv4Address destination, const core::TimePoint now) noexcept {
-            if (!frame.stale(now, ip_->generation())) {
+            if (!frame.stale(now, ip_.generation())) {
                 return {};
             }
             const std::expected<net::Prebuilt, net::SendError> built =
-                ip_->prebuild(destination, wire::Ipv4Protocol::Tcp, now);
+                ip_.prebuild(destination, wire::Ipv4Protocol::Tcp, now);
             if (!built) {
                 return std::unexpected{built.error()};
             }
@@ -178,14 +178,14 @@ namespace aloe::tcp::detail {
 
         void count(const net::SendError error) noexcept {
             if (error == net::SendError::Unresolved) {
-                ++counters_->send_unresolved;
+                ++counters_.send_unresolved;
             } else {
-                ++counters_->send_refused;
+                ++counters_.send_refused;
             }
         }
 
-        Ip* ip_                = nullptr;
-        TcpCounters* counters_ = nullptr;
+        Ip& ip_;
+        TcpCounters& counters_;
     };
 
 }  // namespace aloe::tcp::detail

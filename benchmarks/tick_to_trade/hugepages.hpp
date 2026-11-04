@@ -74,7 +74,7 @@ namespace aloe::benchmarks {
         }
 
     private:
-        HugepageSysfs* sysfs_;
+        HugepageSysfs& sysfs_;
         std::uint64_t original_    = 0;
         std::uint64_t raised_to_   = 0;
         std::uint64_t free_before_ = 0;

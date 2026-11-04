@@ -25,7 +25,7 @@ namespace aloe::benchmarks {
         using Packet = typename Device::Packet;
 
         StampedDevice(Device& owner, std::span<std::uint64_t> stops) noexcept
-            : device_{&owner},
+            : device_{owner},
               stops_{stops} {
         }
 
@@ -44,44 +44,44 @@ namespace aloe::benchmarks {
         }
 
         [[nodiscard]] Device& device() noexcept {
-            return *device_;
+            return device_;
         }
 
         [[nodiscard]] std::uint16_t queue_count() const noexcept {
-            return device_->queue_count();
+            return device_.queue_count();
         }
 
         [[nodiscard]] wire::MacAddress mac() const noexcept {
-            return device_->mac();
+            return device_.mac();
         }
 
         [[nodiscard]] std::uint16_t mtu() const noexcept {
-            return device_->mtu();
+            return device_.mtu();
         }
 
         [[nodiscard]] bool link_up() const noexcept {
-            return device_->link_up();
+            return device_.link_up();
         }
 
         [[nodiscard]] const device::Capabilities& capabilities() const noexcept {
-            return device_->capabilities();
+            return device_.capabilities();
         }
 
         [[nodiscard]] const device::RssDescription& steering() const noexcept {
-            return device_->steering();
+            return device_.steering();
         }
 
         [[nodiscard]] std::optional<Packet> allocate(const std::uint16_t queue) noexcept {
-            return device_->allocate(queue);
+            return device_.allocate(queue);
         }
 
         [[nodiscard]] std::size_t receive(const std::uint16_t queue, std::span<Packet> out) noexcept {
-            return device_->receive(queue, out);
+            return device_.receive(queue, out);
         }
 
         /// Forwards, then stamps when armed and the device took at least one packet.
         [[nodiscard]] std::size_t transmit(const std::uint16_t queue, std::span<Packet> in) noexcept {
-            const std::size_t accepted = device_->transmit(queue, in);
+            const std::size_t accepted = device_.transmit(queue, in);
             if (accepted > 0 && armed_) {
                 stops_[round_] = core::TscClock::get_ticks();
                 armed_         = false;
@@ -91,15 +91,15 @@ namespace aloe::benchmarks {
         }
 
         [[nodiscard]] std::size_t reclaim(const std::uint16_t queue) noexcept {
-            return device_->reclaim(queue);
+            return device_.reclaim(queue);
         }
 
         [[nodiscard]] device::QueueCounters counters(const std::uint16_t queue) const noexcept {
-            return device_->counters(queue);
+            return device_.counters(queue);
         }
 
     private:
-        Device* device_;
+        Device& device_;
         std::span<std::uint64_t> stops_;
         std::uint64_t round_ = 0;
         std::uint64_t taken_ = 0;

@@ -311,6 +311,42 @@ Two exceptions:
 - A span the function writes through, `std::span<std::byte>` or `std::span<Packet>`, stays unqualified: the
   `const` would say nothing about the elements, and the parameter is the function's output.
 
+## Members That Refer to Other Objects
+
+The member's type says who owns the object and whether it can be absent:
+
+| The member                                                                        | Type                        |
+|-----------------------------------------------------------------------------------|-----------------------------|
+| owns heap memory                                                                  | `std::unique_ptr<T>`        |
+| is set by the constructor, never null, never changed; the class is not assignable | `T&`                        |
+| is the same, but the class must stay copy- or move-assignable                     | `std::reference_wrapper<T>` |
+| can be null or is set later: an empty packet, a moved-from handle, a list link    | `T*`                        |
+
+```cpp
+// Good: the queue cannot exist without its device, and nothing reassigns it
+class ShardQueue {
+public:
+    ShardQueue(Device& owner, std::uint16_t index, std::size_t ring_capacity, ShardCounters& counters)
+        : device_{owner}, counters_{counters} { /* ... */ }
+
+private:
+    Device& device_;
+    ShardCounters& counters_;
+};
+
+// Good: an empty packet has no pool
+class Packet {
+private:
+    Pool* pool_ = nullptr;
+};
+```
+
+- No `std::shared_ptr`: each shard owns what it works on, and nothing in the stack shares ownership.
+- A type compared by what it points at keeps a pointer: `Scheduler`'s defaulted `operator==` compares its
+  `ShardContext*`, where a `reference_wrapper` would compare the two contexts.
+- An operation state that deletes itself when it completes (`new`, then `delete this`) stays a raw `new`;
+  `std::unique_ptr` cannot hold an object that owns itself.
+
 ## Unreachable Code
 
 ### `std::unreachable()`

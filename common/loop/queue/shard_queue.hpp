@@ -30,9 +30,9 @@ namespace aloe::loop {
         using Packet = typename Device::Packet;
 
         ShardQueue(Device& owner, const std::uint16_t index, const std::size_t ring_capacity, ShardCounters& counters)
-            : device_{&owner},
+            : device_{owner},
               queue_{index},
-              counters_{&counters},
+              counters_{counters},
               ring_(ring_capacity) {
         }
 
@@ -44,13 +44,13 @@ namespace aloe::loop {
 
         [[nodiscard]] std::optional<Packet> allocate() noexcept {
             core::force_non_const(this);  // the stack's mutable view of the device, though only the pointee is written
-            return device_->allocate(queue_);
+            return device_.allocate(queue_);
         }
 
         /// Fills `out` from the front and returns how many; the slots must hold empty packets.
         [[nodiscard]] std::size_t receive(std::span<Packet> out) noexcept {
             core::force_non_const(this);  // the stack's mutable view of the device, though only the pointee is written
-            return device_->receive(queue_, out);
+            return device_.receive(queue_, out);
         }
 
         /// False when the ring is full and the device takes nothing; the packet then stays with the caller.
@@ -58,7 +58,7 @@ namespace aloe::loop {
             if (size_ == ring_.size()) {
                 flush();
                 if (size_ == ring_.size()) {
-                    ++counters_->transmit_refused;
+                    ++counters_.transmit_refused;
                     return false;
                 }
             }
@@ -76,7 +76,7 @@ namespace aloe::loop {
             while (size_ > 0) {
                 const std::size_t contiguous = std::min(size_, ring_.size() - head_);
                 const std::size_t accepted =
-                    device_->transmit(queue_, std::span<Packet>{ring_}.subspan(head_, contiguous));
+                    device_.transmit(queue_, std::span<Packet>{ring_}.subspan(head_, contiguous));
                 accepted_total += accepted;
                 head_           = (head_ + accepted) % ring_.size();
                 size_          -= accepted;
@@ -84,7 +84,7 @@ namespace aloe::loop {
                     break;
                 }
             }
-            counters_->frames_transmitted += accepted_total;
+            counters_.frames_transmitted += accepted_total;
             return accepted_total;
         }
 
@@ -94,7 +94,7 @@ namespace aloe::loop {
                 ring_[head_] = Packet{};
                 head_        = (head_ + 1) % ring_.size();
                 --size_;
-                ++counters_->transmit_refused;
+                ++counters_.transmit_refused;
             }
         }
 
@@ -102,7 +102,7 @@ namespace aloe::loop {
         /// the call.
         [[nodiscard]] std::size_t reclaim() noexcept {
             core::force_non_const(this);  // the stack's mutable view of the device, though only the pointee is written
-            return device_->reclaim(queue_);
+            return device_.reclaim(queue_);
         }
 
         [[nodiscard]] std::size_t pending() const noexcept {
@@ -118,33 +118,33 @@ namespace aloe::loop {
         }
 
         [[nodiscard]] wire::MacAddress mac() const noexcept {
-            return device_->mac();
+            return device_.mac();
         }
 
         [[nodiscard]] std::uint16_t mtu() const noexcept {
-            return device_->mtu();
+            return device_.mtu();
         }
 
         [[nodiscard]] const device::Capabilities& capabilities() const noexcept {
-            return device_->capabilities();
+            return device_.capabilities();
         }
 
         [[nodiscard]] const device::RssDescription& steering() const noexcept {
-            return device_->steering();
+            return device_.steering();
         }
 
         [[nodiscard]] std::uint16_t queue_count() const noexcept {
-            return device_->queue_count();
+            return device_.queue_count();
         }
 
         [[nodiscard]] const Device& device() const noexcept {
-            return *device_;
+            return device_;
         }
 
     private:
-        Device* device_;
+        Device& device_;
         std::uint16_t queue_;
-        ShardCounters* counters_;
+        ShardCounters& counters_;
         std::vector<Packet> ring_;
         std::size_t head_ = 0;
         std::size_t size_ = 0;

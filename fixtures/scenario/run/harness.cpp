@@ -29,13 +29,13 @@ namespace aloe::scenario {
         : config_{
               config
     },
-          peer_port_{&fabric_.add_port({.mac         = config.peer_mac,
-                                        .pool_size   = config.pool_size,
-                                        .queue_depth = 4096,
-                                        .offloads    = config.offloads})},
+          peer_port_{fabric_.add_port({.mac         = config.peer_mac,
+                                       .pool_size   = config.pool_size,
+                                       .queue_depth = 4096,
+                                       .offloads    = config.offloads})},
           stack_port_{
-              &fabric_.add_port({.mac = config.stack_mac, .pool_size = config.pool_size, .offloads = config.offloads})},
-          queue_{*stack_port_, 0, ring_capacity, counters_},
+              fabric_.add_port({.mac = config.stack_mac, .pool_size = config.pool_size, .offloads = config.offloads})},
+          queue_{stack_port_, 0, ring_capacity, counters_},
           ip_{queue_,
               net::Ipv4Config{.address       = config.stack_address,
                               .prefix        = config.prefix,
@@ -47,12 +47,12 @@ namespace aloe::scenario {
 
     template <typename CongestionControl>
     void BasicHarness<CongestionControl>::inject(const std::span<const std::byte> frame, const core::TimePoint now) {
-        auto packet = peer_port_->allocate(0);
+        auto packet = peer_port_.allocate(0);
         if (!packet || !frames::fill(*packet, frame)) {
             throw std::runtime_error{"the harness could not build the peer's frame"};
         }
         std::array<Packet, 1> out{std::move(*packet)};
-        if (peer_port_->transmit(0, out) != 1) {
+        if (peer_port_.transmit(0, out) != 1) {
             throw std::runtime_error{"the peer's port refused the frame"};
         }
         receive(now);
@@ -82,7 +82,7 @@ namespace aloe::scenario {
     std::vector<Collected> BasicHarness<CongestionControl>::collect() {
         std::vector<Collected> collected;
         std::array<Packet, collect_burst> out;
-        for (std::size_t count = peer_port_->receive(0, out); count > 0; count = peer_port_->receive(0, out)) {
+        for (std::size_t count = peer_port_.receive(0, out); count > 0; count = peer_port_.receive(0, out)) {
             for (std::size_t index = 0; index < count; ++index) {
                 if (auto parsed = frames::parse_frame(frames::bytes_of(out[index]))) {
                     Collected item{.frame = std::move(*parsed)};

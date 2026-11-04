@@ -14,7 +14,7 @@ namespace aloe::runtime {
     TaskScope::TaskScope(const log::Logger logger, const std::uint16_t index, loop::ShardCounters& counters) noexcept
         : logger_{logger},
           index_{index},
-          counters_{&counters} {
+          counters_{counters} {
     }
 
     TaskScope::~TaskScope() {
@@ -35,16 +35,16 @@ namespace aloe::runtime {
     void TaskScope::finished(const detail::Outcome outcome) noexcept {
         assert_owner();
         if (outcome == detail::Outcome::Value) {
-            ++counters_->tasks_completed;
+            ++counters_.tasks_completed;
         } else {
-            ++counters_->tasks_stopped;
+            ++counters_.tasks_stopped;
         }
         one_less();
     }
 
     void TaskScope::failed(std::exception_ptr error) noexcept {
         assert_owner();
-        ++counters_->tasks_failed;
+        ++counters_.tasks_failed;
         std::string what = "an error that is not an exception";
         if (error) {
             try {

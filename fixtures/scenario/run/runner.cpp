@@ -135,8 +135,8 @@ namespace aloe::scenario {
 
     template <typename HarnessT>
     BasicRunner<HarnessT>::BasicRunner(HarnessT& harness, const Script& script, const RunnerConfig& config)
-        : harness_{&harness},
-          script_{&script},
+        : harness_{harness},
+          script_{script},
           config_{config},
           peer_{harness.config().peer_isn, harness.config().peer_port, harness.config().stack_port} {
         if (script.tolerance) {
@@ -146,7 +146,7 @@ namespace aloe::scenario {
 
     template <typename HarnessT>
     std::expected<void, Failure> BasicRunner<HarnessT>::run() {
-        for (const Event& event : script_->events) {
+        for (const Event& event : script_.events) {
             if (auto done = run_event(event); !done) {
                 return done;
             }
@@ -181,7 +181,7 @@ namespace aloe::scenario {
         if (options.size() % option_alignment != 0) {
             return fail(event, "inbound options must be a multiple of 4 bytes; pad with nop");
         }
-        const HarnessConfig& config = harness_->config();
+        const HarnessConfig& config = harness_.config();
         const auto frame =
             frames::tcp_frame({.destination_mac  = config.stack_mac,
                                .source_mac       = config.peer_mac,
@@ -195,7 +195,7 @@ namespace aloe::scenario {
                                .window           = line.window.value_or(default_window),
                                .options          = std::move(options)},
                               frames::pattern(line.length, static_cast<std::uint8_t>(line.first)));
-        harness_->inject(frame, now_);
+        harness_.inject(frame, now_);
         return settle(event);
     }
 
@@ -242,7 +242,7 @@ namespace aloe::scenario {
         }
         // The queue fills only while an event runs, so there is a last event to name.
         const Seen& head = queue_.front();
-        return fail(script_->events.back(),
+        return fail(script_.events.back(),
                     std::format("unexpected: the stack sent \"{}\" at {} after the script's end",
                                 describe(head.segment, peer_.outbound_sack_base()),
                                 at(head.stamp)));
@@ -265,7 +265,7 @@ namespace aloe::scenario {
     template <typename HarnessT>
     typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::settle(const Event& event) {
         drain_events();
-        harness_->flush(now_);
+        harness_.flush(now_);
         if (auto collected = collect(event); !collected) {
             return collected;
         }
@@ -301,16 +301,16 @@ namespace aloe::scenario {
 
     template <typename HarnessT>
     typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::step(const Event& event) {
-        now_ += harness_->config().resolution;
-        harness_->step(now_);
+        now_ += harness_.config().resolution;
+        harness_.step(now_);
         drain_events();
-        harness_->flush(now_);
+        harness_.flush(now_);
         return collect(event);
     }
 
     template <typename HarnessT>
     typename BasicRunner<HarnessT>::Outcome BasicRunner<HarnessT>::collect(const Event& event) {
-        for (const Collected& item : harness_->collect()) {
+        for (const Collected& item : harness_.collect()) {
             auto segment = peer_.observe(item.frame);
             if (!segment) {
                 return fail(event, "unexpected non-TCP frame");
@@ -324,7 +324,7 @@ namespace aloe::scenario {
 
     template <typename HarnessT>
     void BasicRunner<HarnessT>::drain_events() {
-        while (const auto polled = harness_->tcp().poll_event()) {
+        while (const auto polled = harness_.tcp().poll_event()) {
             on_event(*polled);
         }
     }
@@ -446,7 +446,7 @@ namespace aloe::scenario {
         if (auto zero = expect_zero(event, call); !zero) {
             return zero;
         }
-        (*found)->port = harness_->config().stack_port;
+        (*found)->port = harness_.config().stack_port;
         return {};
     }
 
@@ -464,7 +464,7 @@ namespace aloe::scenario {
         if (auto zero = expect_zero(event, call); !zero) {
             return zero;
         }
-        if (const auto listened = harness_->tcp().listen(binding.port); !listened) {
+        if (const auto listened = harness_.tcp().listen(binding.port); !listened) {
             return fail(event, std::format("listen: {}", name_of(listened.error())));
         }
         binding.kind = Binding::Kind::Listener;
@@ -488,9 +488,9 @@ namespace aloe::scenario {
         if (call.result != 0 && !in_progress) {
             return fail(event, "connect: unsupported result");
         }
-        const HarnessConfig& config = harness_->config();
+        const HarnessConfig& config = harness_.config();
         const auto connected =
-            harness_->tcp().connect(tcp::Endpoint{.address = config.peer_address, .port = config.peer_port}, now_);
+            harness_.tcp().connect(tcp::Endpoint{.address = config.peer_address, .port = config.peer_port}, now_);
         if (!connected) {
             return fail(event, std::format("connect: {}", name_of(connected.error())));
         }
@@ -560,7 +560,7 @@ namespace aloe::scenario {
             return {};
         }
         if (binding.kind == Binding::Kind::Listener) {
-            harness_->tcp().unlisten(binding.port);
+            harness_.tcp().unlisten(binding.port);
         }
         descriptors_.erase(number);
         return {};

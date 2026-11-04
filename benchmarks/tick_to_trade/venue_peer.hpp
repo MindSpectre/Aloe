@@ -119,7 +119,7 @@ namespace aloe::benchmarks {
         void answer_arp(const frames::ParsedFrame& request);
         [[nodiscard]] static bool is_pure_ack(const frames::ParsedFrame& parsed) noexcept;
 
-        ethdev::Port* port_;
+        ethdev::Port& port_;
         PeerConfig config_;
         frames::TcpPeer script_;
         std::uint32_t ts_{0};

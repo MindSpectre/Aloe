@@ -75,8 +75,8 @@ namespace aloe::tcp {
 
         /// Validates and throws std::invalid_argument; allocates everything; sends nothing.
         Stack(Ip& ip, loop::TimerWheel& wheel, const TcpConfig& config)
-            : ip_{&ip},
-              wheel_{&wheel},
+            : ip_{ip},
+              wheel_{wheel},
               config_{config.validate(ip.max_l4_size(), wheel.resolution())},
               mss_{static_cast<std::uint16_t>(ip.max_l4_size() - wire::TcpHeader::size)},
               byte_budget_{static_cast<std::uint32_t>(std::min<std::uint64_t>(
@@ -100,7 +100,7 @@ namespace aloe::tcp {
         /// now or when the device returns it; the IP brick and the wheel outlive it.
         ~Stack() {
             for (ConnectionType& c : connections_) {
-                wheel_->cancel(c.timer_);
+                wheel_.cancel(c.timer_);
                 c.prepared_.reset();
                 return_chain(c);
                 drop_queue(c);
@@ -167,14 +167,14 @@ namespace aloe::tcp {
         [[nodiscard]] std::expected<ConnectionType*, ConnectError> connect(const Endpoint peer,
                                                                            const core::TimePoint now) noexcept {
             now_ = now;
-            if (!ip_->next_hop(peer.address)) {
+            if (!ip_.next_hop(peer.address)) {
                 return std::unexpected{ConnectError::NoRoute};
             }
             if (send_pool_.available() == 0) {
                 return std::unexpected{ConnectError::TableFull};  // no retransmission-queue node for the SYN
             }
             const std::expected<detail::Placement, ConnectError> placed =
-                table_.place(peer, ip_->address(), ip_->queue().steering(), ip_->queue().index());
+                table_.place(peer, ip_.address(), ip_.queue().steering(), ip_.queue().index());
             if (!placed) {
                 return std::unexpected{placed.error()};
             }
@@ -183,7 +183,7 @@ namespace aloe::tcp {
                 return std::unexpected{ConnectError::TableFull};
             }
             ConnectionType& c = connections_[*slot];
-            bind_flow(c, Endpoint{.address = ip_->address(), .port = placed->port}, peer, placed->base_hash);
+            bind_flow(c, Endpoint{.address = ip_.address(), .port = placed->port}, peer, placed->base_hash);
             c.state_ = State::SynSent;
             c.owned_ = true;
             open(c);
@@ -318,7 +318,7 @@ namespace aloe::tcp {
             }
             const FlowKey key{
                 .remote = datagram.source, .remote_port = header->source_port, .local_port = header->destination_port};
-            segment.base_hash = table_.base_hash(ip_->queue().steering(),
+            segment.base_hash = table_.base_hash(ip_.queue().steering(),
                                                  device::FlowTuple{.source           = datagram.source,
                                                                    .destination      = datagram.destination,
                                                                    .source_port      = header->source_port,
@@ -382,7 +382,7 @@ namespace aloe::tcp {
             }
             ConnectionType& conn = connections_[*slot];
             bind_flow(conn,
-                      Endpoint{.address = ip_->address(), .port = segment.header.destination_port},
+                      Endpoint{.address = ip_.address(), .port = segment.header.destination_port},
                       Endpoint{.address = datagram.source, .port = segment.header.source_port},
                       segment.base_hash);
             conn.state_ = State::SynReceived;
@@ -873,7 +873,7 @@ namespace aloe::tcp {
             assert(!node.packet.lent() && "a queued packet is written only once the device gave it back");
             const bool first_into_empty = node.transmits == 0 && index == conn.queue_.head() && conn.queue_.size() == 1;
             if (node.packet.empty()) {
-                std::optional<Packet> fresh = ip_->allocate();
+                std::optional<Packet> fresh = ip_.allocate();
                 if (!fresh) {
                     ++counters_.send_refused;
                     return std::unexpected{net::SendError::Refused};
@@ -940,7 +940,7 @@ namespace aloe::tcp {
             assert(!conn.queue_.empty() && "a resend with nothing queued");
             SentNode& node = send_pool_.node(conn.queue_.head());
             node.reconcile();
-            if (node.packet.lent() && ip_->queue().reclaim() > 0) {
+            if (node.packet.lent() && ip_.queue().reclaim() > 0) {
                 node.reconcile();  // what the device let go of may be either packet
             }
             if (node.packet.lent()) {
@@ -1018,7 +1018,7 @@ namespace aloe::tcp {
         /// A header-only ACK at `sequence` from a fresh packet: lent to the device and forgotten, never kept. A failure
         /// is counted.
         [[nodiscard]] bool send_bare_ack(ConnectionType& conn, const Sequence sequence) noexcept {
-            std::optional<Packet> packet = ip_->allocate();
+            std::optional<Packet> packet = ip_.allocate();
             if (!packet) {
                 ++counters_.send_refused;
                 return false;
@@ -1124,7 +1124,7 @@ namespace aloe::tcp {
                 return std::nullopt;  // nothing allocates when nothing is writable
             }
             const std::size_t size       = std::min(count, room);
-            std::optional<Packet> packet = ip_->allocate();
+            std::optional<Packet> packet = ip_.allocate();
             if (!packet) {
                 ++counters_.allocation_failures;
                 mark_retry(conn);  // the pool may have packets by the next process
@@ -1283,19 +1283,19 @@ namespace aloe::tcp {
                 deadline = std::min(deadline, std::max(now_, head->first_sent + config_.user_timeout));
             }
             conn.timer_kind_ = detail::TimerKind::Retransmit;
-            wheel_->arm(conn.timer_, deadline);
+            wheel_.arm(conn.timer_, deadline);
         }
 
         /// A SYN, SYN-ACK or FIN whose first send found no next hop: tried again every `unresolved_retry`, as no retry.
         void arm_poll(ConnectionType& conn) noexcept {
             conn.timer_kind_ = detail::TimerKind::ArpPoll;
-            wheel_->arm(conn.timer_, now_ + config_.unresolved_retry);
+            wheel_.arm(conn.timer_, now_ + config_.unresolved_retry);
         }
 
         /// The next probe (`ZeroWindowProbe::deadline`).
         void arm_probe(ConnectionType& conn) noexcept {
             conn.timer_kind_ = detail::TimerKind::Probe;
-            wheel_->arm(conn.timer_, conn.probe_.deadline(now_, config_.user_timeout));
+            wheel_.arm(conn.timer_, conn.probe_.deadline(now_, config_.user_timeout));
         }
 
         /// The peer's window is zero with nothing in flight: the first probe one RTO away.
@@ -1305,7 +1305,7 @@ namespace aloe::tcp {
         }
 
         void disarm(ConnectionType& conn) noexcept {
-            wheel_->cancel(conn.timer_);
+            wheel_.cancel(conn.timer_);
             conn.timer_kind_ = detail::TimerKind::None;
         }
 
@@ -1624,8 +1624,8 @@ namespace aloe::tcp {
             free_slot(conn);
         }
 
-        Ip* ip_                    = nullptr;
-        loop::TimerWheel* wheel_   = nullptr;
+        Ip& ip_;
+        loop::TimerWheel& wheel_;
         TcpConfig config_          = {};
         std::uint16_t mss_         = 0;
         std::uint32_t byte_budget_ = 0;

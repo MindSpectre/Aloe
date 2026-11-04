@@ -48,7 +48,7 @@ namespace aloe::benchmarks {
     }
 
     HugepageReservation::HugepageReservation(HugepageSysfs& sysfs, const std::uint64_t needed, const bool keep)
-        : sysfs_{&sysfs},
+        : sysfs_{sysfs},
           keep_{keep} {
         free_before_ = sysfs.read("free_hugepages");
         original_    = sysfs.read("nr_hugepages");
@@ -94,7 +94,7 @@ namespace aloe::benchmarks {
             return;
         }
         try {
-            sysfs_->write_reserved(original_);
+            sysfs_.write_reserved(original_);
         } catch (const std::system_error&) {  // NOLINT(bugprone-empty-catch): a destructor reports nothing
         }
     }

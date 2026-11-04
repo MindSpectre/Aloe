@@ -66,11 +66,11 @@ namespace aloe::scenario {
         }
 
         [[nodiscard]] fabric::Port& stack_port() noexcept {
-            return *stack_port_;
+            return stack_port_;
         }
 
         [[nodiscard]] fabric::Port& peer_port() noexcept {
-            return *peer_port_;
+            return peer_port_;
         }
 
         [[nodiscard]] loop::ShardQueue<fabric::Port>& queue() noexcept {
@@ -108,8 +108,8 @@ namespace aloe::scenario {
 
         HarnessConfig config_;
         fabric::Fabric fabric_;
-        fabric::Port* peer_port_;
-        fabric::Port* stack_port_;
+        fabric::Port& peer_port_;
+        fabric::Port& stack_port_;
         loop::ShardCounters counters_;
         loop::ShardQueue<fabric::Port> queue_;
         Ip ip_;
