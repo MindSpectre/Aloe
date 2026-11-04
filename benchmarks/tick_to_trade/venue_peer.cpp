@@ -1,5 +1,6 @@
 #include "venue_peer.hpp"
 
+#include <aloe/core>
 #include <cassert>
 #include <format>
 #include <tuple>
@@ -7,7 +8,6 @@
 #include <vector>
 
 #include <application_work.hpp>
-#include <tsc_clock.hpp>
 
 namespace aloe::benchmarks {
 
@@ -28,7 +28,7 @@ namespace aloe::benchmarks {
     }  // namespace
 
     VenuePeer::VenuePeer(ethdev::Port& port, const PeerConfig& config, std::span<std::uint64_t> starts)
-        : port_{&port},
+        : port_{port},
           config_{config},
           script_{peer_spec(config), peer_initial_sequence},
           starts_{starts} {
@@ -92,7 +92,7 @@ namespace aloe::benchmarks {
 
     void VenuePeer::send_tick(const std::uint64_t round, const std::size_t payload) {
         if (carrier_.empty()) {  // the floor has no handshake to seed the carrier: one mbuf of the peer's pool, once
-            std::optional<Packet> fresh = port_->allocate(0);
+            std::optional<Packet> fresh = port_.allocate(0);
             if (!fresh) {
                 return;
             }
@@ -180,7 +180,7 @@ namespace aloe::benchmarks {
                 }
                 return taken;
             }
-            pending_ = port_->receive(0, burst_);
+            pending_ = port_.receive(0, burst_);
             next_    = 0;
             if (pending_ == 0 && core::Clock::now() >= deadline) {
                 return std::nullopt;
@@ -189,12 +189,12 @@ namespace aloe::benchmarks {
     }
 
     void VenuePeer::inject(const std::span<const std::byte> frame) {
-        std::optional<Packet> packet = port_->allocate(0);
+        std::optional<Packet> packet = port_.allocate(0);
         if (!packet || !frames::fill(*packet, frame)) {
             return;  // the round that waits for the answer times out and names the peer
         }
         std::array<Packet, 1> out{std::move(*packet)};
-        std::ignore = port_->transmit(0, out);
+        std::ignore = port_.transmit(0, out);
     }
 
     bool VenuePeer::prepare_carrier(const std::span<const std::byte> frame) {
@@ -205,7 +205,7 @@ namespace aloe::benchmarks {
 
     void VenuePeer::send_carrier() noexcept {
         std::array<Packet, 1> out{std::move(carrier_)};
-        if (port_->transmit(0, out) != 1) {
+        if (port_.transmit(0, out) != 1) {
             carrier_ = std::move(out[0]);  // a refused transmit leaves the packet in the burst
         }
     }

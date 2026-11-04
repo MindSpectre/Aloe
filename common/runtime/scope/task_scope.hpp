@@ -2,6 +2,7 @@
 
 #include <aloe/execution>
 #include <aloe/log>
+#include <aloe/loop>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
@@ -11,8 +12,6 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
-
-#include <counters.hpp>
 
 namespace aloe::runtime {
 
@@ -130,7 +129,7 @@ namespace aloe::runtime {
 
         log::Logger logger_;
         std::uint16_t index_;
-        loop::ShardCounters* counters_;
+        loop::ShardCounters& counters_;
         execution::ex::inplace_stop_source stop_source_;
         std::size_t live_         = 0;
         detail::JoinBase* joiner_ = nullptr;
@@ -226,16 +225,16 @@ namespace aloe::runtime {
         using completion_signatures = execution::ex::completion_signatures<execution::ex::set_value_t()>;
 
         explicit JoinSender(TaskScope& scope) noexcept
-            : scope_{&scope} {
+            : scope_{scope} {
         }
 
         template <execution::ex::receiver Receiver>
         [[nodiscard]] auto connect(Receiver receiver) const noexcept -> JoinOperation<Receiver> {
-            return JoinOperation<Receiver>{scope_, std::move(receiver)};
+            return JoinOperation<Receiver>{&scope_, std::move(receiver)};
         }
 
     private:
-        TaskScope* scope_;
+        TaskScope& scope_;
     };
 
     inline TaskScope::JoinSender TaskScope::join() noexcept {
@@ -252,7 +251,7 @@ namespace aloe::runtime {
         Plain owned{std::forward<Sender>(sender)};
         auto* operation = new Operation{this, std::move(owned), std::move(env)};
         ++live_;
-        ++counters_->tasks_spawned;
+        ++counters_.tasks_spawned;
         execution::ex::start(operation->state);
     }
 

@@ -1,11 +1,10 @@
 #pragma once
 
+#include <aloe/loop>
+#include <aloe/stream>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
-
-#include <stream_events.hpp>
-#include <work.hpp>
 
 namespace aloe::runtime::detail {
 

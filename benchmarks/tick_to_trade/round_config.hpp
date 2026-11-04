@@ -1,10 +1,9 @@
 #pragma once
 
+#include <aloe/core>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
-
-#include <clock.hpp>
 
 namespace aloe::benchmarks {
 

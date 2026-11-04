@@ -1,6 +1,8 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/stream>
+#include <aloe/tcp>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -8,10 +10,7 @@
 #include <optional>
 #include <span>
 
-#include <stream.hpp>
-#include <stream_events.hpp>
 #include <stream_wait.hpp>
-#include <tcp_config.hpp>
 
 namespace aloe::runtime {
 

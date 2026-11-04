@@ -1,3 +1,5 @@
+#include "fabric_packet.hpp"
+
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
@@ -5,8 +7,6 @@
 #include <optional>
 #include <span>
 #include <utility>
-
-#include <fabric_packet.hpp>
 
 namespace aloe::fabric {
 

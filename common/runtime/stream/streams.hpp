@@ -2,6 +2,9 @@
 
 #include <aloe/core>
 #include <aloe/execution>
+#include <aloe/loop>
+#include <aloe/stream>
+#include <aloe/tcp>
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -12,11 +15,8 @@
 #include <vector>
 
 #include <shard_context.hpp>
-#include <stream_events.hpp>
 #include <stream_policies.hpp>
 #include <stream_wait.hpp>
-#include <tcp_config.hpp>
-#include <timer_wheel.hpp>
 
 namespace aloe::runtime {
 
@@ -48,8 +48,8 @@ namespace aloe::runtime {
         using Sequence       = Stack::Sequence;
 
         Streams(Stack& stack, ShardContext& shard)
-            : tcp_{&stack},
-              context_{&shard} {
+            : tcp_{stack},
+              context_{shard} {
             for (std::uint32_t index = 0; index < stack.capacity(); ++index) {
                 Slot& slot = slots_.emplace_back(this, index);
                 slot.stop.emplace();
@@ -67,14 +67,14 @@ namespace aloe::runtime {
 
         ~Streams() {
             for (Slot& slot : slots_) {
-                context_->timers().cancel(slot.deadline);
+                context_.timers().cancel(slot.deadline);
                 assert(slot.active == nullptr && "a stream operation outlived the shard's scope");
             }
         }
 
         /// Drains the brick's events; every completion goes onto the run queue, none runs here.
         void wake(core::TimePoint /*now*/) noexcept {
-            while (const auto event = tcp_->poll_event()) {
+            while (const auto event = tcp_.poll_event()) {
                 deliver(*event->connection, event->events);
             }
         }
@@ -83,17 +83,17 @@ namespace aloe::runtime {
         void cancel(const std::uint32_t index) noexcept {
             Slot& slot = slots_[index];
             slot.stop->request_stop();
-            tcp_->connection(index).abort();
+            tcp_.connection(index).abort();
         }
 
         void deadline(const std::uint32_t index, const core::TimePoint when) noexcept {
-            context_->timers().arm(slots_[index].deadline, when);
+            context_.timers().arm(slots_[index].deadline, when);
         }
 
         /// The owner's last call for a connection: every active wait is stopped, the slot is clean for reuse.
         void release(const std::uint32_t index) noexcept {
             Slot& slot = slots_[index];
-            context_->timers().cancel(slot.deadline);
+            context_.timers().cancel(slot.deadline);
             while (detail::StreamWait* wait = slot.active) {
                 unlink(slot, *wait);
                 wait->drop_callbacks(*wait);
@@ -101,14 +101,14 @@ namespace aloe::runtime {
                 if (wait->phase == detail::StreamWait::Phase::Parked) {
                     slot.waits[kind_index(wait->kind)] = nullptr;
                     wait->phase                        = detail::StreamWait::Phase::Queued;
-                    context_->ready().push(*wait);
+                    context_.ready().push(*wait);
                 }
             }
             slot.waits.fill(nullptr);
             slot.terminal.reset();
             slot.owned = false;
             slot.stop.emplace();  // after every callback on the old source is gone
-            tcp_->connection(index).release();
+            tcp_.connection(index).release();
         }
 
         /// The next accepted connection on `port`: from the backlog at once, else parked on the listener.
@@ -129,7 +129,7 @@ namespace aloe::runtime {
             while (const auto index = take_backlog(port)) {
                 release(*index);
             }
-            tcp_->unlisten(port);
+            tcp_.unlisten(port);
             Listener& last = listeners_[--listener_count_];
             if (listener != &last) {
                 std::swap(*listener, last);  // both records keep their backlog storage
@@ -148,11 +148,11 @@ namespace aloe::runtime {
         }
 
         [[nodiscard]] Stack& tcp() noexcept {
-            return *tcp_;
+            return tcp_;
         }
         [[nodiscard]] ShardContext& context() noexcept {
             core::force_non_const(this);
-            return *context_;
+            return context_;
         }
 
         // The operations' side: parking, queueing and the slot's state. Not for applications.
@@ -181,7 +181,7 @@ namespace aloe::runtime {
             }
             wait.outcome = outcome;
             wait.phase   = detail::StreamWait::Phase::Queued;
-            context_->ready().push(wait);
+            context_.ready().push(wait);
         }
 
         /// Unlinks a wait that is about to complete; the completion itself belongs to the operation.
@@ -212,7 +212,7 @@ namespace aloe::runtime {
             if (listener_count_ == listeners_.size()) {
                 return std::unexpected{stream::Error::TableFull};
             }
-            const auto listened = tcp_->listen(port);
+            const auto listened = tcp_.listen(port);
             if (!listened) {
                 return std::unexpected{listened.error() == tcp::ListenError::TableFull ? stream::Error::TableFull
                                                                                        : stream::Error::Refused};
@@ -366,7 +366,7 @@ namespace aloe::runtime {
                 }
             }
             if (events.connected()) {
-                context_->timers().cancel(slot.deadline);  // a connect deadline ends with the hand-over
+                context_.timers().cancel(slot.deadline);  // a connect deadline ends with the hand-over
                 if (detail::StreamWait* wait = slot.waits[kind_index(detail::WaitKind::Connected)]) {
                     queue(*wait, {.value = c.index()});
                 }
@@ -415,8 +415,8 @@ namespace aloe::runtime {
             }
         }
 
-        Stack* tcp_            = nullptr;
-        ShardContext* context_ = nullptr;
+        Stack& tcp_;
+        ShardContext& context_;
         std::deque<Slot> slots_{};           ///< A slot holds a timer: immovable, so a deque.
         std::vector<Listener> listeners_{};  ///< Sized at construction; the first `listener_count_` are in use.
         std::size_t listener_count_ = 0;

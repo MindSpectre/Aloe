@@ -311,6 +311,42 @@ Two exceptions:
 - A span the function writes through, `std::span<std::byte>` or `std::span<Packet>`, stays unqualified: the
   `const` would say nothing about the elements, and the parameter is the function's output.
 
+## Members That Refer to Other Objects
+
+The member's type says who owns the object and whether it can be absent:
+
+| The member                                                                        | Type                        |
+|-----------------------------------------------------------------------------------|-----------------------------|
+| owns heap memory                                                                  | `std::unique_ptr<T>`        |
+| is set by the constructor, never null, never changed; the class is not assignable | `T&`                        |
+| is the same, but the class must stay copy- or move-assignable                     | `std::reference_wrapper<T>` |
+| can be null or is set later: an empty packet, a moved-from handle, a list link    | `T*`                        |
+
+```cpp
+// Good: the queue cannot exist without its device, and nothing reassigns it
+class ShardQueue {
+public:
+    ShardQueue(Device& owner, std::uint16_t index, std::size_t ring_capacity, ShardCounters& counters)
+        : device_{owner}, counters_{counters} { /* ... */ }
+
+private:
+    Device& device_;
+    ShardCounters& counters_;
+};
+
+// Good: an empty packet has no pool
+class Packet {
+private:
+    Pool* pool_ = nullptr;
+};
+```
+
+- No `std::shared_ptr`: each shard owns what it works on, and nothing in the stack shares ownership.
+- A type compared by what it points at keeps a pointer: `Scheduler`'s defaulted `operator==` compares its
+  `ShardContext*`, where a `reference_wrapper` would compare the two contexts.
+- An operation state that deletes itself when it completes (`new`, then `delete this`) stays a raw `new`;
+  `std::unique_ptr` cannot hold an object that owns itself.
+
 ## Unreachable Code
 
 ### `std::unreachable()`
@@ -629,34 +665,36 @@ namespace aloe::net {
 
 ## Include Organization
 
-Order (separated by blank lines):
+Order (separated by blank lines), which `.clang-format` produces itself:
 
 1. Corresponding header (for .cpp files)
-2. Standard library headers
-3. Third-party libraries
-4. Framework headers (`<aloe/...>`)
-5. Local project headers
+2. Headers without an extension: the standard library and the umbrellas (`<aloe/...>`), sorted together
+3. Headers ending in `.hpp` or `.h`: third-party libraries and the same module's headers
+
+What it cannot decide is how each one is spelled:
+
+- **A `.cpp` includes its own header in quotes**, `#include "flow_table.hpp"`, first. No other include
+  uses quotes.
+- **A header of the same module is included by its basename**, `#include <tcp_stack.hpp>`, wherever it
+  sits in the module; one in a `detail/` folder is `#include <detail/frame.hpp>`.
+- **Anything from another module comes through its umbrella**, `#include <aloe/net>`, never one of its
+  headers, even when only one is needed. A module never includes its own umbrella.
+- Tests, examples and the benchmark are not modules: they include every module through its umbrella,
+  and their own helpers by basename.
 
 ```cpp
-#include "query_compiler.hpp"
+// a .cpp in tcp
+#include "flow_table.hpp"
 
 #include <algorithm>
-#include <string>
+#include <aloe/core>
+#include <aloe/wire>
+#include <cstdint>
 
-#include <stdexec/execution.hpp>
-
-#include <aloe/execution>
-
-#include <segment.hpp>
-#include "local_helper.hpp"
+#include <tcp_counters.hpp>
 ```
 
-Use angle brackets for library headers, quotes for same-directory:
-
-```cpp
-#include <strings.hpp>   // Library header
-#include "local_impl.hpp"      // Same directory
-```
+`./scripts/check-includes.sh` checks every source against these rules, in the pre-commit hook and in CI.
 
 ## Type Aliases
 

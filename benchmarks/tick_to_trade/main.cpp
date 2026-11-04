@@ -1,6 +1,7 @@
 // The tick-to-trade benchmark: both rounds, three levels, a scripted venue on a second core, over DPDK's ring
 // driver. See docs/benchmarks/tick-to-trade.md for how to run it and how to read the table.
 
+#include <aloe/core>
 #include <aloe/ethdev>
 #include <chrono>
 #include <cstdlib>
@@ -17,7 +18,6 @@
 
 #include <benchmark_options.hpp>
 #include <benchmark_run.hpp>
-#include <clock.hpp>
 #include <hugepages.hpp>
 #include <machine_info.hpp>
 #include <report.hpp>

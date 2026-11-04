@@ -1,5 +1,7 @@
 #pragma once
 
+#include <aloe/device>
+#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -8,10 +10,7 @@
 #include <string_view>
 #include <vector>
 
-#include <device.hpp>
 #include <ethdev_packet.hpp>
-#include <mac_address.hpp>
-#include <rss.hpp>
 
 struct rte_mempool;
 struct rte_eth_dev_info;

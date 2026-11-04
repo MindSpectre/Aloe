@@ -1,10 +1,10 @@
+#include "flow_table.hpp"
+
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <stdexcept>
-
-#include <flow_table.hpp>
 
 namespace aloe::tcp {
 

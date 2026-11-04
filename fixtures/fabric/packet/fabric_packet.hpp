@@ -1,13 +1,12 @@
 #pragma once
 
+#include <aloe/device>
 #include <cassert>
 #include <cstddef>
 #include <memory>
 #include <optional>
 #include <span>
 #include <vector>
-
-#include <packet.hpp>
 
 namespace aloe::fabric {
 

@@ -1,16 +1,16 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/stream>
+#include <aloe/tcp>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <utility>
 
-#include <stream_events.hpp>
 #include <stream_policies.hpp>
 #include <streams.hpp>
-#include <tcp_config.hpp>
 
 namespace aloe::runtime {
 

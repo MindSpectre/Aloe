@@ -1,5 +1,6 @@
 #pragma once
 
+#include <aloe/core>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -8,7 +9,6 @@
 #include <string>
 #include <vector>
 
-#include <clock.hpp>
 #include <round_config.hpp>
 
 namespace aloe::benchmarks {

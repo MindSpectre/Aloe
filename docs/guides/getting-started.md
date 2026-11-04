@@ -222,17 +222,22 @@ to running without hugepages on its own: `--no-huge` reaches DPDK only after `--
 [docs/benchmarks/tick-to-trade.md](../benchmarks/tick-to-trade.md) covers the cores, the options, how to read
 the table, and the recorded results.
 
-## Formatting and the pre-commit hook
+## Formatting, includes and the pre-commit hook
 
 `.clang-format` decides how C++ is laid out. `./scripts/check-format.sh` checks every
 `.cpp` and `.hpp` under `common/`, `tests/`, `examples/` and `benchmarks/`
 against it and fails if any of them differs, and `clang-format -i <files>` fixes them.
 `clang-format` comes with the toolchain that `scripts/install-linux.sh` installs.
 
+`./scripts/check-includes.sh` checks every include against the rules in `codestyle.md`
+("Include Organization"): a `.cpp`'s own header in quotes, the same module's headers as
+`<file.hpp>`, another module only through `<aloe/module>`. It prints each include that breaks
+them with the spelling to use instead.
+
 The repository ships a pre-commit hook, `.githooks/pre-commit`, that runs
-`./scripts/check-format.sh --staged`. It checks the staged version of each staged C++
-file, which is what the commit would record, and rejects the commit with the
-`clang-format -i` command to run. A commit that stages no C++ is not checked, and the hook
+`./scripts/check-format.sh --staged` and `./scripts/check-includes.sh --staged`. They check
+the staged version of each staged C++ file, which is what the commit would record, and reject
+the commit with the `clang-format -i` command to run or the includes to fix. A commit that stages no C++ is not checked, and the hook
 never rewrites a file.
 
 There is nothing to set up: configuring, which every build does first, sets
@@ -245,7 +250,7 @@ git config core.hooksPath .githooks
 ```
 
 `git commit --no-verify` skips the hook. CI does not: every pull request runs
-`./scripts/check-format.sh` on the whole tree, in the toolchain image, before it builds.
+`./scripts/check-format.sh` and `./scripts/check-includes.sh` on the whole tree, in the toolchain image, before it builds.
 
 ## Options
 

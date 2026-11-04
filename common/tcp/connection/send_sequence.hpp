@@ -1,10 +1,9 @@
 #pragma once
 
+#include <aloe/wire>
 #include <cstdint>
 
 #include <tcp_config.hpp>
-#include <tcp_header.hpp>
-#include <tcp_sequence.hpp>
 
 namespace aloe::tcp::detail {
 

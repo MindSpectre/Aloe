@@ -1,8 +1,8 @@
+#include "shard_context.hpp"
+
 #include <cstddef>
 #include <mutex>
 #include <span>
-
-#include <shard_context.hpp>
 
 namespace aloe::runtime {
 

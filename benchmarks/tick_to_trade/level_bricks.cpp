@@ -1,5 +1,6 @@
 #include "level_bricks.hpp"
 
+#include <aloe/core>
 #include <aloe/loop>
 #include <aloe/stream>
 #include <aloe/tcp>
@@ -14,9 +15,7 @@
 #include <vector>
 
 #include <application_work.hpp>
-#include <clock.hpp>
 #include <stack_sanity.hpp>
-#include <tsc_clock.hpp>
 
 namespace aloe::benchmarks {
 
@@ -31,8 +30,8 @@ namespace aloe::benchmarks {
         class BricksLoop {
         public:
             BricksLoop(RunState& state, Device& device, const PeerConfig& peer_config, const bool arp_on_wire)
-                : state_{&state},
-                  device_{&device},
+                : state_{state},
+                  device_{device},
                   queue_{device, 0, 512, counters_},
                   ip_{queue_, stack_ip_config(peer_config)},
                   wheel_{std::chrono::milliseconds{1}, core::Clock::now()},
@@ -58,10 +57,10 @@ namespace aloe::benchmarks {
             /// One iteration of the loop. Returns once every round is out, or on a failure.
             void step() {
                 const core::TimePoint now      = core::Clock::now();
-                const bool breakdown           = state_->config.breakdown;
+                const bool breakdown           = state_.config.breakdown;
                 // The gateway round's window opens at the application, after the receive path: it records no
                 // receive phases, which here would stamp the processing of the last bare ACK, before its start.
-                const bool receive_phases      = breakdown && state_->config.round == Round::Tick;
+                const bool receive_phases      = breakdown && state_.config.round == Round::Tick;
                 const std::size_t received     = queue_.receive(burst_);
                 const std::uint64_t t_received = receive_phases && received > 0 ? core::TscClock::get_ticks() : 0;
                 ip_.process(std::span<Packet>{burst_}.first(received), now);
@@ -80,17 +79,17 @@ namespace aloe::benchmarks {
                         connection_ = &c;
                         opened      = true;
                     }
-                    if (events.readable() && state_->config.round == Round::Tick) {
+                    if (events.readable() && state_.config.round == Round::Tick) {
                         stamped = answer_tick(c);
                     }
                     if (events.closed() || events.reset() || events.timed_out() || events.unresolved()) {
-                        state_->fail(std::format("level 0: the connection ended, events {:#x}", events.raw()));
+                        state_.fail(std::format("level 0: the connection ended, events {:#x}", events.raw()));
                         return;
                     }
                 }
                 // The handshake's ACK leaves alone in the flush of the step that connected, as the peer's script
                 // expects; an order in that step would carry it. The first order goes in the next step.
-                if (state_->config.round == Round::Gateway && connection_ != nullptr && !opened) {
+                if (state_.config.round == Round::Gateway && connection_ != nullptr && !opened) {
                     stamped = issue_order(now);
                 }
                 const std::uint64_t t_application = breakdown && stamped ? core::TscClock::get_ticks() : 0;
@@ -98,7 +97,7 @@ namespace aloe::benchmarks {
                 const std::uint64_t t_flush = breakdown && stamped ? core::TscClock::get_ticks() : 0;
                 std::ignore                 = queue_.flush();
                 if (breakdown && stamped) {
-                    auto& phases                                                   = state_->stamps.phases;
+                    auto& phases                                                   = state_.stamps.phases;
                     phases[static_cast<std::size_t>(Phase::Received)][*stamped]    = t_received;
                     phases[static_cast<std::size_t>(Phase::Ip)][*stamped]          = t_ip;
                     phases[static_cast<std::size_t>(Phase::Tcp)][*stamped]         = t_tcp;
@@ -107,14 +106,14 @@ namespace aloe::benchmarks {
                 }
                 if (finishing_) {
                     finishing_ = false;
-                    state_->finish();  // the last order is out: the store and the wake fall outside its window
+                    state_.finish();  // the last order is out: the store and the wake fall outside its window
                 }
                 // The deadline reuses the step's own stamp, so an idle poll reads no clock but the loop's one; it
                 // covers only a silent peer.
                 if (progressed) {
                     progress_ = now;
                 } else if (now - progress_ > deadline_) {
-                    state_->fail("level 0: nothing happened within the deadline");
+                    state_.fail("level 0: nothing happened within the deadline");
                 }
             }
 
@@ -131,31 +130,31 @@ namespace aloe::benchmarks {
             }
 
             void check() {
-                check_stack_counters(*state_, tcp_.counters(), ip_.counters(), counters_);
+                check_stack_counters(state_, tcp_.counters(), ip_.counters(), counters_);
             }
 
         private:
             /// The tick-to-trade application: the whole tick must be unread; returns the round it answered.
             [[nodiscard]] std::optional<std::uint64_t> answer_tick(Tcp::ConnectionType& c) {
                 const auto view = c.unread();
-                if (view.size() < state_->config.payload) {
+                if (view.size() < state_.config.payload) {
                     return std::nullopt;  // a partial tick: not in this benchmark, but never a wrong answer
                 }
                 const std::uint64_t round  = read_round(view.front());
-                state_->sink              ^= fold(view);
+                state_.sink               ^= fold(view);
                 c.consume(view.size());
                 const auto out = c.prepare(order_size);
                 if (!out) {
-                    state_->fail(std::format("level 0, round {}: prepare refused, writable {}", round, c.writable()));
+                    state_.fail(std::format("level 0, round {}: prepare refused, writable {}", round, c.writable()));
                     return std::nullopt;
                 }
                 write_order(*out, round);
-                device_->arm(round);
+                device_.arm(round);
                 if (!c.commit(order_size)) {
-                    state_->fail(std::format("level 0, round {}: commit refused", round));
+                    state_.fail(std::format("level 0, round {}: commit refused", round));
                     return std::nullopt;
                 }
-                if (round + 1 == state_->config.total()) {
+                if (round + 1 == state_.config.total()) {
                     finishing_ = true;  // finished once this step's flush has carried the order out
                 }
                 return round;
@@ -166,33 +165,33 @@ namespace aloe::benchmarks {
             [[nodiscard]] std::optional<std::uint64_t> issue_order(const core::TimePoint now) {
                 if (order_in_flight_ && connection_->acknowledged() == connection_->committed()) {
                     order_in_flight_ = false;
-                    resume_at_       = now + state_->config.gap;
-                    if (next_round_ == state_->config.total()) {
+                    resume_at_       = now + state_.config.gap;
+                    if (next_round_ == state_.config.total()) {
                         finishing_ = true;
                     }
                 }
-                if (order_in_flight_ || next_round_ == state_->config.total() || now < resume_at_) {
+                if (order_in_flight_ || next_round_ == state_.config.total() || now < resume_at_) {
                     return std::nullopt;
                 }
-                const std::uint64_t round   = next_round_++;
-                state_->stamps.start[round] = core::TscClock::get_ticks();
-                const auto out              = connection_->prepare(order_size);
+                const std::uint64_t round  = next_round_++;
+                state_.stamps.start[round] = core::TscClock::get_ticks();
+                const auto out             = connection_->prepare(order_size);
                 if (!out) {
-                    state_->fail(std::format("level 0, round {}: prepare refused", round));
+                    state_.fail(std::format("level 0, round {}: prepare refused", round));
                     return std::nullopt;
                 }
                 write_order(*out, round);
-                device_->arm(round);
+                device_.arm(round);
                 if (!connection_->commit(order_size)) {
-                    state_->fail(std::format("level 0, round {}: commit refused", round));
+                    state_.fail(std::format("level 0, round {}: commit refused", round));
                     return std::nullopt;
                 }
                 order_in_flight_ = true;
                 return round;
             }
 
-            RunState* state_;
-            Device* device_;
+            RunState& state_;
+            Device& device_;
             loop::ShardCounters counters_;
             loop::ShardQueue<Device> queue_;
             Ipv4 ip_;

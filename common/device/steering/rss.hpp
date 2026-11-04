@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <aloe/wire>
 #include <array>
 #include <cassert>
 #include <cstddef>
@@ -9,10 +10,6 @@
 #include <span>
 #include <stdexcept>
 #include <vector>
-
-#include <bytes.hpp>
-#include <ipv4_address.hpp>
-#include <ipv4_protocol.hpp>
 
 namespace aloe::device {
 

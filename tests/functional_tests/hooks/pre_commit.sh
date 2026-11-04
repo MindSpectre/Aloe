@@ -3,7 +3,7 @@
 # Usage: pre_commit.sh <scenario> <repository root> <scratch dir>
 #
 # Runs one scenario of .githooks/pre-commit against a throwaway git repository that holds
-# copies of the hook, scripts/check-format.sh and .clang-format. Exits non-zero, with the
+# copies of the hook, scripts/check-format.sh, scripts/check-includes.sh and .clang-format. Exits non-zero, with the
 # reason on stderr, when the hook behaves differently from what the scenario expects.
 
 set -euo pipefail
@@ -36,10 +36,18 @@ setup_repository() {
     mkdir -p -- "$work_dir/repo/scripts" "$work_dir/repo/.githooks"
     cd -- "$work_dir/repo"
     cp -- "$source_root/.clang-format" .
-    cp -- "$source_root/scripts/check-format.sh" scripts/
+    cp -- "$source_root/scripts/check-format.sh" "$source_root/scripts/check-includes.sh" scripts/
     cp -- "$source_root/.githooks/pre-commit" .githooks/
     git init --quiet
     git config core.hooksPath .githooks
+}
+
+# two_modules: a module net with one header and a module tcp, each with its umbrella.
+two_modules() {
+    write_file common/net/export/aloe/net '#include <ipv4.hpp>'
+    write_file common/net/stack/ipv4.hpp '#pragma once'
+    write_file common/tcp/export/aloe/tcp '#pragma once'
+    git add common/net common/tcp/export
 }
 
 # write_file <path> <content>
@@ -154,6 +162,22 @@ case $scenario in
         write_file docs/notes.md "no C++ in here"
         git add docs/notes.md
         try_commit "$(path_without_clang_format)"
+        expect_committed
+        ;;
+    rejects_an_include_of_another_modules_header)
+        two_modules
+        write_file common/tcp/stack/tcp_stack.hpp '#include <ipv4.hpp>'
+        git add common/tcp/stack/tcp_stack.hpp
+        try_commit
+        expect_rejected
+        expect_output_contains "common/tcp/stack/tcp_stack.hpp:1"
+        expect_output_contains "<aloe/net>"
+        ;;
+    accepts_an_include_of_another_modules_umbrella)
+        two_modules
+        write_file common/tcp/stack/tcp_stack.hpp '#include <aloe/net>'
+        git add common/tcp/stack/tcp_stack.hpp
+        try_commit
         expect_committed
         ;;
     whole_tree_mode_checks_files_that_are_not_staged)

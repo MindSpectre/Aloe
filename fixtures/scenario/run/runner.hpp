@@ -152,8 +152,8 @@ namespace aloe::scenario {
         /// A call whose expected result is not zero fails: `<name>: result <r> is not 0`.
         [[nodiscard]] static Outcome expect_zero(const Event& event, const CallLine& call);
 
-        HarnessT* harness_    = nullptr;
-        const Script* script_ = nullptr;
+        HarnessT& harness_;
+        const Script& script_;
         RunnerConfig config_{};
         Peer peer_;
         core::TimePoint now_{};

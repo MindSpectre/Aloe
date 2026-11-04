@@ -1,22 +1,18 @@
 #pragma once
 
 #include <aloe/core>
+#include <aloe/device>
+#include <aloe/loop>
+#include <aloe/net>
+#include <aloe/tcp>
+#include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
 #include <arp_forward.hpp>
-#include <datagram.hpp>
-#include <device.hpp>
-#include <ipv4.hpp>
-#include <ipv4_address.hpp>
-#include <ipv4_protocol.hpp>
-#include <mac_address.hpp>
 #include <shard_context.hpp>
-#include <shard_queue.hpp>
 #include <streams.hpp>
-#include <tcp_config.hpp>
-#include <tcp_stack.hpp>
 
 namespace aloe::runtime {
 
@@ -63,7 +59,7 @@ namespace aloe::runtime {
                  loop::ShardQueue<Device>& queue,
                  const net::Ipv4Config& ip_config,
                  const tcp::TcpConfig& tcp_config)
-            : context_{&context},
+            : context_{context},
               ip_{queue, detail::shard_ip_config(queue, ip_config)},
               tcp_{ip_, context.timers(), tcp_config},
               streams_{tcp_, context} {
@@ -77,16 +73,16 @@ namespace aloe::runtime {
 
         /// Tears the sink down first, while every member is still alive; then Streams, TCP and IP, in that order.
         ~TcpStack() {
-            context_->set_arp_sink({});
+            context_.set_arp_sink({});
         }
 
         void on_receive(const std::span<Packet> burst) noexcept {
-            const core::TimePoint now = context_->now();
+            const core::TimePoint now = context_.now();
             ip_.process(burst, now);
             tcp_.process(ip_.received(wire::Ipv4Protocol::Tcp), now);
             for (const net::ArpResolution& resolution : ip_.resolved()) {
                 const detail::ForwardOutcome outcome =
-                    detail::forward_resolution(context_->siblings(), resolution.address, resolution.mac);
+                    detail::forward_resolution(context_.siblings(), resolution.address, resolution.mac);
                 forwards_dropped_  += outcome.dropped;
                 forwards_rejected_ += outcome.rejected;
             }
@@ -128,7 +124,7 @@ namespace aloe::runtime {
             static_cast<TcpStack*>(object)->ip_.learn(address, mac, now);  // reports nothing: no echo between shards
         }
 
-        ShardContext* context_ = nullptr;
+        ShardContext& context_;
         Ip ip_;                ///< Declared first: destroyed last.
         Tcp tcp_;              ///< Over `ip_` and the context's wheel.
         StreamsType streams_;  ///< Over `tcp_`: destroyed first.

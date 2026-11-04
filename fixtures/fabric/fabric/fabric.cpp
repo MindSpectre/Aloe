@@ -1,4 +1,7 @@
+#include "fabric.hpp"
+
 #include <algorithm>
+#include <aloe/wire>
 #include <cassert>
 #include <chrono>
 #include <cmath>
@@ -14,15 +17,8 @@
 #include <utility>
 #include <vector>
 
-#include <bytes.hpp>
-#include <checksum.hpp>
 #include <detail/frame.hpp>
-#include <ethernet.hpp>
-#include <fabric.hpp>
 #include <impairment.hpp>
-#include <ipv4_checksum.hpp>
-#include <ipv4_protocol.hpp>
-#include <mac_address.hpp>
 
 namespace aloe::fabric {
 

@@ -31,6 +31,9 @@ target_include_directories(${RUNTIME}.Context PUBLIC
 target_link_libraries(${RUNTIME}.Context PUBLIC
         ${RUNTIME}.Scope
         Aloe::Common::Loop
+        Aloe::Common::Core
+        Aloe::Common::Log
+        Aloe::Common::Wire
 )
 ##############################################################################
 
@@ -45,6 +48,8 @@ target_include_directories(${RUNTIME}.Scheduler INTERFACE
 )
 target_link_libraries(${RUNTIME}.Scheduler INTERFACE
         ${RUNTIME}.Context
+        Aloe::Common::Execution
+        Aloe::Common::Loop
 )
 ##############################################################################
 
@@ -59,6 +64,7 @@ target_include_directories(${RUNTIME}.Task INTERFACE
 )
 target_link_libraries(${RUNTIME}.Task INTERFACE
         ${RUNTIME}.Scheduler
+        Aloe::Common::Execution
 )
 ##############################################################################
 
@@ -80,6 +86,9 @@ target_link_libraries(${RUNTIME}.Stream INTERFACE
         Aloe::Common::Tcp
         Aloe::Common::Stream
         Aloe::Common::Net
+        Aloe::Common::Core
+        Aloe::Common::Execution
+        Aloe::Common::Loop
 )
 ##############################################################################
 
@@ -98,6 +107,10 @@ target_link_libraries(${RUNTIME}.Stack INTERFACE
         ${RUNTIME}.Context
         Aloe::Common::Tcp
         Aloe::Common::Net
+        Aloe::Common::Core
+        Aloe::Common::Device
+        Aloe::Common::Loop
+        Aloe::Common::Wire
 )
 ##############################################################################
 
@@ -130,6 +143,10 @@ target_include_directories(${RUNTIME}.Runtime INTERFACE
 target_link_libraries(${RUNTIME}.Runtime INTERFACE
         ${RUNTIME}.Shard
         Aloe::Common::Core
+        Aloe::Common::Device
+        Aloe::Common::Execution
+        Aloe::Common::Log
+        Aloe::Common::Loop
         Threads::Threads
 )
 ##############################################################################
