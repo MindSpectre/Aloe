@@ -27,7 +27,7 @@ namespace aloe::loop {
     template <device::IsDevice Device>
     class ShardQueue {
     public:
-        using Packet = typename Device::Packet;
+        using Packet = Device::Packet;
 
         ShardQueue(Device& owner, const std::uint16_t index, const std::size_t ring_capacity, ShardCounters& counters)
             : device_{owner},
