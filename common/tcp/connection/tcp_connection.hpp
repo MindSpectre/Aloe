@@ -89,15 +89,15 @@ namespace aloe::tcp {
         /// `min(mss, min(peer window, congestion window + limited transmit's allowance) - in flight)` in Established or
         /// CloseWait with no prepare open and the queue below the send cap, else zero.
         [[nodiscard]] std::size_t writable() const noexcept {
-            return block_.stack.writable(block_);
+            return block_.stack.transmitter_.writable(block_);
         }
         /// A span of at most `writable()` bytes inside a fresh packet, or nothing. One prepare at a time.
         [[nodiscard]] std::optional<std::span<std::byte>> prepare(const std::size_t count) noexcept {
-            return block_.stack.prepare(block_, count);
+            return block_.stack.transmitter_.prepare(block_, count);
         }
         /// Seals the prepared segment with `count` bytes and queues it. False: not sent, bytes not accepted.
         [[nodiscard]] bool commit(const std::size_t count) noexcept {
-            return block_.stack.commit(block_, count);
+            return block_.stack.transmitter_.commit(block_, count);
         }
         /// `stream::send`: prepare, copy, commit per segment; the bytes accepted.
         [[nodiscard]] std::size_t send(const std::span<const std::byte> bytes) noexcept {

@@ -24,6 +24,7 @@
 #include <detail/sent_segment_pool.hpp>
 #include <detail/stack_context.hpp>
 #include <detail/tcp_timestamps.hpp>
+#include <detail/transmitter.hpp>
 #include <detail/zero_window_probe.hpp>
 #include <flow_table.hpp>
 #include <newreno.hpp>

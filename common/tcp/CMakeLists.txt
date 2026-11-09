@@ -44,6 +44,7 @@ add_library(${TCP}.Stack INTERFACE
         detail/sent_segment_pool.hpp
         detail/stack_context.hpp
         detail/tcp_timestamps.hpp
+        detail/transmitter.hpp
         detail/zero_window_probe.hpp
         stack/tcp_fwd.hpp
         stack/tcp_stack.hpp
