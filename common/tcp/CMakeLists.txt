@@ -30,6 +30,7 @@ add_library(${TCP}.Stack INTERFACE
         connection/tcp_connection.hpp
         detail/ack_policy.hpp
         detail/connection_table.hpp
+        detail/control_block.hpp
         detail/frame_template.hpp
         detail/held_segment_pool.hpp
         detail/isn_generator.hpp

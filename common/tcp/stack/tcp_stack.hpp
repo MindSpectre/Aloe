@@ -20,6 +20,7 @@
 
 #include <congestion_control.hpp>
 #include <detail/connection_table.hpp>
+#include <detail/control_block.hpp>
 #include <detail/held_segment_pool.hpp>
 #include <detail/isn_generator.hpp>
 #include <detail/loss_recovery.hpp>
@@ -86,9 +87,9 @@ namespace aloe::tcp {
               table_{config_, ip.queue().steering()},
               writer_{ip, counters_} {
             for (std::size_t index = 0; index < config_.connections; ++index) {
-                ConnectionType& slot = connections_.emplace_back(typename ConnectionType::PrivateTag{});
-                slot.stack_          = this;
-                slot.index_          = static_cast<std::uint32_t>(index);
+                Block& block =
+                    blocks_.emplace_back(*this, &Stack::on_timer_fired, static_cast<std::uint32_t>(index), mss_);
+                connections_.emplace_back(typename ConnectionType::PrivateTag{}, block);
             }
         }
 
@@ -99,11 +100,11 @@ namespace aloe::tcp {
         /// Cancels every timer, returns every held packet and drops every queued one, which goes back to its pool
         /// now or when the device returns it; the IP brick and the wheel outlive it.
         ~Stack() {
-            for (ConnectionType& c : connections_) {
-                wheel_.cancel(c.timer_);
-                c.prepared_.reset();
-                return_chain(c);
-                drop_queue(c);
+            for (Block& block : blocks_) {
+                wheel_.cancel(block.timer);
+                block.prepared.reset();
+                return_chain(block);
+                drop_queue(block);
             }
         }
 
@@ -111,7 +112,7 @@ namespace aloe::tcp {
         /// out or released. An empty span is valid.
         void process(const std::span<net::Datagram<Packet>> segments, const core::TimePoint now) noexcept {
             now_ = now;
-            for (ConnectionType* c = retries_.pop_front(); c != nullptr; c = retries_.pop_front()) {
+            for (Block* c = retries_.pop_front(); c != nullptr; c = retries_.pop_front()) {
                 raise(*c, stream::Event::Writable);  // the deferred retry hint, at most one per marked connection
             }
             for (Datagram& datagram : segments) {
@@ -127,26 +128,26 @@ namespace aloe::tcp {
 
         /// Removes one pending notification and returns its snapshot; nothing when none is pending.
         [[nodiscard]] std::optional<EventType> poll_event() noexcept {
-            ConnectionType* c = events_.pop_front();
-            if (c == nullptr) {
+            Block* block = events_.pop_front();
+            if (block == nullptr) {
                 return std::nullopt;
             }
-            const stream::Events snapshot = c->events_;
-            c->events_                    = {};
-            return EventType{.connection = c, .events = snapshot};
+            const stream::Events snapshot = block->events;
+            block->events                 = {};
+            return EventType{.connection = &connections_[block->index], .events = snapshot};
         }
 
         /// Retries the resends that found their packet lent, which leave once it is back or go by the busy rule, then
         /// sends the ordinary ACKs and window updates that waited, one pure ACK per connection.
         void flush(const core::TimePoint now) noexcept {
             now_ = now;
-            for (ConnectionType* c = deferred_.front(); c != nullptr;) {
-                ConnectionType* next = DeferredList::next_of(*c);  // a resend that leaves unlinks c
-                std::ignore          = resend_head(*c);
-                c                    = next;
+            for (Block* c = deferred_.front(); c != nullptr;) {
+                Block* next = DeferredList::next_of(*c);  // a resend that leaves unlinks c
+                std::ignore = resend_head(*c);
+                c           = next;
             }
-            for (ConnectionType* c = acks_.front(); c != nullptr;) {
-                ConnectionType* next = AckList::next_of(*c);  // a successful send unlinks c
+            for (Block* c = acks_.front(); c != nullptr;) {
+                Block* next = AckList::next_of(*c);  // a successful send unlinks c
                 if (send_pure_ack(*c)) {
                     maybe_finish(*c);
                 }
@@ -182,18 +183,18 @@ namespace aloe::tcp {
             if (!slot) {
                 return std::unexpected{ConnectError::TableFull};
             }
-            ConnectionType& c = connections_[*slot];
-            bind_flow(c, Endpoint{.address = ip_.address(), .port = placed->port}, peer, placed->base_hash);
-            c.state_ = State::SynSent;
-            c.owned_ = true;
-            open(c);
-            c.timestamps_.offer(config_.timestamps, isn_.offset());  // the SYN offers; the SYN-ACK decides
+            Block& block = blocks_[*slot];
+            bind_flow(block, Endpoint{.address = ip_.address(), .port = placed->port}, peer, placed->base_hash);
+            block.state = State::SynSent;
+            block.owned = true;
+            open(block);
+            block.timestamps.offer(config_.timestamps, isn_.offset());  // the SYN offers; the SYN-ACK decides
             // Arms the timer on a send or an ARP wait; a refused send leaves the SYN to the RTO.
-            std::ignore = queue_control(c, wire::TcpFlags{wire::TcpFlag::Syn}, c.send_.iss);
-            if (!c.timer_.armed()) {
-                arm_retransmit(c);
+            std::ignore = queue_control(block, wire::TcpFlags{wire::TcpFlag::Syn}, block.send.iss);
+            if (!block.timer.armed()) {
+                arm_retransmit(block);
             }
-            return &c;
+            return &connections_[block.index];
         }
 
         [[nodiscard]] ConnectionType& connection(const std::uint32_t index) noexcept {
@@ -237,7 +238,7 @@ namespace aloe::tcp {
         /// For tests and monitoring: the entry at `position` of the connection's retransmission queue, 0 the head.
         [[nodiscard]] const detail::SentSegment<Packet>& sent_segment(const ConnectionType& conn,
                                                                       const std::size_t position) const noexcept {
-            return conn.queue_.at(send_pool_, position);
+            return conn.block_.queue.at(send_pool_, position);
         }
         [[nodiscard]] std::size_t send_nodes_available() const noexcept {
             return send_pool_.available();
@@ -251,17 +252,18 @@ namespace aloe::tcp {
         /// For tests: the connection's RFC 6582 `recover` takes this value, as if an episode had recorded it.
         void force_recover(ConnectionType& conn, const wire::TcpSequence recover) noexcept {
             core::force_non_static(this);
-            conn.recovery_.force_recover(recover);
+            conn.block_.recovery.force_recover(recover);
         }
 
     private:
         friend class Connection<Ip, CongestionControl>;
 
+        using Block        = detail::ControlBlock<Ip, CongestionControl>;
         using Datagram     = net::Datagram<Packet>;
-        using EventList    = detail::ConnectionList<ConnectionType, &ConnectionType::event_link_>;
-        using AckList      = detail::ConnectionList<ConnectionType, &ConnectionType::ack_link_>;
-        using RetryList    = detail::ConnectionList<ConnectionType, &ConnectionType::retry_link_>;
-        using DeferredList = detail::ConnectionList<ConnectionType, &ConnectionType::deferred_link_>;
+        using EventList    = detail::ConnectionList<Block, &Block::event_link>;
+        using AckList      = detail::ConnectionList<Block, &Block::ack_link>;
+        using RetryList    = detail::ConnectionList<Block, &Block::retry_link>;
+        using DeferredList = detail::ConnectionList<Block, &Block::deferred_link>;
         using SentNode     = detail::SentSegment<Packet>;
         using Freed        = detail::RetransmissionQueue<Packet>::Freed;
 
@@ -339,7 +341,7 @@ namespace aloe::tcp {
                 }
                 return;
             }
-            switch (ConnectionType& conn = connections_[*found]; conn.state_) {
+            switch (Block& block = blocks_[*found]; block.state) {
                 case State::Closed:  // still indexed because not released
                     ++counters_.dropped_closed;
                     if (!header->flags.has(wire::TcpFlag::Rst)) {
@@ -347,10 +349,10 @@ namespace aloe::tcp {
                     }
                     return;
                 case State::SynSent:
-                    receive_syn_sent(conn, datagram, segment);
+                    receive_syn_sent(block, datagram, segment);
                     return;
                 default:
-                    receive_synchronized(conn, datagram, segment);
+                    receive_synchronized(block, datagram, segment);
                     return;
             }
         }
@@ -380,32 +382,32 @@ namespace aloe::tcp {
                 ++counters_.dropped_table_full;
                 return;
             }
-            ConnectionType& conn = connections_[*slot];
-            bind_flow(conn,
+            Block& block = blocks_[*slot];
+            bind_flow(block,
                       Endpoint{.address = ip_.address(), .port = segment.header.destination_port},
                       Endpoint{.address = datagram.source, .port = segment.header.source_port},
                       segment.base_hash);
-            conn.state_ = State::SynReceived;
-            conn.owned_ = false;
-            open(conn);
-            conn.receive_.open(segment.header.sequence + 1, byte_budget_);  // the initial offer, carried by the SYN-ACK
-            conn.send_.peer_mss = segment.mss.value_or(default_peer_mss);
-            conn.send_.wnd      = segment.header.window;
-            conn.send_.wl1      = segment.header.sequence;
-            conn.send_.wl2      = Sequence{};
-            conn.timestamps_.offer(config_.timestamps, isn_.offset());
-            conn.timestamps_.answer(segment.ts_value, now_);
-            conn.timestamps_.sent_ack(conn.receive_.next());  // what the SYN-ACK acknowledges, as Linux's rcv_wup
+            block.state = State::SynReceived;
+            block.owned = false;
+            open(block);
+            block.receive.open(segment.header.sequence + 1, byte_budget_);  // the initial offer, carried by the SYN-ACK
+            block.send.peer_mss = segment.mss.value_or(default_peer_mss);
+            block.send.wnd      = segment.header.window;
+            block.send.wl1      = segment.header.sequence;
+            block.send.wl2      = Sequence{};
+            block.timestamps.offer(config_.timestamps, isn_.offset());
+            block.timestamps.answer(segment.ts_value, now_);
+            block.timestamps.sent_ack(block.receive.next());  // what the SYN-ACK acknowledges, as Linux's rcv_wup
             // Arms the timer on a send or an ARP wait; a refused send leaves the SYN-ACK to the RTO.
-            std::ignore = queue_control(conn, wire::TcpFlags{wire::TcpFlag::Syn, wire::TcpFlag::Ack}, conn.send_.iss);
-            if (!conn.timer_.armed()) {
-                arm_retransmit(conn);
+            std::ignore = queue_control(block, wire::TcpFlags{wire::TcpFlag::Syn, wire::TcpFlag::Ack}, block.send.iss);
+            if (!block.timer.armed()) {
+                arm_retransmit(block);
             }
         }
 
-        void receive_syn_sent(ConnectionType& conn, Datagram& datagram, Segment segment) noexcept {
+        void receive_syn_sent(Block& block, Datagram& datagram, Segment segment) noexcept {
             const wire::TcpHeader& header = segment.header;
-            if (header.flags.has(wire::TcpFlag::Ack) && header.acknowledgement != conn.send_.nxt) {
+            if (header.flags.has(wire::TcpFlag::Ack) && header.acknowledgement != block.send.nxt) {
                 ++counters_.dropped_unexpected;  // not an answer to our SYN
                 return;
             }
@@ -415,60 +417,60 @@ namespace aloe::tcp {
                     return;
                 }
                 ++counters_.connections_reset;
-                set_closed(conn);
-                raise(conn, stream::Event::Reset);
+                set_closed(block);
+                raise(block, stream::Event::Reset);
                 return;
             }
             if (!header.flags.has(wire::TcpFlag::Syn) || !header.flags.has(wire::TcpFlag::Ack)) {
                 ++counters_.dropped_unexpected;  // a simultaneous open is out of scope
                 return;
             }
-            conn.timestamps_.answer(segment.ts_value, now_);                // our offer, answered
-            const Freed freed = acknowledge(conn, header.acknowledgement);  // frees the SYN's entry
-            conn.send_.una    = header.acknowledgement;
-            on_acknowledged(conn, freed, segment.ts_echo);  // a sample, and the timer stopped with the queue empty
-            conn.receive_.open(header.sequence + 1, byte_budget_);  // the initial offer, carried by our first ACK
-            conn.timestamps_.sent_ack(conn.receive_.next());  // as Linux's rcv_wup: data on the SYN-ACK may update it
-            conn.send_.peer_mss = segment.mss.value_or(default_peer_mss);
-            conn.send_.synchronize(header);
-            conn.state_ = State::Established;
-            reserve_fin_node(conn);
-            conn.recovery_.establish(conn.mss());
-            update_probing(conn);  // a SYN-ACK offering no window starts probing as any ACK does
+            block.timestamps.answer(segment.ts_value, now_);                 // our offer, answered
+            const Freed freed = acknowledge(block, header.acknowledgement);  // frees the SYN's entry
+            block.send.una    = header.acknowledgement;
+            on_acknowledged(block, freed, segment.ts_echo);  // a sample, and the timer stopped with the queue empty
+            block.receive.open(header.sequence + 1, byte_budget_);  // the initial offer, carried by our first ACK
+            block.timestamps.sent_ack(block.receive.next());  // as Linux's rcv_wup: data on the SYN-ACK may update it
+            block.send.peer_mss = segment.mss.value_or(default_peer_mss);
+            block.send.synchronize(header);
+            block.state = State::Established;
+            reserve_fin_node(block);
+            block.recovery.establish(block.mss());
+            update_probing(block);  // a SYN-ACK offering no window starts probing as any ACK does
             ++counters_.connections_opened;
-            queue_ack(conn);  // deferred: a commit on the Connected event completes the handshake with data
-            raise(conn, stream::Event::Connected);
+            queue_ack(block);  // deferred: a commit on the Connected event completes the handshake with data
+            raise(block, stream::Event::Connected);
             if (segment.payload_length > 0 || header.flags.has(wire::TcpFlag::Fin)) {
-                segment.header.sequence = conn.receive_.next();
+                segment.header.sequence = block.receive.next();
                 segment.header.flags    = wire::TcpFlags::from_raw(
                     static_cast<std::uint8_t>(header.flags.raw() & ~std::to_underlying(wire::TcpFlag::Syn)));
-                receive_synchronized(conn, datagram, segment);
+                receive_synchronized(block, datagram, segment);
             }
         }
 
         /// A segment on a synchronized connection, in RFC 9293's order; each step may end it.
-        void receive_synchronized(ConnectionType& conn, Datagram& datagram, Segment segment) noexcept {
+        void receive_synchronized(Block& block, Datagram& datagram, Segment segment) noexcept {
             const bool rst         = segment.header.flags.has(wire::TcpFlag::Rst);
             const Sequence arrived = segment.header.sequence;  // SEG.SEQ before any trim, for the TS.Recent rule
 
             // 0. PAWS (RFC 7323), before the sequence check as Linux's tcp_validate_incoming: a timestamp older than
             // TS.Recent is an old duplicate, acknowledged at once and dropped. A RST is exempt; a segment without the
             // option goes on, as Linux lets it.
-            if (conn.timestamps_.rejects(segment.ts_value, rst, now_)) {
+            if (block.timestamps.rejects(segment.ts_value, rst, now_)) {
                 ++counters_.dropped_paws;
-                ack_now(conn);
+                ack_now(block);
                 return;
             }
 
             // 1. Sequence check against [rcv_nxt, the offered edge).
-            if (!accept_sequence(conn, segment)) {
+            if (!accept_sequence(block, segment)) {
                 return;
             }
-            conn.timestamps_.update(segment.ts_value, arrived, now_);  // acceptable, trimmed or not
+            block.timestamps.update(segment.ts_value, arrived, now_);  // acceptable, trimmed or not
 
             // 2. RST, and a SYN, which a synchronized connection does not take.
             if (rst) {
-                receive_reset(conn);
+                receive_reset(block);
                 return;
             }
             if (segment.header.flags.has(wire::TcpFlag::Syn)) {
@@ -477,23 +479,23 @@ namespace aloe::tcp {
             }
 
             // 3. ACK.
-            if (!receive_ack(conn, segment)) {
+            if (!receive_ack(block, segment)) {
                 return;
             }
 
             // 4. Payload.
-            if (segment.payload_length > 0 && !receive_payload(conn, datagram, segment)) {
+            if (segment.payload_length > 0 && !receive_payload(block, datagram, segment)) {
                 return;
             }
 
             // 5. FIN, in order: its sequence is rcv_nxt after the payload.
             if (segment.header.flags.has(wire::TcpFlag::Fin)) {
-                if (conn.state_ == State::CloseWait || conn.state_ == State::Closing || conn.state_ == State::LastAck) {
+                if (block.state == State::CloseWait || block.state == State::Closing || block.state == State::LastAck) {
                     ++counters_.dropped_unexpected;  // a second FIN: the peer's sequence space ended at the first
-                    ack_now(conn);
+                    ack_now(block);
                     return;
                 }
-                receive_fin(conn);
+                receive_fin(block);
             }
         }
 
@@ -503,18 +505,18 @@ namespace aloe::tcp {
          * data that fills it is acknowledged at once. One that overlaps RCV.NXT loses its old prefix, a SYN with it. A
          * duplicate SYN in SynReceived gets the SYN-ACK again, from its entry. False when the segment goes no further.
          */
-        [[nodiscard]] bool accept_sequence(ConnectionType& conn, Segment& segment) noexcept {
+        [[nodiscard]] bool accept_sequence(Block& block, Segment& segment) noexcept {
             wire::TcpHeader& header    = segment.header;
             const bool rst             = header.flags.has(wire::TcpFlag::Rst);
-            const Sequence next        = conn.receive_.next();
-            const Sequence edge        = conn.receive_.offered();
-            const std::uint32_t window = conn.receive_.window();
+            const Sequence next        = block.receive.next();
+            const Sequence edge        = block.receive.offered();
+            const std::uint32_t window = block.receive.window();
             const Sequence sequence    = header.sequence;
             const Sequence end         = sequence + segment.length();
-            const auto drop            = [this, &conn, rst](std::uint64_t& counter) {
+            const auto drop            = [this, &block, rst](std::uint64_t& counter) {
                 ++counter;
                 if (!rst) {
-                    ack_now(conn);
+                    ack_now(block);
                 }
                 return false;
             };
@@ -524,15 +526,15 @@ namespace aloe::tcp {
                 return acceptable || drop(counters_.dropped_out_of_window);
             }
             if (!end.after(next)) {  // entirely before rcv_nxt
-                if (conn.state_ == State::SynReceived && header.flags.has(wire::TcpFlag::Syn) &&
+                if (block.state == State::SynReceived && header.flags.has(wire::TcpFlag::Syn) &&
                     !header.flags.has(wire::TcpFlag::Ack)) {
-                    std::ignore = resend_head(conn);  // a duplicate SYN: the SYN-ACK again, from its entry
+                    std::ignore = resend_head(block);  // a duplicate SYN: the SYN-ACK again, from its entry
                     return false;
                 }
                 return drop(counters_.dropped_duplicate);
             }
             if (sequence.after(next)) {  // a gap before it
-                conn.ack_policy_.gap(end);
+                block.ack_policy.gap(end);
                 return drop(counters_.dropped_out_of_order);
             }
             if (sequence.before(next)) {  // overlap: the old prefix is already ours
@@ -554,15 +556,15 @@ namespace aloe::tcp {
         }
 
         /// A RST in the window: a passive open nobody took is freed silently; any other connection is reset.
-        void receive_reset(ConnectionType& conn) noexcept {
-            if (conn.state_ == State::SynReceived && !conn.owned_) {
+        void receive_reset(Block& block) noexcept {
+            if (block.state == State::SynReceived && !block.owned) {
                 ++counters_.handshakes_failed;
-                free_slot(conn);
+                free_slot(block);
                 return;
             }
             ++counters_.connections_reset;
-            set_closed(conn);
-            raise(conn, stream::Event::Reset);
+            set_closed(block);
+            raise(block, stream::Event::Reset);
         }
 
         /**
@@ -573,67 +575,67 @@ namespace aloe::tcp {
          * window. False when the segment goes no further: no ACK, an ACK of what was never sent, or a connection that
          * finished.
          */
-        [[nodiscard]] bool receive_ack(ConnectionType& conn, const Segment& segment) noexcept {
+        [[nodiscard]] bool receive_ack(Block& block, const Segment& segment) noexcept {
             const wire::TcpHeader& header = segment.header;
             if (!header.flags.has(wire::TcpFlag::Ack)) {
                 ++counters_.dropped_unexpected;
                 return false;
             }
             const Sequence ack = header.acknowledgement;
-            if (conn.state_ == State::SynReceived) {
-                if (ack != conn.send_.nxt) {
+            if (block.state == State::SynReceived) {
+                if (ack != block.send.nxt) {
                     ++counters_.dropped_unexpected;
                     return false;
                 }
-                const Freed freed = acknowledge(conn, ack);  // frees the SYN-ACK's entry
-                conn.send_.una    = ack;
-                on_acknowledged(conn, freed, segment.ts_echo);  // a sample, and the timer stopped with the queue empty
-                conn.state_ = State::Established;
-                reserve_fin_node(conn);
-                conn.recovery_.establish(conn.mss());
-                conn.owned_ = true;
+                const Freed freed = acknowledge(block, ack);  // frees the SYN-ACK's entry
+                block.send.una    = ack;
+                on_acknowledged(block, freed, segment.ts_echo);  // a sample, and the timer stopped with the queue empty
+                block.state = State::Established;
+                reserve_fin_node(block);
+                block.recovery.establish(block.mss());
+                block.owned = true;
                 ++counters_.connections_accepted;
-                raise(conn, stream::Event::Accepted);
+                raise(block, stream::Event::Accepted);
                 // The same segment may carry data or a FIN: keep going.
             }
-            if (ack.after(conn.send_.nxt)) {
+            if (ack.after(block.send.nxt)) {
                 ++counters_.dropped_unexpected;  // acknowledges what was never sent
-                ack_now(conn);
+                ack_now(block);
                 return false;
             }
-            const std::size_t writable_before = writable(conn);
+            const std::size_t writable_before = writable(block);
             const bool duplicate              = segment.payload_length == 0 && !header.flags.has(wire::TcpFlag::Syn) &&
-                                                !header.flags.has(wire::TcpFlag::Fin) && ack == conn.send_.una &&
-                                                header.window == conn.send_.wnd && in_flight(conn);
-            if (ack.after(conn.send_.una)) {
-                acknowledge_data(conn, ack, segment.ts_echo);
-                raise(conn, stream::Event::Acked);
-                if (conn.send_.fin_sent && ack == conn.send_.nxt) {  // our FIN is acknowledged: the queue is empty
-                    switch (conn.state_) {
+                                                !header.flags.has(wire::TcpFlag::Fin) && ack == block.send.una &&
+                                                header.window == block.send.wnd && in_flight(block);
+            if (ack.after(block.send.una)) {
+                acknowledge_data(block, ack, segment.ts_echo);
+                raise(block, stream::Event::Acked);
+                if (block.send.fin_sent && ack == block.send.nxt) {  // our FIN is acknowledged: the queue is empty
+                    switch (block.state) {
                         case State::FinWait1:
-                            conn.state_ = State::FinWait2;
+                            block.state = State::FinWait2;
                             break;
                         case State::Closing:
                         case State::LastAck:
-                            conn.finish_pending_ = true;
+                            block.finish_pending = true;
                             break;
                         default:
                             break;
                     }
                 }
             } else if (duplicate) {
-                on_duplicate_ack(conn, ack);
+                on_duplicate_ack(block, ack);
             }
-            if (!ack.before(conn.send_.una)) {
-                conn.send_.update_window(header);
-                update_probing(conn);  // a window that opened ends probing; the comparison below raises Writable
-                send_unsent(conn);     // and sends the FIN a close left waiting for it
+            if (!ack.before(block.send.una)) {
+                block.send.update_window(header);
+                update_probing(block);  // a window that opened ends probing; the comparison below raises Writable
+                send_unsent(block);     // and sends the FIN a close left waiting for it
             }
-            if (writable(conn) > writable_before) {
-                raise(conn, stream::Event::Writable);
+            if (writable(block) > writable_before) {
+                raise(block, stream::Event::Writable);
             }
-            maybe_finish(conn);
-            return conn.state_ != State::Closed;
+            maybe_finish(block);
+            return block.state != State::Closed;
         }
 
         /**
@@ -641,54 +643,54 @@ namespace aloe::tcp {
          * ACK that reports the last byte accepted, past the peer's FIN, past the per-connection cap of held packets
          * or with the shard's pool empty; the FIN behind refused data is not consumed. False when refused.
          */
-        [[nodiscard]] bool receive_payload(ConnectionType& conn, Datagram& datagram, const Segment& segment) noexcept {
-            if (conn.receive_.closed()) {  // the peer's sequence space ended at its FIN, whatever state we are in
+        [[nodiscard]] bool receive_payload(Block& block, Datagram& datagram, const Segment& segment) noexcept {
+            if (block.receive.closed()) {  // the peer's sequence space ended at its FIN, whatever state we are in
                 ++counters_.dropped_unexpected;
-                ack_now(conn);
+                ack_now(block);
                 return false;
             }
-            if (conn.receive_.segments() >= config_.receive_segments) {
+            if (block.receive.segments() >= config_.receive_segments) {
                 ++counters_.dropped_no_slot;
-                ack_now(conn);
+                ack_now(block);
                 return false;
             }
             const auto offset =
                 static_cast<std::uint16_t>(datagram.l3_offset + datagram.l3_length + segment.payload_offset);
-            if (!conn.receive_.hold(pool_, datagram.packet, offset, segment.payload_length)) {
+            if (!block.receive.hold(pool_, datagram.packet, offset, segment.payload_length)) {
                 ++counters_.dropped_no_node;
-                ack_now(conn);
+                ack_now(block);
                 return false;
             }
-            raise(conn, stream::Event::Readable);
+            raise(block, stream::Event::Readable);
             // A full-sized segment is our MSS less the timestamp option a timestamped peer puts in every segment.
-            const std::size_t full_size = mss_ - conn.timestamps_.option_size();
-            if (conn.ack_policy_.on_data(segment.payload_length, full_size, conn.receive_.next()) ==
+            const std::size_t full_size = mss_ - block.timestamps.option_size();
+            if (block.ack_policy.on_data(segment.payload_length, full_size, block.receive.next()) ==
                 detail::AckPolicy::Ack::Now) {
-                ack_now(conn);
+                ack_now(block);
             } else {
-                queue_ack(conn);
+                queue_ack(block);
             }
             return true;
         }
 
-        void receive_fin(ConnectionType& conn) noexcept {
-            conn.receive_.take_fin();
-            raise(conn, stream::Event::PeerClosed);
-            switch (conn.state_) {
+        void receive_fin(Block& block) noexcept {
+            block.receive.take_fin();
+            raise(block, stream::Event::PeerClosed);
+            switch (block.state) {
                 case State::Established:
-                    conn.state_ = State::CloseWait;
-                    queue_ack(conn);  // the application's close may carry it
+                    block.state = State::CloseWait;
+                    queue_ack(block);  // the application's close may carry it
                     break;
                 case State::FinWait1:
-                    conn.state_ = State::Closing;
-                    ack_now(conn);
+                    block.state = State::Closing;
+                    ack_now(block);
                     break;
                 case State::FinWait2:
-                    conn.finish_pending_ = true;
-                    ack_now(conn);  // the terminal ACK goes before Closed is published; flush retries a refusal
+                    block.finish_pending = true;
+                    ack_now(block);  // the terminal ACK goes before Closed is published; flush retries a refusal
                     break;
                 default:
-                    queue_ack(conn);
+                    queue_ack(block);
                     break;
             }
         }
@@ -699,34 +701,34 @@ namespace aloe::tcp {
          * starts it: in Established or CloseWait whether or not the application has data, and in any state while a
          * FIN the window did not cover waits in the queue (`close`). A head waiting for the next hop is the ARP poll's.
          */
-        void update_probing(ConnectionType& conn) noexcept {
-            conn.probe_.answered();
-            if (conn.probing()) {
-                if (conn.send_.wnd > 0) {
-                    disarm(conn);
+        void update_probing(Block& block) noexcept {
+            block.probe.answered();
+            if (block.probing()) {
+                if (block.send.wnd > 0) {
+                    disarm(block);
                 }
                 return;
             }
-            if (conn.send_.wnd == 0 && !in_flight(conn) && conn.timer_kind_ != detail::TimerKind::ArpPoll &&
-                (!conn.queue_.empty() || conn.state_ == State::Established || conn.state_ == State::CloseWait)) {
-                start_probing(conn);
+            if (block.send.wnd == 0 && !in_flight(block) && block.timer_kind != detail::TimerKind::ArpPoll &&
+                (!block.queue.empty() || block.state == State::Established || block.state == State::CloseWait)) {
+                start_probing(block);
             }
         }
 
         /// The head that never left, the FIN of a close the peer's window did not cover: sent once the window covers
         /// it, as Linux's `tcp_push_pending_frames` on an ACK. A head waiting for the next hop is the ARP poll's. The
         /// send arms the RTO (`transmit_entry`); a refused one leaves the RTO to try again, as `close` does.
-        void send_unsent(ConnectionType& conn) noexcept {
-            if (conn.queue_.empty() || in_flight(conn) || conn.timer_kind_ == detail::TimerKind::ArpPoll) {
+        void send_unsent(Block& block) noexcept {
+            if (block.queue.empty() || in_flight(block) || block.timer_kind == detail::TimerKind::ArpPoll) {
                 return;
             }
-            if (const SentNode& head = send_pool_.node(conn.queue_.head());
-                !conn.send_.covers(head.first + head.length)) {
+            if (const SentNode& head = send_pool_.node(block.queue.head());
+                !block.send.covers(head.first + head.length)) {
                 return;
             }
-            std::ignore = transmit_entry(conn, conn.queue_.head());
-            if (!conn.timer_.armed()) {
-                arm_retransmit(conn);
+            std::ignore = transmit_entry(block, block.queue.head());
+            if (!block.timer.armed()) {
+                arm_retransmit(block);
             }
         }
 
@@ -753,26 +755,25 @@ namespace aloe::tcp {
         // that occupy sequence space; pure ACKs and their policy.
 
         /// The right edge an ACK offers now (`ReceiveQueue::offer`).
-        [[nodiscard]] Sequence offer_of(const ConnectionType& conn) const noexcept {
-            return conn.receive_.offer(byte_budget_, config_.receive_segments);
+        [[nodiscard]] Sequence offer_of(const Block& block) const noexcept {
+            return block.receive.offer(byte_budget_, config_.receive_segments);
         }
 
         /// A segment with ACK left offering `offer`: the edge is recorded and the ACK that waited is done.
-        void record_offer(ConnectionType& conn, const Sequence offer) noexcept {
-            if (conn.receive_.record_offer(offer)) {
+        void record_offer(Block& block, const Sequence offer) noexcept {
+            if (block.receive.record_offer(offer)) {
                 ++counters_.window_updates;
             }
-            acks_.remove(conn);
-            conn.ack_policy_.acknowledged();
+            acks_.remove(block);
+            block.ack_policy.acknowledged();
         }
 
         /// The timestamp option a segment of the connection carries now: the clock's value and TS.Recent as the echo.
-        [[nodiscard]] std::optional<detail::TimestampOption>
-        timestamp_option(const ConnectionType& conn) const noexcept {
-            if (!conn.timestamps_.enabled()) {
+        [[nodiscard]] std::optional<detail::TimestampOption> timestamp_option(const Block& block) const noexcept {
+            if (!block.timestamps.enabled()) {
                 return std::nullopt;
             }
-            return detail::TimestampOption{.value = conn.timestamps_.value(now_), .echo = conn.timestamps_.echo()};
+            return detail::TimestampOption{.value = block.timestamps.value(now_), .echo = block.timestamps.echo()};
         }
 
         /**
@@ -782,18 +783,18 @@ namespace aloe::tcp {
          * caller. Only a success records the offer and Last.ACK.sent and clears the pending ACK; a failure, counted
          * by the writer, leaves the packet framed.
          */
-        [[nodiscard]] std::expected<void, net::SendError> emit(ConnectionType& conn,
+        [[nodiscard]] std::expected<void, net::SendError> emit(Block& block,
                                                                Packet& packet,
                                                                const bool framed,
                                                                const Sequence sequence,
                                                                const wire::TcpFlags flags,
                                                                const bool handshake) noexcept {
             const bool with_ack  = flags.has(wire::TcpFlag::Ack);
-            const Sequence next  = conn.receive_.next();
-            const Sequence offer = with_ack ? offer_of(conn) : conn.receive_.offered();
+            const Sequence next  = block.receive.next();
+            const Sequence offer = with_ack ? offer_of(block) : block.receive.offered();
             const detail::OutgoingSegment segment{
-                .header     = wire::TcpHeader{.source_port      = conn.local_.port,
-                                              .destination_port = conn.remote_.port,
+                .header     = wire::TcpHeader{.source_port      = block.local.port,
+                                              .destination_port = block.remote.port,
                                               .sequence         = sequence,
                                               .acknowledgement  = with_ack ? next : Sequence{},
                                               .flags            = flags,
@@ -801,27 +802,27 @@ namespace aloe::tcp {
                                                                  : static_cast<std::uint16_t>(byte_budget_)},
                 .mss        = handshake ? std::optional{mss_}
                       : std::nullopt,
-                .timestamps = timestamp_option(conn)
+                .timestamps = timestamp_option(block)
             };
             const std::expected<void, net::SendError> sent =
-                writer_.send(conn.template_, conn.remote_.address, packet, framed, segment, now_);
+                writer_.send(block.frame, block.remote.address, packet, framed, segment, now_);
             if (sent && with_ack) {
-                record_offer(conn, offer);
-                conn.timestamps_.sent_ack(next);
+                record_offer(block, offer);
+                block.timestamps.sent_ack(next);
             }
             return sent;
         }
 
         /// Established: one node of the pool is set aside for the connection's FIN. The ACK that brought the
         /// connection here freed the handshake's node, so one is free to set aside.
-        void reserve_fin_node(ConnectionType& conn) noexcept {
-            [[maybe_unused]] const bool reserved = conn.queue_.reserve_fin(send_pool_);
+        void reserve_fin_node(Block& block) noexcept {
+            [[maybe_unused]] const bool reserved = block.queue.reserve_fin(send_pool_);
             assert(reserved && "the handshake's node just came back");
         }
 
         /// A queue entry for a segment about to leave, with what a rate sample reads: the delivered count, and whether
         /// the windows allowed more than it carries.
-        [[nodiscard]] SentNode entry(const ConnectionType& conn,
+        [[nodiscard]] SentNode entry(const Block& block,
                                      Packet&& packet,
                                      const std::uint16_t payload,
                                      const wire::TcpFlags flags,
@@ -832,8 +833,8 @@ namespace aloe::tcp {
                             .length            = length,
                             .payload           = payload,
                             .flags             = flags,
-                            .delivered_at_send = conn.queue_.delivered(),
-                            .app_limited       = conn.recovery_.room(conn.send_) > payload};
+                            .delivered_at_send = block.queue.delivered(),
+                            .app_limited       = block.recovery.room(block.send) > payload};
         }
 
         /**
@@ -841,23 +842,23 @@ namespace aloe::tcp {
          * SYN-ACK, which `transmit_entry` gives one. Nothing, the packet back to its pool, when no node is free or a
          * data segment would pass the send cap. The FIN's entry is `enqueue_fin`.
          */
-        [[nodiscard]] std::optional<std::uint32_t> enqueue(ConnectionType& conn,
+        [[nodiscard]] std::optional<std::uint32_t> enqueue(Block& block,
                                                            Packet&& packet,
                                                            const std::uint16_t payload,
                                                            const wire::TcpFlags flags,
                                                            const Sequence first,
                                                            const std::uint32_t length) noexcept {
-            if (payload > 0 && conn.queue_.size() >= config_.send_segments) {
+            if (payload > 0 && block.queue.size() >= config_.send_segments) {
                 return std::nullopt;
             }
-            return conn.queue_.push(send_pool_, entry(conn, std::move(packet), payload, flags, first, length));
+            return block.queue.push(send_pool_, entry(block, std::move(packet), payload, flags, first, length));
         }
 
         /// The FIN's entry, on the node Established set aside for it; the stack's own, so the send cap does not hold
         /// it.
-        [[nodiscard]] std::optional<std::uint32_t> enqueue_fin(ConnectionType& conn, const Sequence fin) noexcept {
-            return conn.queue_.push_fin(
-                send_pool_, entry(conn, Packet{}, 0, wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, fin, 1));
+        [[nodiscard]] std::optional<std::uint32_t> enqueue_fin(Block& block, const Sequence fin) noexcept {
+            return block.queue.push_fin(
+                send_pool_, entry(block, Packet{}, 0, wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, fin, 1));
         }
 
         /**
@@ -867,11 +868,11 @@ namespace aloe::tcp {
          * only entry, a segment sent into an empty queue, arms the timer: the RTO when it left, the ARP poll when a
          * SYN, SYN-ACK or FIN found no next hop. A data segment that found none is not kept: `commit` refuses it.
          */
-        [[nodiscard]] std::expected<void, net::SendError> transmit_entry(ConnectionType& conn,
+        [[nodiscard]] std::expected<void, net::SendError> transmit_entry(Block& block,
                                                                          const std::uint32_t index) noexcept {
             SentNode& node = send_pool_.node(index);
             assert(!node.packet.lent() && "a queued packet is written only once the device gave it back");
-            const bool first_into_empty = node.transmits == 0 && index == conn.queue_.head() && conn.queue_.size() == 1;
+            const bool first_into_empty = node.transmits == 0 && index == block.queue.head() && block.queue.size() == 1;
             if (node.packet.empty()) {
                 std::optional<Packet> fresh = ip_.allocate();
                 if (!fresh) {
@@ -881,17 +882,17 @@ namespace aloe::tcp {
                 node.packet = std::move(*fresh);
             }
             const std::expected<void, net::SendError> sent =
-                emit(conn, node.packet, node.framed, node.first, node.flags, node.flags.has(wire::TcpFlag::Syn));
+                emit(block, node.packet, node.framed, node.first, node.flags, node.flags.has(wire::TcpFlag::Syn));
             node.framed = true;
             if (!sent) {
                 if (first_into_empty && node.payload == 0 && sent.error() == net::SendError::Unresolved) {
-                    arm_poll(conn);
+                    arm_poll(block);
                 }
                 return sent;
             }
-            record_transmission(conn, node);
+            record_transmission(block, node);
             if (first_into_empty) {
-                arm_retransmit(conn);
+                arm_retransmit(block);
             }
             return {};
         }
@@ -899,32 +900,32 @@ namespace aloe::tcp {
         /// A transmission of the entry left, from its packet or as a copy: stamped, on the queue too when it carries
         /// payload (the idle restart's clock), counted as a control segment for a SYN or FIN, and the ARP poll's count
         /// cleared.
-        void record_transmission(ConnectionType& conn, SentNode& node) noexcept {
-            conn.queue_.sent(node, now_);
+        void record_transmission(Block& block, SentNode& node) noexcept {
+            block.queue.sent(node, now_);
             if (node.control()) {
                 ++counters_.control_segments_sent;
             }
-            conn.unresolved_polls_ = 0;
+            block.unresolved_polls = 0;
         }
 
         /// Queues a SYN or SYN-ACK at `sequence` and transmits it. The entry stays when the send fails, for the
         /// timer; `Refused`, counted, when no node is free.
         [[nodiscard]] std::expected<void, net::SendError>
-        queue_control(ConnectionType& conn, const wire::TcpFlags flags, const Sequence sequence) noexcept {
-            const std::optional<std::uint32_t> entry = enqueue(conn, Packet{}, 0, flags, sequence, 1);
+        queue_control(Block& block, const wire::TcpFlags flags, const Sequence sequence) noexcept {
+            const std::optional<std::uint32_t> entry = enqueue(block, Packet{}, 0, flags, sequence, 1);
             if (!entry) {
                 ++counters_.send_refused;
                 return std::unexpected{net::SendError::Refused};
             }
-            return transmit_entry(conn, *entry);
+            return transmit_entry(block, *entry);
         }
 
         /// The queue frees what `ack` covers (`RetransmissionQueue::acknowledge`); a resend that waited on the deferred
         /// list is moot once its entry is freed. Called before SND.UNA moves.
-        [[nodiscard]] Freed acknowledge(ConnectionType& conn, const Sequence ack) noexcept {
-            const Freed freed = conn.queue_.acknowledge(send_pool_, ack, conn.send_.una);
+        [[nodiscard]] Freed acknowledge(Block& block, const Sequence ack) noexcept {
+            const Freed freed = block.queue.acknowledge(send_pool_, ack, block.send.una);
             if (freed.length > 0) {
-                deferred_.remove(conn);
+                deferred_.remove(block);
             }
             return freed;
         }
@@ -936,21 +937,21 @@ namespace aloe::tcp {
          * `transmit_entry` sends what is left. IP's error, or nothing when the resend left or was deferred. A send that
          * failed leaves the deferred list too: the timer's next expiry tries again.
          */
-        [[nodiscard]] std::expected<void, net::SendError> resend_head(ConnectionType& conn) noexcept {
-            assert(!conn.queue_.empty() && "a resend with nothing queued");
-            SentNode& node = send_pool_.node(conn.queue_.head());
+        [[nodiscard]] std::expected<void, net::SendError> resend_head(Block& block) noexcept {
+            assert(!block.queue.empty() && "a resend with nothing queued");
+            SentNode& node = send_pool_.node(block.queue.head());
             node.reconcile();
             if (node.packet.lent() && ip_.queue().reclaim() > 0) {
                 node.reconcile();  // what the device let go of may be either packet
             }
             if (node.packet.lent()) {
-                return resend_busy(conn, node);
+                return resend_busy(block, node);
             }
-            if (conn.send_.una.after(node.first)) {
-                node.trim_to(conn.send_.una);
+            if (block.send.una.after(node.first)) {
+                node.trim_to(block.send.una);
             }
-            deferred_.remove(conn);  // the packet is back: whatever IP answers, this resend is not waiting any more
-            const std::expected<void, net::SendError> sent = transmit_entry(conn, conn.queue_.head());
+            deferred_.remove(block);  // the packet is back: whatever IP answers, this resend is not waiting any more
+            const std::expected<void, net::SendError> sent = transmit_entry(block, block.queue.head());
             if (sent) {
                 node.deferrals = 0;
             }
@@ -964,18 +965,18 @@ namespace aloe::tcp {
          * per deferral; at the bound, with no copy out, the copy goes (`send_copy`); with a copy out and both packets
          * lent, it waits again.
          */
-        [[nodiscard]] std::expected<void, net::SendError> resend_busy(ConnectionType& conn, SentNode& node) noexcept {
-            if (deferred_.contains(conn) && node.deferred_at == now_) {
+        [[nodiscard]] std::expected<void, net::SendError> resend_busy(Block& block, SentNode& node) noexcept {
+            if (deferred_.contains(block) && node.deferred_at == now_) {
                 return {};
             }
             if (node.deferrals < config_.retransmit_defers) {
                 ++node.deferrals;
             } else if (node.copy.empty()) {
-                return send_copy(conn, node);
+                return send_copy(block, node);
             }
             node.deferred_at = now_;
-            if (!deferred_.contains(conn)) {
-                deferred_.push_back(conn);
+            if (!deferred_.contains(block)) {
+                deferred_.push_back(block);
             }
             ++counters_.retransmits_deferred;
             return {};
@@ -988,10 +989,10 @@ namespace aloe::tcp {
          * free counts `allocation_failures` and refuses; a refused send drops the copy. Either way the entry stays as
          * it was and the connection leaves the deferred list: the timer's next expiry tries again.
          */
-        [[nodiscard]] std::expected<void, net::SendError> send_copy(ConnectionType& conn, SentNode& node) noexcept {
+        [[nodiscard]] std::expected<void, net::SendError> send_copy(Block& block, SentNode& node) noexcept {
             assert(node.framed && node.copy.empty() && "one copy at a time, of a frame that left");
-            deferred_.remove(conn);
-            const Sequence first    = conn.send_.una.after(node.first) ? conn.send_.una : node.first;
+            deferred_.remove(block);
+            const Sequence first    = block.send.una.after(node.first) ? block.send.una : node.first;
             const auto acknowledged = static_cast<std::uint32_t>(first - node.first);
             assert((acknowledged == 0 || acknowledged < node.payload) && "only data is acknowledged in part");
             const auto payload            = static_cast<std::uint16_t>(node.payload - acknowledged);
@@ -1002,7 +1003,7 @@ namespace aloe::tcp {
                 return std::unexpected{net::SendError::Refused};
             }
             if (const std::expected<void, net::SendError> sent =
-                    emit(conn, *copy, true, first, node.flags, node.flags.has(wire::TcpFlag::Syn));
+                    emit(block, *copy, true, first, node.flags, node.flags.has(wire::TcpFlag::Syn));
                 !sent) {
                 return sent;  // the copy goes back to the pool
             }
@@ -1010,20 +1011,20 @@ namespace aloe::tcp {
             node.copy_first   = first;
             node.copy_payload = payload;
             node.deferrals    = 0;
-            record_transmission(conn, node);
+            record_transmission(block, node);
             ++counters_.retransmits_copied;
             return {};
         }
 
         /// A header-only ACK at `sequence` from a fresh packet: lent to the device and forgotten, never kept. A failure
         /// is counted.
-        [[nodiscard]] bool send_bare_ack(ConnectionType& conn, const Sequence sequence) noexcept {
+        [[nodiscard]] bool send_bare_ack(Block& block, const Sequence sequence) noexcept {
             std::optional<Packet> packet = ip_.allocate();
             if (!packet) {
                 ++counters_.send_refused;
                 return false;
             }
-            if (!emit(conn, *packet, false, sequence, wire::TcpFlags{wire::TcpFlag::Ack}, false)) {
+            if (!emit(block, *packet, false, sequence, wire::TcpFlags{wire::TcpFlag::Ack}, false)) {
                 return false;  // the packet goes back to the pool
             }
             *packet = Packet{};  // the device frees the buffer when it is done
@@ -1031,8 +1032,8 @@ namespace aloe::tcp {
         }
 
         /// A pure ACK at `snd_nxt`.
-        [[nodiscard]] bool send_pure_ack(ConnectionType& conn) noexcept {
-            if (!send_bare_ack(conn, conn.send_.nxt)) {
+        [[nodiscard]] bool send_pure_ack(Block& block) noexcept {
+            if (!send_bare_ack(block, block.send.nxt)) {
                 return false;
             }
             ++counters_.pure_acks_sent;
@@ -1041,8 +1042,8 @@ namespace aloe::tcp {
 
         /// A zero-window probe, Linux's `tcp_xmit_probe_skb`: a pure ACK at `snd_una - 1`, which occupies no sequence
         /// space and which the peer, finding it outside its window, answers with an ACK carrying its window.
-        [[nodiscard]] bool send_probe(ConnectionType& conn) noexcept {
-            if (!send_bare_ack(conn, Sequence{conn.send_.una.value - 1})) {
+        [[nodiscard]] bool send_probe(Block& block) noexcept {
+            if (!send_bare_ack(block, Sequence{block.send.una.value - 1})) {
                 return false;
             }
             ++counters_.zero_window_probes;
@@ -1051,60 +1052,60 @@ namespace aloe::tcp {
 
         /// abort's RST, at `snd_nxt` with the ACK, window and timestamps an ordinary segment carries (RFC 7323: should
         /// carry them, as Linux's does): through `Ipv4::send` and forgotten, since nothing of it is kept.
-        [[nodiscard]] bool send_reset(ConnectionType& conn) noexcept {
-            const Sequence next  = conn.receive_.next();
-            const Sequence offer = offer_of(conn);
+        [[nodiscard]] bool send_reset(Block& block) noexcept {
+            const Sequence next  = block.receive.next();
+            const Sequence offer = offer_of(block);
             const detail::OutgoingSegment reset{
-                .header     = wire::TcpHeader{.source_port      = conn.local_.port,
-                                              .destination_port = conn.remote_.port,
-                                              .sequence         = conn.send_.nxt,
+                .header     = wire::TcpHeader{.source_port      = block.local.port,
+                                              .destination_port = block.remote.port,
+                                              .sequence         = block.send.nxt,
                                               .acknowledgement  = next,
                                               .flags            = wire::TcpFlags{wire::TcpFlag::Rst, wire::TcpFlag::Ack},
                                               .window           = static_cast<std::uint16_t>(offer.value - next.value)},
-                .timestamps = timestamp_option(conn)
+                .timestamps = timestamp_option(block)
             };
-            if (!writer_.send_detached(conn.remote_.address, reset, now_)) {
+            if (!writer_.send_detached(block.remote.address, reset, now_)) {
                 return false;
             }
-            record_offer(conn, offer);
+            record_offer(block, offer);
             ++counters_.resets_sent;
             return true;
         }
 
         /// An ordinary ACK: on the ACK list, sent by flush unless a segment carrying an ACK leaves first.
-        void queue_ack(ConnectionType& conn) noexcept {
-            if (!acks_.contains(conn)) {
-                acks_.push_back(conn);
+        void queue_ack(Block& block) noexcept {
+            if (!acks_.contains(block)) {
+                acks_.push_back(block);
             }
         }
 
         /// An immediate ACK: queued through IP before the next segment is processed; a refusal leaves it pending. When
         /// the close only waited for this ACK, Closed follows it, whichever segment prompted it.
-        void ack_now(ConnectionType& conn) noexcept {
-            if (send_pure_ack(conn)) {
-                maybe_finish(conn);
+        void ack_now(Block& block) noexcept {
+            if (send_pure_ack(block)) {
+                maybe_finish(block);
             } else {
-                queue_ack(conn);
+                queue_ack(block);
             }
         }
 
         /// A Writable hint at the next process, at most one per marked connection.
-        void mark_retry(ConnectionType& conn) noexcept {
-            if (!retries_.contains(conn)) {
-                retries_.push_back(conn);
+        void mark_retry(Block& block) noexcept {
+            if (!retries_.contains(block)) {
+                retries_.push_back(block);
             }
         }
 
         /// The MSS, within what the windows allow beyond the flight (`LossRecovery::room`), in Established or
         /// CloseWait with no prepare open and the queue below the send cap; else zero.
-        [[nodiscard]] std::size_t writable(const ConnectionType& conn) const noexcept {
-            if (conn.prepared_ || (conn.state_ != State::Established && conn.state_ != State::CloseWait)) {
+        [[nodiscard]] std::size_t writable(const Block& block) const noexcept {
+            if (block.prepared || (block.state != State::Established && block.state != State::CloseWait)) {
                 return 0;
             }
-            if (conn.queue_.size() >= config_.send_segments) {
+            if (block.queue.size() >= config_.send_segments) {
                 return 0;  // the send cap: the ACK that frees an entry raises Writable
             }
-            return static_cast<std::size_t>(std::min<std::uint64_t>(conn.mss(), conn.recovery_.room(conn.send_)));
+            return static_cast<std::size_t>(std::min<std::uint64_t>(block.mss(), block.recovery.room(block.send)));
         }
 
         /**
@@ -1113,13 +1114,12 @@ namespace aloe::tcp {
          * without allocating, for a count of zero or nothing writable; an allocation failure counts one
          * `allocation_failures`, marks a retry hint and retains nothing.
          */
-        [[nodiscard]] std::optional<std::span<std::byte>> prepare(ConnectionType& conn,
-                                                                  const std::size_t count) noexcept {
-            assert(!conn.prepared_ && "one prepare at a time: commit first");
+        [[nodiscard]] std::optional<std::span<std::byte>> prepare(Block& block, const std::size_t count) noexcept {
+            assert(!block.prepared && "one prepare at a time: commit first");
             if (count == 0) {
                 return std::nullopt;
             }
-            const std::size_t room = writable(conn);
+            const std::size_t room = writable(block);
             if (room == 0) {
                 return std::nullopt;  // nothing allocates when nothing is writable
             }
@@ -1127,18 +1127,18 @@ namespace aloe::tcp {
             std::optional<Packet> packet = ip_.allocate();
             if (!packet) {
                 ++counters_.allocation_failures;
-                mark_retry(conn);  // the pool may have packets by the next process
+                mark_retry(block);  // the pool may have packets by the next process
                 return std::nullopt;
             }
             const std::optional<std::span<std::byte>> span = packet->append(size);
             assert(span && "size is at most the MSS and a packet holds a whole frame");
             if (!span) {
                 ++counters_.allocation_failures;  // unreachable by construction; counted in a release build
-                mark_retry(conn);
+                mark_retry(block);
                 return std::nullopt;
             }
             // The span points into the block, which does not move.
-            conn.prepared_ = typename ConnectionType::Preparation{.packet = std::move(*packet), .size = size};
+            block.prepared = typename Block::Preparation{.packet = std::move(*packet), .size = size};
             return span;
         }
 
@@ -1151,178 +1151,176 @@ namespace aloe::tcp {
          * right edge or a loss shrank the congestion window since the prepare, refuses the commit with a hint: prepare
          * again for what `writable()` allows. No queue node free refuses it with a hint too.
          */
-        [[nodiscard]] bool commit(ConnectionType& conn, const std::size_t count) noexcept {
-            assert(conn.prepared_ && "commit without a prepare");
-            if (!conn.prepared_) {
+        [[nodiscard]] bool commit(Block& block, const std::size_t count) noexcept {
+            assert(block.prepared && "commit without a prepare");
+            if (!block.prepared) {
                 ++counters_.commits_refused;  // a contract violation, refused in a release build
                 return false;
             }
-            assert(count <= conn.prepared_->size && "commit more than was prepared");
-            Packet packet              = std::move(conn.prepared_->packet);
-            const std::size_t prepared = conn.prepared_->size;
-            conn.prepared_.reset();
+            assert(count <= block.prepared->size && "commit more than was prepared");
+            Packet packet              = std::move(block.prepared->packet);
+            const std::size_t prepared = block.prepared->size;
+            block.prepared.reset();
             if (count == 0) {
                 return true;  // discarded: `packet` goes back to the pool; nothing was refused
             }
-            if (conn.state_ != State::Established && conn.state_ != State::CloseWait) {
+            if (block.state != State::Established && block.state != State::CloseWait) {
                 ++counters_.commits_refused;  // closed since the prepare: no hint, the events say why
                 return false;
             }
-            if (count > writable(conn)) {     // the preparation is released, so this is the credit the peer offers now
+            if (count > writable(block)) {    // the preparation is released, so this is the credit the peer offers now
                 ++counters_.commits_refused;  // RFC 1122: a sender copes with a shrunk window by not sending into it
-                mark_retry(conn);
+                mark_retry(block);
                 return false;
             }
             packet.trim_back(prepared - count);
-            if (conn.queue_.idle(now_, conn.rtt_.rto())) {
-                conn.recovery_.on_idle(conn.mss());  // RFC 5681's restart after an idle RTO
+            if (block.queue.idle(now_, block.rtt.rto())) {
+                block.recovery.on_idle(block.mss());  // RFC 5681's restart after an idle RTO
             }
             const auto payload                       = static_cast<std::uint16_t>(count);
-            const std::uint32_t previous_tail        = conn.queue_.tail();
-            const std::optional<std::uint32_t> entry = enqueue(conn,
+            const std::uint32_t previous_tail        = block.queue.tail();
+            const std::optional<std::uint32_t> entry = enqueue(block,
                                                                std::move(packet),
                                                                payload,
                                                                wire::TcpFlags{wire::TcpFlag::Ack, wire::TcpFlag::Psh},
-                                                               conn.send_.nxt,
+                                                               block.send.nxt,
                                                                payload);
             if (!entry) {
                 ++counters_.allocation_failures;  // no queue node free: the packet goes back to the pool
-                mark_retry(conn);
+                mark_retry(block);
                 return false;
             }
-            if (!transmit_entry(conn, *entry)) {
-                conn.queue_.pop_back(send_pool_, previous_tail);  // the packet goes back with the node
-                mark_retry(conn);                                 // emit counted the refusal
+            if (!transmit_entry(block, *entry)) {
+                block.queue.pop_back(send_pool_, previous_tail);  // the packet goes back with the node
+                mark_retry(block);                                // emit counted the refusal
                 return false;
             }
-            conn.send_.nxt = conn.send_.nxt + static_cast<std::uint32_t>(count);
+            block.send.nxt = block.send.nxt + static_cast<std::uint32_t>(count);
             ++counters_.data_segments_sent;
             return true;
         }
 
         /// Advances the held payload's front by `count` bytes, freeing packets as they empty; a reopened edge queues
         /// an update.
-        void consume(ConnectionType& conn, const std::size_t count) noexcept {
-            conn.receive_.consume(pool_, count);
+        void consume(Block& block, const std::size_t count) noexcept {
+            block.receive.consume(pool_, count);
             const bool receiving =
-                conn.state_ == State::Established || conn.state_ == State::FinWait1 || conn.state_ == State::FinWait2;
+                block.state == State::Established || block.state == State::FinWait1 || block.state == State::FinWait2;
             if (!receiving) {
                 return;  // the peer sends no more data, or the connection is closed: no offer to make
             }
-            if (offer_of(conn) != conn.receive_.offered()) {
-                queue_ack(conn);  // an ordinary window update, including the reopening of a zero window
+            if (offer_of(block) != block.receive.offered()) {
+                queue_ack(block);  // an ordinary window update, including the reopening of a zero window
             }
         }
 
         // The control path: events, slots, the opening, the retransmit and probe timers, close, abort and release.
 
-        void raise(ConnectionType& conn, const stream::Event event) noexcept {
-            conn.events_ |= event;
-            if (!events_.contains(conn)) {
-                events_.push_back(conn);
+        void raise(Block& block, const stream::Event event) noexcept {
+            block.events |= event;
+            if (!events_.contains(block)) {
+                events_.push_back(block);
             }
         }
 
         /// The flow's identity, indexed in the table under `base_hash`; the caller found the flow free.
-        void bind_flow(ConnectionType& conn,
-                       const Endpoint local,
-                       const Endpoint remote,
-                       const std::uint32_t base_hash) noexcept {
-            conn.local_     = local;
-            conn.remote_    = remote;
-            conn.key_       = FlowKey{.remote = remote.address, .remote_port = remote.port, .local_port = local.port};
-            conn.base_hash_ = base_hash;
-            [[maybe_unused]] const bool inserted = table_.insert(conn.key_, conn.index_, base_hash);
+        void
+        bind_flow(Block& block, const Endpoint local, const Endpoint remote, const std::uint32_t base_hash) noexcept {
+            block.local     = local;
+            block.remote    = remote;
+            block.key       = FlowKey{.remote = remote.address, .remote_port = remote.port, .local_port = local.port};
+            block.base_hash = base_hash;
+            [[maybe_unused]] const bool inserted = table_.insert(block.key, block.index, base_hash);
             assert(inserted && "the caller found the flow free");
-            conn.indexed_ = true;
+            block.indexed = true;
         }
 
         /// Numbers the connection's SYN from a fresh ISN and starts its sender from scratch: RFC 6582's `recover` at
         /// the ISN, no round-trip sample, the initial RTO and no retry.
-        void open(ConnectionType& conn) noexcept {
-            conn.send_.open(isn_.next());
-            conn.recovery_.open(conn.send_.iss);
-            conn.rtt_.reset(config_.rto_initial);
-            conn.retransmit_count_ = 0;
+        void open(Block& block) noexcept {
+            block.send.open(isn_.next());
+            block.recovery.open(block.send.iss);
+            block.rtt.reset(config_.rto_initial);
+            block.retransmit_count = 0;
         }
 
-        void free_slot(ConnectionType& conn) noexcept {
+        void free_slot(Block& block) noexcept {
             // Every live connection is indexed by connect or passive_open; a free slot is not, and pushing its index
             // again would hand one slot to two opens. A release build ignores the second call.
-            assert(conn.indexed_ && "release of a free slot");
-            if (!conn.indexed_) {
+            assert(block.indexed && "release of a free slot");
+            if (!block.indexed) {
                 return;
             }
-            disarm(conn);
-            std::ignore = table_.erase(conn.key_, conn.base_hash_);
-            return_chain(conn);
-            drop_queue(conn);
-            conn.prepared_.reset();
-            events_.remove(conn);
-            acks_.remove(conn);
-            retries_.remove(conn);
-            conn.clear();
-            table_.free_slot(conn.index_);
+            disarm(block);
+            std::ignore = table_.erase(block.key, block.base_hash);
+            return_chain(block);
+            drop_queue(block);
+            block.prepared.reset();
+            events_.remove(block);
+            acks_.remove(block);
+            retries_.remove(block);
+            block.clear();
+            table_.free_slot(block.index);
         }
 
-        void return_chain(ConnectionType& conn) noexcept {
-            conn.receive_.release(pool_);
+        void return_chain(Block& block) noexcept {
+            block.receive.release(pool_);
         }
 
         /// The retransmission queue dropped (`RetransmissionQueue::drop`), and the connection off the deferred list.
-        void drop_queue(ConnectionType& conn) noexcept {
-            conn.queue_.drop(send_pool_);
-            deferred_.remove(conn);
+        void drop_queue(Block& block) noexcept {
+            block.queue.drop(send_pool_);
+            deferred_.remove(block);
         }
 
         /// The RTO from now; under a user timeout on a synchronized connection, never later than the head's first
         /// transmission plus the timeout, Linux's `tcp_clamp_rto_to_user_timeout`, and never earlier than now.
-        void arm_retransmit(ConnectionType& conn) noexcept {
-            core::TimePoint deadline = now_ + conn.rtt_.rto();
-            if (const SentNode* head = user_timed_head(conn); head != nullptr) {
+        void arm_retransmit(Block& block) noexcept {
+            core::TimePoint deadline = now_ + block.rtt.rto();
+            if (const SentNode* head = user_timed_head(block); head != nullptr) {
                 deadline = std::min(deadline, std::max(now_, head->first_sent + config_.user_timeout));
             }
-            conn.timer_kind_ = detail::TimerKind::Retransmit;
-            wheel_.arm(conn.timer_, deadline);
+            block.timer_kind = detail::TimerKind::Retransmit;
+            wheel_.arm(block.timer, deadline);
         }
 
         /// A SYN, SYN-ACK or FIN whose first send found no next hop: tried again every `unresolved_retry`, as no retry.
-        void arm_poll(ConnectionType& conn) noexcept {
-            conn.timer_kind_ = detail::TimerKind::ArpPoll;
-            wheel_.arm(conn.timer_, now_ + config_.unresolved_retry);
+        void arm_poll(Block& block) noexcept {
+            block.timer_kind = detail::TimerKind::ArpPoll;
+            wheel_.arm(block.timer, now_ + config_.unresolved_retry);
         }
 
         /// The next probe (`ZeroWindowProbe::deadline`).
-        void arm_probe(ConnectionType& conn) noexcept {
-            conn.timer_kind_ = detail::TimerKind::Probe;
-            wheel_.arm(conn.timer_, conn.probe_.deadline(now_, config_.user_timeout));
+        void arm_probe(Block& block) noexcept {
+            block.timer_kind = detail::TimerKind::Probe;
+            wheel_.arm(block.timer, block.probe.deadline(now_, config_.user_timeout));
         }
 
         /// The peer's window is zero with nothing in flight: the first probe one RTO away.
-        void start_probing(ConnectionType& conn) noexcept {
-            conn.probe_.start(conn.rtt_.rto());
-            arm_probe(conn);
+        void start_probing(Block& block) noexcept {
+            block.probe.start(block.rtt.rto());
+            arm_probe(block);
         }
 
-        void disarm(ConnectionType& conn) noexcept {
-            wheel_.cancel(conn.timer_);
-            conn.timer_kind_ = detail::TimerKind::None;
+        void disarm(Block& block) noexcept {
+            wheel_.cancel(block.timer);
+            block.timer_kind = detail::TimerKind::None;
         }
 
         /// The entry the user timeout counts from: the head of the queue once it has left, on a synchronized
         /// connection, with the timeout set. Null otherwise: the handshake is bounded by `retries` alone.
-        [[nodiscard]] const SentNode* user_timed_head(const ConnectionType& conn) const noexcept {
-            if (config_.user_timeout <= core::Duration::zero() || conn.state_ == State::SynSent ||
-                conn.state_ == State::SynReceived || conn.queue_.empty()) {
+        [[nodiscard]] const SentNode* user_timed_head(const Block& block) const noexcept {
+            if (config_.user_timeout <= core::Duration::zero() || block.state == State::SynSent ||
+                block.state == State::SynReceived || block.queue.empty()) {
                 return nullptr;
             }
-            const SentNode& head = send_pool_.node(conn.queue_.head());
+            const SentNode& head = send_pool_.node(block.queue.head());
             return head.transmits > 0 ? &head : nullptr;
         }
 
         /// Whether a segment the peer can acknowledge is out (`RetransmissionQueue::in_flight`).
-        [[nodiscard]] bool in_flight(const ConnectionType& conn) const noexcept {
-            return conn.queue_.in_flight(send_pool_);
+        [[nodiscard]] bool in_flight(const Block& block) const noexcept {
+            return block.queue.in_flight(send_pool_);
         }
 
         /**
@@ -1336,20 +1334,20 @@ namespace aloe::tcp {
          * echo, and restarts the timer. Returns the sample taken, if any.
          */
         std::optional<core::Duration>
-        on_acknowledged(ConnectionType& conn, const Freed& freed, const std::optional<std::uint32_t> echo) noexcept {
-            conn.retransmit_count_ = 0;
+        on_acknowledged(Block& block, const Freed& freed, const std::optional<std::uint32_t> echo) noexcept {
+            block.retransmit_count = 0;
             const std::optional<core::Duration> sample =
                 freed.length > 0 && !freed.resent
                     ? std::optional{std::max<core::Duration>(now_ - freed.sent, core::Duration::zero())}
-                    : conn.timestamps_.sample(echo, now_);
+                    : block.timestamps.sample(echo, now_);
             if (sample) {
-                conn.rtt_.sample(*sample, config_.rto_min, config_.rto_max);
+                block.rtt.sample(*sample, config_.rto_min, config_.rto_max);
                 ++counters_.rtt_samples;
             }
-            if (in_flight(conn)) {
-                arm_retransmit(conn);
+            if (in_flight(block)) {
+                arm_retransmit(block);
             } else {
-                disarm(conn);
+                disarm(block);
             }
             return sample;
         }
@@ -1360,29 +1358,28 @@ namespace aloe::tcp {
          * reads and says what to resend: the head as a fast retransmit on a partial ACK in fast recovery, or the new
          * head in the loss episode after a timeout, counted in `retransmits`.
          */
-        void
-        acknowledge_data(ConnectionType& conn, const Sequence ack, const std::optional<std::uint32_t> echo) noexcept {
-            const std::uint32_t flight_before       = conn.send_.flight();
-            const auto acked                        = static_cast<std::uint32_t>(ack - conn.send_.una);
-            const Freed freed                       = acknowledge(conn, ack);  // a partial entry stays whole
-            conn.send_.una                          = ack;
-            const std::optional<core::Duration> rtt = on_acknowledged(conn, freed, echo);
+        void acknowledge_data(Block& block, const Sequence ack, const std::optional<std::uint32_t> echo) noexcept {
+            const std::uint32_t flight_before       = block.send.flight();
+            const auto acked                        = static_cast<std::uint32_t>(ack - block.send.una);
+            const Freed freed                       = acknowledge(block, ack);  // a partial entry stays whole
+            block.send.una                          = ack;
+            const std::optional<core::Duration> rtt = on_acknowledged(block, freed, echo);
             const AckInfo info{.acked             = acked,
                                .flight            = flight_before,
-                               .mss               = conn.mss(),
+                               .mss               = block.mss(),
                                .rtt               = rtt,
                                .now               = now_,
                                .sent              = freed.newest_sent,
-                               .delivered         = conn.queue_.delivered(),
+                               .delivered         = block.queue.delivered(),
                                .delivered_at_send = freed.delivered_at_send,
                                .app_limited       = freed.app_limited};
-            switch (conn.recovery_.on_ack(info, ack, conn.send_)) {
+            switch (block.recovery.on_ack(info, ack, block.send)) {
                 case detail::Resend::Fast:
-                    fast_retransmit(conn);
+                    fast_retransmit(block);
                     break;
                 case detail::Resend::Head:
-                    if (!conn.queue_.empty()) {
-                        std::ignore = resend_head(conn);
+                    if (!block.queue.empty()) {
+                        std::ignore = resend_head(block);
                     }
                     ++counters_.retransmits;
                     break;
@@ -1393,10 +1390,10 @@ namespace aloe::tcp {
 
         /// RFC 5681's duplicate ACK, counted; the third may start fast recovery (`LossRecovery::on_duplicate`), which
         /// resends the head at once.
-        void on_duplicate_ack(ConnectionType& conn, const Sequence ack) noexcept {
+        void on_duplicate_ack(Block& block, const Sequence ack) noexcept {
             ++counters_.duplicate_acks;
-            if (conn.recovery_.on_duplicate(ack, conn.send_, conn.mss()) == detail::Resend::Fast) {
-                fast_retransmit(conn);
+            if (block.recovery.on_duplicate(ack, block.send, block.mss()) == detail::Resend::Fast) {
+                fast_retransmit(block);
                 ++counters_.recoveries;
             }
         }
@@ -1407,29 +1404,40 @@ namespace aloe::tcp {
          * (`tcp_xmit_retransmit_queue`), so the timer the first send armed does not expire before the resend's ACK can
          * return. A resend deferred, or refused, leaves the timer as it was.
          */
-        void fast_retransmit(ConnectionType& conn) noexcept {
+        void fast_retransmit(Block& block) noexcept {
             ++counters_.fast_retransmits;
-            if (!in_flight(conn)) {
+            if (!in_flight(block)) {
                 return;  // nothing in flight: the head, if any, waits for the window
             }
-            if (resend_head(conn) && !deferred_.contains(conn)) {
-                arm_retransmit(conn);
+            if (resend_head(block) && !deferred_.contains(block)) {
+                arm_retransmit(block);
             }
         }
 
+        /// The wheel's callback: the node's block, then the stack's timer handling.
+        static void on_timer_fired(loop::Timer& timer) noexcept {
+            Block& block = static_cast<typename Block::TimerNode&>(timer).block;
+            block.stack.on_timer(block);
+        }
+
+        /// The unconsumed payloads of the block's held packets, for the handle.
+        [[nodiscard]] typename ConnectionType::View unread(const Block& block) noexcept {
+            return block.receive.view(pool_);
+        }
+
         /// Called by the wheel with the timer unarmed; its kind says what for.
-        void on_timer(ConnectionType& conn) noexcept {
-            const detail::TimerKind kind = std::exchange(conn.timer_kind_, detail::TimerKind::None);
+        void on_timer(Block& block) noexcept {
+            const detail::TimerKind kind = std::exchange(block.timer_kind, detail::TimerKind::None);
             assert(kind != detail::TimerKind::None && "the wheel fires only an armed timer");
             switch (kind) {
                 case detail::TimerKind::Retransmit:
-                    on_retransmit_timeout(conn);
+                    on_retransmit_timeout(block);
                     break;
                 case detail::TimerKind::ArpPoll:
-                    on_arp_poll(conn);
+                    on_arp_poll(block);
                     break;
                 case detail::TimerKind::Probe:
-                    on_probe_timeout(conn);
+                    on_probe_timeout(block);
                     break;
                 case detail::TimerKind::None:
                     break;
@@ -1446,123 +1454,123 @@ namespace aloe::tcp {
          * (`transmit_entry`), and the expiry leaves the timer to it: nothing left, so no backoff; the poll arms the RTO
          * once the send leaves, or ends the connection `Unresolved`.
          */
-        void on_retransmit_timeout(ConnectionType& conn) noexcept {
-            assert(!conn.queue_.empty() && "the RTO runs while something is queued");
-            if (const SentNode* head = user_timed_head(conn);
+        void on_retransmit_timeout(Block& block) noexcept {
+            assert(!block.queue.empty() && "the RTO runs while something is queued");
+            if (const SentNode* head = user_timed_head(block);
                 head != nullptr && now_ - head->first_sent >= config_.user_timeout) {
-                time_out(conn, /*by_user_timeout=*/true);
+                time_out(block, /*by_user_timeout=*/true);
                 return;
             }
-            if (const bool handshake = conn.state_ == State::SynSent || conn.state_ == State::SynReceived;
-                conn.retransmit_count_ >= (handshake ? config_.retries : config_.data_retries)) {
-                time_out(conn, /*by_user_timeout=*/false);
+            if (const bool handshake = block.state == State::SynSent || block.state == State::SynReceived;
+                block.retransmit_count >= (handshake ? config_.retries : config_.data_retries)) {
+                time_out(block, /*by_user_timeout=*/false);
                 return;
             }
-            if (++conn.retransmit_count_ == 1) {
-                conn.recovery_.on_timeout(conn.send_, conn.mss());
+            if (++block.retransmit_count == 1) {
+                block.recovery.on_timeout(block.send, block.mss());
             }
-            std::ignore = resend_head(conn);
+            std::ignore = resend_head(block);
             ++counters_.retransmits;
-            if (conn.timer_kind_ == detail::TimerKind::ArpPoll) {
+            if (block.timer_kind == detail::TimerKind::ArpPoll) {
                 return;  // a first send that found no next hop: the poll retries it, and arms the RTO once it leaves
             }
-            conn.rtt_.back_off(config_.rto_max);
-            arm_retransmit(conn);
+            block.rtt.back_off(config_.rto_max);
+            arm_retransmit(block);
         }
 
         /// The ARP poll: the SYN, SYN-ACK or FIN that never left is tried again, as no retry. Once it leaves, or the
         /// device refuses it, the RTO takes over; a next hop still silent after `unresolved_polls` polls ends the
         /// connection with `Unresolved`.
-        void on_arp_poll(ConnectionType& conn) noexcept {
-            assert(!conn.queue_.empty() && "the poll retries an entry that never left");
-            if (const std::expected<void, net::SendError> sent = transmit_entry(conn, conn.queue_.head());
+        void on_arp_poll(Block& block) noexcept {
+            assert(!block.queue.empty() && "the poll retries an entry that never left");
+            if (const std::expected<void, net::SendError> sent = transmit_entry(block, block.queue.head());
                 sent || sent.error() != net::SendError::Unresolved) {
-                arm_retransmit(conn);
+                arm_retransmit(block);
                 return;
             }
-            if (++conn.unresolved_polls_ >= config_.unresolved_polls) {
-                fail_unresolved(conn);  // the bound Linux's ARP probes give: the next hop is not going to answer
+            if (++block.unresolved_polls >= config_.unresolved_polls) {
+                fail_unresolved(block);  // the bound Linux's ARP probes give: the next hop is not going to answer
                 return;
             }
-            arm_poll(conn);
+            arm_poll(block);
         }
 
         /// The probe timer ran out with the peer's window still zero (`ZeroWindowProbe::expire`): the user timeout or
         /// `data_retries` unanswered probes end the connection; else one probe goes, a refused one counted all the
         /// same, and the next is armed.
-        void on_probe_timeout(ConnectionType& conn) noexcept {
-            assert(!in_flight(conn) && conn.send_.wnd == 0 &&
-                   (!conn.queue_.empty() || conn.state_ == State::Established || conn.state_ == State::CloseWait) &&
+        void on_probe_timeout(Block& block) noexcept {
+            assert(!in_flight(block) && block.send.wnd == 0 &&
+                   (!block.queue.empty() || block.state == State::Established || block.state == State::CloseWait) &&
                    "a probe runs only while the window is zero and nothing is in flight");
-            switch (conn.probe_.expire(now_, config_.user_timeout, config_.data_retries, config_.rto_max)) {
+            switch (block.probe.expire(now_, config_.user_timeout, config_.data_retries, config_.rto_max)) {
                 case detail::ZeroWindowProbe::Expiry::UserTimedOut:
-                    time_out(conn, /*by_user_timeout=*/true);
+                    time_out(block, /*by_user_timeout=*/true);
                     return;
                 case detail::ZeroWindowProbe::Expiry::TimedOut:
-                    time_out(conn, /*by_user_timeout=*/false);
+                    time_out(block, /*by_user_timeout=*/false);
                     return;
                 case detail::ZeroWindowProbe::Expiry::Probe:
                     break;
             }
-            std::ignore = send_probe(conn);  // a refusal was counted by the send
-            arm_probe(conn);
+            std::ignore = send_probe(block);  // a refusal was counted by the send
+            arm_probe(block);
         }
 
         /// The retry cap or the user timeout ran out: `TimedOut` for an owned connection, counted apart when the user
         /// timeout ended it.
-        void time_out(ConnectionType& conn, const bool by_user_timeout) noexcept {
-            if (!conn.owned_) {
+        void time_out(Block& block, const bool by_user_timeout) noexcept {
+            if (!block.owned) {
                 ++counters_.handshakes_failed;  // a passive open nobody took: freed silently
-                free_slot(conn);
+                free_slot(block);
                 return;
             }
             ++counters_.connections_timed_out;
             if (by_user_timeout) {
                 ++counters_.connections_user_timed_out;
             }
-            set_closed(conn);
-            raise(conn, stream::Event::TimedOut);
+            set_closed(block);
+            raise(block, stream::Event::TimedOut);
         }
 
         /// The next hop never answered ARP: a failure of its own, told apart from a segment that left and was ignored.
-        void fail_unresolved(ConnectionType& conn) noexcept {
-            if (!conn.owned_) {
+        void fail_unresolved(Block& block) noexcept {
+            if (!block.owned) {
                 ++counters_.handshakes_failed;  // a passive open nobody took: freed silently
-                free_slot(conn);
+                free_slot(block);
                 return;
             }
             ++counters_.connections_unresolved;
-            set_closed(conn);
-            raise(conn, stream::Event::Unresolved);
+            set_closed(block);
+            raise(block, stream::Event::Unresolved);
         }
 
         /// Closed, with nothing armed, pending or queued: after a terminal event nothing is resent, so the
         /// retransmission queue is dropped, its packets back now or when the device returns them. Held segments stay
         /// until release, and so does an open preparation: the application may still write into its span, and the
         /// next commit refuses it.
-        void set_closed(ConnectionType& conn) noexcept {
-            if (conn.state_ == State::SynSent) {
-                conn.timestamps_.withdraw();  // the offer was never answered: nothing was negotiated
+        void set_closed(Block& block) noexcept {
+            if (block.state == State::SynSent) {
+                block.timestamps.withdraw();  // the offer was never answered: nothing was negotiated
             }
-            conn.state_ = State::Closed;
-            disarm(conn);
-            conn.unresolved_polls_ = 0;
-            acks_.remove(conn);
-            conn.finish_pending_ = false;
-            retries_.remove(conn);
-            drop_queue(conn);  // and off the deferred list
+            block.state = State::Closed;
+            disarm(block);
+            block.unresolved_polls = 0;
+            acks_.remove(block);
+            block.finish_pending = false;
+            retries_.remove(block);
+            drop_queue(block);  // and off the deferred list
         }
 
-        void finish(ConnectionType& conn) noexcept {
-            set_closed(conn);
+        void finish(Block& block) noexcept {
+            set_closed(block);
             ++counters_.connections_closed;
-            raise(conn, stream::Event::Closed);
+            raise(block, stream::Event::Closed);
         }
 
         /// The last ACK the peer is owed must be queued before Closed is published; flush retries the rest.
-        void maybe_finish(ConnectionType& conn) noexcept {
-            if (conn.finish_pending_ && !acks_.contains(conn)) {
-                finish(conn);
+        void maybe_finish(Block& block) noexcept {
+            if (block.finish_pending && !acks_.contains(block)) {
+                finish(block);
             }
         }
 
@@ -1572,56 +1580,56 @@ namespace aloe::tcp {
         /// window does not cover, Linux's `tcp_snd_wnd_test`, waits in the queue, unsent, for the ACK that opens the
         /// window (`send_unsent`), while the probes go on; a Linux peer drops a FIN sent into its zero window. The
         /// congestion window does not gate a FIN, as it does not in Linux.
-        void close(ConnectionType& conn) noexcept {
-            switch (conn.state_) {
+        void close(Block& block) noexcept {
+            switch (block.state) {
                 case State::Established:
-                    conn.state_ = State::FinWait1;
+                    block.state = State::FinWait1;
                     break;
                 case State::CloseWait:
-                    conn.state_ = State::LastAck;
+                    block.state = State::LastAck;
                     break;
                 default:
                     return;
             }
-            const Sequence fin  = conn.send_.nxt;
-            const bool idle     = !in_flight(conn);  // else the RTO already runs for the data
-            conn.send_.fin_sent = true;
-            conn.send_.nxt      = fin + 1;  // the FIN takes its number whether or not it left: the timer resends it
-            const std::optional<std::uint32_t> entry = enqueue_fin(conn, fin);
+            const Sequence fin  = block.send.nxt;
+            const bool idle     = !in_flight(block);  // else the RTO already runs for the data
+            block.send.fin_sent = true;
+            block.send.nxt      = fin + 1;  // the FIN takes its number whether or not it left: the timer resends it
+            const std::optional<std::uint32_t> entry = enqueue_fin(block, fin);
             if (!entry) {
                 ++counters_.send_refused;  // unreachable by construction; a release build resets rather than hangs
-                abort(conn);
+                abort(block);
                 return;
             }
-            if (!conn.send_.covers(fin + 1)) {
-                if (idle && !conn.probing()) {
-                    start_probing(conn);  // a zero window with nothing in flight is probed already, as a rule
+            if (!block.send.covers(fin + 1)) {
+                if (idle && !block.probing()) {
+                    start_probing(block);  // a zero window with nothing in flight is probed already, as a rule
                 }
                 return;
             }
-            std::ignore = transmit_entry(conn, *entry);
-            if (idle && (!conn.timer_.armed() || conn.probing())) {
-                arm_retransmit(conn);  // refused: the RTO tries again, and takes the timer from a probe
+            std::ignore = transmit_entry(block, *entry);
+            if (idle && (!block.timer.armed() || block.probing())) {
+                arm_retransmit(block);  // refused: the RTO tries again, and takes the timer from a probe
             }
         }
 
-        void abort(ConnectionType& conn) noexcept {
-            if (conn.state_ == State::Closed) {
+        void abort(Block& block) noexcept {
+            if (block.state == State::Closed) {
                 return;
             }
             // RFC 9293's ABORT in SYN-SENT: the peer holds nothing of ours to take back, so no RST leaves.
-            if (conn.state_ != State::SynSent) {
-                std::ignore = send_reset(conn);
+            if (block.state != State::SynSent) {
+                std::ignore = send_reset(block);
             }
-            set_closed(conn);
-            raise(conn, stream::Event::Closed);
+            set_closed(block);
+            raise(block, stream::Event::Closed);
         }
 
-        void release(ConnectionType& conn) noexcept {
-            if (conn.state_ != State::Closed) {
-                abort(conn);
+        void release(Block& block) noexcept {
+            if (block.state != State::Closed) {
+                abort(block);
             }
-            free_slot(conn);
+            free_slot(block);
         }
 
         Ip& ip_;
@@ -1632,6 +1640,7 @@ namespace aloe::tcp {
         detail::HeldSegmentPool<Packet> pool_;
         detail::SentSegmentPool<Packet> send_pool_;
         detail::ConnectionTable table_;
+        std::deque<Block> blocks_               = {};
         std::deque<ConnectionType> connections_ = {};
         EventList events_                       = {};
         AckList acks_                           = {};
