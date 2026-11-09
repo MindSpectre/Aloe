@@ -17,6 +17,7 @@
 
 #include <arp_cache.hpp>
 #include <datagram.hpp>
+#include <detail/ipv4_routing.hpp>
 #include <ipv4_config.hpp>
 #include <ipv4_counters.hpp>
 #include <prebuilt.hpp>
@@ -48,7 +49,7 @@ namespace aloe::net {
                   owner
         },
               config_{validated(config)},
-              subnet_{config.address, config.prefix},
+              routing_{config_.address, config_.prefix, config_.gateway},
               arp_{ArpCacheConfig{.capacity         = config.arp_capacity,
                                   .reachable        = config.arp_reachable,
                                   .expire           = config.arp_expire,
@@ -185,7 +186,7 @@ namespace aloe::net {
                              .destination    = destination}
                 .write(std::span<std::byte>{prebuilt.headers}.subspan(wire::EthernetHeader::size));
             prebuilt.valid_until = core::TimePoint::max();
-            if (!is_broadcast(destination) && !destination.is_multicast()) {
+            if (!routing_.is_broadcast(destination) && !destination.is_multicast()) {
                 const std::optional<core::TimePoint> confirmed = arp_.confirmed(*next_hop(destination));
                 const bool fresh     = confirmed.has_value() && now - *confirmed < config_.arp_reachable;
                 prebuilt.valid_until = fresh ? *confirmed + config_.arp_reachable : now + config_.arp_request_interval;
@@ -296,10 +297,7 @@ namespace aloe::net {
          * the same way. Broadcast and multicast destinations are not routed and answer with themselves.
          */
         [[nodiscard]] std::optional<wire::Ipv4Address> next_hop(const wire::Ipv4Address destination) const noexcept {
-            if (is_broadcast(destination) || destination.is_multicast() || subnet_.contains(destination)) {
-                return destination;
-            }
-            return config_.gateway;
+            return routing_.next_hop(destination);
         }
 
         [[nodiscard]] wire::Ipv4Address address() const noexcept {
@@ -366,26 +364,17 @@ namespace aloe::net {
             return config;  // the ARP capacity and durations are ArpCache's to check
         }
 
-        /// The limited broadcast, or the subnet broadcast where the subnet has one.
-        [[nodiscard]] bool is_broadcast(const wire::Ipv4Address address) const noexcept {
-            return address.is_limited_broadcast() || (subnet_.has_broadcast() && address == subnet_.broadcast());
-        }
-
         /// False for a sender that cannot be a host: zero, multicast, the limited broadcast, or a group MAC.
         [[nodiscard]] static bool plausible_sender(const wire::ArpPacket& arp) noexcept {
             return !arp.sender_ip.is_unspecified() && !arp.sender_ip.is_multicast() &&
                    !arp.sender_ip.is_limited_broadcast() && !arp.sender_mac.is_multicast();
         }
 
-        [[nodiscard]] bool for_me(const wire::Ipv4Address destination) const noexcept {
-            return destination == config_.address || is_broadcast(destination);
-        }
-
         /// The MAC a frame to `destination` goes to: a group MAC, or the routed hop's from the cache, counting the
         /// failures as `send` and `prebuild` report them.
         [[nodiscard]] std::expected<wire::MacAddress, SendError> next_mac(const wire::Ipv4Address destination,
                                                                           const core::TimePoint now) noexcept {
-            if (is_broadcast(destination)) {
+            if (routing_.is_broadcast(destination)) {
                 return wire::MacAddress::broadcast();
             }
             if (destination.is_multicast()) {
@@ -510,7 +499,7 @@ namespace aloe::net {
                 ++counters_.dropped_martian;
                 return;
             }
-            if (!for_me(header->destination)) {
+            if (!routing_.for_me(header->destination)) {
                 ++counters_.dropped_not_for_us;
                 return;
             }
@@ -702,7 +691,7 @@ namespace aloe::net {
 
         loop::ShardQueue<Device>& queue_;
         Ipv4Config config_;
-        wire::Ipv4Subnet subnet_;
+        detail::Routing routing_;
         ArpCache arp_;
         std::uint16_t identification_;
         std::vector<Datagram<Packet>> tcp_;

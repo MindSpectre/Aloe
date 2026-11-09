@@ -20,6 +20,7 @@ target_link_libraries(${NET}.Arp PUBLIC
 # The brick: IPv4 over a shard queue, with ARP and ICMP echo
 ##############################################################################
 add_library(${NET}.Stack INTERFACE
+        detail/ipv4_routing.hpp
         stack/datagram.hpp
         stack/ipv4.hpp
         stack/ipv4_config.hpp
@@ -27,6 +28,7 @@ add_library(${NET}.Stack INTERFACE
         stack/prebuilt.hpp
 )
 target_include_directories(${NET}.Stack INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}
         stack/
 )
 target_link_libraries(${NET}.Stack INTERFACE
