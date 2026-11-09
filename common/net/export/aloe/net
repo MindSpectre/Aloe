@@ -10,7 +10,9 @@
 
 #include <arp_cache.hpp>
 #include <datagram.hpp>
+#include <detail/ipv4_arp.hpp>
 #include <detail/ipv4_routing.hpp>
+#include <detail/ipv4_transmit.hpp>
 #include <ipv4.hpp>
 #include <ipv4_config.hpp>
 #include <ipv4_counters.hpp>
