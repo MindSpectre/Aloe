@@ -34,6 +34,7 @@ add_library(${TCP}.Stack INTERFACE
         detail/frame_template.hpp
         detail/held_segment_pool.hpp
         detail/isn_generator.hpp
+        detail/lifecycle.hpp
         detail/loss_recovery.hpp
         detail/node_pool.hpp
         detail/receive_queue.hpp

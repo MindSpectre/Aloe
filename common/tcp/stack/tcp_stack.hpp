@@ -23,6 +23,7 @@
 #include <detail/control_block.hpp>
 #include <detail/held_segment_pool.hpp>
 #include <detail/isn_generator.hpp>
+#include <detail/lifecycle.hpp>
 #include <detail/loss_recovery.hpp>
 #include <detail/retransmission_queue.hpp>
 #include <detail/stack_context.hpp>
@@ -78,7 +79,7 @@ namespace aloe::tcp {
         Stack(Ip& ip, loop::TimerWheel& wheel, const TcpConfig& config)
             : context_{ip, config.validate(ip.max_l4_size(), wheel.resolution()), *this, &Stack::on_timer_fired},
               transmitter_{context_, wheel},
-              table_{context_.config, ip.queue().steering()} {
+              lifecycle_{context_, transmitter_} {
             for (Block& block : context_.blocks) {
                 connections_.emplace_back(typename ConnectionType::PrivateTag{}, block);
             }
@@ -94,7 +95,7 @@ namespace aloe::tcp {
             for (Block& block : context_.blocks) {
                 transmitter_.disarm(block);
                 block.prepared.reset();
-                return_chain(block);
+                block.receive.release(context_.pool);
                 transmitter_.drop_queue(block);
             }
         }
@@ -104,7 +105,8 @@ namespace aloe::tcp {
         void process(const std::span<net::Datagram<Packet>> segments, const core::TimePoint now) noexcept {
             context_.now = now;
             for (Block* block = transmitter_.pop_retry(); block != nullptr; block = transmitter_.pop_retry()) {
-                raise(*block, stream::Event::Writable);  // the deferred retry hint, at most one per marked connection
+                lifecycle_.raise(
+                    *block, stream::Event::Writable);  // the deferred retry hint, at most one per marked connection
             }
             for (Datagram& datagram : segments) {
                 if (datagram.packet.empty()) {
@@ -119,7 +121,7 @@ namespace aloe::tcp {
 
         /// Removes one pending notification and returns its snapshot; nothing when none is pending.
         [[nodiscard]] std::optional<EventType> poll_event() noexcept {
-            Block* block = events_.pop_front();
+            Block* block = lifecycle_.pop_event();
             if (block == nullptr) {
                 return std::nullopt;
             }
@@ -136,52 +138,30 @@ namespace aloe::tcp {
             for (Block* block = transmitter_.ack_front(); block != nullptr;) {
                 Block* next = Transmitter::ack_next(*block);  // a successful send unlinks the block
                 if (transmitter_.send_pure_ack(*block)) {
-                    maybe_finish(*block);
+                    lifecycle_.maybe_finish(*block);
                 }
                 block = next;
             }
         }
 
         [[nodiscard]] std::expected<void, ListenError> listen(const std::uint16_t port) noexcept {
-            return table_.listen(port);
+            return lifecycle_.listen(port);
         }
 
         /// Connections already open stay open.
         void unlisten(const std::uint16_t port) noexcept {
-            table_.unlisten(port);
+            lifecycle_.unlisten(port);
         }
 
         /// A SynSent connection the caller owns; its SYN is queued, or waits for ARP on the timer.
         [[nodiscard]] std::expected<ConnectionType*, ConnectError> connect(const Endpoint peer,
                                                                            const core::TimePoint now) noexcept {
-            context_.now = now;
-            if (!context_.ip.next_hop(peer.address)) {
-                return std::unexpected{ConnectError::NoRoute};
+            context_.now                                     = now;
+            const std::expected<Block*, ConnectError> opened = lifecycle_.connect(peer);
+            if (!opened) {
+                return std::unexpected{opened.error()};
             }
-            if (transmitter_.nodes_available() == 0) {
-                return std::unexpected{ConnectError::TableFull};  // no retransmission-queue node for the SYN
-            }
-            const std::expected<detail::Placement, ConnectError> placed =
-                table_.place(peer, context_.ip.address(), context_.ip.queue().steering(), context_.ip.queue().index());
-            if (!placed) {
-                return std::unexpected{placed.error()};
-            }
-            const std::optional<std::uint32_t> slot = table_.take_slot();
-            if (!slot) {
-                return std::unexpected{ConnectError::TableFull};
-            }
-            Block& block = context_.blocks[*slot];
-            bind_flow(block, Endpoint{.address = context_.ip.address(), .port = placed->port}, peer, placed->base_hash);
-            block.state = State::SynSent;
-            block.owned = true;
-            open(block);
-            block.timestamps.offer(context_.config.timestamps, isn_.offset());  // the SYN offers; the SYN-ACK decides
-            // Arms the timer on a send or an ARP wait; a refused send leaves the SYN to the RTO.
-            std::ignore = transmitter_.queue_control(block, wire::TcpFlags{wire::TcpFlag::Syn}, block.send.iss);
-            if (!block.timer.armed()) {
-                transmitter_.arm_retransmit(block);
-            }
-            return &connections_[block.index];
+            return &connections_[(*opened)->index];
         }
 
         [[nodiscard]] ConnectionType& connection(const std::uint32_t index) noexcept {
@@ -208,10 +188,10 @@ namespace aloe::tcp {
             return context_.config;
         }
         [[nodiscard]] bool listening(const std::uint16_t port) const noexcept {
-            return table_.listening(port);
+            return lifecycle_.listening(port);
         }
         [[nodiscard]] std::size_t pending_events() const noexcept {
-            return events_.size();
+            return lifecycle_.pending_events();
         }
         [[nodiscard]] core::TimePoint now() const noexcept {
             return context_.now;
@@ -220,7 +200,7 @@ namespace aloe::tcp {
             return context_.pool.available();
         }
         [[nodiscard]] std::size_t table_size() const noexcept {
-            return table_.size();
+            return lifecycle_.table_size();
         }
         /// For tests and monitoring: the entry at `position` of the connection's retransmission queue, 0 the head.
         [[nodiscard]] const detail::SentSegment<Packet>& sent_segment(const ConnectionType& conn,
@@ -233,7 +213,7 @@ namespace aloe::tcp {
 
         /// For tests: the next connection opened takes this initial sequence number instead of a drawn one.
         void force_next_isn(const wire::TcpSequence isn) noexcept {
-            isn_.force(isn);
+            lifecycle_.force_next_isn(isn);
         }
 
         /// For tests: the connection's RFC 6582 `recover` takes this value, as if an episode had recorded it.
@@ -247,7 +227,6 @@ namespace aloe::tcp {
 
         using Block       = detail::ControlBlock<Ip, CongestionControl>;
         using Datagram    = net::Datagram<Packet>;
-        using EventList   = detail::ConnectionList<Block, &Block::event_link>;
         using Transmitter = detail::Transmitter<Ip, CongestionControl>;
 
         /// What the receive path parsed from one datagram.
@@ -303,18 +282,19 @@ namespace aloe::tcp {
             }
             const FlowKey key{
                 .remote = datagram.source, .remote_port = header->source_port, .local_port = header->destination_port};
-            segment.base_hash = table_.base_hash(context_.ip.queue().steering(),
-                                                 device::FlowTuple{.source           = datagram.source,
-                                                                   .destination      = datagram.destination,
-                                                                   .source_port      = header->source_port,
-                                                                   .destination_port = header->destination_port,
-                                                                   .protocol         = wire::Ipv4Protocol::Tcp},
-                                                 datagram.packet.rx().rss_hash);
-            const std::optional<std::uint32_t> found = table_.find(key, segment.base_hash);
+            segment.base_hash =
+                lifecycle_.table().base_hash(context_.ip.queue().steering(),
+                                             device::FlowTuple{.source           = datagram.source,
+                                                               .destination      = datagram.destination,
+                                                               .source_port      = header->source_port,
+                                                               .destination_port = header->destination_port,
+                                                               .protocol         = wire::Ipv4Protocol::Tcp},
+                                             datagram.packet.rx().rss_hash);
+            const std::optional<std::uint32_t> found = lifecycle_.table().find(key, segment.base_hash);
             if (!found) {
                 const bool opening = header->flags.has(wire::TcpFlag::Syn) && !header->flags.has(wire::TcpFlag::Ack) &&
                                      !header->flags.has(wire::TcpFlag::Rst);
-                if (opening && table_.listening(header->destination_port)) {
+                if (opening && lifecycle_.table().listening(header->destination_port)) {
                     passive_open(datagram, segment);
                     return;
                 }
@@ -360,26 +340,21 @@ namespace aloe::tcp {
                 ++context_.counters.dropped_no_node;  // no retransmission-queue node for the SYN-ACK
                 return;
             }
-            const std::optional<std::uint32_t> slot = table_.take_slot();
-            if (!slot) {
+            Block* opened = lifecycle_.accept_slot(
+                Endpoint{.address = context_.ip.address(), .port = segment.header.destination_port},
+                Endpoint{.address = datagram.source, .port = segment.header.source_port},
+                segment.base_hash);
+            if (opened == nullptr) {
                 ++context_.counters.dropped_table_full;
                 return;
             }
-            Block& block = context_.blocks[*slot];
-            bind_flow(block,
-                      Endpoint{.address = context_.ip.address(), .port = segment.header.destination_port},
-                      Endpoint{.address = datagram.source, .port = segment.header.source_port},
-                      segment.base_hash);
-            block.state = State::SynReceived;
-            block.owned = false;
-            open(block);
+            Block& block = *opened;
             block.receive.open(segment.header.sequence + 1,
                                context_.byte_budget);  // the initial offer, carried by the SYN-ACK
             block.send.peer_mss = segment.mss.value_or(default_peer_mss);
             block.send.wnd      = segment.header.window;
             block.send.wl1      = segment.header.sequence;
             block.send.wl2      = Sequence{};
-            block.timestamps.offer(context_.config.timestamps, isn_.offset());
             block.timestamps.answer(segment.ts_value, context_.now);
             block.timestamps.sent_ack(block.receive.next());  // what the SYN-ACK acknowledges, as Linux's rcv_wup
             // Arms the timer on a send or an ARP wait; a refused send leaves the SYN-ACK to the RTO.
@@ -402,8 +377,8 @@ namespace aloe::tcp {
                     return;
                 }
                 ++context_.counters.connections_reset;
-                set_closed(block);
-                raise(block, stream::Event::Reset);
+                lifecycle_.set_closed(block);
+                lifecycle_.raise(block, stream::Event::Reset);
                 return;
             }
             if (!header.flags.has(wire::TcpFlag::Syn) || !header.flags.has(wire::TcpFlag::Ack)) {
@@ -427,7 +402,7 @@ namespace aloe::tcp {
             ++context_.counters.connections_opened;
             transmitter_.queue_ack(
                 block);  // deferred: a commit on the Connected event completes the handshake with data
-            raise(block, stream::Event::Connected);
+            lifecycle_.raise(block, stream::Event::Connected);
             if (segment.payload_length > 0 || header.flags.has(wire::TcpFlag::Fin)) {
                 segment.header.sequence = block.receive.next();
                 segment.header.flags    = wire::TcpFlags::from_raw(
@@ -549,12 +524,12 @@ namespace aloe::tcp {
         void receive_reset(Block& block) noexcept {
             if (block.state == State::SynReceived && !block.owned) {
                 ++context_.counters.handshakes_failed;
-                free_slot(block);
+                lifecycle_.free_slot(block);
                 return;
             }
             ++context_.counters.connections_reset;
-            set_closed(block);
-            raise(block, stream::Event::Reset);
+            lifecycle_.set_closed(block);
+            lifecycle_.raise(block, stream::Event::Reset);
         }
 
         /**
@@ -586,7 +561,7 @@ namespace aloe::tcp {
                 block.recovery.establish(block.mss());
                 block.owned = true;
                 ++context_.counters.connections_accepted;
-                raise(block, stream::Event::Accepted);
+                lifecycle_.raise(block, stream::Event::Accepted);
                 // The same segment may carry data or a FIN: keep going.
             }
             if (ack.after(block.send.nxt)) {
@@ -600,7 +575,7 @@ namespace aloe::tcp {
                                                 header.window == block.send.wnd && transmitter_.in_flight(block);
             if (ack.after(block.send.una)) {
                 acknowledge_data(block, ack, segment.ts_echo);
-                raise(block, stream::Event::Acked);
+                lifecycle_.raise(block, stream::Event::Acked);
                 if (block.send.fin_sent && ack == block.send.nxt) {  // our FIN is acknowledged: the queue is empty
                     switch (block.state) {
                         case State::FinWait1:
@@ -623,9 +598,9 @@ namespace aloe::tcp {
                 send_unsent(block);     // and sends the FIN a close left waiting for it
             }
             if (transmitter_.writable(block) > writable_before) {
-                raise(block, stream::Event::Writable);
+                lifecycle_.raise(block, stream::Event::Writable);
             }
-            maybe_finish(block);
+            lifecycle_.maybe_finish(block);
             return block.state != State::Closed;
         }
 
@@ -652,7 +627,7 @@ namespace aloe::tcp {
                 ack_now(block);
                 return false;
             }
-            raise(block, stream::Event::Readable);
+            lifecycle_.raise(block, stream::Event::Readable);
             // A full-sized segment is our MSS less the timestamp option a timestamped peer puts in every segment.
             const std::size_t full_size = context_.mss - block.timestamps.option_size();
             if (block.ack_policy.on_data(segment.payload_length, full_size, block.receive.next()) ==
@@ -666,7 +641,7 @@ namespace aloe::tcp {
 
         void receive_fin(Block& block) noexcept {
             block.receive.take_fin();
-            raise(block, stream::Event::PeerClosed);
+            lifecycle_.raise(block, stream::Event::PeerClosed);
             switch (block.state) {
                 case State::Established:
                     block.state = State::CloseWait;
@@ -729,7 +704,7 @@ namespace aloe::tcp {
         /// the close only waited for this ACK, Closed follows it, whichever segment prompted it.
         void ack_now(Block& block) noexcept {
             if (transmitter_.send_pure_ack(block)) {
-                maybe_finish(block);
+                lifecycle_.maybe_finish(block);
             } else {
                 transmitter_.queue_ack(block);
             }
@@ -761,57 +736,7 @@ namespace aloe::tcp {
             }
         }
 
-        // The control path: events, slots, the opening, the retransmit and probe timers, close, abort and release.
-
-        void raise(Block& block, const stream::Event event) noexcept {
-            block.events |= event;
-            if (!events_.contains(block)) {
-                events_.push_back(block);
-            }
-        }
-
-        /// The flow's identity, indexed in the table under `base_hash`; the caller found the flow free.
-        void
-        bind_flow(Block& block, const Endpoint local, const Endpoint remote, const std::uint32_t base_hash) noexcept {
-            block.local     = local;
-            block.remote    = remote;
-            block.key       = FlowKey{.remote = remote.address, .remote_port = remote.port, .local_port = local.port};
-            block.base_hash = base_hash;
-            [[maybe_unused]] const bool inserted = table_.insert(block.key, block.index, base_hash);
-            assert(inserted && "the caller found the flow free");
-            block.indexed = true;
-        }
-
-        /// Numbers the connection's SYN from a fresh ISN and starts its sender from scratch: RFC 6582's `recover` at
-        /// the ISN, no round-trip sample, the initial RTO and no retry.
-        void open(Block& block) noexcept {
-            block.send.open(isn_.next());
-            block.recovery.open(block.send.iss);
-            block.rtt.reset(context_.config.rto_initial);
-            block.retransmit_count = 0;
-        }
-
-        void free_slot(Block& block) noexcept {
-            // Every live connection is indexed by connect or passive_open; a free slot is not, and pushing its index
-            // again would hand one slot to two opens. A release build ignores the second call.
-            assert(block.indexed && "release of a free slot");
-            if (!block.indexed) {
-                return;
-            }
-            transmitter_.disarm(block);
-            std::ignore = table_.erase(block.key, block.base_hash);
-            return_chain(block);
-            transmitter_.drop_queue(block);
-            block.prepared.reset();
-            events_.remove(block);
-            transmitter_.forget(block);
-            block.clear();
-            table_.free_slot(block.index);
-        }
-
-        void return_chain(Block& block) noexcept {
-            block.receive.release(context_.pool);
-        }
+        // The handle's verbs and the wheel's callback; the control path itself is the Lifecycle's.
 
         /**
          * SND.UNA moved forward. The retry count clears. The round-trip sample follows Linux's `tcp_clean_rtx_queue`
@@ -906,10 +831,23 @@ namespace aloe::tcp {
             }
         }
 
+        /// The handle's verbs: close, abort and release go to the Lifecycle.
+        void close(Block& block) noexcept {
+            lifecycle_.close(block);
+        }
+
+        void abort(Block& block) noexcept {
+            lifecycle_.abort(block);
+        }
+
+        void release(Block& block) noexcept {
+            lifecycle_.release(block);
+        }
+
         /// The wheel's callback: the node's block, then the stack's timer handling.
         static void on_timer_fired(loop::Timer& timer) noexcept {
             Block& block = static_cast<typename Block::TimerNode&>(timer).block;
-            block.stack.on_timer(block);
+            block.stack.lifecycle_.on_timer(block);
         }
 
         /// The unconsumed payloads of the block's held packets, for the handle.
@@ -917,221 +855,10 @@ namespace aloe::tcp {
             return block.receive.view(context_.pool);
         }
 
-        /// Called by the wheel with the timer unarmed; its kind says what for.
-        void on_timer(Block& block) noexcept {
-            const detail::TimerKind kind = std::exchange(block.timer_kind, detail::TimerKind::None);
-            assert(kind != detail::TimerKind::None && "the wheel fires only an armed timer");
-            switch (kind) {
-                case detail::TimerKind::Retransmit:
-                    on_retransmit_timeout(block);
-                    break;
-                case detail::TimerKind::ArpPoll:
-                    on_arp_poll(block);
-                    break;
-                case detail::TimerKind::Probe:
-                    on_probe_timeout(block);
-                    break;
-                case detail::TimerKind::None:
-                    break;
-            }
-        }
-
-        /**
-         * The RTO ran out: one retry, the head of the queue again. First the user timeout, counted from the head's
-         * first transmission on a synchronized connection, and then the cap, `retries` in the handshake and
-         * `data_retries` after it, may end the connection instead. The first expiry since an ACK of new data starts
-         * the loss episode (`LossRecovery::on_timeout`); each expiry doubles the RTO up to `rto_max` and re-arms. A
-         * resend deferred or refused counts as the retry all the same: the next expiry tries again. A first send, of a
-         * SYN, SYN-ACK or FIN the device refused before, that finds no next hop arms the ARP poll instead
-         * (`transmit_entry`), and the expiry leaves the timer to it: nothing left, so no backoff; the poll arms the RTO
-         * once the send leaves, or ends the connection `Unresolved`.
-         */
-        void on_retransmit_timeout(Block& block) noexcept {
-            assert(!block.queue.empty() && "the RTO runs while something is queued");
-            if (const typename Transmitter::SentNode* head = transmitter_.user_timed_head(block);
-                head != nullptr && context_.now - head->first_sent >= context_.config.user_timeout) {
-                time_out(block, /*by_user_timeout=*/true);
-                return;
-            }
-            if (const bool handshake = block.state == State::SynSent || block.state == State::SynReceived;
-                block.retransmit_count >= (handshake ? context_.config.retries : context_.config.data_retries)) {
-                time_out(block, /*by_user_timeout=*/false);
-                return;
-            }
-            if (++block.retransmit_count == 1) {
-                block.recovery.on_timeout(block.send, block.mss());
-            }
-            std::ignore = transmitter_.resend_head(block);
-            ++context_.counters.retransmits;
-            if (block.timer_kind == detail::TimerKind::ArpPoll) {
-                return;  // a first send that found no next hop: the poll retries it, and arms the RTO once it leaves
-            }
-            block.rtt.back_off(context_.config.rto_max);
-            transmitter_.arm_retransmit(block);
-        }
-
-        /// The ARP poll: the SYN, SYN-ACK or FIN that never left is tried again, as no retry. Once it leaves, or the
-        /// device refuses it, the RTO takes over; a next hop still silent after `unresolved_polls` polls ends the
-        /// connection with `Unresolved`.
-        void on_arp_poll(Block& block) noexcept {
-            assert(!block.queue.empty() && "the poll retries an entry that never left");
-            if (const std::expected<void, net::SendError> sent = transmitter_.transmit_entry(block, block.queue.head());
-                sent || sent.error() != net::SendError::Unresolved) {
-                transmitter_.arm_retransmit(block);
-                return;
-            }
-            if (++block.unresolved_polls >= context_.config.unresolved_polls) {
-                fail_unresolved(block);  // the bound Linux's ARP probes give: the next hop is not going to answer
-                return;
-            }
-            transmitter_.arm_poll(block);
-        }
-
-        /// The probe timer ran out with the peer's window still zero (`ZeroWindowProbe::expire`): the user timeout or
-        /// `data_retries` unanswered probes end the connection; else one probe goes, a refused one counted all the
-        /// same, and the next is armed.
-        void on_probe_timeout(Block& block) noexcept {
-            assert(!transmitter_.in_flight(block) && block.send.wnd == 0 &&
-                   (!block.queue.empty() || block.state == State::Established || block.state == State::CloseWait) &&
-                   "a probe runs only while the window is zero and nothing is in flight");
-            switch (block.probe.expire(
-                context_.now, context_.config.user_timeout, context_.config.data_retries, context_.config.rto_max)) {
-                case detail::ZeroWindowProbe::Expiry::UserTimedOut:
-                    time_out(block, /*by_user_timeout=*/true);
-                    return;
-                case detail::ZeroWindowProbe::Expiry::TimedOut:
-                    time_out(block, /*by_user_timeout=*/false);
-                    return;
-                case detail::ZeroWindowProbe::Expiry::Probe:
-                    break;
-            }
-            std::ignore = transmitter_.send_probe(block);  // a refusal was counted by the send
-            transmitter_.arm_probe(block);
-        }
-
-        /// The retry cap or the user timeout ran out: `TimedOut` for an owned connection, counted apart when the user
-        /// timeout ended it.
-        void time_out(Block& block, const bool by_user_timeout) noexcept {
-            if (!block.owned) {
-                ++context_.counters.handshakes_failed;  // a passive open nobody took: freed silently
-                free_slot(block);
-                return;
-            }
-            ++context_.counters.connections_timed_out;
-            if (by_user_timeout) {
-                ++context_.counters.connections_user_timed_out;
-            }
-            set_closed(block);
-            raise(block, stream::Event::TimedOut);
-        }
-
-        /// The next hop never answered ARP: a failure of its own, told apart from a segment that left and was ignored.
-        void fail_unresolved(Block& block) noexcept {
-            if (!block.owned) {
-                ++context_.counters.handshakes_failed;  // a passive open nobody took: freed silently
-                free_slot(block);
-                return;
-            }
-            ++context_.counters.connections_unresolved;
-            set_closed(block);
-            raise(block, stream::Event::Unresolved);
-        }
-
-        /// Closed, with nothing armed, pending or queued: after a terminal event nothing is resent, so the
-        /// retransmission queue is dropped, its packets back now or when the device returns them. Held segments stay
-        /// until release, and so does an open preparation: the application may still write into its span, and the
-        /// next commit refuses it.
-        void set_closed(Block& block) noexcept {
-            if (block.state == State::SynSent) {
-                block.timestamps.withdraw();  // the offer was never answered: nothing was negotiated
-            }
-            block.state = State::Closed;
-            transmitter_.disarm(block);
-            block.unresolved_polls = 0;
-            transmitter_.forget(block);
-            block.finish_pending = false;
-            transmitter_.drop_queue(block);  // and off the deferred list
-        }
-
-        void finish(Block& block) noexcept {
-            set_closed(block);
-            ++context_.counters.connections_closed;
-            raise(block, stream::Event::Closed);
-        }
-
-        /// The last ACK the peer is owed must be queued before Closed is published; flush retries the rest.
-        void maybe_finish(Block& block) noexcept {
-            if (block.finish_pending && !transmitter_.ack_pending(block)) {
-                finish(block);
-            }
-        }
-
-        /// FIN after what was committed: Established moves to FinWait1, CloseWait to LastAck; elsewhere nothing. An
-        /// open preparation stays the application's: its next commit refuses it, as the connection left the sendable
-        /// states. The FIN's entry is the node Established set aside, so the pool never refuses it. A FIN the peer's
-        /// window does not cover, Linux's `tcp_snd_wnd_test`, waits in the queue, unsent, for the ACK that opens the
-        /// window (`send_unsent`), while the probes go on; a Linux peer drops a FIN sent into its zero window. The
-        /// congestion window does not gate a FIN, as it does not in Linux.
-        void close(Block& block) noexcept {
-            switch (block.state) {
-                case State::Established:
-                    block.state = State::FinWait1;
-                    break;
-                case State::CloseWait:
-                    block.state = State::LastAck;
-                    break;
-                default:
-                    return;
-            }
-            const Sequence fin  = block.send.nxt;
-            const bool idle     = !transmitter_.in_flight(block);  // else the RTO already runs for the data
-            block.send.fin_sent = true;
-            block.send.nxt      = fin + 1;  // the FIN takes its number whether or not it left: the timer resends it
-            const std::optional<std::uint32_t> entry = transmitter_.enqueue_fin(block, fin);
-            if (!entry) {
-                ++context_.counters
-                      .send_refused;  // unreachable by construction; a release build resets rather than hangs
-                abort(block);
-                return;
-            }
-            if (!block.send.covers(fin + 1)) {
-                if (idle && !block.probing()) {
-                    transmitter_.start_probing(
-                        block);  // a zero window with nothing in flight is probed already, as a rule
-                }
-                return;
-            }
-            std::ignore = transmitter_.transmit_entry(block, *entry);
-            if (idle && (!block.timer.armed() || block.probing())) {
-                transmitter_.arm_retransmit(block);  // refused: the RTO tries again, and takes the timer from a probe
-            }
-        }
-
-        void abort(Block& block) noexcept {
-            if (block.state == State::Closed) {
-                return;
-            }
-            // RFC 9293's ABORT in SYN-SENT: the peer holds nothing of ours to take back, so no RST leaves.
-            if (block.state != State::SynSent) {
-                std::ignore = transmitter_.send_reset(block);
-            }
-            set_closed(block);
-            raise(block, stream::Event::Closed);
-        }
-
-        void release(Block& block) noexcept {
-            if (block.state != State::Closed) {
-                abort(block);
-            }
-            free_slot(block);
-        }
-
         detail::StackContext<Ip, CongestionControl> context_;
         detail::Transmitter<Ip, CongestionControl> transmitter_;
-        detail::ConnectionTable table_;
+        detail::Lifecycle<Ip, CongestionControl> lifecycle_;
         std::deque<ConnectionType> connections_ = {};
-        EventList events_                       = {};
-        detail::IsnGenerator isn_{};
     };
 
 }  // namespace aloe::tcp
