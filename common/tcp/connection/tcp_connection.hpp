@@ -11,19 +11,19 @@
 #include <optional>
 #include <span>
 
-#include <ack_policy.hpp>
+#include <detail/ack_policy.hpp>
+#include <detail/frame_template.hpp>
+#include <detail/loss_recovery.hpp>
+#include <detail/receive_queue.hpp>
+#include <detail/retransmission_queue.hpp>
+#include <detail/rtt_estimator.hpp>
+#include <detail/send_sequence.hpp>
+#include <detail/tcp_timestamps.hpp>
+#include <detail/zero_window_probe.hpp>
 #include <flow_table.hpp>
-#include <frame_template.hpp>
-#include <loss_recovery.hpp>
 #include <read_view.hpp>
-#include <receive_queue.hpp>
-#include <retransmission_queue.hpp>
-#include <rtt_estimator.hpp>
-#include <send_sequence.hpp>
 #include <tcp_config.hpp>
 #include <tcp_fwd.hpp>
-#include <tcp_timestamps.hpp>
-#include <zero_window_probe.hpp>
 
 namespace aloe::tcp {
 

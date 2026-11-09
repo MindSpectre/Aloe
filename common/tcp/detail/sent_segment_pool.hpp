@@ -10,7 +10,7 @@
 #include <span>
 #include <utility>
 
-#include <node_pool.hpp>
+#include <detail/node_pool.hpp>
 
 namespace aloe::tcp::detail {
 

@@ -13,7 +13,7 @@
 #include <span>
 #include <utility>
 
-#include <frame_template.hpp>
+#include <detail/frame_template.hpp>
 #include <tcp_counters.hpp>
 
 namespace aloe::tcp::detail {

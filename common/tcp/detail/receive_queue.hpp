@@ -9,8 +9,8 @@
 #include <optional>
 #include <utility>
 
-#include <held_segment_pool.hpp>
-#include <node_pool.hpp>
+#include <detail/held_segment_pool.hpp>
+#include <detail/node_pool.hpp>
 #include <read_view.hpp>
 
 namespace aloe::tcp::detail {

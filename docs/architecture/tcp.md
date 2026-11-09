@@ -352,9 +352,7 @@ packets), `AckPolicy` (RFC 5681's delayed and immediate ACKs), `SendSequence` (R
 `RetransmissionQueue` (the sent segments and what the ACKs delivered), `LossRecovery` (RFC 5681, 3042 and 6582
 over the policy's state: it decides what to resend, the stack resends it), `RttEstimator` (RFC 6298),
 `ZeroWindowProbe` and `Timestamps` (RFC 7323 with PAWS). None of them reaches back into the stack; a connection
-resets each of them as a whole when its slot is freed. The folders follow the same split: `connection/` holds the
-connection and its parts, `stack/` the stack and its shard-level parts, `pool/` the node pools, `config/` the
-configuration and counters, `congestion/` the policies, and `table/` the flow table.
+resets each of them as a whole when its slot is freed. The folders: `detail/` holds every part, included as `<detail/name.hpp>`; `connection/` the connection and its read view; `stack/` the stack and the forward header; `config/` the configuration and counters; `congestion/` the policies; `table/` the flow table.
 
 **Zero-copy both ways.** A received segment's packet is held as it arrived and `unread()` points into it;
 `consume` advances through it and returns each packet to the pool once it is empty. A sent segment is written

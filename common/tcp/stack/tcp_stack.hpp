@@ -19,16 +19,16 @@
 #include <utility>
 
 #include <congestion_control.hpp>
-#include <connection_table.hpp>
+#include <detail/connection_table.hpp>
+#include <detail/held_segment_pool.hpp>
+#include <detail/isn_generator.hpp>
+#include <detail/loss_recovery.hpp>
+#include <detail/retransmission_queue.hpp>
+#include <detail/segment_writer.hpp>
+#include <detail/sent_segment_pool.hpp>
 #include <flow_table.hpp>
-#include <held_segment_pool.hpp>
-#include <isn_generator.hpp>
-#include <loss_recovery.hpp>
 #include <newreno.hpp>
 #include <read_view.hpp>
-#include <retransmission_queue.hpp>
-#include <segment_writer.hpp>
-#include <sent_segment_pool.hpp>
 #include <tcp_config.hpp>
 #include <tcp_connection.hpp>
 #include <tcp_counters.hpp>
