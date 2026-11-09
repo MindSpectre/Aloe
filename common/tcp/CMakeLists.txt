@@ -38,6 +38,7 @@ add_library(${TCP}.Stack INTERFACE
         detail/loss_recovery.hpp
         detail/node_pool.hpp
         detail/receive_queue.hpp
+        detail/receiver.hpp
         detail/retransmission_queue.hpp
         detail/rtt_estimator.hpp
         detail/segment_writer.hpp
