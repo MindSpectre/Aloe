@@ -22,6 +22,8 @@ target_link_libraries(${NET}.Arp PUBLIC
 add_library(${NET}.Stack INTERFACE
         stack/datagram.hpp
         stack/ipv4.hpp
+        stack/ipv4_config.hpp
+        stack/ipv4_counters.hpp
         stack/prebuilt.hpp
 )
 target_include_directories(${NET}.Stack INTERFACE

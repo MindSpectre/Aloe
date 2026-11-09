@@ -17,73 +17,11 @@
 
 #include <arp_cache.hpp>
 #include <datagram.hpp>
+#include <ipv4_config.hpp>
+#include <ipv4_counters.hpp>
 #include <prebuilt.hpp>
 
 namespace aloe::net {
-
-    struct Ipv4Config {
-        wire::Ipv4Address address{};
-        std::uint8_t prefix                      = 24;
-        std::optional<wire::Ipv4Address> gateway = std::nullopt;  ///< Absent: an off-subnet destination is NoRoute.
-        std::uint8_t ttl                         = 64;
-        std::size_t burst_capacity               = 64;   ///< The most packets one `process` takes; ethdev's burst.
-        std::size_t arp_capacity                 = 256;  ///< A power of two of at least 8.
-        core::Duration arp_reachable             = std::chrono::seconds{60};
-        core::Duration arp_expire                = std::chrono::seconds{120};
-        core::Duration arp_request_interval      = std::chrono::seconds{1};
-        /// A multi-queue device's shards share one address, so the shard whose queue receives a reply a sibling
-        /// solicited learns it in order to forward it. Off by default (RFC 826 merge rule).
-        bool accept_unsolicited_replies          = false;
-    };
-
-    struct SendRequest {
-        wire::Ipv4Address destination{};
-        wire::Ipv4Protocol protocol = wire::Ipv4Protocol::Udp;
-        device::L4Checksum checksum = device::L4Checksum::None;  ///< Fill the L4 checksum field the caller left zero.
-    };
-
-    enum class SendError : std::uint8_t {
-        NoRoute,     ///< Off the subnet with no gateway configured.
-        Unresolved,  ///< The next hop's MAC is unknown; a request is on its way, retry later.
-        Oversized,   ///< The segment does not fit the MTU.
-        Refused,     ///< The ring and the device are both full.
-    };
-
-    /// Per-brick counters, all monotonic, read on the owning thread or after it has stopped.
-    struct Ipv4Counters {
-        std::uint64_t frames                  = 0;  ///< Handed to `process`.
-        std::uint64_t arp_requests_received   = 0;
-        std::uint64_t arp_replies_received    = 0;
-        std::uint64_t datagrams_received      = 0;  ///< Valid IPv4 for us, whatever the protocol.
-        std::uint64_t delivered_tcp           = 0;
-        std::uint64_t delivered_udp           = 0;
-        std::uint64_t resolutions             = 0;  ///< Mappings learned from ARP frames.
-        std::uint64_t arp_requests_sent       = 0;
-        std::uint64_t arp_replies_sent        = 0;
-        std::uint64_t echo_replies_sent       = 0;
-        std::uint64_t datagrams_sent          = 0;
-        std::uint64_t transmit_refused        = 0;  ///< A frame the brick itself built that the queue refused.
-        std::uint64_t dropped_short           = 0;
-        std::uint64_t dropped_not_for_us      = 0;
-        std::uint64_t dropped_ethertype       = 0;
-        std::uint64_t dropped_arp_malformed   = 0;
-        std::uint64_t dropped_arp_conflict    = 0;
-        std::uint64_t dropped_arp_unsolicited = 0;
-        std::uint64_t dropped_bad_header      = 0;
-        std::uint64_t dropped_bad_checksum    = 0;
-        std::uint64_t dropped_fragment        = 0;
-        std::uint64_t dropped_protocol        = 0;
-        std::uint64_t dropped_icmp            = 0;
-        std::uint64_t dropped_martian = 0;  ///< A source no host sends from: a multicast, broadcast, loopback or our
-                                            ///< own IPv4 address, or an ARP request from a group MAC.
-        std::uint64_t dropped_tcp_broadcast = 0;  ///< TCP to a broadcast address: RFC 1122 makes TCP unicast only.
-        std::uint64_t send_no_route         = 0;
-        std::uint64_t send_unresolved       = 0;
-        std::uint64_t send_oversized        = 0;
-        std::uint64_t send_refused          = 0;
-
-        friend constexpr bool operator==(const Ipv4Counters&, const Ipv4Counters&) noexcept = default;
-    };
 
     /**
      * @brief IPv4 over one device queue, with the ARP and ICMP echo that serve it: the first protocol brick.
