@@ -39,16 +39,6 @@ namespace aloe::net::detail {
             return destination == address_ || is_broadcast(destination);
         }
 
-        [[nodiscard]] wire::Ipv4Address address() const noexcept {
-            return address_;
-        }
-        [[nodiscard]] const wire::Ipv4Subnet& subnet() const noexcept {
-            return subnet_;
-        }
-        [[nodiscard]] std::optional<wire::Ipv4Address> gateway() const noexcept {
-            return gateway_;
-        }
-
     private:
         wire::Ipv4Address address_;
         wire::Ipv4Subnet subnet_;

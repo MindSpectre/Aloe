@@ -45,6 +45,7 @@ namespace aloe::net::detail {
               identification_{static_cast<std::uint16_t>(owner.index() * identification_stride)} {
         }
 
+        /// Routes, resolves, prepends both headers and transmits; the contract is on `Ipv4::send`.
         [[nodiscard]] std::expected<void, SendError>
         send(Packet&& packet, const SendRequest& request, const core::TimePoint now) noexcept {
             assert(packet.headroom() >= headers_size && "no room for the headers: use allocate()");
@@ -94,6 +95,7 @@ namespace aloe::net::detail {
             return std::unexpected{SendError::Refused};
         }
 
+        /// Routes, resolves and writes both headers into a kept packet's template; the contract is on `Ipv4::prebuild`.
         [[nodiscard]] std::expected<Prebuilt, SendError> prebuild(const wire::Ipv4Address destination,
                                                                   const wire::Ipv4Protocol protocol,
                                                                   const core::TimePoint now) noexcept {
@@ -122,6 +124,7 @@ namespace aloe::net::detail {
             return prebuilt;
         }
 
+        /// Finishes a prebuilt frame in place and transmits it; the contract is on `Ipv4::send_frame`.
         [[nodiscard]] std::expected<void, SendError>
         send_frame(Packet& packet, const SendRequest& request, [[maybe_unused]] const core::TimePoint now) noexcept {
             assert(!packet.empty() && !packet.lent() && "a frame that is empty or still on loan");
@@ -218,6 +221,7 @@ namespace aloe::net::detail {
             return tx;
         }
 
+        /// The next IPv4 identification, one per datagram this queue sends.
         [[nodiscard]] std::uint16_t next_identification() noexcept {
             return identification_++;
         }
@@ -266,6 +270,7 @@ namespace aloe::net::detail {
             }
             return *mac;
         }
+
         loop::ShardQueue<Device>& queue_;
         Arp<Device>& arp_;
         const Routing& routing_;

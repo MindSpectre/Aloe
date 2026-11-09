@@ -4,6 +4,7 @@
 #include <aloe/device>
 #include <aloe/loop>
 #include <aloe/wire>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -34,9 +35,8 @@ namespace aloe::net::detail {
             : queue_{
                   owner
         },
+              config_{config},
               counters_{counters},
-              address_{config.address},
-              accept_unsolicited_replies_{config.accept_unsolicited_replies},
               cache_{ArpCacheConfig{.capacity         = config.arp_capacity,
                                     .reachable        = config.arp_reachable,
                                     .expire           = config.arp_expire,
@@ -44,7 +44,8 @@ namespace aloe::net::detail {
             resolved_.reserve(config.burst_capacity);
         }
 
-        /// An ARP frame for us: a request answered in its own packet, a reply learned; what `Ipv4::receive_arp` did.
+        /// An ARP frame for us: a request is answered in its own packet, a reply is learned, and what the wire
+        /// taught is reported.
         void receive(Packet& packet, const core::TimePoint now) noexcept {
             const std::span<std::byte> frame = packet.data();
             const std::optional<wire::ArpPacket> arp =
@@ -53,7 +54,7 @@ namespace aloe::net::detail {
                 ++counters_.dropped_arp_malformed;
                 return;
             }
-            if (arp->sender_ip == address_) {
+            if (arp->sender_ip == config_.address) {
                 ++counters_.dropped_arp_conflict;
                 return;
             }
@@ -64,7 +65,7 @@ namespace aloe::net::detail {
                     return;
                 }
                 const bool plausible = plausible_sender(*arp);
-                if (arp->target_ip != address_) {
+                if (arp->target_ip != config_.address) {
                     // Someone else's business; `process` releases it. RFC 826's merge rule: an entry we hold is
                     // refreshed, a new one is never created from a request not meant for us.
                     if (plausible && cache_.contains(arp->sender_ip)) {
@@ -81,7 +82,7 @@ namespace aloe::net::detail {
                     .write(frame.first(wire::EthernetHeader::size));
                 wire::ArpPacket{.operation  = wire::ArpOperation::Reply,
                                 .sender_mac = queue_.mac(),
-                                .sender_ip  = address_,
+                                .sender_ip  = config_.address,
                                 .target_mac = arp->sender_mac,
                                 .target_ip  = arp->sender_ip}
                     .write(frame.subspan(wire::EthernetHeader::size));
@@ -92,7 +93,7 @@ namespace aloe::net::detail {
             ++counters_.arp_replies_received;
             if (!cache_.contains(arp->sender_ip)) {
                 // Never asked: nothing on the segment fills the cache, unless a sibling shard asked for our address.
-                if (accept_unsolicited_replies_ && arp->target_ip == address_ && plausible_sender(*arp)) {
+                if (config_.accept_unsolicited_replies && arp->target_ip == config_.address && plausible_sender(*arp)) {
                     learn_from_wire(arp->sender_ip, arp->sender_mac, now);
                 } else {
                     ++counters_.dropped_arp_unsolicited;
@@ -134,6 +135,7 @@ namespace aloe::net::detail {
             return resolved_;
         }
 
+        /// Forgets the mappings reported since the last call; `process` calls it first.
         void clear_resolved() noexcept {
             resolved_.clear();
         }
@@ -172,7 +174,7 @@ namespace aloe::net::detail {
                 .write(room->first(wire::EthernetHeader::size));
             wire::ArpPacket{.operation  = wire::ArpOperation::Request,
                             .sender_mac = queue_.mac(),
-                            .sender_ip  = address_,
+                            .sender_ip  = config_.address,
                             .target_mac = {},
                             .target_ip  = target}
                 .write(room->subspan(wire::EthernetHeader::size));
@@ -181,9 +183,8 @@ namespace aloe::net::detail {
         }
 
         loop::ShardQueue<Device>& queue_;
+        const Ipv4Config& config_;
         Ipv4Counters& counters_;
-        wire::Ipv4Address address_;
-        bool accept_unsolicited_replies_;
         ArpCache cache_;
         std::vector<ArpResolution> resolved_;
     };
