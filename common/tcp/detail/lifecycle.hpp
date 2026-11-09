@@ -1,7 +1,6 @@
 #pragma once
 
 #include <aloe/core>
-#include <aloe/device>
 #include <aloe/net>
 #include <aloe/stream>
 #include <aloe/wire>
@@ -18,6 +17,8 @@
 #include <detail/isn_generator.hpp>
 #include <detail/stack_context.hpp>
 #include <detail/transmitter.hpp>
+#include <detail/zero_window_probe.hpp>
+#include <flow_table.hpp>
 #include <tcp_config.hpp>
 #include <tcp_fwd.hpp>
 
@@ -167,12 +168,6 @@ namespace aloe::tcp::detail {
             transmitter_.drop_queue(block);  // and off the deferred list
         }
 
-        void finish(Block& block) noexcept {
-            set_closed(block);
-            ++context_.counters.connections_closed;
-            raise(block, stream::Event::Closed);
-        }
-
         /// The last ACK the peer is owed must be queued before Closed is published; flush retries the rest.
         void maybe_finish(Block& block) noexcept {
             if (block.finish_pending && !transmitter_.ack_pending(block)) {
@@ -203,15 +198,15 @@ namespace aloe::tcp::detail {
             block.send.nxt      = fin + 1;  // the FIN takes its number whether or not it left: the timer resends it
             const std::optional<std::uint32_t> entry = transmitter_.enqueue_fin(block, fin);
             if (!entry) {
-                ++context_.counters
-                      .send_refused;  // unreachable by construction; a release build resets rather than hangs
+                // Unreachable by construction; a release build resets rather than hangs.
+                ++context_.counters.send_refused;
                 abort(block);
                 return;
             }
             if (!block.send.covers(fin + 1)) {
                 if (idle && !block.probing()) {
-                    transmitter_.start_probing(
-                        block);  // a zero window with nothing in flight is probed already, as a rule
+                    // A zero window with nothing in flight is probed already, as a rule.
+                    transmitter_.start_probing(block);
                 }
                 return;
             }
@@ -261,6 +256,12 @@ namespace aloe::tcp::detail {
         }
 
     private:
+        void finish(Block& block) noexcept {
+            set_closed(block);
+            ++context_.counters.connections_closed;
+            raise(block, stream::Event::Closed);
+        }
+
         using EventList = ConnectionList<Block, &Block::event_link>;
 
         /// The flow's identity, indexed in the table under `base_hash`; the caller found the flow free.
@@ -281,8 +282,8 @@ namespace aloe::tcp::detail {
             block.send.open(isn_.next());
             block.recovery.open(block.send.iss);
             block.rtt.reset(context_.config.rto_initial);
-            block.timestamps.offer(context_.config.timestamps,
-                                   isn_.offset());  // the SYN or SYN-ACK offers; the peer decides
+            // The SYN or SYN-ACK offers; the peer decides.
+            block.timestamps.offer(context_.config.timestamps, isn_.offset());
             block.retransmit_count = 0;
         }
 

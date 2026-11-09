@@ -14,10 +14,14 @@
 #include <tuple>
 #include <utility>
 
+#include <congestion_control.hpp>
+#include <detail/ack_policy.hpp>
 #include <detail/control_block.hpp>
 #include <detail/lifecycle.hpp>
+#include <detail/loss_recovery.hpp>
 #include <detail/stack_context.hpp>
 #include <detail/transmitter.hpp>
+#include <flow_table.hpp>
 #include <tcp_config.hpp>
 #include <tcp_fwd.hpp>
 
@@ -180,8 +184,8 @@ namespace aloe::tcp::detail {
                 return;
             }
             Block& block = *opened;
-            block.receive.open(segment.header.sequence + 1,
-                               context_.byte_budget);  // the initial offer, carried by the SYN-ACK
+            // The initial offer, carried by the SYN-ACK.
+            block.receive.open(segment.header.sequence + 1, context_.byte_budget);
             block.send.peer_mss = segment.mss.value_or(default_peer_mss);
             block.send.wnd      = segment.header.window;
             block.send.wl1      = segment.header.sequence;
@@ -221,8 +225,8 @@ namespace aloe::tcp::detail {
                 transmitter_.acknowledge(block, header.acknowledgement);  // frees the SYN's entry
             block.send.una = header.acknowledgement;
             on_acknowledged(block, freed, segment.ts_echo);  // a sample, and the timer stopped with the queue empty
-            block.receive.open(header.sequence + 1,
-                               context_.byte_budget);         // the initial offer, carried by our first ACK
+            // The initial offer, carried by our first ACK.
+            block.receive.open(header.sequence + 1, context_.byte_budget);
             block.timestamps.sent_ack(block.receive.next());  // as Linux's rcv_wup: data on the SYN-ACK may update it
             block.send.peer_mss = segment.mss.value_or(default_peer_mss);
             block.send.synchronize(header);
@@ -231,8 +235,8 @@ namespace aloe::tcp::detail {
             block.recovery.establish(block.mss());
             update_probing(block);  // a SYN-ACK offering no window starts probing as any ACK does
             ++context_.counters.connections_opened;
-            transmitter_.queue_ack(
-                block);  // deferred: a commit on the Connected event completes the handshake with data
+            // Deferred: a commit on the Connected event completes the handshake with data.
+            transmitter_.queue_ack(block);
             lifecycle_.raise(block, stream::Event::Connected);
             if (segment.payload_length > 0 || header.flags.has(wire::TcpFlag::Fin)) {
                 segment.header.sequence = block.receive.next();
@@ -285,8 +289,8 @@ namespace aloe::tcp::detail {
             // 5. FIN, in order: its sequence is rcv_nxt after the payload.
             if (segment.header.flags.has(wire::TcpFlag::Fin)) {
                 if (block.state == State::CloseWait || block.state == State::Closing || block.state == State::LastAck) {
-                    ++context_.counters
-                          .dropped_unexpected;  // a second FIN: the peer's sequence space ended at the first
+                    // A second FIN: the peer's sequence space ended at the first.
+                    ++context_.counters.dropped_unexpected;
                     ack_now(block);
                     return;
                 }
@@ -323,8 +327,8 @@ namespace aloe::tcp::detail {
             if (!end.after(next)) {  // entirely before rcv_nxt
                 if (block.state == State::SynReceived && header.flags.has(wire::TcpFlag::Syn) &&
                     !header.flags.has(wire::TcpFlag::Ack)) {
-                    std::ignore =
-                        transmitter_.resend_head(block);  // a duplicate SYN: the SYN-ACK again, from its entry
+                    // A duplicate SYN: the SYN-ACK again, from its entry.
+                    std::ignore = transmitter_.resend_head(block);
                     return false;
                 }
                 return drop(context_.counters.dropped_duplicate);
@@ -462,7 +466,7 @@ namespace aloe::tcp::detail {
             // A full-sized segment is our MSS less the timestamp option a timestamped peer puts in every segment.
             const std::size_t full_size = context_.mss - block.timestamps.option_size();
             if (block.ack_policy.on_data(segment.payload_length, full_size, block.receive.next()) ==
-                detail::AckPolicy::Ack::Now) {
+                AckPolicy::Ack::Now) {
                 ack_now(block);
             } else {
                 transmitter_.queue_ack(block);
@@ -506,8 +510,7 @@ namespace aloe::tcp::detail {
                 }
                 return;
             }
-            if (block.send.wnd == 0 && !transmitter_.in_flight(block) &&
-                block.timer_kind != detail::TimerKind::ArpPoll &&
+            if (block.send.wnd == 0 && !transmitter_.in_flight(block) && block.timer_kind != TimerKind::ArpPoll &&
                 (!block.queue.empty() || block.state == State::Established || block.state == State::CloseWait)) {
                 transmitter_.start_probing(block);
             }
@@ -517,8 +520,7 @@ namespace aloe::tcp::detail {
         /// it, as Linux's `tcp_push_pending_frames` on an ACK. A head waiting for the next hop is the ARP poll's. The
         /// send arms the RTO (`transmit_entry`); a refused one leaves the RTO to try again, as `close` does.
         void send_unsent(Block& block) noexcept {
-            if (block.queue.empty() || transmitter_.in_flight(block) ||
-                block.timer_kind == detail::TimerKind::ArpPoll) {
+            if (block.queue.empty() || transmitter_.in_flight(block) || block.timer_kind == TimerKind::ArpPoll) {
                 return;
             }
             if (const typename Transmitter::SentNode& head = transmitter_.head(block);
@@ -594,16 +596,16 @@ namespace aloe::tcp::detail {
                                .delivered_at_send = freed.delivered_at_send,
                                .app_limited       = freed.app_limited};
             switch (block.recovery.on_ack(info, ack, block.send)) {
-                case detail::Resend::Fast:
+                case Resend::Fast:
                     fast_retransmit(block);
                     break;
-                case detail::Resend::Head:
+                case Resend::Head:
                     if (!block.queue.empty()) {
                         std::ignore = transmitter_.resend_head(block);
                     }
                     ++context_.counters.retransmits;
                     break;
-                case detail::Resend::None:
+                case Resend::None:
                     break;
             }
         }
@@ -612,7 +614,7 @@ namespace aloe::tcp::detail {
         /// resends the head at once.
         void on_duplicate_ack(Block& block, const Sequence ack) noexcept {
             ++context_.counters.duplicate_acks;
-            if (block.recovery.on_duplicate(ack, block.send, block.mss()) == detail::Resend::Fast) {
+            if (block.recovery.on_duplicate(ack, block.send, block.mss()) == Resend::Fast) {
                 fast_retransmit(block);
                 ++context_.counters.recoveries;
             }
@@ -633,7 +635,6 @@ namespace aloe::tcp::detail {
                 transmitter_.arm_retransmit(block);
             }
         }
-
 
         Context& context_;
         Lifecycle& lifecycle_;

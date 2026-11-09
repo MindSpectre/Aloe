@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <aloe/core>
-#include <aloe/device>
 #include <aloe/loop>
 #include <aloe/net>
 #include <aloe/wire>
@@ -16,6 +15,7 @@
 #include <utility>
 
 #include <detail/control_block.hpp>
+#include <detail/retransmission_queue.hpp>
 #include <detail/segment_writer.hpp>
 #include <detail/sent_segment_pool.hpp>
 #include <detail/stack_context.hpp>
@@ -56,13 +56,6 @@ namespace aloe::tcp::detail {
             }
         }
 
-        /// A Writable hint at the next process, at most one per marked connection.
-        void mark_retry(Block& block) noexcept {
-            if (!retries_.contains(block)) {
-                retries_.push_back(block);
-            }
-        }
-
         /// The next connection with a retry hint, off the list; null when none.
         [[nodiscard]] Block* pop_retry() noexcept {
             return retries_.pop_front();
@@ -95,10 +88,10 @@ namespace aloe::tcp::detail {
 
         /// The resends that found their packet lent: the first loop of `Stack::flush`.
         void flush_deferred() noexcept {
-            for (Block* c = deferred_.front(); c != nullptr;) {
-                Block* next = DeferredList::next_of(*c);  // a resend that leaves unlinks c
-                std::ignore = resend_head(*c);
-                c           = next;
+            for (Block* block = deferred_.front(); block != nullptr;) {
+                Block* next = DeferredList::next_of(*block);  // a resend that leaves unlinks block
+                std::ignore = resend_head(*block);
+                block       = next;
             }
         }
 
@@ -412,8 +405,8 @@ namespace aloe::tcp::detail {
                 return false;
             }
             if (count > writable(block)) {  // the preparation is released, so this is the credit the peer offers now
-                ++context_.counters
-                      .commits_refused;  // RFC 1122: a sender copes with a shrunk window by not sending into it
+                // RFC 1122: a sender copes with a shrunk window by not sending into it.
+                ++context_.counters.commits_refused;
                 mark_retry(block);
                 return false;
             }
@@ -450,6 +443,13 @@ namespace aloe::tcp::detail {
         }
 
     private:
+        /// A Writable hint at the next process, at most one per marked connection.
+        void mark_retry(Block& block) noexcept {
+            if (!retries_.contains(block)) {
+                retries_.push_back(block);
+            }
+        }
+
         using AckList      = ConnectionList<Block, &Block::ack_link>;
         using RetryList    = ConnectionList<Block, &Block::retry_link>;
         using DeferredList = ConnectionList<Block, &Block::deferred_link>;
@@ -631,8 +631,8 @@ namespace aloe::tcp::detail {
         SentSegmentPool<Packet> send_pool_;
         AckList acks_          = {};
         RetryList retries_     = {};
-        DeferredList deferred_ = {};
-        SegmentWriter<Ip> writer_;  ///< Counts into the context's counters.
+        DeferredList deferred_ = {};  ///< Connections whose head resend waits for its packet.
+        SegmentWriter<Ip> writer_;    ///< Counts into the context's counters.
     };
 
 }  // namespace aloe::tcp::detail

@@ -1,10 +1,8 @@
 #pragma once
 
-#include <algorithm>
 #include <aloe/core>
 #include <aloe/stream>
 #include <aloe/wire>
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>

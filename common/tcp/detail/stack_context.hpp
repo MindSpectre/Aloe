@@ -50,10 +50,10 @@ namespace aloe::tcp::detail {
         ~StackContext()                              = default;
 
         Ip& ip;
-        TcpConfig config;
-        std::uint16_t mss = 0;  ///< Ours: `max_l4_size() - 20`.
-        std::uint32_t byte_budget =
-            0;  ///< `min(receive_segments * mss, 65535)`: the receive credit a connection starts with.
+        TcpConfig config{};
+        std::uint16_t mss         = 0;  ///< Ours: `max_l4_size() - 20`.
+        /// `min(receive_segments * mss, 65535)`: the receive credit a connection starts with.
+        std::uint32_t byte_budget = 0;
         HeldSegmentPool<Packet> pool;
         std::deque<Block> blocks{};
         TcpCounters counters{};

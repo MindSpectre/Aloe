@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <aloe/core>
 #include <aloe/loop>
 #include <aloe/stream>
 #include <aloe/wire>

@@ -342,7 +342,29 @@ preparations: neither node pool is carved out of it.
 
 ## Design notes
 
-**One class per concern.** `tcp::Stack` is the brick's façade and owner: the four verbs, the accessors, and the mapping from a connection's state to its public handle. What it does is three procedure classes in `tcp::detail`, each in its own header under `detail/`, over one `detail::ControlBlock` per connection, RFC 9293's transmission control block as a struct with one part per concern, and one `detail::StackContext` per shard, what every part reads: the IP brick, the config, the held-segment pool, the counters and the stamp. The `Receiver` is what a datagram does to a connection: the checksum and lookup, the handshake, RFC 9293's order on a synchronized connection, the ACK processing that drives loss recovery, and `consume`; it owns nothing. The `Lifecycle` owns the connection table, the ISN generator and the event list: slots in and out, the states to `Closed`, `close`, `abort`, `release`, and the timer expiries that resend or give up. The `Transmitter` owns the segment writer, the send pool and the ACK, retry and deferred lists: every segment that leaves, the retransmission queue's entries, the resends with the busy rule and the copy, the pure ACKs, probes and resets, the timers' arming, and `writable`, `prepare`, `commit`. The dependency runs one way, Receiver → Lifecycle → Transmitter, read off the includes, as Linux's `tcp_input.c` and `tcp_timer.c` call into `tcp_output.c` and not back; the triggers from the receive side (an immediate ACK, a fast retransmit, the SYN-ACK) are direct calls, and state defers work only where it must wait anyway: the ordinary ACK until `flush`, the retry hint until the next `process`, a resend whose packet is lent until the next `flush`. The block is plain single-thread memory: a connection's receive and transmit run on one shard thread, and nothing in it is shared. Beneath the three: per shard `ConnectionTable`, `SegmentWriter`, `IsnGenerator` and one `NodePool` each for held packets and retransmission-queue entries; per connection `ReceiveQueue`, `AckPolicy`, `SendSequence`, `RetransmissionQueue`, `LossRecovery` (over the policy's state), `RttEstimator`, `ZeroWindowProbe` and `Timestamps`. The folders: `detail/` holds every part, included as `<detail/name.hpp>`; `connection/` the handle and its read view; `stack/` the façade and the forward header; `config/` the configuration and counters; `congestion/` the policies; `table/` the flow table.
+**One class per concern.** `tcp::Stack` is the brick's façade and owner: the four verbs, the accessors, and
+the mapping from a connection's state to its public handle. What it does is three procedure classes in
+`tcp::detail`, each in its own header under `detail/`, over one `detail::ControlBlock` per connection, RFC
+9293's transmission control block as a struct with one part per concern, and one `detail::StackContext` per
+shard, what every part reads: the IP brick, the config, the held-segment pool, the counters and the stamp. The
+`Receiver` is what a datagram does to a connection: the checksum and lookup, the handshake, RFC 9293's order
+on a synchronized connection, the ACK processing that drives loss recovery, and `consume`; it owns nothing.
+The `Lifecycle` owns the connection table, the ISN generator and the event list: slots in and out, the states
+to `Closed`, `close`, `abort`, `release`, and the timer expiries that resend or give up. The `Transmitter`
+owns the segment writer, the send pool and the ACK, retry and deferred lists: every segment that leaves, the
+retransmission queue's entries, the resends with the busy rule and the copy, the pure ACKs, probes and resets,
+the timers' arming, and `writable`, `prepare`, `commit`. The dependency runs one way, Receiver → Lifecycle →
+Transmitter, read off the includes, as Linux's `tcp_input.c` and `tcp_timer.c` call into `tcp_output.c` and
+not back; the triggers from the receive side (an immediate ACK, a fast retransmit, the SYN-ACK) are direct
+calls, and state defers work only where it must wait anyway: the ordinary ACK until `flush`, the retry hint
+until the next `process`, a resend whose packet is lent until the next `flush`. The block is plain
+single-thread memory: a connection's receive and transmit run on one shard thread, and nothing in it is
+shared. Beneath the three: per shard `ConnectionTable`, `SegmentWriter`, `IsnGenerator` and one `NodePool`
+each for held packets and retransmission-queue entries; per connection `ReceiveQueue`, `AckPolicy`,
+`SendSequence`, `RetransmissionQueue`, `LossRecovery` (over the policy's state), `RttEstimator`,
+`ZeroWindowProbe` and `Timestamps`. The folders: `detail/` holds every part, included as `<detail/name.hpp>`;
+`connection/` the handle and its read view; `stack/` the façade and the forward header; `config/` the
+configuration and counters; `congestion/` the policies; `table/` the flow table.
 
 **Zero-copy both ways.** A received segment's packet is held as it arrived and `unread()` points into it;
 `consume` advances through it and returns each packet to the pool once it is empty. A sent segment is written

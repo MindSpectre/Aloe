@@ -98,8 +98,8 @@ namespace aloe::tcp {
         void process(const std::span<net::Datagram<Packet>> segments, const core::TimePoint now) noexcept {
             context_.now = now;
             for (Block* block = transmitter_.pop_retry(); block != nullptr; block = transmitter_.pop_retry()) {
-                lifecycle_.raise(
-                    *block, stream::Event::Writable);  // the deferred retry hint, at most one per marked connection
+                // The deferred retry hint, at most one per marked connection.
+                lifecycle_.raise(*block, stream::Event::Writable);
             }
             for (Datagram& datagram : segments) {
                 if (datagram.packet.empty()) {
@@ -214,7 +214,6 @@ namespace aloe::tcp {
             core::force_non_static(this);
             conn.block_.recovery.force_recover(recover);
         }
-
 
     private:
         friend class Connection<Ip, CongestionControl>;
