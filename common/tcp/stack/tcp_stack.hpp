@@ -735,6 +735,18 @@ namespace aloe::tcp {
             }
         }
 
+        [[nodiscard]] std::size_t writable(const Block& block) const noexcept {
+            return transmitter_.writable(block);
+        }
+
+        [[nodiscard]] std::optional<std::span<std::byte>> prepare(Block& block, const std::size_t count) noexcept {
+            return transmitter_.prepare(block, count);
+        }
+
+        [[nodiscard]] bool commit(Block& block, const std::size_t count) noexcept {
+            return transmitter_.commit(block, count);
+        }
+
         /// Advances the held payload's front by `count` bytes, freeing packets as they empty; a reopened edge queues
         /// an update.
         void consume(Block& block, const std::size_t count) noexcept {
