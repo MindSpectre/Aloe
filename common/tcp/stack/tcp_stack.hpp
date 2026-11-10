@@ -76,7 +76,7 @@ namespace aloe::tcp {
               lifecycle_{context_, transmitter_},
               acks_{context_, transmitter_},
               receiver_{context_, lifecycle_, acks_, transmitter_} {
-            for (Block& block : context_.blocks) {
+            for (ControlBlock& block : context_.blocks) {
                 connections_.emplace_back(typename ConnectionType::PrivateTag{}, block);
             }
         }
@@ -88,7 +88,7 @@ namespace aloe::tcp {
         /// Cancels every timer, returns every held packet and drops every queued one, which goes back to its pool
         /// now or when the device returns it; the IP brick and the wheel outlive it.
         ~Stack() {
-            for (Block& block : context_.blocks) {
+            for (ControlBlock& block : context_.blocks) {
                 transmitter_.disarm(block);
                 block.prepared.reset();
                 block.receive.release(context_.pool);
@@ -100,7 +100,7 @@ namespace aloe::tcp {
         /// out or released. An empty span is valid.
         void process(const std::span<net::Datagram<Packet>> segments, const core::TimePoint now) noexcept {
             context_.now = now;
-            for (Block* block = transmitter_.pop_retry(); block != nullptr; block = transmitter_.pop_retry()) {
+            for (ControlBlock* block = transmitter_.pop_retry(); block != nullptr; block = transmitter_.pop_retry()) {
                 // The deferred retry hint, at most one per marked connection.
                 lifecycle_.raise(*block, stream::Event::Writable);
             }
@@ -117,7 +117,7 @@ namespace aloe::tcp {
 
         /// Removes one pending notification and returns its snapshot; nothing when none is pending.
         [[nodiscard]] std::optional<EventType> poll_event() noexcept {
-            Block* block = lifecycle_.pop_event();
+            ControlBlock* block = lifecycle_.pop_event();
             if (block == nullptr) {
                 return std::nullopt;
             }
@@ -131,8 +131,8 @@ namespace aloe::tcp {
         void flush(const core::TimePoint now) noexcept {
             context_.now = now;
             transmitter_.flush_deferred();
-            for (Block* block = transmitter_.ack_front(); block != nullptr;) {
-                Block* next = Transmitter::ack_next(*block);  // a successful send unlinks the block
+            for (ControlBlock* block = transmitter_.ack_front(); block != nullptr;) {
+                ControlBlock* next = Transmitter::ack_next(*block);  // a successful send unlinks the block
                 if (transmitter_.send_pure_ack(*block)) {
                     lifecycle_.maybe_finish(*block);
                 }
@@ -152,8 +152,8 @@ namespace aloe::tcp {
         /// A SynSent connection the caller owns; its SYN is queued, or waits for ARP on the timer.
         [[nodiscard]] std::expected<ConnectionType*, ConnectError> connect(const Endpoint peer,
                                                                            const core::TimePoint now) noexcept {
-            context_.now                                     = now;
-            const std::expected<Block*, ConnectError> opened = lifecycle_.connect(peer);
+            context_.now                                            = now;
+            const std::expected<ControlBlock*, ConnectError> opened = lifecycle_.connect(peer);
             if (!opened) {
                 return std::unexpected{opened.error()};
             }
@@ -221,40 +221,41 @@ namespace aloe::tcp {
     private:
         friend class Connection<Ip, CongestionControl>;
 
-        using Block       = detail::ControlBlock<Ip, CongestionControl>;
-        using Datagram    = net::Datagram<Packet>;
-        using Transmitter = detail::Transmitter<Ip, CongestionControl>;
+        using ControlBlock = detail::ControlBlock<Ip, CongestionControl>;
+        using Datagram     = net::Datagram<Packet>;
+        using Transmitter  = detail::Transmitter<Ip, CongestionControl>;
 
         /// The wheel's callback: the node's block, then the Lifecycle's timer handling.
         static void on_timer_fired(loop::Timer& timer) noexcept {
-            Block& block = static_cast<Block::TimerNode&>(timer).block;
+            ControlBlock& block = static_cast<ControlBlock::TimerNode&>(timer).block;
             block.stack.lifecycle_.on_timer(block);
         }
 
         // The handle's verbs: the Receiver's consume, the Transmitter's send side and the Lifecycle's close, abort
         // and release.
-        [[nodiscard]] ConnectionType::View unread(const Block& block) noexcept {
+        [[nodiscard]] ConnectionType::View unread(const ControlBlock& block) noexcept {
             return block.receive.view(context_.pool);
         }
-        void consume(Block& block, const std::size_t count) noexcept {
+        void consume(ControlBlock& block, const std::size_t count) noexcept {
             receiver_.consume(block, count);
         }
-        [[nodiscard]] std::size_t writable(const Block& block) const noexcept {
+        [[nodiscard]] std::size_t writable(const ControlBlock& block) const noexcept {
             return transmitter_.writable(block);
         }
-        [[nodiscard]] std::optional<std::span<std::byte>> prepare(Block& block, const std::size_t count) noexcept {
+        [[nodiscard]] std::optional<std::span<std::byte>> prepare(ControlBlock& block,
+                                                                  const std::size_t count) noexcept {
             return transmitter_.prepare(block, count);
         }
-        [[nodiscard]] bool commit(Block& block, const std::size_t count) noexcept {
+        [[nodiscard]] bool commit(ControlBlock& block, const std::size_t count) noexcept {
             return transmitter_.commit(block, count);
         }
-        void close(Block& block) noexcept {
+        void close(ControlBlock& block) noexcept {
             lifecycle_.close(block);
         }
-        void abort(Block& block) noexcept {
+        void abort(ControlBlock& block) noexcept {
             lifecycle_.abort(block);
         }
-        void release(Block& block) noexcept {
+        void release(ControlBlock& block) noexcept {
             lifecycle_.release(block);
         }
 

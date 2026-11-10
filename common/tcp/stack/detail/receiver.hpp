@@ -34,7 +34,7 @@ namespace aloe::tcp::detail {
     class Receiver {
     public:
         using Packet       = Ip::Packet;
-        using Block        = ControlBlock<Ip, CongestionControl>;
+        using ControlBlock = detail::ControlBlock<Ip, CongestionControl>;
         using Context      = StackContext<Ip, CongestionControl>;
         using Lifecycle    = detail::Lifecycle<Ip, CongestionControl>;
         using AckProcessor = detail::AckProcessor<Ip, CongestionControl>;
@@ -106,7 +106,7 @@ namespace aloe::tcp::detail {
                 }
                 return;
             }
-            switch (Block& block = context_.blocks[*found]; block.state) {
+            switch (ControlBlock& block = context_.blocks[*found]; block.state) {
                 case State::Closed:  // still indexed because not released
                     ++context_.counters.dropped_closed;
                     if (!header->flags.has(wire::TcpFlag::Rst)) {
@@ -124,7 +124,7 @@ namespace aloe::tcp::detail {
 
         /// Advances the held payload's front by `count` bytes, freeing packets as they empty; a reopened edge queues
         /// an update.
-        void consume(Block& block, const std::size_t count) noexcept {
+        void consume(ControlBlock& block, const std::size_t count) noexcept {
             block.receive.consume(context_.pool, count);
             const bool receiving =
                 block.state == State::Established || block.state == State::FinWait1 || block.state == State::FinWait2;
@@ -174,7 +174,7 @@ namespace aloe::tcp::detail {
                 ++context_.counters.dropped_no_node;  // no retransmission-queue node for the SYN-ACK
                 return;
             }
-            Block* opened = lifecycle_.accept_slot(
+            ControlBlock* opened = lifecycle_.accept_slot(
                 Endpoint{.address = context_.ip.address(), .port = segment.header.destination_port},
                 Endpoint{.address = datagram.source, .port = segment.header.source_port},
                 segment.base_hash);
@@ -182,7 +182,7 @@ namespace aloe::tcp::detail {
                 ++context_.counters.dropped_table_full;
                 return;
             }
-            Block& block = *opened;
+            ControlBlock& block = *opened;
             // The initial offer, carried by the SYN-ACK.
             block.receive.open(segment.header.sequence + 1, context_.byte_budget);
             block.send.peer_mss = segment.mss.value_or(default_peer_mss);
@@ -199,7 +199,7 @@ namespace aloe::tcp::detail {
             }
         }
 
-        void receive_syn_sent(Block& block, Datagram& datagram, Segment segment) noexcept {
+        void receive_syn_sent(ControlBlock& block, Datagram& datagram, Segment segment) noexcept {
             const wire::TcpHeader& header = segment.header;
             if (header.flags.has(wire::TcpFlag::Ack) && header.acknowledgement != block.send.nxt) {
                 ++context_.counters.dropped_unexpected;  // not an answer to our SYN
@@ -238,7 +238,7 @@ namespace aloe::tcp::detail {
         }
 
         /// A segment on a synchronized connection, in RFC 9293's order; each step may end it.
-        void receive_synchronized(Block& block, Datagram& datagram, Segment segment) noexcept {
+        void receive_synchronized(ControlBlock& block, Datagram& datagram, Segment segment) noexcept {
             const bool rst         = segment.header.flags.has(wire::TcpFlag::Rst);
             const Sequence arrived = segment.header.sequence;  // SEG.SEQ before any trim, for the TS.Recent rule
 
@@ -295,7 +295,7 @@ namespace aloe::tcp::detail {
          * data that fills it is acknowledged at once. One that overlaps RCV.NXT loses its old prefix, a SYN with it. A
          * duplicate SYN in SynReceived gets the SYN-ACK again, from its entry. False when the segment goes no further.
          */
-        [[nodiscard]] bool accept_sequence(Block& block, Segment& segment) noexcept {
+        [[nodiscard]] bool accept_sequence(ControlBlock& block, Segment& segment) noexcept {
             wire::TcpHeader& header    = segment.header;
             const bool rst             = header.flags.has(wire::TcpFlag::Rst);
             const Sequence next        = block.receive.next();
@@ -352,7 +352,7 @@ namespace aloe::tcp::detail {
          * moves the close on once our FIN is acknowledged. False when the segment goes no further: no ACK, an ACK of
          * what was never sent, or a connection that finished.
          */
-        [[nodiscard]] bool receive_ack(Block& block, const Segment& segment) noexcept {
+        [[nodiscard]] bool receive_ack(ControlBlock& block, const Segment& segment) noexcept {
             const wire::TcpHeader& header = segment.header;
             if (!header.flags.has(wire::TcpFlag::Ack)) {
                 ++context_.counters.dropped_unexpected;
@@ -394,7 +394,7 @@ namespace aloe::tcp::detail {
          * ACK that reports the last byte accepted, past the peer's FIN, past the per-connection cap of held packets
          * or with the shard's pool empty; the FIN behind refused data is not consumed. False when refused.
          */
-        [[nodiscard]] bool receive_payload(Block& block, Datagram& datagram, const Segment& segment) noexcept {
+        [[nodiscard]] bool receive_payload(ControlBlock& block, Datagram& datagram, const Segment& segment) noexcept {
             if (block.receive.closed()) {  // the peer's sequence space ended at its FIN, whatever state we are in
                 ++context_.counters.dropped_unexpected;
                 ack_now(block);
@@ -426,7 +426,7 @@ namespace aloe::tcp::detail {
 
         /// The peer's FIN, in order: the receive side ends, the Lifecycle moves the state on and says when the ACK
         /// goes; flush retries an immediate one that was refused.
-        void receive_fin(Block& block) noexcept {
+        void receive_fin(ControlBlock& block) noexcept {
             block.receive.take_fin();
             if (lifecycle_.peer_closed(block) == AckPolicy::Ack::Now) {
                 ack_now(block);
@@ -437,7 +437,7 @@ namespace aloe::tcp::detail {
 
         /// An immediate ACK: queued through IP before the next segment is processed; a refusal leaves it pending. When
         /// the close only waited for this ACK, Closed follows it, whichever segment prompted it.
-        void ack_now(Block& block) noexcept {
+        void ack_now(ControlBlock& block) noexcept {
             if (transmitter_.send_pure_ack(block)) {
                 lifecycle_.maybe_finish(block);
             } else {

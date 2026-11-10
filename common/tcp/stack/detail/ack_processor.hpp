@@ -26,11 +26,11 @@ namespace aloe::tcp::detail {
     template <typename Ip, typename CongestionControl>
     class AckProcessor {
     public:
-        using Block       = ControlBlock<Ip, CongestionControl>;
-        using Context     = StackContext<Ip, CongestionControl>;
-        using Transmitter = detail::Transmitter<Ip, CongestionControl>;
-        using Sequence    = wire::TcpSequence;
-        using Freed       = Transmitter::Freed;
+        using ControlBlock = detail::ControlBlock<Ip, CongestionControl>;
+        using Context      = StackContext<Ip, CongestionControl>;
+        using Transmitter  = detail::Transmitter<Ip, CongestionControl>;
+        using Sequence     = wire::TcpSequence;
+        using Freed        = Transmitter::Freed;
 
         /// What an acceptable ACK did, for the Receiver to publish.
         struct Outcome {
@@ -45,8 +45,9 @@ namespace aloe::tcp::detail {
 
         /// The ACK that completes a handshake, of our SYN or SYN-ACK: its entry freed, SND.UNA at `ack`, a sample
         /// taken and the timer stopped with the queue empty (`on_acknowledged`).
-        void
-        handshake_acknowledged(Block& block, const Sequence ack, const std::optional<std::uint32_t> echo) noexcept {
+        void handshake_acknowledged(ControlBlock& block,
+                                    const Sequence ack,
+                                    const std::optional<std::uint32_t> echo) noexcept {
             const Freed freed = transmitter_.acknowledge(block, ack);
             block.send.una    = ack;
             on_acknowledged(block, freed, echo);
@@ -59,7 +60,7 @@ namespace aloe::tcp::detail {
          * window only when SND.UNA <= SEG.ACK <= SND.NXT: a stale ACK carries a stale window. `payload_length` is the
          * segment's, since an ACK that carries data is no duplicate.
          */
-        [[nodiscard]] Outcome on_ack(Block& block,
+        [[nodiscard]] Outcome on_ack(ControlBlock& block,
                                      const wire::TcpHeader& header,
                                      const std::uint16_t payload_length,
                                      const std::optional<std::uint32_t> echo) noexcept {
@@ -90,7 +91,7 @@ namespace aloe::tcp::detail {
          * starts it: in Established or CloseWait whether or not the application has data, and in any state while a
          * FIN the window did not cover waits in the queue (`close`). A head waiting for the next hop is the ARP poll's.
          */
-        void update_probing(Block& block) noexcept {
+        void update_probing(ControlBlock& block) noexcept {
             block.probe.answered();
             if (block.probing()) {
                 if (block.send.wnd > 0) {
@@ -108,7 +109,7 @@ namespace aloe::tcp::detail {
         /// The head that never left, the FIN of a close the peer's window did not cover: sent once the window covers
         /// it, as Linux's `tcp_push_pending_frames` on an ACK. A head waiting for the next hop is the ARP poll's. The
         /// send arms the RTO (`transmit_entry`); a refused one leaves the RTO to try again, as `close` does.
-        void send_unsent(Block& block) noexcept {
+        void send_unsent(ControlBlock& block) noexcept {
             if (block.queue.empty() || transmitter_.in_flight(block) || block.timer_kind == TimerKind::ArpPoll) {
                 return;
             }
@@ -132,7 +133,7 @@ namespace aloe::tcp::detail {
          * holds for the window, is `send_unsent`'s or the probes'. A partial ACK frees nothing, samples only from its
          * echo, and restarts the timer. Returns the sample taken, if any.
          */
-        std::optional<core::Duration> on_acknowledged(Block& block,
+        std::optional<core::Duration> on_acknowledged(ControlBlock& block,
                                                       const Transmitter::Freed& freed,
                                                       const std::optional<std::uint32_t> echo) noexcept {
             block.retransmit_count = 0;
@@ -158,7 +159,8 @@ namespace aloe::tcp::detail {
          * reads and says what to resend: the head as a fast retransmit on a partial ACK in fast recovery, or the new
          * head in the loss episode after a timeout, counted in `retransmits`.
          */
-        void acknowledge_data(Block& block, const Sequence ack, const std::optional<std::uint32_t> echo) noexcept {
+        void
+        acknowledge_data(ControlBlock& block, const Sequence ack, const std::optional<std::uint32_t> echo) noexcept {
             const std::uint32_t flight_before = block.send.flight();
             const auto acked                  = static_cast<std::uint32_t>(ack - block.send.una);
             const typename Transmitter::Freed freed =
@@ -191,7 +193,7 @@ namespace aloe::tcp::detail {
 
         /// RFC 5681's duplicate ACK, counted; the third may start fast recovery (`LossRecovery::on_duplicate`), which
         /// resends the head at once.
-        void on_duplicate_ack(Block& block, const Sequence ack) noexcept {
+        void on_duplicate_ack(ControlBlock& block, const Sequence ack) noexcept {
             ++context_.counters.duplicate_acks;
             if (block.recovery.on_duplicate(ack, block.send, block.mss()) == Resend::Fast) {
                 fast_retransmit(block);
@@ -205,7 +207,7 @@ namespace aloe::tcp::detail {
          * (`tcp_xmit_retransmit_queue`), so the timer the first send armed does not expire before the resend's ACK can
          * return. A resend deferred, or refused, leaves the timer as it was.
          */
-        void fast_retransmit(Block& block) noexcept {
+        void fast_retransmit(ControlBlock& block) noexcept {
             ++context_.counters.fast_retransmits;
             if (!transmitter_.in_flight(block)) {
                 return;  // nothing in flight: the head, if any, waits for the window
