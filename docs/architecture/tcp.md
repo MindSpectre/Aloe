@@ -349,8 +349,10 @@ the mapping from a connection's state to its public handle. What it does is thre
 shard, what every part reads: the IP brick, the config, the held-segment pool, the counters and the stamp. The
 `Receiver` is what a datagram does to a connection: the checksum and lookup, the handshake, RFC 9293's order
 on a synchronized connection, the ACK processing that drives loss recovery, and `consume`; it owns nothing.
-The `Lifecycle` owns the connection table, the ISN generator and the event list: slots in and out, the states
-to `Closed`, `close`, `abort`, `release`, and the timer expiries that resend or give up. The `Transmitter`
+The `Lifecycle` owns the connection table, the ISN generator and the event list: slots in and out, every
+change of a connection's state from the open to `Closed`, `close`, `abort`, `release`, and the timer expiries
+that resend or give up. It is the only part that writes the state: the `Receiver` tells it what arrived (the
+handshake answered, the peer's FIN or RST, our FIN acknowledged) and it moves the connection on. The `Transmitter`
 owns the segment writer, the send pool and the ACK, retry and deferred lists: every segment that leaves, the
 retransmission queue's entries, the resends with the busy rule and the copy, the pure ACKs, probes and resets,
 the timers' arming, and `writable`, `prepare`, `commit`. The dependency runs one way, Receiver → Lifecycle →

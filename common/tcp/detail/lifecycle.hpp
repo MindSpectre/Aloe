@@ -12,6 +12,7 @@
 #include <tuple>
 #include <utility>
 
+#include <detail/ack_policy.hpp>
 #include <detail/connection_table.hpp>
 #include <detail/control_block.hpp>
 #include <detail/isn_generator.hpp>
@@ -25,9 +26,11 @@
 namespace aloe::tcp::detail {
 
     /**
-     * @brief A connection's life: the slot taken and bound, the handshake's numbers drawn, the states to `Closed`,
-     * the events raised, the timer expiries that resend or give up, `close`, `abort` and `release`. It owns the
-     * connection table, the ISN generator and the event list, and calls down into the Transmitter.
+     * @brief A connection's life: the slot taken and bound, the handshake's numbers drawn, every change of state
+     * from the open to `Closed`, the events raised, the timer expiries that resend or give up, `close`, `abort` and
+     * `release`. It owns the connection table, the ISN generator and the event list, and calls down into the
+     * Transmitter. No other part writes a connection's state: the Receiver says what arrived and the Lifecycle
+     * moves the connection on.
      */
     template <typename Ip, typename CongestionControl>
     class Lifecycle {
@@ -117,6 +120,23 @@ namespace aloe::tcp::detail {
             return &block;
         }
 
+        /// The active open was answered: Established, counted, `Connected` raised.
+        void connected(Block& block) noexcept {
+            assert(block.state == State::SynSent && "only a SYN of ours is answered");
+            establish(block);
+            ++context_.counters.connections_opened;
+            raise(block, stream::Event::Connected);
+        }
+
+        /// The passive open's SYN-ACK was acknowledged: Established, and the application's from `Accepted` on.
+        void accepted(Block& block) noexcept {
+            assert(block.state == State::SynReceived && "only a passive open is accepted");
+            establish(block);
+            block.owned = true;
+            ++context_.counters.connections_accepted;
+            raise(block, stream::Event::Accepted);
+        }
+
         // Events.
         void raise(Block& block, const stream::Event event) noexcept {
             block.events |= event;
@@ -134,40 +154,6 @@ namespace aloe::tcp::detail {
         }
 
         // Closing.
-        void free_slot(Block& block) noexcept {
-            // Every live connection is indexed by connect or passive_open; a free slot is not, and pushing its index
-            // again would hand one slot to two opens. A release build ignores the second call.
-            assert(block.indexed && "release of a free slot");
-            if (!block.indexed) {
-                return;
-            }
-            transmitter_.disarm(block);
-            std::ignore = table_.erase(block.key, block.base_hash);
-            return_chain(block);
-            transmitter_.drop_queue(block);
-            block.prepared.reset();
-            events_.remove(block);
-            transmitter_.forget(block);
-            block.clear();
-            table_.free_slot(block.index);
-        }
-
-        /// Closed, with nothing armed, pending or queued: after a terminal event nothing is resent, so the
-        /// retransmission queue is dropped, its packets back now or when the device returns them. Held segments stay
-        /// until release, and so does an open preparation: the application may still write into its span, and the
-        /// next commit refuses it.
-        void set_closed(Block& block) noexcept {
-            if (block.state == State::SynSent) {
-                block.timestamps.withdraw();  // the offer was never answered: nothing was negotiated
-            }
-            block.state = State::Closed;
-            transmitter_.disarm(block);
-            block.unresolved_polls = 0;
-            transmitter_.forget(block);
-            block.finish_pending = false;
-            transmitter_.drop_queue(block);  // and off the deferred list
-        }
-
         /// The last ACK the peer is owed must be queued before Closed is published; flush retries the rest.
         void maybe_finish(Block& block) noexcept {
             if (block.finish_pending && !transmitter_.ack_pending(block)) {
@@ -216,6 +202,55 @@ namespace aloe::tcp::detail {
             }
         }
 
+        /**
+         * The peer's FIN arrived in order: `PeerClosed` raised and the state moved on. Says when the FIN's ACK goes:
+         * at once where our own close is under way, since the close waits on it, and with the next flush otherwise,
+         * where the application's close may carry it.
+         */
+        [[nodiscard]] AckPolicy::Ack peer_closed(Block& block) noexcept {
+            raise(block, stream::Event::PeerClosed);
+            switch (block.state) {
+                case State::Established:
+                    block.state = State::CloseWait;
+                    return AckPolicy::Ack::Delayed;
+                case State::FinWait1:
+                    block.state = State::Closing;
+                    return AckPolicy::Ack::Now;
+                case State::FinWait2:
+                    block.finish_pending = true;  // the terminal ACK goes before Closed is published
+                    return AckPolicy::Ack::Now;
+                default:
+                    return AckPolicy::Ack::Delayed;
+            }
+        }
+
+        /// Our FIN was acknowledged, so the queue is empty: FinWait1 waits for the peer's FIN in FinWait2; Closing and
+        /// LastAck are done, and `Closed` follows once no ACK is owed (`maybe_finish`).
+        void fin_acknowledged(Block& block) noexcept {
+            switch (block.state) {
+                case State::FinWait1:
+                    block.state = State::FinWait2;
+                    break;
+                case State::Closing:
+                case State::LastAck:
+                    block.finish_pending = true;
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        /// The peer's RST was accepted: a passive open nobody took is freed silently; any other connection is Closed
+        /// with `Reset` raised.
+        void peer_reset(Block& block) noexcept {
+            if (discard_unowned(block)) {
+                return;
+            }
+            ++context_.counters.connections_reset;
+            set_closed(block);
+            raise(block, stream::Event::Reset);
+        }
+
         void abort(Block& block) noexcept {
             if (block.state == State::Closed) {
                 return;
@@ -256,10 +291,63 @@ namespace aloe::tcp::detail {
         }
 
     private:
+        /// Established: the FIN's node set aside and the policy's first window taken from the negotiated MSS.
+        void establish(Block& block) noexcept {
+            block.state = State::Established;
+            transmitter_.reserve_fin_node(block);
+            block.recovery.establish(block.mss());
+        }
+
+        void free_slot(Block& block) noexcept {
+            // Every live connection is indexed by connect or passive_open; a free slot is not, and pushing its index
+            // again would hand one slot to two opens. A release build ignores the second call.
+            assert(block.indexed && "release of a free slot");
+            if (!block.indexed) {
+                return;
+            }
+            transmitter_.disarm(block);
+            std::ignore = table_.erase(block.key, block.base_hash);
+            return_chain(block);
+            transmitter_.drop_queue(block);
+            block.prepared.reset();
+            events_.remove(block);
+            transmitter_.forget(block);
+            block.clear();
+            table_.free_slot(block.index);
+        }
+
+        /// Closed, with nothing armed, pending or queued: after a terminal event nothing is resent, so the
+        /// retransmission queue is dropped, its packets back now or when the device returns them. Held segments stay
+        /// until release, and so does an open preparation: the application may still write into its span, and the
+        /// next commit refuses it.
+        void set_closed(Block& block) noexcept {
+            if (block.state == State::SynSent) {
+                block.timestamps.withdraw();  // the offer was never answered: nothing was negotiated
+            }
+            block.state = State::Closed;
+            transmitter_.disarm(block);
+            block.unresolved_polls = 0;
+            transmitter_.forget(block);
+            block.finish_pending = false;
+            transmitter_.drop_queue(block);  // and off the deferred list
+        }
+
         void finish(Block& block) noexcept {
             set_closed(block);
             ++context_.counters.connections_closed;
             raise(block, stream::Event::Closed);
+        }
+
+        /// A passive open nobody took ends silently, whatever ended it: counted and its slot freed. True when `block`
+        /// was one, and is gone.
+        [[nodiscard]] bool discard_unowned(Block& block) noexcept {
+            if (block.owned) {
+                return false;
+            }
+            assert(block.state == State::SynReceived && "a connection is unowned only until its handshake completes");
+            ++context_.counters.handshakes_failed;
+            free_slot(block);
+            return true;
         }
 
         using EventList = ConnectionList<Block, &Block::event_link>;
@@ -367,9 +455,7 @@ namespace aloe::tcp::detail {
         /// The retry cap or the user timeout ran out: `TimedOut` for an owned connection, counted apart when the user
         /// timeout ended it.
         void time_out(Block& block, const bool by_user_timeout) noexcept {
-            if (!block.owned) {
-                ++context_.counters.handshakes_failed;  // a passive open nobody took: freed silently
-                free_slot(block);
+            if (discard_unowned(block)) {
                 return;
             }
             ++context_.counters.connections_timed_out;
@@ -382,9 +468,7 @@ namespace aloe::tcp::detail {
 
         /// The next hop never answered ARP: a failure of its own, told apart from a segment that left and was ignored.
         void fail_unresolved(Block& block) noexcept {
-            if (!block.owned) {
-                ++context_.counters.handshakes_failed;  // a passive open nobody took: freed silently
-                free_slot(block);
+            if (discard_unowned(block)) {
                 return;
             }
             ++context_.counters.connections_unresolved;

@@ -30,8 +30,9 @@ namespace aloe::tcp::detail {
     /**
      * @brief What a datagram does to a connection: the header and checksum, the lookup, the handshake, RFC 9293's
      * order on a synchronized connection (PAWS, the sequence check, RST, ACK with loss recovery, payload, FIN), and
-     * `consume`. It owns no state; it drives the block, opens and closes through the Lifecycle and sends through
-     * the Transmitter, in place, as each step of the procedure asks.
+     * `consume`. It owns no state; it drives the block's sequence numbers and queues, leaves every change of the
+     * connection's state to the Lifecycle and sends through the Transmitter, in place, as each step of the procedure
+     * asks.
      */
     template <typename Ip, typename CongestionControl>
     class Receiver {
@@ -211,9 +212,7 @@ namespace aloe::tcp::detail {
                     ++context_.counters.dropped_unexpected;
                     return;
                 }
-                ++context_.counters.connections_reset;
-                lifecycle_.set_closed(block);
-                lifecycle_.raise(block, stream::Event::Reset);
+                lifecycle_.peer_reset(block);
                 return;
             }
             if (!header.flags.has(wire::TcpFlag::Syn) || !header.flags.has(wire::TcpFlag::Ack)) {
@@ -230,14 +229,10 @@ namespace aloe::tcp::detail {
             block.timestamps.sent_ack(block.receive.next());  // as Linux's rcv_wup: data on the SYN-ACK may update it
             block.send.peer_mss = segment.mss.value_or(default_peer_mss);
             block.send.synchronize(header);
-            block.state = State::Established;
-            transmitter_.reserve_fin_node(block);
-            block.recovery.establish(block.mss());
+            lifecycle_.connected(block);
             update_probing(block);  // a SYN-ACK offering no window starts probing as any ACK does
-            ++context_.counters.connections_opened;
             // Deferred: a commit on the Connected event completes the handshake with data.
             transmitter_.queue_ack(block);
-            lifecycle_.raise(block, stream::Event::Connected);
             if (segment.payload_length > 0 || header.flags.has(wire::TcpFlag::Fin)) {
                 segment.header.sequence = block.receive.next();
                 segment.header.flags    = wire::TcpFlags::from_raw(
@@ -268,7 +263,7 @@ namespace aloe::tcp::detail {
 
             // 2. RST, and a SYN, which a synchronized connection does not take.
             if (rst) {
-                receive_reset(block);
+                lifecycle_.peer_reset(block);
                 return;
             }
             if (segment.header.flags.has(wire::TcpFlag::Syn)) {
@@ -355,18 +350,6 @@ namespace aloe::tcp::detail {
             return true;
         }
 
-        /// A RST in the window: a passive open nobody took is freed silently; any other connection is reset.
-        void receive_reset(Block& block) noexcept {
-            if (block.state == State::SynReceived && !block.owned) {
-                ++context_.counters.handshakes_failed;
-                lifecycle_.free_slot(block);
-                return;
-            }
-            ++context_.counters.connections_reset;
-            lifecycle_.set_closed(block);
-            lifecycle_.raise(block, stream::Event::Reset);
-        }
-
         /**
          * The ACK. In SynReceived it completes the passive open. An ACK of new data frees what it covers, samples the
          * round trip and drives loss recovery (`acknowledge_data`); our FIN acknowledged moves the close on. A
@@ -391,12 +374,7 @@ namespace aloe::tcp::detail {
                     transmitter_.acknowledge(block, ack);  // frees the SYN-ACK's entry
                 block.send.una = ack;
                 on_acknowledged(block, freed, segment.ts_echo);  // a sample, and the timer stopped with the queue empty
-                block.state = State::Established;
-                transmitter_.reserve_fin_node(block);
-                block.recovery.establish(block.mss());
-                block.owned = true;
-                ++context_.counters.connections_accepted;
-                lifecycle_.raise(block, stream::Event::Accepted);
+                lifecycle_.accepted(block);
                 // The same segment may carry data or a FIN: keep going.
             }
             if (ack.after(block.send.nxt)) {
@@ -411,18 +389,8 @@ namespace aloe::tcp::detail {
             if (ack.after(block.send.una)) {
                 acknowledge_data(block, ack, segment.ts_echo);
                 lifecycle_.raise(block, stream::Event::Acked);
-                if (block.send.fin_sent && ack == block.send.nxt) {  // our FIN is acknowledged: the queue is empty
-                    switch (block.state) {
-                        case State::FinWait1:
-                            block.state = State::FinWait2;
-                            break;
-                        case State::Closing:
-                        case State::LastAck:
-                            block.finish_pending = true;
-                            break;
-                        default:
-                            break;
-                    }
+                if (block.send.fin_sent && ack == block.send.nxt) {
+                    lifecycle_.fin_acknowledged(block);
                 }
             } else if (duplicate) {
                 on_duplicate_ack(block, ack);
@@ -474,25 +442,14 @@ namespace aloe::tcp::detail {
             return true;
         }
 
+        /// The peer's FIN, in order: the receive side ends, the Lifecycle moves the state on and says when the ACK
+        /// goes; flush retries an immediate one that was refused.
         void receive_fin(Block& block) noexcept {
             block.receive.take_fin();
-            lifecycle_.raise(block, stream::Event::PeerClosed);
-            switch (block.state) {
-                case State::Established:
-                    block.state = State::CloseWait;
-                    transmitter_.queue_ack(block);  // the application's close may carry it
-                    break;
-                case State::FinWait1:
-                    block.state = State::Closing;
-                    ack_now(block);
-                    break;
-                case State::FinWait2:
-                    block.finish_pending = true;
-                    ack_now(block);  // the terminal ACK goes before Closed is published; flush retries a refusal
-                    break;
-                default:
-                    transmitter_.queue_ack(block);
-                    break;
+            if (lifecycle_.peer_closed(block) == AckPolicy::Ack::Now) {
+                ack_now(block);
+            } else {
+                transmitter_.queue_ack(block);
             }
         }
 
