@@ -676,7 +676,9 @@ What it cannot decide is how each one is spelled:
 - **A `.cpp` includes its own header in quotes**, `#include "flow_table.hpp"`, first. No other include
   uses quotes.
 - **A header of the same module is included by its basename**, `#include <tcp_stack.hpp>`, wherever it
-  sits in the module; one in a `detail/` folder is `#include <detail/frame.hpp>`.
+  sits in the module. A header whose names are all in `detail` sits in a `detail/` folder inside the folder
+  it belongs to (`stack/detail/receiver.hpp` beside `stack/tcp_stack.hpp`), never in one `detail/` folder for
+  the whole module, and is `#include <detail/receiver.hpp>`.
 - **Anything from another module comes through its umbrella**, `#include <aloe/net>`, never one of its
   headers, even when only one is needed. A module never includes its own umbrella.
 - Tests, examples and the benchmark are not modules: they include every module through its umbrella,

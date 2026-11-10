@@ -369,9 +369,12 @@ single-thread memory: a connection's receive and transmit run on one shard threa
 shared. Beneath the four: per shard `ConnectionTable`, `SegmentWriter`, `IsnGenerator` and one `NodePool`
 each for held packets and retransmission-queue entries; per connection `ReceiveQueue`, `AckPolicy`,
 `SendSequence`, `RetransmissionQueue`, `LossRecovery` (over the policy's state), `RttEstimator`,
-`ZeroWindowProbe` and `Timestamps`. The folders: `detail/` holds every part, included as `<detail/name.hpp>`;
-`connection/` the handle and its read view; `stack/` the façade and the forward header; `config/` the
-configuration and counters; `congestion/` the policies; `table/` the flow table.
+`ZeroWindowProbe` and `Timestamps`. The folders: `connection/` the handle and its read view, with the control
+block and the connection's parts in `connection/detail/`; `stack/` the façade and the forward header, with the
+four procedure classes, the context, the connection table, the ISN generator and the segment writer in
+`stack/detail/`; `pool/detail/` the node pools; `config/` the configuration and counters; `congestion/` the
+policies; `table/` the flow table. A header whose names are all in `tcp::detail` sits in the `detail/` folder
+of the folder it belongs to and is included as `<detail/name.hpp>`.
 
 **Zero-copy both ways.** A received segment's packet is held as it arrived and `unread()` points into it;
 `consume` advances through it and returns each packet to the pool once it is empty. A sent segment is written

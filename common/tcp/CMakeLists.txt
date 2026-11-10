@@ -26,37 +26,37 @@ add_library(${TCP}.Stack INTERFACE
         congestion/congestion_control.hpp
         congestion/newreno.hpp
         congestion/no_congestion_control.hpp
+        connection/detail/ack_policy.hpp
+        connection/detail/control_block.hpp
+        connection/detail/frame_template.hpp
+        connection/detail/loss_recovery.hpp
+        connection/detail/receive_queue.hpp
+        connection/detail/retransmission_queue.hpp
+        connection/detail/rtt_estimator.hpp
+        connection/detail/send_sequence.hpp
+        connection/detail/tcp_timestamps.hpp
+        connection/detail/zero_window_probe.hpp
         connection/read_view.hpp
         connection/tcp_connection.hpp
-        detail/ack_policy.hpp
-        detail/ack_processor.hpp
-        detail/connection_table.hpp
-        detail/control_block.hpp
-        detail/frame_template.hpp
-        detail/held_segment_pool.hpp
-        detail/isn_generator.hpp
-        detail/lifecycle.hpp
-        detail/loss_recovery.hpp
-        detail/node_pool.hpp
-        detail/receive_queue.hpp
-        detail/receiver.hpp
-        detail/retransmission_queue.hpp
-        detail/rtt_estimator.hpp
-        detail/segment_writer.hpp
-        detail/send_sequence.hpp
-        detail/sent_segment_pool.hpp
-        detail/stack_context.hpp
-        detail/tcp_timestamps.hpp
-        detail/transmitter.hpp
-        detail/zero_window_probe.hpp
+        pool/detail/held_segment_pool.hpp
+        pool/detail/node_pool.hpp
+        pool/detail/sent_segment_pool.hpp
+        stack/detail/ack_processor.hpp
+        stack/detail/connection_table.hpp
+        stack/detail/isn_generator.hpp
+        stack/detail/lifecycle.hpp
+        stack/detail/receiver.hpp
+        stack/detail/segment_writer.hpp
+        stack/detail/stack_context.hpp
+        stack/detail/transmitter.hpp
         stack/tcp_fwd.hpp
         stack/tcp_stack.hpp
 )
 target_include_directories(${TCP}.Stack INTERFACE
-        ${CMAKE_CURRENT_SOURCE_DIR}
         config/
         congestion/
         connection/
+        pool/
         stack/
 )
 target_link_libraries(${TCP}.Stack INTERFACE
