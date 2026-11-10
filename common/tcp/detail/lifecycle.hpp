@@ -1,7 +1,6 @@
 #pragma once
 
 #include <aloe/core>
-#include <aloe/net>
 #include <aloe/stream>
 #include <aloe/wire>
 #include <cassert>
@@ -10,7 +9,6 @@
 #include <expected>
 #include <optional>
 #include <tuple>
-#include <utility>
 
 #include <detail/ack_policy.hpp>
 #include <detail/connection_table.hpp>
@@ -18,7 +16,6 @@
 #include <detail/isn_generator.hpp>
 #include <detail/stack_context.hpp>
 #include <detail/transmitter.hpp>
-#include <detail/zero_window_probe.hpp>
 #include <flow_table.hpp>
 #include <tcp_config.hpp>
 #include <tcp_fwd.hpp>
@@ -27,8 +24,8 @@ namespace aloe::tcp::detail {
 
     /**
      * @brief A connection's life: the slot taken and bound, the handshake's numbers drawn, every change of state
-     * from the open to `Closed`, the events raised, the timer expiries that resend or give up, `close`, `abort` and
-     * `release`. It owns the connection table, the ISN generator and the event list, and calls down into the
+     * from the open to `Closed`, the events raised, the end of a connection whose timer gave up, `close`, `abort`
+     * and `release`. It owns the connection table, the ISN generator and the event list, and calls down into the
      * Transmitter. No other part writes a connection's state: the Receiver says what arrived and the Lifecycle
      * moves the connection on.
      */
@@ -271,22 +268,21 @@ namespace aloe::tcp::detail {
         }
 
         // The timer.
-        /// Called by the wheel through the stack's trampoline with the timer unarmed; its kind says what for.
+        /// Called by the wheel through the stack's trampoline with the timer unarmed. The Transmitter resends, probes
+        /// or polls and re-arms (`Transmitter::on_timer`); what is left here is the end of a connection it gave up on.
         void on_timer(Block& block) noexcept {
-            const TimerKind kind = std::exchange(block.timer_kind, TimerKind::None);
-            assert(kind != TimerKind::None && "the wheel fires only an armed timer");
-            switch (kind) {
-                case TimerKind::Retransmit:
-                    on_retransmit_timeout(block);
-                    break;
-                case TimerKind::ArpPoll:
-                    on_arp_poll(block);
-                    break;
-                case TimerKind::Probe:
-                    on_probe_timeout(block);
-                    break;
-                case TimerKind::None:
-                    break;
+            switch (transmitter_.on_timer(block)) {
+                case TimerExpiry::Handled:
+                    return;
+                case TimerExpiry::TimedOut:
+                    time_out(block, /*by_user_timeout=*/false);
+                    return;
+                case TimerExpiry::UserTimedOut:
+                    time_out(block, /*by_user_timeout=*/true);
+                    return;
+                case TimerExpiry::Unresolved:
+                    fail_unresolved(block);
+                    return;
             }
         }
 
@@ -377,79 +373,6 @@ namespace aloe::tcp::detail {
 
         void return_chain(Block& block) noexcept {
             block.receive.release(context_.pool);
-        }
-
-        /**
-         * The RTO ran out: one retry, the head of the queue again. First the user timeout, counted from the head's
-         * first transmission on a synchronized connection, and then the cap, `retries` in the handshake and
-         * `data_retries` after it, may end the connection instead. The first expiry since an ACK of new data starts
-         * the loss episode (`LossRecovery::on_timeout`); each expiry doubles the RTO up to `rto_max` and re-arms. A
-         * resend deferred or refused counts as the retry all the same: the next expiry tries again. A first send, of a
-         * SYN, SYN-ACK or FIN the device refused before, that finds no next hop arms the ARP poll instead
-         * (`transmit_entry`), and the expiry leaves the timer to it: nothing left, so no backoff; the poll arms the RTO
-         * once the send leaves, or ends the connection `Unresolved`.
-         */
-        void on_retransmit_timeout(Block& block) noexcept {
-            assert(!block.queue.empty() && "the RTO runs while something is queued");
-            if (const typename Transmitter::SentNode* head = transmitter_.user_timed_head(block);
-                head != nullptr && context_.now - head->first_sent >= context_.config.user_timeout) {
-                time_out(block, /*by_user_timeout=*/true);
-                return;
-            }
-            if (const bool handshake = block.state == State::SynSent || block.state == State::SynReceived;
-                block.retransmit_count >= (handshake ? context_.config.retries : context_.config.data_retries)) {
-                time_out(block, /*by_user_timeout=*/false);
-                return;
-            }
-            if (++block.retransmit_count == 1) {
-                block.recovery.on_timeout(block.send, block.mss());
-            }
-            std::ignore = transmitter_.resend_head(block);
-            ++context_.counters.retransmits;
-            if (block.timer_kind == TimerKind::ArpPoll) {
-                return;  // a first send that found no next hop: the poll retries it, and arms the RTO once it leaves
-            }
-            block.rtt.back_off(context_.config.rto_max);
-            transmitter_.arm_retransmit(block);
-        }
-
-        /// The ARP poll: the SYN, SYN-ACK or FIN that never left is tried again, as no retry. Once it leaves, or the
-        /// device refuses it, the RTO takes over; a next hop still silent after `unresolved_polls` polls ends the
-        /// connection with `Unresolved`.
-        void on_arp_poll(Block& block) noexcept {
-            assert(!block.queue.empty() && "the poll retries an entry that never left");
-            if (const std::expected<void, net::SendError> sent = transmitter_.transmit_entry(block, block.queue.head());
-                sent || sent.error() != net::SendError::Unresolved) {
-                transmitter_.arm_retransmit(block);
-                return;
-            }
-            if (++block.unresolved_polls >= context_.config.unresolved_polls) {
-                fail_unresolved(block);  // the bound Linux's ARP probes give: the next hop is not going to answer
-                return;
-            }
-            transmitter_.arm_poll(block);
-        }
-
-        /// The probe timer ran out with the peer's window still zero (`ZeroWindowProbe::expire`): the user timeout or
-        /// `data_retries` unanswered probes end the connection; else one probe goes, a refused one counted all the
-        /// same, and the next is armed.
-        void on_probe_timeout(Block& block) noexcept {
-            assert(!transmitter_.in_flight(block) && block.send.wnd == 0 &&
-                   (!block.queue.empty() || block.state == State::Established || block.state == State::CloseWait) &&
-                   "a probe runs only while the window is zero and nothing is in flight");
-            switch (block.probe.expire(
-                context_.now, context_.config.user_timeout, context_.config.data_retries, context_.config.rto_max)) {
-                case ZeroWindowProbe::Expiry::UserTimedOut:
-                    time_out(block, /*by_user_timeout=*/true);
-                    return;
-                case ZeroWindowProbe::Expiry::TimedOut:
-                    time_out(block, /*by_user_timeout=*/false);
-                    return;
-                case ZeroWindowProbe::Expiry::Probe:
-                    break;
-            }
-            std::ignore = transmitter_.send_probe(block);  // a refusal was counted by the send
-            transmitter_.arm_probe(block);
         }
 
         /// The retry cap or the user timeout ran out: `TimedOut` for an owned connection, counted apart when the user

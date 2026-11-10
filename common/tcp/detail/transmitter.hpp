@@ -19,17 +19,26 @@
 #include <detail/segment_writer.hpp>
 #include <detail/sent_segment_pool.hpp>
 #include <detail/stack_context.hpp>
+#include <detail/zero_window_probe.hpp>
 #include <tcp_config.hpp>
 #include <tcp_fwd.hpp>
 
 namespace aloe::tcp::detail {
 
+    /// What an expiry of a connection's timer leaves for the Lifecycle (`Transmitter::on_timer`).
+    enum class TimerExpiry : std::uint8_t {
+        Handled,       ///< Resent, probed or polled, and re-armed as it needs: nothing is left.
+        TimedOut,      ///< The retry cap ran out: the connection ends `TimedOut`.
+        UserTimedOut,  ///< The user timeout ran out: the same end, counted apart.
+        Unresolved,    ///< The next hop never answered ARP: the connection ends `Unresolved`.
+    };
+
     /**
      * @brief Everything that leaves a connection, and what guards it: the one send function over the segment
      * writer, the retransmission queue's entries on the shard's send pool, the resends with the busy rule and the
-     * copy fallback, the pure ACKs, probes and resets, the timers' arming, and the application's `writable`,
-     * `prepare` and `commit`. It owns the ACK, retry and deferred lists; the Receiver and the Lifecycle call down
-     * into it, and it calls neither.
+     * copy fallback, the pure ACKs, probes and resets, the timers' arming and what an expiry resends, and the
+     * application's `writable`, `prepare` and `commit`. It owns the ACK, retry and deferred lists; the Receiver and the
+     * Lifecycle call down into it, and it calls neither.
      */
     template <typename Ip, typename CongestionControl>
     class Transmitter {
@@ -213,17 +222,6 @@ namespace aloe::tcp::detail {
             return send_pool_.node(block.queue.head());
         }
 
-        /// The entry the user timeout counts from: the head of the queue once it has left, on a synchronized
-        /// connection, with the timeout set. Null otherwise: the handshake is bounded by `retries` alone.
-        [[nodiscard]] const SentNode* user_timed_head(const Block& block) const noexcept {
-            if (context_.config.user_timeout <= core::Duration::zero() || block.state == State::SynSent ||
-                block.state == State::SynReceived || block.queue.empty()) {
-                return nullptr;
-            }
-            const SentNode& head = send_pool_.node(block.queue.head());
-            return head.transmits > 0 ? &head : nullptr;
-        }
-
         [[nodiscard]] std::size_t nodes_available() const noexcept {
             return send_pool_.available();
         }
@@ -240,16 +238,6 @@ namespace aloe::tcp::detail {
                 return false;
             }
             ++context_.counters.pure_acks_sent;
-            return true;
-        }
-
-        /// A zero-window probe, Linux's `tcp_xmit_probe_skb`: a pure ACK at `snd_una - 1`, which occupies no sequence
-        /// space and which the peer, finding it outside its window, answers with an ACK carrying its window.
-        [[nodiscard]] bool send_probe(Block& block) noexcept {
-            if (!send_bare_ack(block, Sequence{block.send.una.value - 1})) {
-                return false;
-            }
-            ++context_.counters.zero_window_probes;
             return true;
         }
 
@@ -308,18 +296,6 @@ namespace aloe::tcp::detail {
             wheel_.arm(block.timer, deadline);
         }
 
-        /// A SYN, SYN-ACK or FIN whose first send found no next hop: tried again every `unresolved_retry`, as no retry.
-        void arm_poll(Block& block) noexcept {
-            block.timer_kind = TimerKind::ArpPoll;
-            wheel_.arm(block.timer, context_.now + context_.config.unresolved_retry);
-        }
-
-        /// The next probe (`ZeroWindowProbe::deadline`).
-        void arm_probe(Block& block) noexcept {
-            block.timer_kind = TimerKind::Probe;
-            wheel_.arm(block.timer, block.probe.deadline(context_.now, context_.config.user_timeout));
-        }
-
         /// The peer's window is zero with nothing in flight: the first probe one RTO away.
         void start_probing(Block& block) noexcept {
             block.probe.start(block.rtt.rto());
@@ -329,6 +305,28 @@ namespace aloe::tcp::detail {
         void disarm(Block& block) noexcept {
             wheel_.cancel(block.timer);
             block.timer_kind = TimerKind::None;
+        }
+
+        /**
+         * The connection's timer fired, unarmed by the wheel; its kind says what for. The RTO resends the head, the
+         * ARP poll tries again the send that never left, the probe timer probes, and each arms what guards the
+         * connection next. Says what is left for the caller: nothing, or the end of a connection that the retries,
+         * the user timeout or a silent next hop gave up on, which is the Lifecycle's to carry out.
+         */
+        [[nodiscard]] TimerExpiry on_timer(Block& block) noexcept {
+            const TimerKind kind = std::exchange(block.timer_kind, TimerKind::None);
+            assert(kind != TimerKind::None && "the wheel fires only an armed timer");
+            switch (kind) {
+                case TimerKind::Retransmit:
+                    return on_retransmit_timeout(block);
+                case TimerKind::ArpPoll:
+                    return on_arp_poll(block);
+                case TimerKind::Probe:
+                    return on_probe_timeout(block);
+                case TimerKind::None:
+                    break;
+            }
+            return TimerExpiry::Handled;
         }
 
         // The application.
@@ -624,6 +622,110 @@ namespace aloe::tcp::detail {
             }
             *packet = Packet{};  // the device frees the buffer when it is done
             return true;
+        }
+
+        /// A zero-window probe, Linux's `tcp_xmit_probe_skb`: a pure ACK at `snd_una - 1`, which occupies no sequence
+        /// space and which the peer, finding it outside its window, answers with an ACK carrying its window.
+        [[nodiscard]] bool send_probe(Block& block) noexcept {
+            if (!send_bare_ack(block, Sequence{block.send.una.value - 1})) {
+                return false;
+            }
+            ++context_.counters.zero_window_probes;
+            return true;
+        }
+
+        /// The entry the user timeout counts from: the head of the queue once it has left, on a synchronized
+        /// connection, with the timeout set. Null otherwise: the handshake is bounded by `retries` alone.
+        [[nodiscard]] const SentNode* user_timed_head(const Block& block) const noexcept {
+            if (context_.config.user_timeout <= core::Duration::zero() || block.state == State::SynSent ||
+                block.state == State::SynReceived || block.queue.empty()) {
+                return nullptr;
+            }
+            const SentNode& head = send_pool_.node(block.queue.head());
+            return head.transmits > 0 ? &head : nullptr;
+        }
+
+        /// A SYN, SYN-ACK or FIN whose first send found no next hop: tried again every `unresolved_retry`, as no retry.
+        void arm_poll(Block& block) noexcept {
+            block.timer_kind = TimerKind::ArpPoll;
+            wheel_.arm(block.timer, context_.now + context_.config.unresolved_retry);
+        }
+
+        /// The next probe (`ZeroWindowProbe::deadline`).
+        void arm_probe(Block& block) noexcept {
+            block.timer_kind = TimerKind::Probe;
+            wheel_.arm(block.timer, block.probe.deadline(context_.now, context_.config.user_timeout));
+        }
+
+        /**
+         * The RTO ran out: one retry, the head of the queue again. First the user timeout, counted from the head's
+         * first transmission on a synchronized connection, and then the cap, `retries` in the handshake and
+         * `data_retries` after it, may give the connection up instead. The first expiry since an ACK of new data
+         * starts the loss episode (`LossRecovery::on_timeout`); each expiry doubles the RTO up to `rto_max` and
+         * re-arms. A resend deferred or refused counts as the retry all the same: the next expiry tries again. A
+         * first send, of a SYN, SYN-ACK or FIN the device refused before, that finds no next hop arms the ARP poll
+         * instead (`transmit_entry`), and the expiry leaves the timer to it: nothing left, so no backoff; the poll
+         * arms the RTO once the send leaves, or gives the connection up as `Unresolved`.
+         */
+        [[nodiscard]] TimerExpiry on_retransmit_timeout(Block& block) noexcept {
+            assert(!block.queue.empty() && "the RTO runs while something is queued");
+            if (const SentNode* head = user_timed_head(block);
+                head != nullptr && context_.now - head->first_sent >= context_.config.user_timeout) {
+                return TimerExpiry::UserTimedOut;
+            }
+            if (const bool handshake = block.state == State::SynSent || block.state == State::SynReceived;
+                block.retransmit_count >= (handshake ? context_.config.retries : context_.config.data_retries)) {
+                return TimerExpiry::TimedOut;
+            }
+            if (++block.retransmit_count == 1) {
+                block.recovery.on_timeout(block.send, block.mss());
+            }
+            std::ignore = resend_head(block);
+            ++context_.counters.retransmits;
+            if (block.timer_kind == TimerKind::ArpPoll) {
+                return TimerExpiry::Handled;  // a first send that found no next hop: the poll retries it
+            }
+            block.rtt.back_off(context_.config.rto_max);
+            arm_retransmit(block);
+            return TimerExpiry::Handled;
+        }
+
+        /// The ARP poll: the SYN, SYN-ACK or FIN that never left is tried again, as no retry. Once it leaves, or the
+        /// device refuses it, the RTO takes over; a next hop still silent after `unresolved_polls` polls gives the
+        /// connection up as `Unresolved`, the bound Linux's ARP probes give.
+        [[nodiscard]] TimerExpiry on_arp_poll(Block& block) noexcept {
+            assert(!block.queue.empty() && "the poll retries an entry that never left");
+            if (const std::expected<void, net::SendError> sent = transmit_entry(block, block.queue.head());
+                sent || sent.error() != net::SendError::Unresolved) {
+                arm_retransmit(block);
+                return TimerExpiry::Handled;
+            }
+            if (++block.unresolved_polls >= context_.config.unresolved_polls) {
+                return TimerExpiry::Unresolved;  // the next hop is not going to answer
+            }
+            arm_poll(block);
+            return TimerExpiry::Handled;
+        }
+
+        /// The probe timer ran out with the peer's window still zero (`ZeroWindowProbe::expire`): the user timeout or
+        /// `data_retries` unanswered probes give the connection up; else one probe goes, a refused one counted all
+        /// the same, and the next is armed.
+        [[nodiscard]] TimerExpiry on_probe_timeout(Block& block) noexcept {
+            assert(!in_flight(block) && block.send.wnd == 0 &&
+                   (!block.queue.empty() || block.state == State::Established || block.state == State::CloseWait) &&
+                   "a probe runs only while the window is zero and nothing is in flight");
+            switch (block.probe.expire(
+                context_.now, context_.config.user_timeout, context_.config.data_retries, context_.config.rto_max)) {
+                case ZeroWindowProbe::Expiry::UserTimedOut:
+                    return TimerExpiry::UserTimedOut;
+                case ZeroWindowProbe::Expiry::TimedOut:
+                    return TimerExpiry::TimedOut;
+                case ZeroWindowProbe::Expiry::Probe:
+                    break;
+            }
+            std::ignore = send_probe(block);  // a refusal was counted by the send
+            arm_probe(block);
+            return TimerExpiry::Handled;
         }
 
         Context& context_;
