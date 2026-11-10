@@ -11,6 +11,7 @@
 #include <tuple>
 
 #include <detail/ack_policy.hpp>
+#include <detail/connection_list.hpp>
 #include <detail/connection_table.hpp>
 #include <detail/control_block.hpp>
 #include <detail/isn_generator.hpp>
@@ -18,7 +19,6 @@
 #include <detail/transmitter.hpp>
 #include <flow_table.hpp>
 #include <tcp_config.hpp>
-#include <tcp_fwd.hpp>
 
 namespace aloe::tcp::detail {
 

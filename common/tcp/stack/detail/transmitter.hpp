@@ -14,6 +14,7 @@
 #include <tuple>
 #include <utility>
 
+#include <detail/connection_list.hpp>
 #include <detail/control_block.hpp>
 #include <detail/retransmission_queue.hpp>
 #include <detail/segment_writer.hpp>
@@ -21,7 +22,6 @@
 #include <detail/stack_context.hpp>
 #include <detail/zero_window_probe.hpp>
 #include <tcp_config.hpp>
-#include <tcp_fwd.hpp>
 
 namespace aloe::tcp::detail {
 

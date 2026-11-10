@@ -10,6 +10,7 @@
 #include <optional>
 
 #include <detail/ack_policy.hpp>
+#include <detail/connection_list.hpp>
 #include <detail/frame_template.hpp>
 #include <detail/loss_recovery.hpp>
 #include <detail/receive_queue.hpp>

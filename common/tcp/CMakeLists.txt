@@ -27,6 +27,7 @@ add_library(${TCP}.Stack INTERFACE
         congestion/newreno.hpp
         congestion/no_congestion_control.hpp
         connection/detail/ack_policy.hpp
+        connection/detail/connection_list.hpp
         connection/detail/control_block.hpp
         connection/detail/frame_template.hpp
         connection/detail/loss_recovery.hpp
