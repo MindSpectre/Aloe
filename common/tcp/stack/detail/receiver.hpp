@@ -20,7 +20,6 @@
 #include <detail/transmitter.hpp>
 #include <flow_table.hpp>
 #include <tcp_config.hpp>
-#include <tcp_fwd.hpp>
 
 namespace aloe::tcp::detail {
 
@@ -415,8 +414,8 @@ namespace aloe::tcp::detail {
             }
             lifecycle_.raise(block, stream::Event::Readable);
             // A full-sized segment is our MSS less the timestamp option a timestamped peer puts in every segment.
-            const std::size_t full_size = context_.mss - block.timestamps.option_size();
-            if (block.ack_policy.on_data(segment.payload_length, full_size, block.receive.next()) ==
+            if (const std::size_t full_size = context_.mss - block.timestamps.option_size();
+                block.ack_policy.on_data(segment.payload_length, full_size, block.receive.next()) ==
                 AckPolicy::Ack::Now) {
                 ack_now(block);
             } else {

@@ -13,7 +13,6 @@
 #include <detail/loss_recovery.hpp>
 #include <detail/stack_context.hpp>
 #include <detail/transmitter.hpp>
-#include <tcp_fwd.hpp>
 
 namespace aloe::tcp::detail {
 
@@ -134,7 +133,7 @@ namespace aloe::tcp::detail {
          * echo, and restarts the timer. Returns the sample taken, if any.
          */
         std::optional<core::Duration> on_acknowledged(Block& block,
-                                                      const typename Transmitter::Freed& freed,
+                                                      const Transmitter::Freed& freed,
                                                       const std::optional<std::uint32_t> echo) noexcept {
             block.retransmit_count = 0;
             const std::optional<core::Duration> sample =

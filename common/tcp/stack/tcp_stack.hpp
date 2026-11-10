@@ -227,13 +227,13 @@ namespace aloe::tcp {
 
         /// The wheel's callback: the node's block, then the Lifecycle's timer handling.
         static void on_timer_fired(loop::Timer& timer) noexcept {
-            Block& block = static_cast<typename Block::TimerNode&>(timer).block;
+            Block& block = static_cast<Block::TimerNode&>(timer).block;
             block.stack.lifecycle_.on_timer(block);
         }
 
         // The handle's verbs: the Receiver's consume, the Transmitter's send side and the Lifecycle's close, abort
         // and release.
-        [[nodiscard]] typename ConnectionType::View unread(const Block& block) noexcept {
+        [[nodiscard]] ConnectionType::View unread(const Block& block) noexcept {
             return block.receive.view(context_.pool);
         }
         void consume(Block& block, const std::size_t count) noexcept {

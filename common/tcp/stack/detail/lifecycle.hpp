@@ -32,10 +32,10 @@ namespace aloe::tcp::detail {
     template <typename Ip, typename CongestionControl>
     class Lifecycle {
     public:
-        using Block       = ControlBlock<Ip, CongestionControl>;
-        using Context     = StackContext<Ip, CongestionControl>;
-        using Transmitter = detail::Transmitter<Ip, CongestionControl>;
-        using Sequence    = wire::TcpSequence;
+        using ControlBlock = detail::ControlBlock<Ip, CongestionControl>;
+        using Context      = StackContext<Ip, CongestionControl>;
+        using Transmitter  = detail::Transmitter<Ip, CongestionControl>;
+        using Sequence     = wire::TcpSequence;
 
         Lifecycle(Context& context, Transmitter& transmitter)
             : context_{context},
@@ -73,7 +73,7 @@ namespace aloe::tcp::detail {
 
         // Opening.
         /// A SynSent block the caller owns; its SYN is queued, or waits for ARP on the timer.
-        [[nodiscard]] std::expected<Block*, ConnectError> connect(const Endpoint peer) noexcept {
+        [[nodiscard]] std::expected<ControlBlock*, ConnectError> connect(const Endpoint peer) noexcept {
             if (!context_.ip.next_hop(peer.address)) {
                 return std::unexpected{ConnectError::NoRoute};
             }
@@ -89,7 +89,7 @@ namespace aloe::tcp::detail {
             if (!slot) {
                 return std::unexpected{ConnectError::TableFull};
             }
-            Block& block = context_.blocks[*slot];
+            ControlBlock& block = context_.blocks[*slot];
             bind_flow(block, Endpoint{.address = context_.ip.address(), .port = placed->port}, peer, placed->base_hash);
             block.state = State::SynSent;
             block.owned = true;
@@ -103,13 +103,13 @@ namespace aloe::tcp::detail {
         }
 
         /// A slot for a SYN a listener took: bound, SynReceived, not owned, opened; null when the table is full.
-        [[nodiscard]] Block*
+        [[nodiscard]] ControlBlock*
         accept_slot(const Endpoint local, const Endpoint remote, const std::uint32_t base_hash) noexcept {
             const std::optional<std::uint32_t> slot = table_.take_slot();
             if (!slot) {
                 return nullptr;
             }
-            Block& block = context_.blocks[*slot];
+            ControlBlock& block = context_.blocks[*slot];
             bind_flow(block, local, remote, base_hash);
             block.state = State::SynReceived;
             block.owned = false;
@@ -118,7 +118,7 @@ namespace aloe::tcp::detail {
         }
 
         /// The active open was answered: Established, counted, `Connected` raised.
-        void connected(Block& block) noexcept {
+        void connected(ControlBlock& block) noexcept {
             assert(block.state == State::SynSent && "only a SYN of ours is answered");
             establish(block);
             ++context_.counters.connections_opened;
@@ -126,7 +126,7 @@ namespace aloe::tcp::detail {
         }
 
         /// The passive open's SYN-ACK was acknowledged: Established, and the application's from `Accepted` on.
-        void accepted(Block& block) noexcept {
+        void accepted(ControlBlock& block) noexcept {
             assert(block.state == State::SynReceived && "only a passive open is accepted");
             establish(block);
             block.owned = true;
@@ -135,14 +135,14 @@ namespace aloe::tcp::detail {
         }
 
         // Events.
-        void raise(Block& block, const stream::Event event) noexcept {
+        void raise(ControlBlock& block, const stream::Event event) noexcept {
             block.events |= event;
             if (!events_.contains(block)) {
                 events_.push_back(block);
             }
         }
 
-        [[nodiscard]] Block* pop_event() noexcept {
+        [[nodiscard]] ControlBlock* pop_event() noexcept {
             return events_.pop_front();
         }
 
@@ -152,7 +152,7 @@ namespace aloe::tcp::detail {
 
         // Closing.
         /// The last ACK the peer is owed must be queued before Closed is published; flush retries the rest.
-        void maybe_finish(Block& block) noexcept {
+        void maybe_finish(ControlBlock& block) noexcept {
             if (block.finish_pending && !transmitter_.ack_pending(block)) {
                 finish(block);
             }
@@ -164,7 +164,7 @@ namespace aloe::tcp::detail {
         /// window does not cover, Linux's `tcp_snd_wnd_test`, waits in the queue, unsent, for the ACK that opens the
         /// window (`send_unsent`), while the probes go on; a Linux peer drops a FIN sent into its zero window. The
         /// congestion window does not gate a FIN, as it does not in Linux.
-        void close(Block& block) noexcept {
+        void close(ControlBlock& block) noexcept {
             switch (block.state) {
                 case State::Established:
                     block.state = State::FinWait1;
@@ -204,7 +204,7 @@ namespace aloe::tcp::detail {
          * at once where our own close is under way, since the close waits on it, and with the next flush otherwise,
          * where the application's close may carry it.
          */
-        [[nodiscard]] AckPolicy::Ack peer_closed(Block& block) noexcept {
+        [[nodiscard]] AckPolicy::Ack peer_closed(ControlBlock& block) noexcept {
             raise(block, stream::Event::PeerClosed);
             switch (block.state) {
                 case State::Established:
@@ -223,7 +223,7 @@ namespace aloe::tcp::detail {
 
         /// Our FIN was acknowledged, so the queue is empty: FinWait1 waits for the peer's FIN in FinWait2; Closing and
         /// LastAck are done, and `Closed` follows once no ACK is owed (`maybe_finish`).
-        void fin_acknowledged(Block& block) noexcept {
+        void fin_acknowledged(ControlBlock& block) noexcept {
             switch (block.state) {
                 case State::FinWait1:
                     block.state = State::FinWait2;
@@ -239,7 +239,7 @@ namespace aloe::tcp::detail {
 
         /// The peer's RST was accepted: a passive open nobody took is freed silently; any other connection is Closed
         /// with `Reset` raised.
-        void peer_reset(Block& block) noexcept {
+        void peer_reset(ControlBlock& block) noexcept {
             if (discard_unowned(block)) {
                 return;
             }
@@ -248,7 +248,7 @@ namespace aloe::tcp::detail {
             raise(block, stream::Event::Reset);
         }
 
-        void abort(Block& block) noexcept {
+        void abort(ControlBlock& block) noexcept {
             if (block.state == State::Closed) {
                 return;
             }
@@ -260,7 +260,7 @@ namespace aloe::tcp::detail {
             raise(block, stream::Event::Closed);
         }
 
-        void release(Block& block) noexcept {
+        void release(ControlBlock& block) noexcept {
             if (block.state != State::Closed) {
                 abort(block);
             }
@@ -270,7 +270,7 @@ namespace aloe::tcp::detail {
         // The timer.
         /// Called by the wheel through the stack's trampoline with the timer unarmed. The Transmitter resends, probes
         /// or polls and re-arms (`Transmitter::on_timer`); what is left here is the end of a connection it gave up on.
-        void on_timer(Block& block) noexcept {
+        void on_timer(ControlBlock& block) noexcept {
             switch (transmitter_.on_timer(block)) {
                 case TimerExpiry::Handled:
                     return;
@@ -288,13 +288,13 @@ namespace aloe::tcp::detail {
 
     private:
         /// Established: the FIN's node set aside and the policy's first window taken from the negotiated MSS.
-        void establish(Block& block) noexcept {
+        void establish(ControlBlock& block) noexcept {
             block.state = State::Established;
             transmitter_.reserve_fin_node(block);
             block.recovery.establish(block.mss());
         }
 
-        void free_slot(Block& block) noexcept {
+        void free_slot(ControlBlock& block) noexcept {
             // Every live connection is indexed by connect or passive_open; a free slot is not, and pushing its index
             // again would hand one slot to two opens. A release build ignores the second call.
             assert(block.indexed && "release of a free slot");
@@ -316,7 +316,7 @@ namespace aloe::tcp::detail {
         /// retransmission queue is dropped, its packets back now or when the device returns them. Held segments stay
         /// until release, and so does an open preparation: the application may still write into its span, and the
         /// next commit refuses it.
-        void set_closed(Block& block) noexcept {
+        void set_closed(ControlBlock& block) noexcept {
             if (block.state == State::SynSent) {
                 block.timestamps.withdraw();  // the offer was never answered: nothing was negotiated
             }
@@ -328,7 +328,7 @@ namespace aloe::tcp::detail {
             transmitter_.drop_queue(block);  // and off the deferred list
         }
 
-        void finish(Block& block) noexcept {
+        void finish(ControlBlock& block) noexcept {
             set_closed(block);
             ++context_.counters.connections_closed;
             raise(block, stream::Event::Closed);
@@ -336,7 +336,7 @@ namespace aloe::tcp::detail {
 
         /// A passive open nobody took ends silently, whatever ended it: counted and its slot freed. True when `block`
         /// was one, and is gone.
-        [[nodiscard]] bool discard_unowned(Block& block) noexcept {
+        [[nodiscard]] bool discard_unowned(ControlBlock& block) noexcept {
             if (block.owned) {
                 return false;
             }
@@ -346,11 +346,13 @@ namespace aloe::tcp::detail {
             return true;
         }
 
-        using EventList = ConnectionList<Block, &Block::event_link>;
+        using EventList = ConnectionList<ControlBlock, &ControlBlock::event_link>;
 
         /// The flow's identity, indexed in the table under `base_hash`; the caller found the flow free.
-        void
-        bind_flow(Block& block, const Endpoint local, const Endpoint remote, const std::uint32_t base_hash) noexcept {
+        void bind_flow(ControlBlock& block,
+                       const Endpoint local,
+                       const Endpoint remote,
+                       const std::uint32_t base_hash) noexcept {
             block.local     = local;
             block.remote    = remote;
             block.key       = FlowKey{.remote = remote.address, .remote_port = remote.port, .local_port = local.port};
@@ -362,7 +364,7 @@ namespace aloe::tcp::detail {
 
         /// Numbers the connection's SYN from a fresh ISN and starts its sender from scratch: RFC 6582's `recover` at
         /// the ISN, no round-trip sample, the initial RTO and no retry; makes the timestamps offer.
-        void open(Block& block) noexcept {
+        void open(ControlBlock& block) noexcept {
             block.send.open(isn_.next());
             block.recovery.open(block.send.iss);
             block.rtt.reset(context_.config.rto_initial);
@@ -371,13 +373,13 @@ namespace aloe::tcp::detail {
             block.retransmit_count = 0;
         }
 
-        void return_chain(Block& block) noexcept {
+        void return_chain(ControlBlock& block) noexcept {
             block.receive.release(context_.pool);
         }
 
         /// The retry cap or the user timeout ran out: `TimedOut` for an owned connection, counted apart when the user
         /// timeout ended it.
-        void time_out(Block& block, const bool by_user_timeout) noexcept {
+        void time_out(ControlBlock& block, const bool by_user_timeout) noexcept {
             if (discard_unowned(block)) {
                 return;
             }
@@ -390,7 +392,7 @@ namespace aloe::tcp::detail {
         }
 
         /// The next hop never answered ARP: a failure of its own, told apart from a segment that left and was ignored.
-        void fail_unresolved(Block& block) noexcept {
+        void fail_unresolved(ControlBlock& block) noexcept {
             if (discard_unowned(block)) {
                 return;
             }

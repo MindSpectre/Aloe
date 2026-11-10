@@ -53,8 +53,8 @@ namespace aloe::tcp::detail {
 
         /// The wheel's node, carrying the way back to its block.
         struct TimerNode : loop::Timer {
-            TimerNode(const loop::Timer::Function callback, ControlBlock& owner) noexcept
-                : loop::Timer{callback},
+            TimerNode(const Function callback, ControlBlock& owner) noexcept
+                : Timer{callback},
                   block{owner} {
             }
 

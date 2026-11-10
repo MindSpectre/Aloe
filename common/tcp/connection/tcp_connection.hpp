@@ -33,10 +33,10 @@ namespace aloe::tcp {
 
     private:
         struct PrivateTag {};
-        using Block = detail::ControlBlock<Ip, CongestionControl>;
+        using ControlBlock = detail::ControlBlock<Ip, CongestionControl>;
 
     public:
-        Connection(PrivateTag, Block& block) noexcept
+        Connection(PrivateTag, ControlBlock& block) noexcept
             : block_{block} {
         }
 
@@ -170,7 +170,7 @@ namespace aloe::tcp {
     private:
         friend class Stack<Ip, CongestionControl>;  // names PrivateTag, reads block_
 
-        Block& block_;
+        ControlBlock& block_;
     };
 
     /// One notification from `poll_event`: the connection and the flags taken from it.

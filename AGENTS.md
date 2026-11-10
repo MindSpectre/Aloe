@@ -153,6 +153,9 @@ basenames are unique across modules: `packet.hpp` is the concept,
   (`device` against `device()`). Rename the parameter, keep the member.
 - Inside a class template, a call to a member template of a dependent object
   needs `.template`: `logger().template info<"...">(...)`.
+- GCC rejects a member alias that redeclares the name it reads, `using Transmitter = Transmitter<Ip, CongestionControl>;`
+  inside a class of the same namespace (`-Werror=changes-meaning`), which clang accepts. Qualify the right-hand
+  side: `using Transmitter = detail::Transmitter<Ip, CongestionControl>;`, as the TCP parts do.
 - `log::Logger::flush` spins forever when no `Logging` is alive; quill waits for
   the backend to acknowledge the flush.
 - A shard task awaits every sender directly, with no `affine` wrap; it awaits

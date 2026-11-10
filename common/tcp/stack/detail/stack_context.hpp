@@ -24,8 +24,8 @@ namespace aloe::tcp::detail {
      */
     template <typename Ip, typename CongestionControl>
     struct StackContext {
-        using Packet = Ip::Packet;
-        using Block  = ControlBlock<Ip, CongestionControl>;
+        using Packet       = Ip::Packet;
+        using ControlBlock = detail::ControlBlock<Ip, CongestionControl>;
 
         /// `validated` is the config after `TcpConfig::validate`; one block per slot is built here over `owner`.
         StackContext(Ip& ip_brick,
@@ -55,7 +55,7 @@ namespace aloe::tcp::detail {
         /// `min(receive_segments * mss, 65535)`: the receive credit a connection starts with.
         std::uint32_t byte_budget = 0;
         HeldSegmentPool<Packet> pool;
-        std::deque<Block> blocks{};
+        std::deque<ControlBlock> blocks{};
         TcpCounters counters{};
         core::TimePoint now{};
     };
