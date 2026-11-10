@@ -7,6 +7,31 @@ and what is left for the builder. It is a pure refactor: no behaviour, counter, 
 Private, like every file under `docs/superpowers/`; the public summary is the design-notes paragraph of the TCP
 and net pages once the work lands.
 
+## Amended on 2026-11-10, after the author's review of the branch
+
+The code differs from the decisions below in five places; this section wins where they disagree.
+
+- **Decision 1, four classes, not three.** What an acknowledgement does to the send side left the Receiver for
+  `detail::AckProcessor`, between the Receiver and the Transmitter. It names neither the Receiver nor the
+  Lifecycle: `on_ack` returns what moved and the Receiver publishes it. Steps 4 and 5 grow this part. The
+  dependency is Receiver → {Lifecycle, AckProcessor} → Transmitter; the two in the middle do not call each other.
+- **Decision 1, the Lifecycle makes every change of state.** The Receiver wrote half of the transitions. It now
+  tells the Lifecycle what arrived (`connected`, `accepted`, `peer_closed`, `fin_acknowledged`, `peer_reset`), and
+  no other part writes `state`, `owned` or `finish_pending`.
+- **Decision 2, the expiries are the Transmitter's.** `Transmitter::on_timer` resends, backs off and re-arms, and
+  returns a `TimerExpiry`; the Lifecycle only ends a connection the timer gave up on.
+- **Decision 7, `Output` frames the echo reply.** `Output::frame_datagram` writes the headers and checksums of a
+  datagram to a known MAC; `send` and the echo reply both use it, and `Input` no longer reaches the checksums or
+  the identification counter.
+- **Decision 9, `detail/` per folder, not per module.** The author's rule was misread: a header whose names are
+  all in `detail` sits in a `detail/` folder inside the folder it belongs to (`connection/detail/`,
+  `pool/detail/` and `stack/detail/` in tcp, `stack/detail/` in net), as `fabric/detail/` already did. The
+  include spelling `<detail/name.hpp>` is unchanged and the module roots are off the include paths. `Link` and
+  `ConnectionList` left `tcp_fwd.hpp` for `connection/detail/connection_list.hpp`, so no header mixes public and
+  `detail` names any more.
+
+Delivery changed too: one branch and one pull request for both bricks, since it is one refactoring.
+
 ## Goal
 
 `tcp::Stack` holds the whole RFC 9293 procedure in one class body under three section comments: the receive
