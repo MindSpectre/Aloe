@@ -24,9 +24,8 @@ namespace aloe::net::detail {
 
     /**
      * @brief What arrives at the IPv4 brick: the frame sorted by ethertype, ARP handed to `Arp`, IPv4 checked and
-     * delivered into one list per transport, an echo request answered in its own packet through `Output`'s
-     * checksums. Every packet handed in is moved into a list, transmitted as a reply, or left for the caller to
-     * release.
+     * delivered into one list per transport, an echo request answered in its own packet, framed by `Output`. Every
+     * packet handed in is moved into a list, transmitted as a reply, or left for the caller to release.
      */
     template <device::IsDevice Device>
     class Input {
@@ -177,25 +176,19 @@ namespace aloe::net::detail {
             }
             // Aloe never sends options: drop them from the front. The message already sits after them and stays put.
             packet.trim_front(header.header_length - wire::Ipv4Header::size);
-            const std::span<std::byte> reply = packet.data();
-            const wire::Ipv4Header reply_header{.total_length =
-                                                    static_cast<std::uint16_t>(wire::Ipv4Header::size + message_length),
-                                                .identification = output_.next_identification(),
-                                                .ttl            = config_.ttl,
-                                                .protocol       = wire::Ipv4Protocol::Icmp,
-                                                .source         = config_.address,
-                                                .destination    = header.source};
-            wire::EthernetHeader{.destination = ethernet.source,  // the last hop is the next hop back, router or not
-                                 .source      = queue_.mac(),
-                                 .ethertype   = std::to_underlying(wire::EtherType::Ipv4)}
-                .write(reply.first(wire::EthernetHeader::size));
-            reply_header.write(reply.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size));
+            const std::span<std::byte> reply         = packet.data();
             const std::span<std::byte> reply_message = reply.subspan(Output<Device>::headers_size, message_length);
             reply_message[0]                         = std::byte{std::to_underlying(wire::IcmpType::EchoReply)};
             wire::store_be16(reply_message.subspan(wire::IcmpHeader::checksum_offset, 2), 0);
             wire::store_be16(reply_message.subspan(wire::IcmpHeader::checksum_offset, 2),
                              wire::internet_checksum(reply_message));
-            packet.set_tx(output_.finish_checksums(reply, reply_header, device::L4Checksum::None));
+            // The last hop is the next hop back, router or not: the reply goes to the MAC the request came from.
+            packet.set_tx(output_.frame_datagram(reply,
+                                                 ethernet.source,
+                                                 header.source,
+                                                 wire::Ipv4Protocol::Icmp,
+                                                 message_length,
+                                                 device::L4Checksum::None));
             transmit_built(queue_, std::move(packet), counters_.echo_replies_sent, counters_.transmit_refused);
         }
 

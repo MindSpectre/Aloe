@@ -23,7 +23,8 @@ namespace aloe::net::detail {
     /**
      * @brief Everything that leaves the IPv4 brick as a datagram: `send` for a packet the caller lets go of,
      * `prebuild` and `send_frame` for a transport that keeps its packets, the checksums in one place and the
-     * identification counter. Routes through `Routing`, resolves through `Arp`, transmits on the queue.
+     * identification counter, and `frame_datagram`, the headers and checksums of a datagram to a known MAC, which
+     * the echo reply is built with. Routes through `Routing`, resolves through `Arp`, transmits on the queue.
      */
     template <device::IsDevice Device>
     class Output {
@@ -67,18 +68,8 @@ namespace aloe::net::detail {
                 return std::unexpected{SendError::Oversized};
             }
             const std::span<std::byte> frame = packet.data();
-            const wire::Ipv4Header header{.total_length =
-                                              static_cast<std::uint16_t>(wire::Ipv4Header::size + segment_size),
-                                          .identification = next_identification(),
-                                          .ttl            = config_.ttl,
-                                          .protocol       = request.protocol,
-                                          .source         = config_.address,
-                                          .destination    = request.destination};
-            wire::EthernetHeader{
-                .destination = hop_mac, .source = queue_.mac(), .ethertype = std::to_underlying(wire::EtherType::Ipv4)}
-                .write(frame.first(wire::EthernetHeader::size));
-            header.write(frame.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size));
-            packet.set_tx(finish_checksums(frame, header, request.checksum));
+            packet.set_tx(
+                frame_datagram(frame, hop_mac, request.destination, request.protocol, segment_size, request.checksum));
             if (queue_.transmit(std::move(packet))) {
                 ++counters_.datagrams_sent;
                 return {};
@@ -176,8 +167,57 @@ namespace aloe::net::detail {
         }
 
         /**
-         * @brief Completes the checksums of a frame whose headers the brick wrote, and says what the device must
-         * finish.
+         * @brief Writes both headers of a datagram to a next hop whose MAC the caller knows, and completes the
+         * checksums: what `send` does once the hop is resolved, and all the echo reply needs, since it goes back to
+         * the MAC its request came from.
+         *
+         * `frame` starts with `headers_size` bytes for the headers, then `l4_size` bytes of segment or message; the
+         * frame may be longer, as a padded one is. The datagram takes a fresh identification. Returns what the device
+         * must finish (`finish_checksums`); the caller sets it on the packet and transmits.
+         */
+        [[nodiscard]] device::TxMetadata frame_datagram(const std::span<std::byte> frame,
+                                                        const wire::MacAddress hop,
+                                                        const wire::Ipv4Address destination,
+                                                        const wire::Ipv4Protocol protocol,
+                                                        const std::size_t l4_size,
+                                                        const device::L4Checksum l4) noexcept {
+            const wire::Ipv4Header header{.total_length = static_cast<std::uint16_t>(wire::Ipv4Header::size + l4_size),
+                                          .identification = next_identification(),
+                                          .ttl            = config_.ttl,
+                                          .protocol       = protocol,
+                                          .source         = config_.address,
+                                          .destination    = destination};
+            wire::EthernetHeader{
+                .destination = hop, .source = queue_.mac(), .ethertype = std::to_underlying(wire::EtherType::Ipv4)}
+                .write(frame.first(wire::EthernetHeader::size));
+            header.write(frame.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size));
+            return finish_checksums(frame, header, l4);
+        }
+
+    private:
+        static constexpr std::uint16_t identification_stride =
+            4096;  ///< Per queue index, so shards do not collide early.
+        static constexpr std::size_t ipv4_total_length_offset   = 2;
+        static constexpr std::size_t ipv4_identification_offset = 4;
+        static constexpr std::size_t tcp_checksum_offset        = 16;
+        static constexpr std::size_t udp_checksum_offset        = 6;
+
+        [[nodiscard]] static constexpr std::size_t checksum_offset(const device::L4Checksum l4) noexcept {
+            return l4 == device::L4Checksum::Tcp ? tcp_checksum_offset : udp_checksum_offset;
+        }
+
+        /// Whether the frame's IPv4 header names what `header` does: the check behind `send_frame`'s trust in the
+        /// caller's request, in an assertion only, so a release build never instantiates it.
+        [[nodiscard]] static bool prebuilt_names(const std::span<const std::byte> frame,
+                                                 const wire::Ipv4Header& header) noexcept {
+            const std::optional<wire::Ipv4Header> parsed =
+                wire::Ipv4Header::parse(frame.subspan(wire::EthernetHeader::size));
+            return parsed.has_value() && parsed->source == header.source && parsed->destination == header.destination &&
+                   parsed->protocol == header.protocol;
+        }
+
+        /**
+         * Completes the checksums of a frame whose headers the brick wrote, and says what the device must finish.
          *
          * `frame` is Ethernet, the 20-byte IPv4 header with a zero checksum field, and the segment
          * `header.total_length` accounts for. When `l4` is not `None`, the segment's checksum field is zero and gets
@@ -224,28 +264,6 @@ namespace aloe::net::detail {
         /// The next IPv4 identification, one per datagram this queue sends.
         [[nodiscard]] std::uint16_t next_identification() noexcept {
             return identification_++;
-        }
-
-    private:
-        static constexpr std::uint16_t identification_stride =
-            4096;  ///< Per queue index, so shards do not collide early.
-        static constexpr std::size_t ipv4_total_length_offset   = 2;
-        static constexpr std::size_t ipv4_identification_offset = 4;
-        static constexpr std::size_t tcp_checksum_offset        = 16;
-        static constexpr std::size_t udp_checksum_offset        = 6;
-
-        [[nodiscard]] static constexpr std::size_t checksum_offset(const device::L4Checksum l4) noexcept {
-            return l4 == device::L4Checksum::Tcp ? tcp_checksum_offset : udp_checksum_offset;
-        }
-
-        /// Whether the frame's IPv4 header names what `header` does: the check behind `send_frame`'s trust in the
-        /// caller's request, in an assertion only, so a release build never instantiates it.
-        [[nodiscard]] static bool prebuilt_names(const std::span<const std::byte> frame,
-                                                 const wire::Ipv4Header& header) noexcept {
-            const std::optional<wire::Ipv4Header> parsed =
-                wire::Ipv4Header::parse(frame.subspan(wire::EthernetHeader::size));
-            return parsed.has_value() && parsed->source == header.source && parsed->destination == header.destination &&
-                   parsed->protocol == header.protocol;
         }
 
         /// The MAC a frame to `destination` goes to: a group MAC, or the routed hop's from the cache, counting the
