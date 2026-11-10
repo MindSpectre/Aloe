@@ -29,6 +29,7 @@ add_library(${TCP}.Stack INTERFACE
         connection/read_view.hpp
         connection/tcp_connection.hpp
         detail/ack_policy.hpp
+        detail/ack_processor.hpp
         detail/connection_table.hpp
         detail/control_block.hpp
         detail/frame_template.hpp

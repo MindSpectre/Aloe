@@ -14,6 +14,7 @@
 #include <span>
 
 #include <congestion_control.hpp>
+#include <detail/ack_processor.hpp>
 #include <detail/control_block.hpp>
 #include <detail/lifecycle.hpp>
 #include <detail/receiver.hpp>
@@ -39,11 +40,12 @@ namespace aloe::tcp {
      * does in between. Everything is allocated at construction; nothing here logs, blocks or
      * names a clock.
      *
-     * The stack is a façade over three parts, each a class of its own in `tcp::detail`: the Transmitter (every
-     * segment that leaves, the retransmission queue and the send side), the Lifecycle (the connection table, opening,
-     * closing and the timer) and the Receiver (what a datagram does to a connection, and `consume`). The dependency
-     * runs one way: the Receiver calls the Lifecycle and the Transmitter, the Lifecycle the Transmitter, and the
-     * Transmitter neither. They share the `detail::StackContext` (the IP brick, the pool, the counters, the
+     * The stack is a façade over four parts, each a class of its own in `tcp::detail`: the Transmitter (every
+     * segment that leaves, the retransmission queue, the send side and its timers), the Lifecycle (the connection
+     * table and every change of a connection's state), the AckProcessor (what an ACK does to the send side) and the
+     * Receiver (what a datagram does to a connection, and `consume`). The dependency runs one way: the Receiver
+     * calls the other three, the Lifecycle and the AckProcessor call the Transmitter and not each other, and the
+     * Transmitter calls none. They share the `detail::StackContext` (the IP brick, the pool, the counters, the
      * stamp) and work on the connections' `detail::ControlBlock`s, which the `Connection` handles name.
      */
     template <typename Ip, typename CongestionControl>
@@ -72,7 +74,8 @@ namespace aloe::tcp {
             : context_{ip, config.validate(ip.max_l4_size(), wheel.resolution()), *this, &Stack::on_timer_fired},
               transmitter_{context_, wheel},
               lifecycle_{context_, transmitter_},
-              receiver_{context_, lifecycle_, transmitter_} {
+              acks_{context_, transmitter_},
+              receiver_{context_, lifecycle_, acks_, transmitter_} {
             for (Block& block : context_.blocks) {
                 connections_.emplace_back(typename ConnectionType::PrivateTag{}, block);
             }
@@ -258,6 +261,7 @@ namespace aloe::tcp {
         detail::StackContext<Ip, CongestionControl> context_;
         detail::Transmitter<Ip, CongestionControl> transmitter_;
         detail::Lifecycle<Ip, CongestionControl> lifecycle_;
+        detail::AckProcessor<Ip, CongestionControl> acks_;
         detail::Receiver<Ip, CongestionControl> receiver_;
         std::deque<ConnectionType> connections_ = {};
     };

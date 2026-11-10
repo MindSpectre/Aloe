@@ -9,6 +9,7 @@
 
 #include <congestion_control.hpp>
 #include <detail/ack_policy.hpp>
+#include <detail/ack_processor.hpp>
 #include <detail/connection_table.hpp>
 #include <detail/control_block.hpp>
 #include <detail/frame_template.hpp>
