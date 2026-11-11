@@ -342,19 +342,39 @@ preparations: neither node pool is carved out of it.
 
 ## Design notes
 
-**One class per concern.** `tcp::Stack` is the protocol's state machine and the shard's lists; what it drives
-are classes with state of their own, in `tcp::detail`, each in its own header with its members defined in its
-body. Per shard: `ConnectionTable` (free slots, the flow table, listeners, and the ephemeral port a connect takes
-so that the card steers its replies here), `SegmentWriter` (frames a segment over the connection's frame
-template, hands it to IP and counts what IP refused), `IsnGenerator`, and one `NodePool` each for held packets
-and retransmission-queue entries. Per connection: `ReceiveQueue` (RCV.NXT, the offered edge and the held
-packets), `AckPolicy` (RFC 5681's delayed and immediate ACKs), `SendSequence` (RFC 793's send variables),
-`RetransmissionQueue` (the sent segments and what the ACKs delivered), `LossRecovery` (RFC 5681, 3042 and 6582
-over the policy's state: it decides what to resend, the stack resends it), `RttEstimator` (RFC 6298),
-`ZeroWindowProbe` and `Timestamps` (RFC 7323 with PAWS). None of them reaches back into the stack; a connection
-resets each of them as a whole when its slot is freed. The folders follow the same split: `connection/` holds the
-connection and its parts, `stack/` the stack and its shard-level parts, `pool/` the node pools, `config/` the
-configuration and counters, `congestion/` the policies, and `table/` the flow table.
+**One class per concern.** `tcp::Stack` is the brick's façade and owner: the four verbs, the accessors, and
+the mapping from a connection's state to its public handle. What it does is four procedure classes in
+`tcp::detail`, each in its own header in a `detail/` folder, over one `detail::ControlBlock` per connection, RFC
+9293's transmission control block as a struct with one part per concern, and one `detail::StackContext` per
+shard, what every part reads: the IP brick, the config, the held-segment pool, the counters and the stamp. The
+`Receiver` is what a datagram does to a connection: the checksum and lookup, the handshake, RFC 9293's order
+on a synchronized connection, and `consume`; it owns nothing. The `AckProcessor` is what an acknowledgement
+does to the send side: the entries it frees, the round-trip sample, loss recovery and the resends it asks for,
+the peer's window and the zero-window probes; it owns nothing either, and tells the `Receiver` what moved.
+The `Lifecycle` owns the connection table, the ISN generator and the event list: slots in and out, every
+change of a connection's state from the open to `Closed`, `close`, `abort` and `release`. It is the only part
+that writes the state: the `Receiver` tells it what arrived (the handshake answered, the peer's FIN or RST, our
+FIN acknowledged), the `Transmitter` tells it a timer gave up, and it moves the connection on. The
+`Transmitter` owns the segment writer, the send pool and the ACK, retry and deferred lists: every segment that
+leaves, the retransmission queue's entries, the resends with the busy rule and the copy, the pure ACKs, probes
+and resets, `writable`, `prepare`, `commit`, and the timers, both their arming and what an expiry resends; an
+expiry that gives the connection up is returned as a verdict for the `Lifecycle` to carry out. The dependency
+runs one way, read off the includes: the `Receiver` calls the other three, the `Lifecycle` and the
+`AckProcessor` call the `Transmitter` and not each other, and the `Transmitter` calls none, as Linux's
+`tcp_input.c` and `tcp_timer.c` call into `tcp_output.c` and
+not back; the triggers from the receive side (an immediate ACK, a fast retransmit, the SYN-ACK) are direct
+calls, and state defers work only where it must wait anyway: the ordinary ACK until `flush`, the retry hint
+until the next `process`, a resend whose packet is lent until the next `flush`. The block is plain
+single-thread memory: a connection's receive and transmit run on one shard thread, and nothing in it is
+shared. Beneath the four: per shard `ConnectionTable`, `SegmentWriter`, `IsnGenerator` and one `NodePool`
+each for held packets and retransmission-queue entries; per connection `ReceiveQueue`, `AckPolicy`,
+`SendSequence`, `RetransmissionQueue`, `LossRecovery` (over the policy's state), `RttEstimator`,
+`ZeroWindowProbe` and `Timestamps`. The folders: `connection/` the handle and its read view, with the control
+block and the connection's parts in `connection/detail/`; `stack/` the façade and the forward header, with the
+four procedure classes, the context, the connection table, the ISN generator and the segment writer in
+`stack/detail/`; `pool/detail/` the node pools; `config/` the configuration and counters; `congestion/` the
+policies; `table/` the flow table. A header whose names are all in `tcp::detail` sits in the `detail/` folder
+of the folder it belongs to and is included as `<detail/name.hpp>`.
 
 **Zero-copy both ways.** A received segment's packet is held as it arrived and `unread()` points into it;
 `consume` advances through it and returns each packet to the pool once it is empty. A sent segment is written

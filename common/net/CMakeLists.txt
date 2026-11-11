@@ -21,7 +21,14 @@ target_link_libraries(${NET}.Arp PUBLIC
 ##############################################################################
 add_library(${NET}.Stack INTERFACE
         stack/datagram.hpp
+        stack/detail/ipv4_arp.hpp
+        stack/detail/ipv4_input.hpp
+        stack/detail/ipv4_output.hpp
+        stack/detail/ipv4_routing.hpp
+        stack/detail/ipv4_transmit.hpp
         stack/ipv4.hpp
+        stack/ipv4_config.hpp
+        stack/ipv4_counters.hpp
         stack/prebuilt.hpp
 )
 target_include_directories(${NET}.Stack INTERFACE

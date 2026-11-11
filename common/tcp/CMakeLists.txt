@@ -26,31 +26,38 @@ add_library(${TCP}.Stack INTERFACE
         congestion/congestion_control.hpp
         congestion/newreno.hpp
         congestion/no_congestion_control.hpp
-        pool/node_pool.hpp
-        pool/held_segment_pool.hpp
-        pool/sent_segment_pool.hpp
-        connection/ack_policy.hpp
-        connection/frame_template.hpp
-        connection/loss_recovery.hpp
+        connection/detail/ack_policy.hpp
+        connection/detail/connection_list.hpp
+        connection/detail/control_block.hpp
+        connection/detail/frame_template.hpp
+        connection/detail/loss_recovery.hpp
+        connection/detail/receive_queue.hpp
+        connection/detail/retransmission_queue.hpp
+        connection/detail/rtt_estimator.hpp
+        connection/detail/send_sequence.hpp
+        connection/detail/tcp_timestamps.hpp
+        connection/detail/zero_window_probe.hpp
         connection/read_view.hpp
-        connection/receive_queue.hpp
-        connection/retransmission_queue.hpp
-        connection/rtt_estimator.hpp
-        connection/send_sequence.hpp
-        connection/tcp_timestamps.hpp
-        connection/zero_window_probe.hpp
         connection/tcp_connection.hpp
-        stack/connection_table.hpp
-        stack/isn_generator.hpp
-        stack/segment_writer.hpp
+        pool/detail/held_segment_pool.hpp
+        pool/detail/node_pool.hpp
+        pool/detail/sent_segment_pool.hpp
+        stack/detail/ack_processor.hpp
+        stack/detail/connection_table.hpp
+        stack/detail/isn_generator.hpp
+        stack/detail/lifecycle.hpp
+        stack/detail/receiver.hpp
+        stack/detail/segment_writer.hpp
+        stack/detail/stack_context.hpp
+        stack/detail/transmitter.hpp
         stack/tcp_fwd.hpp
         stack/tcp_stack.hpp
 )
 target_include_directories(${TCP}.Stack INTERFACE
         config/
         congestion/
-        pool/
         connection/
+        pool/
         stack/
 )
 target_link_libraries(${TCP}.Stack INTERFACE

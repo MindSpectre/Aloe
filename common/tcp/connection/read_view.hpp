@@ -8,7 +8,7 @@
 #include <ranges>
 #include <span>
 
-#include <held_segment_pool.hpp>
+#include <detail/held_segment_pool.hpp>
 
 namespace aloe::tcp {
 

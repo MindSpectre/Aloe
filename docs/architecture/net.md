@@ -126,6 +126,8 @@ if (now >= built->valid_until || ip.generation() != built->generation) {
 
 ## Design notes
 
+**Four parts behind one façade.** `net::Ipv4` is the brick's public face and the owner of its config and counters; what it does is four classes in `net::detail`, each in its own header under `stack/detail/`: `Routing` (the subnet, the gateway and the broadcast rules, as route questions with no side effect), `Arp` (the cache, the requests, the replies and the `resolved()` list; it reaches the queue alone), `Output` (`send`, `prebuild`, `send_frame`, the headers and checksums in one place and the identification counter; it routes through `Routing` and resolves through `Arp`) and `Input` (the frame sorted by ethertype, the IPv4 checks, delivery into one list per transport, the echo reply built in its own packet and framed by `Output`, as `send` frames a datagram once the hop is known). The dependency runs one way, input to output to ARP, read off the includes. The counters are one struct every part writes through a reference, so a reader of `Ipv4Counters` sees the whole brick.
+
 **The seam is a list, not a call.** IPv4 cannot be templated on who reads it, so it does not call anyone.
 It sorts the datagrams it accepts into one list per transport, and the loop hands each list to its brick.
 A core that runs TCP alone writes one line and pays nothing for the UDP list; a core that runs a feed and a

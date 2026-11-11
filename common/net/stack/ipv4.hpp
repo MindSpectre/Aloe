@@ -5,7 +5,6 @@
 #include <aloe/loop>
 #include <aloe/wire>
 #include <cassert>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -13,77 +12,17 @@
 #include <span>
 #include <stdexcept>
 #include <utility>
-#include <vector>
 
-#include <arp_cache.hpp>
 #include <datagram.hpp>
+#include <detail/ipv4_arp.hpp>
+#include <detail/ipv4_input.hpp>
+#include <detail/ipv4_output.hpp>
+#include <detail/ipv4_routing.hpp>
+#include <ipv4_config.hpp>
+#include <ipv4_counters.hpp>
 #include <prebuilt.hpp>
 
 namespace aloe::net {
-
-    struct Ipv4Config {
-        wire::Ipv4Address address{};
-        std::uint8_t prefix                      = 24;
-        std::optional<wire::Ipv4Address> gateway = std::nullopt;  ///< Absent: an off-subnet destination is NoRoute.
-        std::uint8_t ttl                         = 64;
-        std::size_t burst_capacity               = 64;   ///< The most packets one `process` takes; ethdev's burst.
-        std::size_t arp_capacity                 = 256;  ///< A power of two of at least 8.
-        core::Duration arp_reachable             = std::chrono::seconds{60};
-        core::Duration arp_expire                = std::chrono::seconds{120};
-        core::Duration arp_request_interval      = std::chrono::seconds{1};
-        /// A multi-queue device's shards share one address, so the shard whose queue receives a reply a sibling
-        /// solicited learns it in order to forward it. Off by default (RFC 826 merge rule).
-        bool accept_unsolicited_replies          = false;
-    };
-
-    struct SendRequest {
-        wire::Ipv4Address destination{};
-        wire::Ipv4Protocol protocol = wire::Ipv4Protocol::Udp;
-        device::L4Checksum checksum = device::L4Checksum::None;  ///< Fill the L4 checksum field the caller left zero.
-    };
-
-    enum class SendError : std::uint8_t {
-        NoRoute,     ///< Off the subnet with no gateway configured.
-        Unresolved,  ///< The next hop's MAC is unknown; a request is on its way, retry later.
-        Oversized,   ///< The segment does not fit the MTU.
-        Refused,     ///< The ring and the device are both full.
-    };
-
-    /// Per-brick counters, all monotonic, read on the owning thread or after it has stopped.
-    struct Ipv4Counters {
-        std::uint64_t frames                  = 0;  ///< Handed to `process`.
-        std::uint64_t arp_requests_received   = 0;
-        std::uint64_t arp_replies_received    = 0;
-        std::uint64_t datagrams_received      = 0;  ///< Valid IPv4 for us, whatever the protocol.
-        std::uint64_t delivered_tcp           = 0;
-        std::uint64_t delivered_udp           = 0;
-        std::uint64_t resolutions             = 0;  ///< Mappings learned from ARP frames.
-        std::uint64_t arp_requests_sent       = 0;
-        std::uint64_t arp_replies_sent        = 0;
-        std::uint64_t echo_replies_sent       = 0;
-        std::uint64_t datagrams_sent          = 0;
-        std::uint64_t transmit_refused        = 0;  ///< A frame the brick itself built that the queue refused.
-        std::uint64_t dropped_short           = 0;
-        std::uint64_t dropped_not_for_us      = 0;
-        std::uint64_t dropped_ethertype       = 0;
-        std::uint64_t dropped_arp_malformed   = 0;
-        std::uint64_t dropped_arp_conflict    = 0;
-        std::uint64_t dropped_arp_unsolicited = 0;
-        std::uint64_t dropped_bad_header      = 0;
-        std::uint64_t dropped_bad_checksum    = 0;
-        std::uint64_t dropped_fragment        = 0;
-        std::uint64_t dropped_protocol        = 0;
-        std::uint64_t dropped_icmp            = 0;
-        std::uint64_t dropped_martian = 0;  ///< A source no host sends from: a multicast, broadcast, loopback or our
-                                            ///< own IPv4 address, or an ARP request from a group MAC.
-        std::uint64_t dropped_tcp_broadcast = 0;  ///< TCP to a broadcast address: RFC 1122 makes TCP unicast only.
-        std::uint64_t send_no_route         = 0;
-        std::uint64_t send_unresolved       = 0;
-        std::uint64_t send_oversized        = 0;
-        std::uint64_t send_refused          = 0;
-
-        friend constexpr bool operator==(const Ipv4Counters&, const Ipv4Counters&) noexcept = default;
-    };
 
     /**
      * @brief IPv4 over one device queue, with the ARP and ICMP echo that serve it: the first protocol brick.
@@ -102,23 +41,16 @@ namespace aloe::net {
         using Device = DeviceT;
         using Packet = Device::Packet;
 
-        static constexpr std::size_t headers_size = wire::EthernetHeader::size + wire::Ipv4Header::size;
+        static constexpr std::size_t headers_size = detail::Output<Device>::headers_size;
 
         /// Validates and throws std::invalid_argument; transmits nothing.
         Ipv4(loop::ShardQueue<Device>& owner, const Ipv4Config& config)
-            : queue_{
-                  owner
-        },
+            : queue_{owner},
               config_{validated(config)},
-              subnet_{config.address, config.prefix},
-              arp_{ArpCacheConfig{.capacity         = config.arp_capacity,
-                                  .reachable        = config.arp_reachable,
-                                  .expire           = config.arp_expire,
-                                  .request_interval = config.arp_request_interval}},
-              identification_{static_cast<std::uint16_t>(owner.index() * identification_stride)} {
-            tcp_.reserve(config.burst_capacity);
-            udp_.reserve(config.burst_capacity);
-            resolved_.reserve(config.burst_capacity);
+              routing_{config_.address, config_.prefix, config_.gateway},
+              arp_{owner, config_, counters_},
+              output_{owner, arp_, routing_, config_, counters_},
+              input_{owner, arp_, output_, routing_, config_, counters_} {
         }
 
         Ipv4(const Ipv4&)            = delete;
@@ -133,29 +65,25 @@ namespace aloe::net {
          */
         void process(std::span<Packet> burst, const core::TimePoint now) noexcept {
             assert(burst.size() <= config_.burst_capacity && "a burst larger than Ipv4Config::burst_capacity");
-            tcp_.clear();
-            udp_.clear();
-            resolved_.clear();
+            input_.clear();
+            arp_.clear_resolved();
             for (Packet& packet : burst) {
                 if (packet.empty()) {
                     continue;
                 }
-                ++counters_.frames;
-                receive(packet, now);
+                input_.receive(packet, now);
                 packet = Packet{};  // whatever was neither moved out nor transmitted goes back to the pool
             }
         }
 
         /// The datagrams of `protocol`, TCP or UDP, from the last `process`, until the next one.
         [[nodiscard]] std::span<Datagram<Packet>> received(const wire::Ipv4Protocol protocol) noexcept {
-            assert(protocol == wire::Ipv4Protocol::Tcp || protocol == wire::Ipv4Protocol::Udp);
-            return protocol == wire::Ipv4Protocol::Tcp ? std::span<Datagram<Packet>>{tcp_}
-                                                       : std::span<Datagram<Packet>>{udp_};
+            return input_.received(protocol);
         }
 
         /// The mappings learned from ARP frames in the last `process`, until the next one.
         [[nodiscard]] std::span<const ArpResolution> resolved() const noexcept {
-            return resolved_;
+            return arp_.resolved();
         }
 
         /// A packet with nothing in it and room for both headers in front: append the segment, then `send`.
@@ -173,51 +101,7 @@ namespace aloe::net {
          */
         [[nodiscard]] std::expected<void, SendError>
         send(Packet&& packet, const SendRequest& request, const core::TimePoint now) noexcept {
-            assert(packet.headroom() >= headers_size && "no room for the headers: use allocate()");
-            assert((request.checksum == device::L4Checksum::None ||
-                    packet.size() >= checksum_offset(request.checksum) + 2) &&
-                   "a segment shorter than its checksum field");
-            const std::expected<wire::MacAddress, SendError> mac = next_mac(request.destination, now);
-            if (!mac) {
-                return std::unexpected{mac.error()};
-            }
-            const wire::MacAddress hop_mac = *mac;
-            const std::size_t segment_size = packet.size();
-            if (segment_size > max_l4_size()) {
-                ++counters_.send_oversized;
-                return std::unexpected{SendError::Oversized};
-            }
-            if (!packet.prepend(headers_size)) {
-                ++counters_.send_oversized;  // no headroom: not a packet from allocate()
-                return std::unexpected{SendError::Oversized};
-            }
-            const std::span<std::byte> frame = packet.data();
-            const wire::Ipv4Header header{.total_length =
-                                              static_cast<std::uint16_t>(wire::Ipv4Header::size + segment_size),
-                                          .identification = next_identification(),
-                                          .ttl            = config_.ttl,
-                                          .protocol       = request.protocol,
-                                          .source         = config_.address,
-                                          .destination    = request.destination};
-            wire::EthernetHeader{
-                .destination = hop_mac, .source = queue_.mac(), .ethertype = std::to_underlying(wire::EtherType::Ipv4)}
-                .write(frame.first(wire::EthernetHeader::size));
-            header.write(frame.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size));
-            packet.set_tx(finish_checksums(frame, header, request.checksum));
-            if (queue_.transmit(std::move(packet))) {
-                ++counters_.datagrams_sent;
-                return {};
-            }
-            // ShardQueue::transmit moves only on success, so the packet is still ours: hand it back as built.
-            // NOLINTBEGIN(bugprone-use-after-move)
-            if (request.checksum != device::L4Checksum::None) {
-                wire::store_be16(frame.subspan(headers_size + checksum_offset(request.checksum), 2), 0);
-            }
-            packet.trim_front(headers_size);
-            packet.set_tx(device::TxMetadata{});
-            // NOLINTEND(bugprone-use-after-move)
-            ++counters_.send_refused;
-            return std::unexpected{SendError::Refused};
+            return output_.send(std::move(packet), request, now);
         }
 
         /**
@@ -231,29 +115,7 @@ namespace aloe::net {
         [[nodiscard]] std::expected<Prebuilt, SendError> prebuild(const wire::Ipv4Address destination,
                                                                   const wire::Ipv4Protocol protocol,
                                                                   const core::TimePoint now) noexcept {
-            const std::expected<wire::MacAddress, SendError> mac = next_mac(destination, now);
-            if (!mac) {
-                return std::unexpected{mac.error()};
-            }
-            Prebuilt prebuilt{};
-            wire::EthernetHeader{
-                .destination = *mac, .source = queue_.mac(), .ethertype = std::to_underlying(wire::EtherType::Ipv4)}
-                .write(std::span<std::byte>{prebuilt.headers}.first(wire::EthernetHeader::size));
-            wire::Ipv4Header{.total_length   = 0,
-                             .identification = 0,
-                             .ttl            = config_.ttl,
-                             .protocol       = protocol,
-                             .source         = config_.address,
-                             .destination    = destination}
-                .write(std::span<std::byte>{prebuilt.headers}.subspan(wire::EthernetHeader::size));
-            prebuilt.valid_until = core::TimePoint::max();
-            if (!is_broadcast(destination) && !destination.is_multicast()) {
-                const std::optional<core::TimePoint> confirmed = arp_.confirmed(*next_hop(destination));
-                const bool fresh     = confirmed.has_value() && now - *confirmed < config_.arp_reachable;
-                prebuilt.valid_until = fresh ? *confirmed + config_.arp_reachable : now + config_.arp_request_interval;
-            }
-            prebuilt.generation = generation();
-            return prebuilt;
+            return output_.prebuild(destination, protocol, now);
         }
 
         /// Moves when a cached MAC changes or goes: a `Prebuilt` of an older generation may name a stale next hop.
@@ -271,69 +133,15 @@ namespace aloe::net {
          * per-datagram fields back to zero).
          */
         [[nodiscard]] std::expected<void, SendError>
-        send_frame(Packet& packet, const SendRequest& request, [[maybe_unused]] const core::TimePoint now) noexcept {
-            assert(!packet.empty() && !packet.lent() && "a frame that is empty or still on loan");
-            assert((request.checksum == device::L4Checksum::None ||
-                    packet.size() >= Prebuilt::size + checksum_offset(request.checksum) + 2) &&
-                   "a segment shorter than its checksum field");
-            const std::size_t frame_size = packet.size();
-            if (frame_size > queue_.mtu() + wire::EthernetHeader::size) {
-                ++counters_.send_oversized;
-                return std::unexpected{SendError::Oversized};
-            }
-            const std::span<std::byte> frame = packet.data();
-            const std::span<std::byte> ip    = frame.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size);
-            // The header as the Prebuilt wrote it, from what the caller holds rather than a parse of the frame: the
-            // checksums need the addresses, the protocol and the total length only.
-            const wire::Ipv4Header header{.total_length =
-                                              static_cast<std::uint16_t>(frame_size - wire::EthernetHeader::size),
-                                          .protocol    = request.protocol,
-                                          .source      = config_.address,
-                                          .destination = request.destination};
-            wire::store_be16(ip.subspan(ipv4_total_length_offset, 2), header.total_length);
-            wire::store_be16(ip.subspan(ipv4_identification_offset, 2), next_identification());
-            wire::store_be16(ip.subspan(wire::ipv4_checksum_offset, 2), 0);
-            assert(prebuilt_names(frame, header) && "the frame's IPv4 header is not the request's Prebuilt");
-            packet.set_tx(finish_checksums(frame, header, request.checksum));
-            Packet handle = packet.lend();
-            if (queue_.transmit(std::move(handle))) {
-                ++counters_.datagrams_sent;
-                return {};
-            }
-            // ShardQueue::transmit moves only on success: drop the loan, then restore the frame as built.
-            // NOLINTBEGIN(bugprone-use-after-move)
-            handle = Packet{};
-            wire::store_be16(ip.subspan(ipv4_total_length_offset, 2), 0);
-            wire::store_be16(ip.subspan(ipv4_identification_offset, 2), 0);
-            wire::store_be16(ip.subspan(wire::ipv4_checksum_offset, 2), 0);
-            if (request.checksum != device::L4Checksum::None) {
-                wire::store_be16(frame.subspan(Prebuilt::size + checksum_offset(request.checksum), 2), 0);
-            }
-            packet.set_tx(device::TxMetadata{});
-            // NOLINTEND(bugprone-use-after-move)
-            ++counters_.send_refused;
-            return std::unexpected{SendError::Refused};
-        }
-
-        /// Whether the frame's IPv4 header names what `header` does: the check behind `send_frame`'s trust in the
-        /// caller's request, in an assertion only, so a release build never instantiates it.
-        [[nodiscard]] static bool prebuilt_names(const std::span<const std::byte> frame,
-                                                 const wire::Ipv4Header& header) noexcept {
-            const std::optional<wire::Ipv4Header> parsed =
-                wire::Ipv4Header::parse(frame.subspan(wire::EthernetHeader::size));
-            return parsed.has_value() && parsed->source == header.source && parsed->destination == header.destination &&
-                   parsed->protocol == header.protocol;
+        send_frame(Packet& packet, const SendRequest& request, const core::TimePoint now) noexcept {
+            return output_.send_frame(packet, request, now);
         }
 
         /// The next hop's MAC from the cache, or nothing with a request on its way: how a program pre-resolves its
         /// router.
         [[nodiscard]] std::optional<wire::MacAddress> resolve(const wire::Ipv4Address hop,
                                                               const core::TimePoint now) noexcept {
-            const auto [mac, send_request] = arp_.lookup(hop, now);
-            if (send_request) {
-                request_arp(hop, mac);
-            }
-            return mac;
+            return arp_.resolve(hop, now);
         }
 
         /// A static entry, or a resolution another shard learned. Appends nothing to `resolved()`.
@@ -358,10 +166,7 @@ namespace aloe::net {
          * the same way. Broadcast and multicast destinations are not routed and answer with themselves.
          */
         [[nodiscard]] std::optional<wire::Ipv4Address> next_hop(const wire::Ipv4Address destination) const noexcept {
-            if (is_broadcast(destination) || destination.is_multicast() || subnet_.contains(destination)) {
-                return destination;
-            }
-            return config_.gateway;
+            return routing_.next_hop(destination);
         }
 
         [[nodiscard]] wire::Ipv4Address address() const noexcept {
@@ -382,7 +187,7 @@ namespace aloe::net {
 
         /// What one `send` may carry: the MTU less the IPv4 header. TCP's MSS starts here.
         [[nodiscard]] std::uint16_t max_l4_size() const noexcept {
-            return static_cast<std::uint16_t>(queue_.mtu() - wire::Ipv4Header::size);
+            return output_.max_l4_size();
         }
 
         [[nodiscard]] const Ipv4Counters& counters() const noexcept {
@@ -390,9 +195,6 @@ namespace aloe::net {
         }
 
     private:
-        static constexpr std::uint16_t identification_stride =
-            4096;  ///< Per queue index, so shards do not collide early.
-
         /// An address a host may own on `subnet`: not zero, multicast, loopback or a broadcast, and not the subnet's
         /// network address where it has one.
         [[nodiscard]] static bool unicast_host(const wire::Ipv4Address address,
@@ -428,349 +230,13 @@ namespace aloe::net {
             return config;  // the ARP capacity and durations are ArpCache's to check
         }
 
-        /// The limited broadcast, or the subnet broadcast where the subnet has one.
-        [[nodiscard]] bool is_broadcast(const wire::Ipv4Address address) const noexcept {
-            return address.is_limited_broadcast() || (subnet_.has_broadcast() && address == subnet_.broadcast());
-        }
-
-        /// False for a sender that cannot be a host: zero, multicast, the limited broadcast, or a group MAC.
-        [[nodiscard]] static bool plausible_sender(const wire::ArpPacket& arp) noexcept {
-            return !arp.sender_ip.is_unspecified() && !arp.sender_ip.is_multicast() &&
-                   !arp.sender_ip.is_limited_broadcast() && !arp.sender_mac.is_multicast();
-        }
-
-        [[nodiscard]] bool for_me(const wire::Ipv4Address destination) const noexcept {
-            return destination == config_.address || is_broadcast(destination);
-        }
-
-        /// The MAC a frame to `destination` goes to: a group MAC, or the routed hop's from the cache, counting the
-        /// failures as `send` and `prebuild` report them.
-        [[nodiscard]] std::expected<wire::MacAddress, SendError> next_mac(const wire::Ipv4Address destination,
-                                                                          const core::TimePoint now) noexcept {
-            if (is_broadcast(destination)) {
-                return wire::MacAddress::broadcast();
-            }
-            if (destination.is_multicast()) {
-                return destination.multicast_mac();
-            }
-            const std::optional<wire::Ipv4Address> hop = next_hop(destination);
-            if (!hop) {
-                ++counters_.send_no_route;
-                return std::unexpected{SendError::NoRoute};
-            }
-            const std::optional<wire::MacAddress> mac = resolve(*hop, now);
-            if (!mac) {
-                ++counters_.send_unresolved;
-                return std::unexpected{SendError::Unresolved};
-            }
-            return *mac;
-        }
-
-        [[nodiscard]] std::uint16_t next_identification() noexcept {
-            return identification_++;
-        }
-
-        void receive(Packet& packet, const core::TimePoint now) noexcept {
-            const std::span<std::byte> frame                   = packet.data();
-            const std::optional<wire::EthernetHeader> ethernet = wire::EthernetHeader::parse(frame);
-            if (!ethernet) {
-                ++counters_.dropped_short;
-                return;
-            }
-            if (ethernet->destination != queue_.mac() && !ethernet->destination.is_broadcast()) {
-                ++counters_.dropped_not_for_us;
-                return;
-            }
-            if (ethernet->ethertype == std::to_underlying(wire::EtherType::Arp)) {
-                receive_arp(packet, now);
-                return;
-            }
-            if (ethernet->ethertype == std::to_underlying(wire::EtherType::Ipv4)) {
-                receive_ipv4(packet, *ethernet);
-                return;
-            }
-            ++counters_.dropped_ethertype;
-        }
-
-        void receive_arp(Packet& packet, const core::TimePoint now) noexcept {
-            const std::span<std::byte> frame = packet.data();
-            const std::optional<wire::ArpPacket> arp =
-                wire::ArpPacket::parse(frame.subspan(wire::EthernetHeader::size));
-            if (!arp) {
-                ++counters_.dropped_arp_malformed;
-                return;
-            }
-            if (arp->sender_ip == config_.address) {
-                ++counters_.dropped_arp_conflict;
-                return;
-            }
-            if (arp->operation == wire::ArpOperation::Request) {
-                ++counters_.arp_requests_received;
-                if (arp->sender_mac.is_multicast()) {
-                    ++counters_.dropped_martian;  // the reply would go to a group, probe or not
-                    return;
-                }
-                const bool plausible = plausible_sender(*arp);
-                if (arp->target_ip != config_.address) {
-                    // Someone else's business; `process` releases it. RFC 826's merge rule: an entry we hold is
-                    // refreshed, a new one is never created from a request not meant for us.
-                    if (plausible && arp_.contains(arp->sender_ip)) {
-                        learn_from_wire(arp->sender_ip, arp->sender_mac, now);
-                    }
-                    return;
-                }
-                if (plausible) {  // a probe (RFC 5227) is still answered, but teaches nothing
-                    learn_from_wire(arp->sender_ip, arp->sender_mac, now);
-                }
-                wire::EthernetHeader{.destination = arp->sender_mac,
-                                     .source      = queue_.mac(),
-                                     .ethertype   = std::to_underlying(wire::EtherType::Arp)}
-                    .write(frame.first(wire::EthernetHeader::size));
-                wire::ArpPacket{.operation  = wire::ArpOperation::Reply,
-                                .sender_mac = queue_.mac(),
-                                .sender_ip  = config_.address,
-                                .target_mac = arp->sender_mac,
-                                .target_ip  = arp->sender_ip}
-                    .write(frame.subspan(wire::EthernetHeader::size));
-                packet.set_tx(device::TxMetadata{});
-                transmit_built(std::move(packet), counters_.arp_replies_sent);
-                return;
-            }
-            ++counters_.arp_replies_received;
-            if (!arp_.contains(arp->sender_ip)) {
-                // Never asked: nothing on the segment fills the cache, unless a sibling shard asked for our address.
-                if (config_.accept_unsolicited_replies && arp->target_ip == config_.address && plausible_sender(*arp)) {
-                    learn_from_wire(arp->sender_ip, arp->sender_mac, now);
-                } else {
-                    ++counters_.dropped_arp_unsolicited;
-                }
-                return;
-            }
-            if (plausible_sender(*arp)) {
-                learn_from_wire(arp->sender_ip, arp->sender_mac, now);
-            }
-        }
-
-        void receive_ipv4(Packet& packet, const wire::EthernetHeader& ethernet) noexcept {
-            const std::span<std::byte> frame             = packet.data();
-            const std::span<std::byte> payload           = frame.subspan(wire::EthernetHeader::size);
-            const std::optional<wire::Ipv4Header> header = wire::Ipv4Header::parse(payload);
-            if (!header) {
-                ++counters_.dropped_bad_header;
-                return;
-            }
-            const device::RxMetadata rx = packet.rx();
-            const bool bad_checksum     = rx.l3 == device::ChecksumVerdict::Bad ||
-                                          (rx.l3 == device::ChecksumVerdict::Unknown &&
-                                           wire::internet_checksum(payload.first(header->header_length)) != 0);
-            if (bad_checksum) {
-                ++counters_.dropped_bad_checksum;
-                return;
-            }
-            if (header->source.is_multicast() || header->source.is_limited_broadcast() ||
-                header->source.is_loopback() || header->source == config_.address) {
-                ++counters_.dropped_martian;
-                return;
-            }
-            if (!for_me(header->destination)) {
-                ++counters_.dropped_not_for_us;
-                return;
-            }
-            if (header->is_fragment()) {
-                ++counters_.dropped_fragment;
-                return;
-            }
-            if (header->protocol == wire::Ipv4Protocol::Tcp && header->destination != config_.address) {
-                ++counters_.dropped_tcp_broadcast;  // RFC 1122 4.2.3.10: TCP never answers a broadcast
-                return;
-            }
-            ++counters_.datagrams_received;
-            switch (header->protocol) {
-                case wire::Ipv4Protocol::Tcp:
-                    deliver(tcp_, packet, *header, rx);
-                    ++counters_.delivered_tcp;
-                    return;
-                case wire::Ipv4Protocol::Udp:
-                    deliver(udp_, packet, *header, rx);
-                    ++counters_.delivered_udp;
-                    return;
-                case wire::Ipv4Protocol::Icmp:
-                    receive_icmp(packet, ethernet, *header);
-                    return;
-                default:
-                    ++counters_.dropped_protocol;
-                    return;
-            }
-        }
-
-        void deliver(std::vector<Datagram<Packet>>& list,
-                     Packet& packet,
-                     const wire::Ipv4Header& header,
-                     const device::RxMetadata& rx) noexcept {
-            list.push_back(
-                Datagram<Packet>{.packet      = std::move(packet),
-                                 .source      = header.source,
-                                 .destination = header.destination,
-                                 .protocol    = header.protocol,
-                                 .l3_offset   = static_cast<std::uint8_t>(wire::EthernetHeader::size),
-                                 .l3_length   = header.header_length,
-                                 .l4_length   = static_cast<std::uint16_t>(header.total_length - header.header_length),
-                                 .l4_checksum = rx.l4});
-        }
-
-        void learn_from_wire(const wire::Ipv4Address address,
-                             const wire::MacAddress mac,
-                             const core::TimePoint now) noexcept {
-            arp_.learn(address, mac, now);
-            resolved_.push_back(ArpResolution{.address = address, .mac = mac});
-            ++counters_.resolutions;
-        }
-
-        /// A request for `target`: broadcast for an unresolved entry, unicast to `known` for a stale one.
-        void request_arp(const wire::Ipv4Address target, const std::optional<wire::MacAddress> known) noexcept {
-            std::optional<Packet> packet = queue_.allocate();
-            if (!packet) {
-                ++counters_.transmit_refused;
-                return;
-            }
-            const std::optional<std::span<std::byte>> room =
-                packet->append(wire::EthernetHeader::size + wire::ArpPacket::size);
-            if (!room) {
-                ++counters_.transmit_refused;
-                return;
-            }
-            wire::EthernetHeader{.destination = known.value_or(wire::MacAddress::broadcast()),
-                                 .source      = queue_.mac(),
-                                 .ethertype   = std::to_underlying(wire::EtherType::Arp)}
-                .write(room->first(wire::EthernetHeader::size));
-            wire::ArpPacket{.operation  = wire::ArpOperation::Request,
-                            .sender_mac = queue_.mac(),
-                            .sender_ip  = config_.address,
-                            .target_mac = {},
-                            .target_ip  = target}
-                .write(room->subspan(wire::EthernetHeader::size));
-            packet->set_tx(device::TxMetadata{});
-            transmit_built(std::move(*packet), counters_.arp_requests_sent);
-        }
-
-        /// Transmits a frame the brick built: counts it under `sent`, or as refused.
-        void transmit_built(Packet&& packet, std::uint64_t& sent) noexcept {
-            if (queue_.transmit(std::move(packet))) {
-                ++sent;
-            } else {
-                ++counters_.transmit_refused;
-            }
-        }
-
-        static constexpr std::size_t ipv4_total_length_offset   = 2;
-        static constexpr std::size_t ipv4_identification_offset = 4;
-        static constexpr std::size_t tcp_checksum_offset        = 16;
-        static constexpr std::size_t udp_checksum_offset        = 6;
-
-        [[nodiscard]] static constexpr std::size_t checksum_offset(const device::L4Checksum l4) noexcept {
-            return l4 == device::L4Checksum::Tcp ? tcp_checksum_offset : udp_checksum_offset;
-        }
-
-        /**
-         * @brief Completes the checksums of a frame whose headers the brick wrote, and says what the device must
-         * finish.
-         *
-         * `frame` is Ethernet, the 20-byte IPv4 header with a zero checksum field, and the segment
-         * `header.total_length` accounts for. When `l4` is not `None`, the segment's checksum field is zero and gets
-         * the pseudo-header sum for the device to finish, or the full checksum in software, with UDP's zero written as
-         * 0xffff. The IPv4 checksum is left for the device or written in software the same way.
-         */
-        [[nodiscard]] device::TxMetadata finish_checksums(const std::span<std::byte> frame,
-                                                          const wire::Ipv4Header& header,
-                                                          const device::L4Checksum l4) noexcept {
-            device::TxMetadata tx{.l2_length          = static_cast<std::uint8_t>(wire::EthernetHeader::size),
-                                  .l3_length          = static_cast<std::uint8_t>(wire::Ipv4Header::size),
-                                  .fill_ipv4_checksum = false,
-                                  .fill_l4_checksum   = device::L4Checksum::None};
-            const std::span<std::byte> ip = frame.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size);
-            const std::span<std::byte> segment =
-                frame.subspan(headers_size, header.total_length - wire::Ipv4Header::size);
-            if (l4 != device::L4Checksum::None) {
-                const std::span<std::byte> field = segment.subspan(checksum_offset(l4), 2);
-                assert(wire::load_be16(field) == 0 && "the caller leaves the L4 checksum field zero");
-                if (queue_.capabilities().tx_l4_checksum) {
-                    wire::store_be16(field,
-                                     wire::ipv4_pseudo_header_sum(header.source,
-                                                                  header.destination,
-                                                                  header.protocol,
-                                                                  static_cast<std::uint16_t>(segment.size())));
-                    tx.fill_l4_checksum = l4;
-                } else {
-                    std::uint16_t sum =
-                        wire::ipv4_l4_checksum(header.source, header.destination, header.protocol, segment);
-                    if (l4 == device::L4Checksum::Udp && sum == 0) {
-                        sum = 0xffff;  // zero means "no checksum" in UDP
-                    }
-                    wire::store_be16(field, sum);
-                }
-            }
-            if (queue_.capabilities().tx_ipv4_checksum) {
-                tx.fill_ipv4_checksum = true;  // the field is already zero
-            } else {
-                wire::store_be16(ip.subspan(wire::ipv4_checksum_offset, 2), wire::ipv4_header_checksum(ip));
-            }
-            return tx;
-        }
-
-        /// An echo request to our unicast address becomes the reply, in the same packet, back to the frame's source
-        /// MAC.
-        void
-        receive_icmp(Packet& packet, const wire::EthernetHeader& ethernet, const wire::Ipv4Header& header) noexcept {
-            const std::span<std::byte> frame = packet.data();
-            const std::size_t message_length = header.total_length - header.header_length;
-            const std::span<std::byte> message =
-                frame.subspan(wire::EthernetHeader::size + header.header_length, message_length);
-            const std::optional<wire::IcmpHeader> icmp = wire::IcmpHeader::parse(message);
-            if (!icmp) {
-                ++counters_.dropped_bad_header;
-                return;
-            }
-            if (wire::internet_checksum(message) != 0) {  // no card offloads ICMP: always software
-                ++counters_.dropped_bad_checksum;
-                return;
-            }
-            if (icmp->type != wire::IcmpType::EchoRequest || icmp->code != 0 || header.destination != config_.address) {
-                ++counters_.dropped_icmp;  // other types, and echoes to a broadcast address, as the kernel does
-                return;
-            }
-            // Aloe never sends options: drop them from the front. The message already sits after them and stays put.
-            packet.trim_front(header.header_length - wire::Ipv4Header::size);
-            const std::span<std::byte> reply = packet.data();
-            const wire::Ipv4Header reply_header{.total_length =
-                                                    static_cast<std::uint16_t>(wire::Ipv4Header::size + message_length),
-                                                .identification = next_identification(),
-                                                .ttl            = config_.ttl,
-                                                .protocol       = wire::Ipv4Protocol::Icmp,
-                                                .source         = config_.address,
-                                                .destination    = header.source};
-            wire::EthernetHeader{.destination = ethernet.source,  // the last hop is the next hop back, router or not
-                                 .source      = queue_.mac(),
-                                 .ethertype   = std::to_underlying(wire::EtherType::Ipv4)}
-                .write(reply.first(wire::EthernetHeader::size));
-            reply_header.write(reply.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size));
-            const std::span<std::byte> reply_message = reply.subspan(headers_size, message_length);
-            reply_message[0]                         = std::byte{std::to_underlying(wire::IcmpType::EchoReply)};
-            wire::store_be16(reply_message.subspan(wire::IcmpHeader::checksum_offset, 2), 0);
-            wire::store_be16(reply_message.subspan(wire::IcmpHeader::checksum_offset, 2),
-                             wire::internet_checksum(reply_message));
-            packet.set_tx(finish_checksums(reply, reply_header, device::L4Checksum::None));
-            transmit_built(std::move(packet), counters_.echo_replies_sent);
-        }
-
         loop::ShardQueue<Device>& queue_;
         Ipv4Config config_;
-        wire::Ipv4Subnet subnet_;
-        ArpCache arp_;
-        std::uint16_t identification_;
-        std::vector<Datagram<Packet>> tcp_;
-        std::vector<Datagram<Packet>> udp_;
-        std::vector<ArpResolution> resolved_;
+        detail::Routing routing_;
         Ipv4Counters counters_{};
+        detail::Arp<Device> arp_;
+        detail::Output<Device> output_;
+        detail::Input<Device> input_;
     };
 
 }  // namespace aloe::net
