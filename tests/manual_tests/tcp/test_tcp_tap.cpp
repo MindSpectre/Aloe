@@ -69,7 +69,8 @@
 //
 // The cases of `TcpTapReceive` turn it round: the kernel sends and the brick receives, stepped on the test's thread
 // between non-blocking calls on the kernel's socket. They check that SACK and window scaling are negotiated whichever
-// end opens, that a kernel sender fills a window past 65535 bytes, and, under
+// end opens, that a kernel sender fills a window past 65535 bytes up to the point where it stalls at the edge, and,
+// under
 //
 //     tc qdisc replace dev aloe-tcp root netem delay 5ms reorder 25% 50%
 //     tc qdisc replace dev aloe-tcp root netem loss 2%
@@ -78,7 +79,10 @@
 // timeouts at most a quarter of its resends under loss. For those two the tap's `gso_max_segs` is set to 1, so netem
 // drops and reorders single segments rather than GSO bursts, and restored afterwards. They read `tcpi_total_rto`
 // (Linux 6.7) and skip on an older kernel, or when `ip`, `tc` or `sch_netem` is missing; the qdisc is removed after
-// each case. Run them alone with
+// each case. The binary needs `tcpi_total_rto`, `tcpi_snd_wnd` and `tcpi_bytes_acked` in glibc's `<netinet/tcp.h>`,
+// which glibc 2.43, the version it was written on, has; an older glibc without them fails to compile it. Run them
+// alone, since the earlier suites' loop threads register lcores that are never unregistered and each keeps part of
+// the 1024-packet pool in its mempool cache:
 //
 //     sudo ./build/debug/tests/manual_tests/tcp/Aloe.Tests.Manual.Tcp.Tap --gtest_filter='TcpTapReceive.*'
 //
@@ -1087,11 +1091,17 @@ namespace {
     };
 
     /// A non-blocking kernel socket connected to the stack's `echo_port`, the stack stepped while the handshake runs;
-    /// -1 with the failure reported when it does not connect within `patience`.
-    [[nodiscard]] int kernel_connect(ReceiveSide& side) {
+    /// -1 with the failure reported when it does not connect within `patience`. A `send_buffer` above zero is set as
+    /// `SO_SNDBUF` before connecting, which also stops the kernel growing the buffer on its own.
+    [[nodiscard]] int kernel_connect(ReceiveSide& side, const int send_buffer = 0) {
         const int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
         if (fd < 0) {
             ADD_FAILURE() << "socket: " << std::strerror(errno);
+            return -1;
+        }
+        if (send_buffer > 0 && setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &send_buffer, sizeof(send_buffer)) != 0) {
+            ADD_FAILURE() << "setsockopt(SO_SNDBUF): " << std::strerror(errno);
+            close(fd);
             return -1;
         }
         const sockaddr_in server = address_of(stack_ip, echo_port);
@@ -1266,7 +1276,9 @@ namespace {
             }
             if (!ip_link_set("gso_max_segs 1")) {
                 gso_max_segs_.reset();
-                return "`ip link set dev aloe-tcp gso_max_segs 1` failed: ip is missing or too old";
+                return "`ip link set dev aloe-tcp gso_max_segs 1` failed: ip is missing or too old, or the kernel "
+                       "cannot "
+                       "change gso_max_segs over netlink";
             }
             const std::string command = "qdisc replace dev aloe-tcp root netem " + std::string{netem};
             if (!tc(command)) {
@@ -1384,11 +1396,16 @@ TEST_F(TcpTapReceive, TheKernelNegotiatesBothOptionsInBothDirections) {
 TEST_F(TcpTapReceive, AKernelSenderFillsAWindowPast65535Bytes) {
     const auto payload = numbered_words(std::size_t{1} << 20);
     ReceiveSide side{*port_, true};
-    const KernelSocket kernel{kernel_connect(side)};
+    // A send buffer the kernel doubles to 256 KB and no longer grows: with the window's 370688 bytes it takes well
+    // under the megabyte, so the kernel is left with bytes to send when the window closes, and a stall is seen as one.
+    const KernelSocket kernel{kernel_connect(side, 131072)};
     ASSERT_GE(kernel.fd(), 0);
     ASSERT_TRUE(step_until(side, [&side] { return side.connection() != nullptr; }))
         << "the stack raised no Accepted within " << patience().count() << " ms";
-    const std::uint32_t budget        = side.connection()->receive_budget();
+    const auto& c                     = *side.connection();
+    const std::uint32_t budget        = c.receive_budget();
+    const std::size_t mss             = c.mss();
+    const std::size_t slots_hold      = aloe::tcp::TcpConfig{}.receive_segments * mss;
     std::optional<KernelTcpInfo> info = kernel_tcp_info(kernel.fd());
     ASSERT_TRUE(info.has_value());
     if (!info->reports(tcp_info_snd_wnd_end) || !info->reports(tcp_info_bytes_acked_end)) {
@@ -1414,21 +1431,56 @@ TEST_F(TcpTapReceive, AKernelSenderFillsAWindowPast65535Bytes) {
         << "the kernel's tcpi_snd_wnd once the stack acknowledged the first " << first
         << " bytes: the scaled window it reconstructs, against the stack's budget " << budget;
 
-    // The stack does not read; the kernel writes until the stack holds more than an unscaled window could offer.
-    EXPECT_TRUE(step_until(side, [&] { return !sender.pump() || side.unread() > 65535; }))
-        << "the stack held " << side.unread() << " bytes unread after " << patience().count()
-        << " ms, not above 65535; the kernel's socket had taken " << sender.sent() << " of " << payload.size();
+    // The stack does not read; the kernel writes until it stalls at the window's edge. Two signals must agree: the
+    // kernel still has bytes to send, and nothing new has arrived for `quiet` while the stack's window is below one
+    // segment. `quiet` stays near Linux's first zero-window probe, its RTO of 200 ms or more, so few probes fire.
+    constexpr auto quiet = 200ms;
+    std::size_t last     = side.unread();
+    auto last_change     = std::chrono::steady_clock::now();
+    const bool stalled   = step_until(side, [&] {
+        if (!sender.pump()) {
+            return true;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (side.unread() != last) {
+            last        = side.unread();
+            last_change = now;
+            return false;
+        }
+        return sender.sent() < payload.size() && c.receive_window() < mss && now - last_change >= quiet;
+    });
     ASSERT_EQ(sender.error(), 0) << std::strerror(sender.error());
-    EXPECT_GT(side.peak_unread(), 65535U) << "the most the stack held unread";
-    EXPECT_LE(side.peak_unread(), budget) << "the kernel stays inside the offered window";
+    info = kernel_tcp_info(kernel.fd());
+    ASSERT_TRUE(info.has_value());
+    const std::size_t at_stall = side.unread();
+    EXPECT_TRUE(stalled) << "the kernel did not stall at the window within " << patience().count()
+                         << " ms: the stack holds " << at_stall << " bytes unread and offers " << c.receive_window()
+                         << ", the kernel's socket took " << sender.sent() << " of " << payload.size()
+                         << ", its tcpi_snd_wnd is " << info->info.tcpi_snd_wnd;
+    EXPECT_GT(at_stall, 65535U) << "the bytes unread at the stall, past what an unscaled window could offer";
+    EXPECT_GE(at_stall, budget - 2 * mss)
+        << "the bytes unread at the stall against the budget " << budget << " less two segments of " << mss
+        << ": a sender leaves less than a segment unused and the last offer may trail by one; the kernel's "
+           "tcpi_snd_wnd "
+        << info->info.tcpi_snd_wnd;
     EXPECT_TRUE(side.received().empty()) << "nothing read until now";
 
-    // Then the stack reads everything.
+    // Then the stack reads everything: the window reopens and the kernel finishes, within `patience`.
     ASSERT_TRUE(kernel_transfer(side, sender).has_value());
     kernel_finishes(side, kernel.fd(), payload);
-    EXPECT_EQ(side.counters().dropped_out_of_window, 0U) << "the kernel honoured the scaled window";
+    // The edge is rounded up to the scale's unit as each segment leaves and may creep past the budget, so what bounds
+    // the bytes held is the packet cap, `receive_segments` full segments, not the budget.
+    EXPECT_LE(side.peak_unread(), slots_hold)
+        << "the most the stack held unread, against what the packet cap's " << aloe::tcp::TcpConfig{}.receive_segments
+        << " slots of " << mss << " bytes hold";
+    // Linux's zero-window probe is a bare segment at RCV.NXT - 1, which `accept_sequence` counts as
+    // `dropped_out_of_window` (and a retransmitted tail as `dropped_duplicate`), so neither is asserted. A probe into
+    // a window that is small but open carries new data that fits and is accepted in order. None of the three below
+    // can move: nothing is lost on the tap, so nothing arrives above a gap, and at most a few probes add to the slots
+    // and nodes the window's segments hold, far below the cap of 512 and the pool.
+    EXPECT_EQ(side.counters().dropped_out_of_order, 0U) << "nothing is lost on the tap, so nothing waits above a gap";
     EXPECT_EQ(side.counters().dropped_no_slot, 0U) << "the window, not the packet cap, stopped the kernel";
-    EXPECT_EQ(side.counters().dropped_no_node, 0U);
+    EXPECT_EQ(side.counters().dropped_no_node, 0U) << "the window, not the node pool, stopped the kernel";
 }
 
 TEST_F(TcpTapReceive, UnderNetemReorderingTheKernelSeesNoTimeout) {
@@ -1482,6 +1534,7 @@ TEST_F(TcpTapReceive, UnderNetemLossTheKernelRecoversFromTheBlocks) {
     EXPECT_GT(side.counters().sack_acks_sent, 0U) << "the stack sent no ACK with SACK blocks under 2% loss";
     EXPECT_GT(retrans, 0U) << "the kernel's tcpi_total_retrans under 2% loss";
     // A lost retransmission or a lost tail costs the kernel a timeout whatever the receiver does, hence a share.
+    // `tcpi_total_rto` also counts a SYN's timeout, a SYN or an ARP exchange that netem lost; the quarter covers it.
     EXPECT_LE(4U * rto, retrans) << "the kernel's tcpi_total_rto " << rto << " is more than a quarter of its "
                                  << "tcpi_total_retrans " << retrans << ": it waited out its timer, not the blocks";
 }
