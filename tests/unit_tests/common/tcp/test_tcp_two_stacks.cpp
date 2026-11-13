@@ -507,10 +507,11 @@ TEST_P(TcpTwoStacks, BothOptionsAreNegotiatedBetweenTwoStacks) {
         EXPECT_TRUE(end->sack());
         EXPECT_TRUE(end->window_scaling());
         EXPECT_TRUE(end->timestamps());
-        EXPECT_EQ(end->window_shift(), 3U) << "the smallest shift that states 512 * 1460 / 2 = 373760";
+        EXPECT_EQ(end->window_shift(), 3U)
+            << "chosen for the stack's largest budget, 512 * 1460 / 2 = 373760, counted in segments without timestamps";
         EXPECT_EQ(end->peer_window_shift(), 3U);
         EXPECT_EQ(end->mss(), 1448U) << "1460 less the timestamp option";
-        EXPECT_EQ(end->receive_budget(), 370688U) << "512 * 1448 / 2";
+        EXPECT_EQ(end->receive_budget(), 370688U) << "the connection's budget counts its own 1448: 512 * 1448 / 2";
     }
     c->release();
     s->release();
@@ -522,6 +523,7 @@ TEST_P(TcpTwoStacks, AReorderedStreamIsHeldAndDeliveredInOrder) {
     EXPECT_TRUE(run_echo(50000, 4000)) << "every byte echoed in order";
     const auto& sc = server_.tcp.counters();
     EXPECT_GT(client_port_.impairment_counters().reordered, 0U) << "the seed reorders some of the client's frames";
+    // Holds for this seed: re-check it if the seed or the fabric's reorder model changes.
     EXPECT_GT(sc.out_of_order_held, 0U) << "a data segment that overtook the one before it is held, not dropped";
     EXPECT_EQ(sc.dropped_out_of_order, 0U);
     EXPECT_EQ(sc.dropped_no_slot + sc.dropped_no_node, 0U);
@@ -552,10 +554,34 @@ TEST_P(TcpTwoStacks, ALossBehindThreeDuplicateAcksIsRepairedWithoutATimeout) {
     EXPECT_EQ(sc.dropped_out_of_order, 0U);
 }
 
+TEST_P(TcpTwoStacks, ALossWithNothingMoreToSendIsStillRepairedWithoutATimeout) {
+    constexpr std::size_t lost = 4;  // the fourth data frame, once: its retransmission is a later frame
+    client_port_.set_impairment({.script = [data_frames = std::size_t{0}](const aloe::fabric::Egress& egress) mutable
+                                     -> std::optional<aloe::fabric::Verdict> {
+        const auto frame = aloe::frames::parse_frame(egress.frame);
+        if (!frame || !frame->tcp || aloe::frames::tcp_payload(*frame).empty()) {
+            return std::nullopt;
+        }
+        return ++data_frames == lost ? std::optional{aloe::fabric::Verdict{.action = aloe::fabric::Action::Drop}}
+                                     : std::nullopt;
+    }});
+    // Ten full segments, the whole first flight: segments 1-3 and 5-10 reach the server in one burst and nothing
+    // follows them, so the ACKs that burst draws are all the client sees before the repair. Three of them must be
+    // true duplicates, although the first answer above the gap also acknowledges segment 3.
+    EXPECT_TRUE(run_echo(10U * 1448U, 2000));
+    const auto& cc = client_.tcp.counters();
+    const auto& sc = server_.tcp.counters();
+    EXPECT_EQ(client_port_.impairment_counters().dropped, 1U);
+    EXPECT_EQ(cc.retransmits, 0U) << "no retransmission timeout";
+    EXPECT_GE(cc.fast_retransmits, 1U) << "three duplicate ACKs from one burst started the repair";
+    EXPECT_EQ(sc.out_of_order_held, 6U) << "segments 5 to 10, held above the gap";
+}
+
 TEST_P(TcpTwoStacks, LossBothWaysStillDeliversEveryByteInOrder) {
     client_port_.set_impairment(
         {.loss = 0.02, .seed = 13});  // NOLINT(cert-msc51-cpp): a fixed seed keeps the test reproducible
-    server_port_.set_impairment({.loss = 0.02, .seed = 17});  // NOLINT(cert-msc51-cpp)
+    server_port_.set_impairment(
+        {.loss = 0.02, .seed = 17});  // NOLINT(cert-msc51-cpp): a fixed seed keeps the test reproducible
     EXPECT_TRUE(run_echo(200000, 60000)) << "every byte echoed in order, whatever the counters say";
     EXPECT_GT(client_port_.impairment_counters().dropped, 0U) << "the seed loses some of the client's frames";
     EXPECT_GT(server_port_.impairment_counters().dropped, 0U) << "and some of the server's";
