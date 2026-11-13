@@ -16,6 +16,7 @@
 #include <detail/ack_processor.hpp>
 #include <detail/control_block.hpp>
 #include <detail/lifecycle.hpp>
+#include <detail/receive_window.hpp>
 #include <detail/stack_context.hpp>
 #include <detail/transmitter.hpp>
 #include <flow_table.hpp>
@@ -122,8 +123,8 @@ namespace aloe::tcp::detail {
             }
         }
 
-        /// Advances the held payload's front by `count` bytes, freeing packets as they empty; a reopened edge queues
-        /// an update.
+        /// Advances the held payload's front by `count` bytes, freeing packets as they empty; a window that at least
+        /// doubles queues an update (`ReceiveWindow::update_due`).
         void consume(ControlBlock& block, const std::size_t count) noexcept {
             block.receive.consume(context_.pool, count);
             const bool receiving =
@@ -131,7 +132,7 @@ namespace aloe::tcp::detail {
             if (!receiving) {
                 return;  // the peer sends no more data, or the connection is closed: no offer to make
             }
-            if (transmitter_.offer_of(block) != block.receive.offered()) {
+            if (block.window.update_due(block.receive.next(), block.receive.unread(), slot_free(block))) {
                 transmitter_.queue_ack(block);  // an ordinary window update, including the reopening of a zero window
             }
         }
@@ -153,6 +154,21 @@ namespace aloe::tcp::detail {
                        (header.flags.has(wire::TcpFlag::Fin) ? 1U : 0U);
             }
         };
+
+        /// The connection holds fewer packets than its cap: the edge may move.
+        [[nodiscard]] bool slot_free(const ControlBlock& block) const noexcept {
+            return block.held_segments() < context_.config.receive_segments;
+        }
+
+        /// Opens the receive side once the handshake settled the peer's MSS and the options: RCV.NXT, then the window
+        /// with the budget counted in `mss()`. `scaling` is whether both ends offered window scaling (Task 4).
+        void open_receive(ControlBlock& block, const Sequence next, const bool scaling) noexcept {
+            block.receive.open(next);
+            const std::uint8_t shift   = scaling ? context_.window_shift : std::uint8_t{0};
+            const std::uint32_t budget = ReceiveWindow::budget_of(
+                context_.config.receive_segments, block.mss(), context_.config.receive_window, shift);
+            block.window.open(next, budget, block.mss(), scaling ? std::optional<std::uint8_t>{shift} : std::nullopt);
+        }
 
         [[nodiscard]] static bool checksum_ok(Datagram& datagram) noexcept {
             switch (datagram.l4_checksum) {
@@ -183,13 +199,13 @@ namespace aloe::tcp::detail {
                 return;
             }
             ControlBlock& block = *opened;
-            // The initial offer, carried by the SYN-ACK.
-            block.receive.open(segment.header.sequence + 1, context_.byte_budget);
             block.send.peer_mss = segment.mss.value_or(default_peer_mss);
             block.send.wnd      = segment.header.window;
             block.send.wl1      = segment.header.sequence;
             block.send.wl2      = Sequence{};
             block.timestamps.answer(segment.ts_value, context_.now);
+            // `mss()` is final: the window opens, and the SYN-ACK carries its first offer.
+            open_receive(block, segment.header.sequence + 1, false);
             block.timestamps.sent_ack(block.receive.next());  // what the SYN-ACK acknowledges, as Linux's rcv_wup
             // Arms the timer on a send or an ARP wait; a refused send leaves the SYN-ACK to the RTO.
             std::ignore = transmitter_.queue_control(
@@ -220,12 +236,12 @@ namespace aloe::tcp::detail {
             block.timestamps.answer(segment.ts_value, context_.now);  // our offer, answered
             // Frees the SYN's entry: a sample, and the timer stopped with the queue empty.
             acks_.handshake_acknowledged(block, header.acknowledgement, segment.ts_echo);
-            // The initial offer, carried by our first ACK.
-            block.receive.open(header.sequence + 1, context_.byte_budget);
-            block.timestamps.sent_ack(block.receive.next());  // as Linux's rcv_wup: data on the SYN-ACK may update it
             block.send.peer_mss = segment.mss.value_or(default_peer_mss);
             block.send.synchronize(header);
             lifecycle_.connected(block);
+            // Established with the peer's MSS stored: `mss()` is final, and our first ACK carries the first offer.
+            open_receive(block, header.sequence + 1, false);
+            block.timestamps.sent_ack(block.receive.next());  // as Linux's rcv_wup: data on the SYN-ACK may update it
             acks_.update_probing(block);  // a SYN-ACK offering no window starts probing as any ACK does
             // Deferred: a commit on the Connected event completes the handshake with data.
             transmitter_.queue_ack(block);
@@ -247,7 +263,7 @@ namespace aloe::tcp::detail {
             // option goes on, as Linux lets it.
             if (block.timestamps.rejects(segment.ts_value, rst, context_.now)) {
                 ++context_.counters.dropped_paws;
-                ack_now(block);
+                ack_now(block, Edge::Restate);
                 return;
             }
 
@@ -282,7 +298,7 @@ namespace aloe::tcp::detail {
                 if (block.state == State::CloseWait || block.state == State::Closing || block.state == State::LastAck) {
                     // A second FIN: the peer's sequence space ended at the first.
                     ++context_.counters.dropped_unexpected;
-                    ack_now(block);
+                    ack_now(block, Edge::Restate);
                     return;
                 }
                 receive_fin(block);
@@ -291,22 +307,23 @@ namespace aloe::tcp::detail {
 
         /**
          * The sequence check against `[rcv_nxt, offered edge)`. A segment entirely before RCV.NXT, past a gap or past
-         * the edge is dropped with an immediate ACK, unless it is a RST; data dropped past a gap is remembered, so the
-         * data that fills it is acknowledged at once. One that overlaps RCV.NXT loses its old prefix, a SYN with it. A
-         * duplicate SYN in SynReceived gets the SYN-ACK again, from its entry. False when the segment goes no further.
+         * the edge is dropped with an immediate ACK that restates the edge, unless it is a RST; data dropped past a gap
+         * is remembered, so the data that fills it is acknowledged at once. One that overlaps RCV.NXT loses its old
+         * prefix, a SYN with it. A duplicate SYN in SynReceived gets the SYN-ACK again, from its entry. False when the
+         * segment goes no further.
          */
         [[nodiscard]] bool accept_sequence(ControlBlock& block, Segment& segment) noexcept {
             wire::TcpHeader& header    = segment.header;
             const bool rst             = header.flags.has(wire::TcpFlag::Rst);
             const Sequence next        = block.receive.next();
-            const Sequence edge        = block.receive.offered();
-            const std::uint32_t window = block.receive.window();
+            const Sequence edge        = block.window.edge();
+            const std::uint32_t window = block.window.window(next);
             const Sequence sequence    = header.sequence;
             const Sequence end         = sequence + segment.length();
             const auto drop            = [this, &block, rst](std::uint64_t& counter) {
                 ++counter;
                 if (!rst) {
-                    ack_now(block);
+                    ack_now(block, Edge::Restate);
                 }
                 return false;
             };
@@ -371,7 +388,7 @@ namespace aloe::tcp::detail {
             }
             if (ack.after(block.send.nxt)) {
                 ++context_.counters.dropped_unexpected;  // acknowledges what was never sent
-                ack_now(block);
+                ack_now(block, Edge::Restate);
                 return false;
             }
             const typename AckProcessor::Outcome outcome =
@@ -391,31 +408,31 @@ namespace aloe::tcp::detail {
 
         /**
          * In-order payload, held for the application and acknowledged by the ACK policy. Refused, with an immediate
-         * ACK that reports the last byte accepted, past the peer's FIN, past the per-connection cap of held packets
-         * or with the shard's pool empty; the FIN behind refused data is not consumed. False when refused.
+         * ACK that reports the last byte accepted and restates the edge, past the peer's FIN, past the per-connection
+         * cap of held packets or with the shard's pool empty; the FIN behind refused data is not consumed. False when
+         * refused.
          */
         [[nodiscard]] bool receive_payload(ControlBlock& block, Datagram& datagram, const Segment& segment) noexcept {
             if (block.receive.closed()) {  // the peer's sequence space ended at its FIN, whatever state we are in
                 ++context_.counters.dropped_unexpected;
-                ack_now(block);
+                ack_now(block, Edge::Restate);
                 return false;
             }
-            if (block.receive.segments() >= context_.config.receive_segments) {
+            if (!slot_free(block)) {
                 ++context_.counters.dropped_no_slot;
-                ack_now(block);
+                ack_now(block, Edge::Restate);
                 return false;
             }
             const auto offset =
                 static_cast<std::uint16_t>(datagram.l3_offset + datagram.l3_length + segment.payload_offset);
             if (!block.receive.hold(context_.pool, datagram.packet, offset, segment.payload_length)) {
                 ++context_.counters.dropped_no_node;
-                ack_now(block);
+                ack_now(block, Edge::Restate);
                 return false;
             }
             lifecycle_.raise(block, stream::Event::Readable);
-            // A full-sized segment is our MSS less the timestamp option a timestamped peer puts in every segment.
-            if (const std::size_t full_size = context_.mss - block.timestamps.option_size();
-                block.ack_policy.on_data(segment.payload_length, full_size, block.receive.next()) ==
+            // A full-sized segment is the connection's `mss()`: the peer's MSS or ours, less the timestamp option.
+            if (block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next()) ==
                 AckPolicy::Ack::Now) {
                 ack_now(block);
             } else {
@@ -435,10 +452,11 @@ namespace aloe::tcp::detail {
             }
         }
 
-        /// An immediate ACK: queued through IP before the next segment is processed; a refusal leaves it pending. When
-        /// the close only waited for this ACK, Closed follows it, whichever segment prompted it.
-        void ack_now(ControlBlock& block) noexcept {
-            if (transmitter_.send_pure_ack(block)) {
+        /// An immediate ACK, stating the edge `edge` names: queued through IP before the next segment is processed; a
+        /// refusal leaves an ordinary ACK pending for flush. When the close only waited for this ACK, Closed follows
+        /// it, whichever segment prompted it.
+        void ack_now(ControlBlock& block, const Edge edge = Edge::Offer) noexcept {
+            if (transmitter_.send_pure_ack(block, edge)) {
                 lifecycle_.maybe_finish(block);
             } else {
                 transmitter_.queue_ack(block);

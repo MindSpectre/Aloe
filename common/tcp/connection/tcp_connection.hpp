@@ -83,6 +83,15 @@ namespace aloe::tcp {
         [[nodiscard]] bool peer_closed() const noexcept {
             return block_.receive.closed();
         }
+        /// The receive budget the handshake settled: half of what `receive_segments` full segments of `mss()` hold, or
+        /// `receive_window`, within what the window field states.
+        [[nodiscard]] std::uint32_t receive_budget() const noexcept {
+            return block_.window.budget();
+        }
+        /// The bytes on offer to the peer: from RCV.NXT to the right edge already offered.
+        [[nodiscard]] std::uint32_t receive_window() const noexcept {
+            return block_.window.window(block_.receive.next());
+        }
 
         /// `min(mss, min(peer window, congestion window + limited transmit's allowance) - in flight)` in Established or
         /// CloseWait with no prepare open and the queue below the send cap, else zero.

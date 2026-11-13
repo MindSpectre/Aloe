@@ -210,8 +210,9 @@ for (std::uint16_t index = 0; index < runtime.shard_count(); ++index) {
 
 `runtime.shard(index)` is read here before the shard has run anything that touches its streams; the task
 itself runs on the shard. A task awaits only its own shard's senders. The echo awaits `send(chunk)` before it
-consumes, because the sender copies from `chunk` until every byte is committed; the consume then moves the
-window's edge after the segment has left, which costs one window update per echoed segment at the flush. An
+consumes, because the sender copies from `chunk` until every byte is committed; the consume then frees the
+window after the segment has left, which costs a window update at the flush when it at least doubles the window on
+offer. An
 echo that wants the reopening to ride on its data writes through the handle's synchronous members instead:
 `prepare`, copy, `consume`, `commit`. That order lets the reopened window ride on the data segment at the price
 of losing the consumed bytes if the commit is refused, which is why `tcp.md` commits before it consumes.

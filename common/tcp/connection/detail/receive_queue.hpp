@@ -16,36 +16,25 @@
 namespace aloe::tcp::detail {
 
     /**
-     * @brief A connection's receive side: RCV.NXT, the right edge already offered to the peer, and the payload it holds
-     * for the application, chained on the shard's pool of held segments.
+     * @brief A connection's receive side: RCV.NXT and the payload it holds for the application, chained on the shard's
+     * pool of held segments.
      *
-     * The pool is the stack's and is passed in; the queue holds the chain. The offered edge never retreats. Once the
-     * peer's FIN is in, `closed()` and nothing more is accepted.
+     * The pool is the stack's and is passed in; the queue holds the chain. Once the peer's FIN is in, `closed()` and
+     * nothing more is accepted. The offered edge is the `ReceiveWindow`'s.
      */
     template <device::IsPacket Packet>
     class ReceiveQueue {
     public:
         using Pool = HeldSegmentPool<Packet>;
 
-        /// The peer's ISN is in: RCV.NXT follows it, and the first offer, carried by the handshake, is `budget` bytes.
-        void open(const wire::TcpSequence next, const std::uint32_t budget) noexcept {
-            next_    = next;
-            offered_ = next + budget;
+        /// The peer's ISN is in: RCV.NXT follows it.
+        void open(const wire::TcpSequence next) noexcept {
+            next_ = next;
         }
 
         /// RCV.NXT.
         [[nodiscard]] wire::TcpSequence next() const noexcept {
             return next_;
-        }
-
-        /// The right edge already offered.
-        [[nodiscard]] wire::TcpSequence offered() const noexcept {
-            return offered_;
-        }
-
-        /// The window offered: from RCV.NXT to the offered edge.
-        [[nodiscard]] std::uint32_t window() const noexcept {
-            return offered_.value - next_.value;
         }
 
         [[nodiscard]] std::size_t unread() const noexcept {
@@ -110,23 +99,6 @@ namespace aloe::tcp::detail {
             }
         }
 
-        /**
-         * The right edge an ACK offers now: `next + (budget - unread)` when it is later than the edge already offered
-         * and fewer than `cap` packets are held, else the edge already offered.
-         */
-        [[nodiscard]] wire::TcpSequence offer(const std::uint32_t budget, const std::size_t cap) const noexcept {
-            if (const wire::TcpSequence candidate = next_ + (budget - static_cast<std::uint32_t>(unread_));
-                candidate.after(offered_) && chain_.count < cap) {
-                return candidate;
-            }
-            return offered_;
-        }
-
-        /// A segment that left offered `edge`; true when that moved the edge.
-        [[nodiscard]] bool record_offer(const wire::TcpSequence edge) noexcept {
-            return std::exchange(offered_, edge) != edge;
-        }
-
         /// Every held packet back to the pool.
         void release(Pool& pool) noexcept {
             pool.release_all(chain_);
@@ -134,8 +106,7 @@ namespace aloe::tcp::detail {
         }
 
     private:
-        wire::TcpSequence next_{};     ///< RCV.NXT.
-        wire::TcpSequence offered_{};  ///< The right edge already offered to the peer; never retreats.
+        wire::TcpSequence next_{};  ///< RCV.NXT.
         std::size_t unread_ = 0;
         NodeChain chain_{};
         bool closed_ = false;

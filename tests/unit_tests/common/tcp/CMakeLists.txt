@@ -20,6 +20,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Tcp
         test_tcp_timestamps.cpp
         test_tcp_probes.cpp
         test_tcp_recovery.cpp
+        test_tcp_receive_window.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Tcp
         PRIVATE

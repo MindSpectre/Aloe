@@ -52,7 +52,7 @@ written from the RFCs and from what Aloe does, and its opening comment says wher
   first difference: `flags differ`, `sequence differs`, `ack differs`, `window differs`, `urgent differs` or
   `options differ`.
 - **The notation** -- `describe(line, sack_base)` and `describe(segment, sack_base)` write a packet line or a
-  segment the stack sent as a script would, `> S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>`;
+  segment the stack sent as a script would, `> S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>`;
   `encode_options(options, sack_base, timestamp_echo_base)` and `describe_options` turn an option list into
   header bytes and back; `format_time` writes a stamp as seconds since the script's start, `+0.010000`.
 
@@ -198,7 +198,7 @@ A failure names the line, what was expected and what the stack sent, both in the
 in seconds since the start and the window as written, before the tolerance:
 
 ```
-tests/scenarios/tcp/close/remote-fin-then-local-close.pkt:13: expected "> F. 1:1(0) ack 2 win 46720 <nop,nop,TS val 0 ecr 100>" at +0.000000; the stack sent "> . 1:1(0) ack 2 win 46720 <nop,nop,TS val 0 ecr 100>" at +0.000000: flags differ
+tests/scenarios/tcp/close/remote-fin-then-local-close.pkt:13: expected "> F. 1:1(0) ack 2 win 65534 <nop,nop,TS val 0 ecr 100>" at +0.000000; the stack sent "> . 1:1(0) ack 2 win 65534 <nop,nop,TS val 0 ecr 100>" at +0.000000: flags differ
 ```
 
 A mismatch says so first: `early:`, `late:`, `missing:`, `unexpected:` or `bad checksum:`. A call failure (`unbound call ...`, `read: not satisfied: ...`) names the call instead.

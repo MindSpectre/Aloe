@@ -32,6 +32,7 @@ add_library(${TCP}.Stack INTERFACE
         connection/detail/frame_template.hpp
         connection/detail/loss_recovery.hpp
         connection/detail/receive_queue.hpp
+        connection/detail/receive_window.hpp
         connection/detail/retransmission_queue.hpp
         connection/detail/rtt_estimator.hpp
         connection/detail/send_sequence.hpp

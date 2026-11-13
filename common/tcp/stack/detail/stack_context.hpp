@@ -7,10 +7,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <limits>
 
 #include <detail/control_block.hpp>
 #include <detail/held_segment_pool.hpp>
+#include <detail/receive_window.hpp>
 #include <tcp_config.hpp>
 #include <tcp_counters.hpp>
 #include <tcp_fwd.hpp>
@@ -35,8 +35,9 @@ namespace aloe::tcp::detail {
             : ip{ip_brick},
               config{validated},
               mss{static_cast<std::uint16_t>(ip_brick.max_l4_size() - wire::TcpHeader::size)},
-              byte_budget{static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                  std::uint64_t{config.receive_segments} * mss, std::numeric_limits<std::uint16_t>::max()))},
+              largest_budget{
+                  ReceiveWindow::budget_of(config.receive_segments, mss, config.receive_window, window_shift)},
+              syn_window{static_cast<std::uint16_t>(std::min(largest_budget, ReceiveWindow::unscaled_max))},
               pool{config.receive_pool} {
             for (std::size_t index = 0; index < config.connections; ++index) {
                 blocks.emplace_back(owner, fire, static_cast<std::uint32_t>(index), mss);
@@ -51,9 +52,13 @@ namespace aloe::tcp::detail {
 
         Ip& ip;
         TcpConfig config{};
-        std::uint16_t mss         = 0;  ///< Ours: `max_l4_size() - 20`.
-        /// `min(receive_segments * mss, 65535)`: the receive credit a connection starts with.
-        std::uint32_t byte_budget = 0;
+        std::uint16_t mss            = 0;  ///< Ours: `max_l4_size() - 20`.
+        /// Ours, offered on every SYN and SYN-ACK when window scaling is on; Task 4 computes it.
+        std::uint8_t window_shift    = 0;
+        /// `ReceiveWindow::budget_of(receive_segments, mss, receive_window, window_shift)`.
+        std::uint32_t largest_budget = 0;
+        /// `min(largest_budget, 65535)`: what a SYN states, before the connection has a budget.
+        std::uint16_t syn_window     = 0;
         HeldSegmentPool<Packet> pool;
         std::deque<ControlBlock> blocks{};
         TcpCounters counters{};

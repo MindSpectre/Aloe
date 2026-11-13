@@ -173,9 +173,9 @@ namespace aloe::tcp {
         [[nodiscard]] std::uint16_t mss() const noexcept {
             return context_.mss;
         }
-        /// `min(receive_segments * mss, 65535)`: the receive credit a connection starts with.
+        /// The largest budget the configuration allows; a connection's own is `Connection::receive_budget()`.
         [[nodiscard]] std::uint32_t byte_budget() const noexcept {
-            return context_.byte_budget;
+            return context_.largest_budget;
         }
         [[nodiscard]] const TcpCounters& counters() const noexcept {
             return context_.counters;

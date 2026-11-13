@@ -6,15 +6,15 @@
 +0 listen(3, 1) = 0
 
 +0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
-+0 > S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
 +0 < . 1:1(0) ack 1 win 10 <nop,nop,TS val 100 ecr 0>
 +0 accept(3, ..., ...) = 4
 
 +0 write(4, ..., 10) = 10
-+0 > P. 1:11(10) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 > P. 1:11(10) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
 +0 close(4) = 0
 +0.1 < . 1:1(0) ack 11 win 10 <nop,nop,TS val 100 ecr 0>
-+0 > F. 11:11(0) ack 1 win 46720 <nop,nop,TS val 100 ecr 100>
++0 > F. 11:11(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 100>
 +0 < . 1:1(0) ack 12 win 10 <nop,nop,TS val 100 ecr 100>
 +0 < F. 1:1(0) ack 12 win 10 <nop,nop,TS val 100 ecr 100>
-+0 > . 12:12(0) ack 2 win 46720 <nop,nop,TS val 100 ecr 100>
++0 > . 12:12(0) ack 2 win 65534 <nop,nop,TS val 100 ecr 100>

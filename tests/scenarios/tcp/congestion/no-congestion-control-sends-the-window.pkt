@@ -8,49 +8,49 @@
 +0 listen(3, 1) = 0
 
 +0 < S 0:0(0) win 65535 <mss 1000,nop,nop,TS val 100 ecr 0>
-+0 > S. 0:0(0) ack 1 win 46720 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
 +0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
 +0 accept(3, ..., ...) = 4
 
 +0 write(4, ..., 39520) = 39520
-+0 > P. 1:989(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 989:1977(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 1977:2965(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 2965:3953(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 3953:4941(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 4941:5929(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 5929:6917(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 6917:7905(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 7905:8893(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 8893:9881(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 9881:10869(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 10869:11857(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 11857:12845(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 12845:13833(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 13833:14821(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 14821:15809(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 15809:16797(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 16797:17785(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 17785:18773(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 18773:19761(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 19761:20749(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 20749:21737(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 21737:22725(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 22725:23713(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 23713:24701(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 24701:25689(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 25689:26677(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 26677:27665(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 27665:28653(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 28653:29641(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 29641:30629(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 30629:31617(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 31617:32605(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 32605:33593(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 33593:34581(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 34581:35569(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 35569:36557(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 36557:37545(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 37545:38533(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
-+0 > P. 38533:39521(988) ack 1 win 46720 <nop,nop,TS val 0 ecr 100>
++0 > P. 1:989(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 989:1977(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 1977:2965(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 2965:3953(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 3953:4941(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 4941:5929(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 5929:6917(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 6917:7905(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 7905:8893(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 8893:9881(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 9881:10869(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 10869:11857(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 11857:12845(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 12845:13833(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 13833:14821(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 14821:15809(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 15809:16797(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 16797:17785(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 17785:18773(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 18773:19761(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 19761:20749(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 20749:21737(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 21737:22725(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 22725:23713(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 23713:24701(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 24701:25689(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 25689:26677(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 26677:27665(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 27665:28653(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 28653:29641(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 29641:30629(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 30629:31617(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 31617:32605(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 32605:33593(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 33593:34581(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 34581:35569(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 35569:36557(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 36557:37545(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 37545:38533(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 38533:39521(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
 +0 < . 1:1(0) ack 39521 win 65535 <nop,nop,TS val 100 ecr 0>

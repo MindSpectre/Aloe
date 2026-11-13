@@ -115,7 +115,8 @@ TEST_P(TcpReceive, ThreeSegmentsGiveThreeChunksAndConsumeCrossesBoundaries) {
     ASSERT_EQ(frames.size(), 1U) << "one coalesced ACK for the three segments";
     EXPECT_EQ(frames[0].tcp->flags, TcpFlags{TcpFlag::Ack});
     EXPECT_EQ(frames[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 11});
-    EXPECT_EQ(frames[0].tcp->window, aloe::testing::tcp_fabric_budget) << "everything consumed: the full budget";
+    EXPECT_EQ(frames[0].tcp->window, aloe::testing::tcp_fabric_budget - 10U)
+        << "everything consumed, but ten bytes is less than a full segment: the edge stands";
     EXPECT_EQ(tcp_->counters().pure_acks_sent, 1U);
 }
 
@@ -214,7 +215,8 @@ TEST_P(TcpReceive, SlotCapDropsWithoutAdvancingAndRecovers) {
     auto frames = collect_queued();
     ASSERT_EQ(frames.size(), 1U) << "a refused segment is acknowledged at once";
     EXPECT_EQ(frames[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 3}) << "the last accepted byte";
-    EXPECT_EQ(frames[0].tcp->window, 2U * aloe::testing::tcp_fabric_mss - 2U) << "credit is not retracted to zero";
+    EXPECT_EQ(frames[0].tcp->window, aloe::testing::tcp_fabric_mss - 2U)
+        << "half of two slots, less two bytes: credit is not retracted to zero";
     receive(peer_.data(text("d")));  // a gap now: `c` was never accepted
     EXPECT_EQ(tcp_->counters().dropped_out_of_order, 1U);
     frames = collect_queued();

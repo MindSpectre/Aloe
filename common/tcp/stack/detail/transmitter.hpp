@@ -16,6 +16,7 @@
 
 #include <detail/connection_list.hpp>
 #include <detail/control_block.hpp>
+#include <detail/receive_window.hpp>
 #include <detail/retransmission_queue.hpp>
 #include <detail/segment_writer.hpp>
 #include <detail/sent_segment_pool.hpp>
@@ -31,6 +32,12 @@ namespace aloe::tcp::detail {
         TimedOut,      ///< The retry cap ran out: the connection ends `TimedOut`.
         UserTimedOut,  ///< The user timeout ran out: the same end, counted apart.
         Unresolved,    ///< The next hop never answered ARP: the connection ends `Unresolved`.
+    };
+
+    /// Which edge a segment with an ACK states.
+    enum class Edge : std::uint8_t {
+        Offer,    ///< What the window offers now (`ReceiveWindow::offer`).
+        Restate,  ///< The edge already offered: a duplicate ACK stays a duplicate (RFC 5681).
     };
 
     /**
@@ -233,9 +240,9 @@ namespace aloe::tcp::detail {
         }
 
         // The sends that keep nothing.
-        /// A pure ACK at `snd_nxt`.
-        [[nodiscard]] bool send_pure_ack(ControlBlock& block) noexcept {
-            if (!send_bare_ack(block, block.send.nxt)) {
+        /// A pure ACK at `snd_nxt`, stating the edge `edge` names.
+        [[nodiscard]] bool send_pure_ack(ControlBlock& block, const Edge edge = Edge::Offer) noexcept {
+            if (!send_bare_ack(block, block.send.nxt, edge)) {
                 return false;
             }
             ++context_.counters.pure_acks_sent;
@@ -245,15 +252,15 @@ namespace aloe::tcp::detail {
         /// abort's RST, at `snd_nxt` with the ACK, window and timestamps an ordinary segment carries (RFC 7323: should
         /// carry them, as Linux's does): through `Ipv4::send` and forgotten, since nothing of it is kept.
         [[nodiscard]] bool send_reset(ControlBlock& block) noexcept {
-            const Sequence next  = block.receive.next();
-            const Sequence offer = offer_of(block);
+            const Sequence next              = block.receive.next();
+            const ReceiveWindow::Offer offer = offer_of(block, Edge::Offer);
             const OutgoingSegment reset{
                 .header     = wire::TcpHeader{.source_port      = block.local.port,
                                               .destination_port = block.remote.port,
                                               .sequence         = block.send.nxt,
                                               .acknowledgement  = next,
                                               .flags            = wire::TcpFlags{wire::TcpFlag::Rst, wire::TcpFlag::Ack},
-                                              .window           = static_cast<std::uint16_t>(offer.value - next.value)},
+                                              .window           = offer.field},
                 .timestamps = timestamp_option(block)
             };
             if (!writer_.send_detached(block.remote.address, reset, context_.now)) {
@@ -437,9 +444,14 @@ namespace aloe::tcp::detail {
             return true;
         }
 
-        /// The right edge an ACK offers now (`ReceiveQueue::offer`).
-        [[nodiscard]] Sequence offer_of(const ControlBlock& block) const noexcept {
-            return block.receive.offer(context_.byte_budget, context_.config.receive_segments);
+        /// What a segment with an ACK states now.
+        [[nodiscard]] ReceiveWindow::Offer offer_of(const ControlBlock& block, const Edge edge) const noexcept {
+            const Sequence next = block.receive.next();
+            if (edge == Edge::Restate) {
+                return block.window.restate(next);
+            }
+            return block.window.offer(
+                next, block.receive.unread(), block.held_segments() < context_.config.receive_segments);
         }
 
     private:
@@ -454,9 +466,9 @@ namespace aloe::tcp::detail {
         using RetryList    = ConnectionList<ControlBlock, &ControlBlock::retry_link>;
         using DeferredList = ConnectionList<ControlBlock, &ControlBlock::deferred_link>;
 
-        /// A segment with ACK left offering `offer`: the edge is recorded and the ACK that waited is done.
-        void record_offer(ControlBlock& block, const Sequence offer) noexcept {
-            if (block.receive.record_offer(offer)) {
+        /// A segment with ACK left stating `offer`: the edge is recorded and the ACK that waited is done.
+        void record_offer(ControlBlock& block, const ReceiveWindow::Offer& offer) noexcept {
+            if (block.window.record(offer)) {
                 ++context_.counters.window_updates;
             }
             acks_.remove(block);
@@ -474,27 +486,30 @@ namespace aloe::tcp::detail {
         /**
          * The one send function: every segment of a connection leaves here, kept or not, framed by the writer. The
          * option block carries the MSS on a handshake segment and the timestamps on every segment of a connection
-         * that sends them. A segment with ACK offers the receive window (`offer_of`). The packet stays with the
-         * caller. Only a success records the offer and Last.ACK.sent and clears the pending ACK; a failure, counted
-         * by the writer, leaves the packet framed.
+         * that sends them. The window: a SYN states the stack's `syn_window` and records nothing, a SYN-ACK the
+         * connection's budget unscaled (`ReceiveWindow::handshake`), every other segment with ACK what `offer_of`
+         * gives for `edge`. The packet stays with the caller. Only a success records the offer and Last.ACK.sent and
+         * clears the pending ACK; a failure, counted by the writer, leaves the packet framed.
          */
         [[nodiscard]] std::expected<void, net::SendError> emit(ControlBlock& block,
                                                                Packet& packet,
                                                                const bool framed,
                                                                const Sequence sequence,
                                                                const wire::TcpFlags flags,
-                                                               const bool handshake) noexcept {
-            const bool with_ack  = flags.has(wire::TcpFlag::Ack);
-            const Sequence next  = block.receive.next();
-            const Sequence offer = with_ack ? offer_of(block) : block.receive.offered();
+                                                               const bool handshake,
+                                                               const Edge edge = Edge::Offer) noexcept {
+            const bool with_ack              = flags.has(wire::TcpFlag::Ack);
+            const Sequence next              = block.receive.next();
+            const ReceiveWindow::Offer offer = !with_ack   ? ReceiveWindow::Offer{.field = context_.syn_window}
+                                               : handshake ? block.window.handshake(next)
+                                                           : offer_of(block, edge);
             const OutgoingSegment segment{
                 .header     = wire::TcpHeader{.source_port      = block.local.port,
                                               .destination_port = block.remote.port,
                                               .sequence         = sequence,
                                               .acknowledgement  = with_ack ? next : Sequence{},
                                               .flags            = flags,
-                                              .window = with_ack ? static_cast<std::uint16_t>(offer.value - next.value)
-                                                                 : static_cast<std::uint16_t>(context_.byte_budget)},
+                                              .window           = offer.field},
                 .mss        = handshake ? std::optional{context_.mss}
                       : std::nullopt,
                 .timestamps = timestamp_option(block)
@@ -611,15 +626,16 @@ namespace aloe::tcp::detail {
             return {};
         }
 
-        /// A header-only ACK at `sequence` from a fresh packet: lent to the device and forgotten, never kept. A failure
-        /// is counted.
-        [[nodiscard]] bool send_bare_ack(ControlBlock& block, const Sequence sequence) noexcept {
+        /// A header-only ACK at `sequence`, stating the edge `edge` names, from a fresh packet: lent to the device and
+        /// forgotten, never kept. A failure is counted.
+        [[nodiscard]] bool
+        send_bare_ack(ControlBlock& block, const Sequence sequence, const Edge edge = Edge::Offer) noexcept {
             std::optional<Packet> packet = context_.ip.allocate();
             if (!packet) {
                 ++context_.counters.send_refused;
                 return false;
             }
-            if (!emit(block, *packet, false, sequence, wire::TcpFlags{wire::TcpFlag::Ack}, false)) {
+            if (!emit(block, *packet, false, sequence, wire::TcpFlags{wire::TcpFlag::Ack}, false, edge)) {
                 return false;  // the packet goes back to the pool
             }
             *packet = Packet{};  // the device frees the buffer when it is done

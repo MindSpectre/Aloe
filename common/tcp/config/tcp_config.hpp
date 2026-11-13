@@ -47,8 +47,8 @@ namespace aloe::tcp {
     struct TcpConfig {
         std::size_t connections      = 1024;  ///< Slots per shard.
         std::size_t listeners        = 8;
-        std::size_t receive_segments = 32;  ///< Packets one connection may hold, in order and out of order together;
-                                            ///< with `mss()`, the default window.
+        std::size_t receive_segments = 512;  ///< Packets one connection may hold, in order and out of order together;
+                                             ///< with `mss()`, the default window.
         std::uint32_t receive_window =
             0;  ///< The byte window when set, capped at what the slots hold; zero is half of what they hold.
         std::size_t receive_pool      = 2048;  ///< Shared retained-packet nodes per shard.

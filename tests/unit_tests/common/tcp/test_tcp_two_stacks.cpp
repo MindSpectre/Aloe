@@ -271,7 +271,7 @@ TEST_P(TcpTwoStacksFourSlots, SmallSegmentsWithinTheSlotsLoseNothing) {
     Tcp::ConnectionType* c = nullptr;
     Tcp::ConnectionType* s = establish(c);
     ASSERT_NE(s, nullptr);
-    EXPECT_EQ(server_.tcp.byte_budget(), 4U * 1460U) << "the byte window offers four MSS";
+    EXPECT_EQ(server_.tcp.byte_budget(), 2U * 1460U) << "the byte window offers half of four slots";
     for (int i = 0; i < 4; ++i) {
         EXPECT_EQ(c->send(aloe::frames::pattern(1)), 1U) << "one byte per segment: send never coalesces";
     }

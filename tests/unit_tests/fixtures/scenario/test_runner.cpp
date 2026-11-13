@@ -76,7 +76,7 @@ namespace {
 
 TEST_P(RunnerTest, AnExpectedSegmentWithinItsWindowPasses) {
     const auto result = run_text(std::string{listen_preamble} + "+0 < S 0:0(0) win 65535 <mss 1460>\n"
-                                                                "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n",
+                                                                "+0 > S. 0:0(0) ack 1 win 65535 <mss 1460>\n",
                                  GetParam());
     EXPECT_TRUE(result.has_value()) << result.error().message;
 }
@@ -112,7 +112,7 @@ TEST_P(RunnerTest, AMismatchNamesTheFieldAndBothSegments) {
     ASSERT_FALSE(result.has_value());
     EXPECT_TRUE(mentions(result, "flags differ")) << result.error().message;
     EXPECT_TRUE(mentions(result, "> S 0:0(0) <mss 1460>")) << result.error().message;
-    EXPECT_TRUE(mentions(result, "> S. 0:0(0) ack 1 win 46720 <mss 1460>")) << result.error().message;
+    EXPECT_TRUE(mentions(result, "> S. 0:0(0) ack 1 win 65535 <mss 1460>")) << result.error().message;
     EXPECT_EQ(result.error().line, 6);
 }
 
@@ -127,7 +127,7 @@ TEST_P(RunnerTest, TheQueueSurvivesAnInboundLineBetweenTwoOutboundLines) {
 TEST_P(RunnerTest, AnUnexpectedSegmentAtTheEndFails) {
     const auto result = run_text(std::string{listen_preamble} + "+0 < S 0:0(0) win 65535 <mss 1460>\n", GetParam());
     EXPECT_TRUE(mentions(result, "unexpected")) << (result ? "passed" : result.error().message);
-    EXPECT_TRUE(mentions(result, "> S. 0:0(0) ack 1 win 46720 <mss 1460>"));
+    EXPECT_TRUE(mentions(result, "> S. 0:0(0) ack 1 win 65535 <mss 1460>"));
 }
 
 TEST_P(RunnerTest, AnAbsoluteTimeGoingBackwardsFails) {
@@ -180,7 +180,7 @@ TEST_P(RunnerTest, ABadChecksumFailsEvenWhenEveryFieldMatches) {
             .sequence         = aloe::wire::TcpSequence{7000},
             .acknowledgement  = config.peer_isn + 1,
             .flags            = {aloe::wire::TcpFlag::Syn, aloe::wire::TcpFlag::Ack},
-            .window           = 46720,
+            .window           = 65535,
             .mss              = 1460,
             .checksums        = aloe::frames::Checksums::Wrong
     },
@@ -191,7 +191,7 @@ TEST_P(RunnerTest, ABadChecksumFailsEvenWhenEveryFieldMatches) {
     std::array<aloe::fabric::Packet, 1> burst{std::move(*packet)};
     ASSERT_EQ(harness.stack_port().transmit(0, burst), 1);
 
-    const auto script = parse_script("+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n");
+    const auto script = parse_script("+0 > S. 0:0(0) ack 1 win 65535 <mss 1460>\n");
     ASSERT_TRUE(script.has_value());
     Runner runner{harness, *script};
     const auto result = runner.run();
@@ -237,7 +237,7 @@ namespace {
                                               "+0 bind(3, ..., ...) = 0\n"
                                               "+0 listen(3, 1) = 0\n"
                                               "+0 < S 0:0(0) win 65535 <mss 1460>\n"
-                                              "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n"
+                                              "+0 > S. 0:0(0) ack 1 win 65535 <mss 1460>\n"
                                               "+0 < . 1:1(0) ack 1 win 65535\n"
                                               "+0 accept(3, ..., ...) = 4\n";
 
@@ -245,10 +245,10 @@ namespace {
 
 TEST_P(RunnerTest, PassiveOpenWithAcceptAndClose) {
     const auto result = run_text(std::string{passive_open} + "+0 close(4) = 0\n"
-                                                             "+0 > F. 1:1(0) ack 1 win 46720\n"
+                                                             "+0 > F. 1:1(0) ack 1 win 65535\n"
                                                              "+0 < . 1:1(0) ack 2 win 65535\n"
                                                              "+0 < F. 1:1(0) ack 2 win 65535\n"
-                                                             "+0 > . 2:2(0) ack 2 win 46720\n",
+                                                             "+0 > . 2:2(0) ack 2 win 65534\n",
                                  GetParam());
     EXPECT_TRUE(result.has_value()) << result.error().message;
 }
@@ -260,10 +260,10 @@ TEST_P(RunnerTest, AClosedConnectionsNumberIsFreedAtItsTerminalEvent) {
     EXPECT_TRUE(mentions(before, "descriptor 4 is in use")) << (before ? "passed" : before.error().message);
 
     const auto after = run_text(std::string{passive_open} + "+0 close(4) = 0\n"
-                                                            "+0 > F. 1:1(0) ack 1 win 46720\n"
+                                                            "+0 > F. 1:1(0) ack 1 win 65535\n"
                                                             "+0 < . 1:1(0) ack 2 win 65535\n"
                                                             "+0 < F. 1:1(0) ack 2 win 65535\n"
-                                                            "+0 > . 2:2(0) ack 2 win 46720\n"
+                                                            "+0 > . 2:2(0) ack 2 win 65534\n"
                                                             "+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 4\n",
                                 GetParam());
     EXPECT_TRUE(after.has_value()) << after.error().message;
@@ -273,9 +273,9 @@ TEST_P(RunnerTest, ActiveOpenWithConnect) {
     const auto result = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
                                  "+0 fcntl(3, F_SETFL, O_RDWR|O_NONBLOCK) = 0\n"
                                  "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
-                                 "+0 > S 0:0(0) win 46720 <mss 1460,nop,nop,TS val 0 ecr 0>\n"
+                                 "+0 > S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 0 ecr 0>\n"
                                  "+0 < S. 0:0(0) ack 1 win 65535 <mss 1460>\n"
-                                 "+0 > . 1:1(0) ack 1 win 46720\n",
+                                 "+0 > . 1:1(0) ack 1 win 65535\n",
                                  GetParam());
     EXPECT_TRUE(result.has_value()) << result.error().message;
 }
@@ -285,15 +285,15 @@ TEST_P(RunnerTest, WriteSegmentsByThePeersMssAcrossInterleavedAcks) {
                                  "+0 bind(3, ..., ...) = 0\n"
                                  "+0 listen(3, 1) = 0\n"
                                  "+0 < S 0:0(0) win 65535 <mss 1000>\n"
-                                 "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n"
+                                 "+0 > S. 0:0(0) ack 1 win 65535 <mss 1460>\n"
                                  "+0 < . 1:1(0) ack 1 win 65535\n"
                                  "+0 accept(3, ..., ...) = 4\n"
                                  "+0 write(4, ..., 2500) = 2500\n"
-                                 "+0 > P. 1:1001(1000) ack 1 win 46720\n"
+                                 "+0 > P. 1:1001(1000) ack 1 win 65535\n"
                                  "+0 < . 1:1(0) ack 1001 win 65535\n"
-                                 "+0 > P. 1001:2001(1000) ack 1 win 46720\n"
+                                 "+0 > P. 1001:2001(1000) ack 1 win 65535\n"
                                  "+0 < . 1:1(0) ack 2001 win 65535\n"
-                                 "+0 > P. 2001:2501(500) ack 1 win 46720\n"
+                                 "+0 > P. 2001:2501(500) ack 1 win 65535\n"
                                  "+0 < . 1:1(0) ack 2501 win 65535\n",
                                  GetParam());
     EXPECT_TRUE(result.has_value()) << result.error().message;
@@ -301,9 +301,8 @@ TEST_P(RunnerTest, WriteSegmentsByThePeersMssAcrossInterleavedAcks) {
 
 TEST_P(RunnerTest, ReadConsumesWhatArrivedAndEagainWhenNothingIs) {
     const auto result = run_text(std::string{passive_open} + "+0 < P. 1:1001(1000) ack 1 win 65535\n"
-                                                             "+0 > . 1:1(0) ack 1001 win 45720\n"
+                                                             "+0 > . 1:1(0) ack 1001 win 64535\n"
                                                              "+0 read(4, ..., 1000) = 1000\n"
-                                                             "+0 > . 1:1(0) ack 1001 win 46720\n"
                                                              "+0 read(4, ..., 1000) = -1 EAGAIN\n",
                                  GetParam());
     EXPECT_TRUE(result.has_value()) << result.error().message;
@@ -314,7 +313,7 @@ TEST_P(RunnerTest, WriteBeyondTheWindowFailsWithTheCountAccepted) {
                                  "+0 bind(3, ..., ...) = 0\n"
                                  "+0 listen(3, 1) = 0\n"
                                  "+0 < S 0:0(0) win 500 <mss 1460>\n"
-                                 "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n"
+                                 "+0 > S. 0:0(0) ack 1 win 65535 <mss 1460>\n"
                                  "+0 < . 1:1(0) ack 1 win 500\n"
                                  "+0 accept(3, ..., ...) = 4\n"
                                  "+0 write(4, ..., 1000) = 1000\n",
@@ -327,7 +326,7 @@ TEST_P(RunnerTest, WriteBeyondTheWindowFailsWithTheCountAccepted) {
 
 TEST_P(RunnerTest, ReadBeyondUnreadFailsWithTheCounts) {
     const auto result = run_text(std::string{passive_open} + "+0 < P. 1:101(100) ack 1 win 65535\n"
-                                                             "+0 > . 1:1(0) ack 101 win 46620\n"
+                                                             "+0 > . 1:1(0) ack 101 win 65435\n"
                                                              "+0 read(4, ..., 1000) = 500\n",
                                  GetParam());
     ASSERT_FALSE(result.has_value());
@@ -340,8 +339,8 @@ TEST_P(RunnerTest, AReadWithAWindowWaitsForTheTimeout) {
     config.tcp.retries = 1;  // the SYN again at one second, TimedOut two seconds after that
     const auto result  = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
                                   "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
-                                  "+0 > S 0:0(0) win 46720 <mss 1460,nop,nop,TS val 0 ecr 0>\n"
-                                  "+1 > S 0:0(0) win 46720 <mss 1460,nop,nop,TS val 1000 ecr 0>\n"
+                                  "+0 > S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 0 ecr 0>\n"
+                                  "+1 > S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 1000 ecr 0>\n"
                                   // The window starts a second early so the read retries until TimedOut arrives at +2.
                                   "+1~+2.01 read(3, ..., 1) = -1 ETIMEDOUT\n",
                                   GetParam(),
@@ -355,7 +354,7 @@ TEST_P(RunnerTest, AReadWithoutAWindowRunsOnce) {
     config.tcp.retries = 1;
     const auto result  = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
                                   "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
-                                  "+0 > S 0:0(0) win 46720 <mss 1460,nop,nop,TS val 0 ecr 0>\n"
+                                  "+0 > S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 0 ecr 0>\n"
                                   "+0.5 read(3, ..., 1) = -1 ETIMEDOUT\n",
                                   GetParam(),
                                   {},
@@ -401,7 +400,7 @@ TEST_P(RunnerTest, AReleasedSlotIsReusedByTheNextSyn) {
 TEST_P(RunnerTest, ARefusedConnectGivesEconnrefused) {
     const auto result = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
                                  "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
-                                 "+0 > S 0:0(0) win 46720 <mss 1460,nop,nop,TS val 0 ecr 0>\n"
+                                 "+0 > S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 0 ecr 0>\n"
                                  "+0 < R. 0:0(0) ack 1 win 0\n"
                                  "+0 read(3, ..., 1) = -1 ECONNREFUSED\n",
                                  GetParam());
@@ -418,12 +417,11 @@ TEST_P(RunnerTest, CloseOnAListenerUnlistens) {
 
 TEST_P(RunnerTest, ShutdownSendsAFinAndKeepsReading) {
     const auto result = run_text(std::string{passive_open} + "+0 shutdown(4, SHUT_WR) = 0\n"
-                                                             "+0 > F. 1:1(0) ack 1 win 46720\n"
+                                                             "+0 > F. 1:1(0) ack 1 win 65535\n"
                                                              "+0 < . 1:1(0) ack 2 win 65535\n"
                                                              "+0 < P. 1:101(100) ack 2 win 65535\n"
-                                                             "+0 > . 2:2(0) ack 101 win 46620\n"
-                                                             "+0 read(4, ..., 100) = 100\n"
-                                                             "+0 > . 2:2(0) ack 101 win 46720\n",
+                                                             "+0 > . 2:2(0) ack 101 win 65435\n"
+                                                             "+0 read(4, ..., 100) = 100\n",
                                  GetParam());
     EXPECT_TRUE(result.has_value()) << result.error().message;
 }
@@ -459,15 +457,15 @@ TEST_P(RunnerTest, APartialWriteWhoseResultIsTheAcceptedCountPasses) {
     HarnessConfig config;
     config.tcp.send_segments = 2;
     const auto result        = run_text(std::string{listen_preamble} + "+0 < S 0:0(0) win 65535 <mss 1000>\n"
-                                                                       "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n"
+                                                                       "+0 > S. 0:0(0) ack 1 win 65535 <mss 1460>\n"
                                                                        "+0 < . 1:1(0) ack 1 win 65535\n"
                                                                        "+0 accept(3, ..., ...) = 4\n"
                                                                        "+0 write(4, ..., 3000) = 2000\n"
-                                                                       "+0 > P. 1:1001(1000) ack 1 win 46720\n"
-                                                                       "+0 > P. 1001:2001(1000) ack 1 win 46720\n"
+                                                                       "+0 > P. 1:1001(1000) ack 1 win 65535\n"
+                                                                       "+0 > P. 1001:2001(1000) ack 1 win 65535\n"
                                                                        "+0 < . 1:1(0) ack 1001 win 65535\n"
                                                                        "+0 write(4, ..., 1000) = 1000\n"
-                                                                       "+0 > P. 2001:3001(1000) ack 1 win 46720\n",
+                                                                       "+0 > P. 2001:3001(1000) ack 1 win 65535\n",
                                         GetParam(),
                                         {},
                                         config);
@@ -478,7 +476,7 @@ TEST_P(RunnerTest, AWriteWhoseResultIsNotTheAcceptedCountFailsWithBothCounts) {
     HarnessConfig config;
     config.tcp.send_segments = 1;
     const auto result        = run_text(std::string{listen_preamble} + "+0 < S 0:0(0) win 65535 <mss 1000>\n"
-                                                                       "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n"
+                                                                       "+0 > S. 0:0(0) ack 1 win 65535 <mss 1460>\n"
                                                                        "+0 < . 1:1(0) ack 1 win 65535\n"
                                                                        "+0 accept(3, ..., ...) = 4\n"
                                                                        "+0 write(4, ..., 3000) = 3000\n",
@@ -492,7 +490,7 @@ TEST_P(RunnerTest, AWriteWhoseResultIsNotTheAcceptedCountFailsWithBothCounts) {
 TEST_P(RunnerTest, TheNoCongestionRunnerRunsAScript) {
     const auto result =
         run_text_without_congestion(std::string{listen_preamble} + "+0 < S 0:0(0) win 65535 <mss 1460>\n"
-                                                                   "+0 > S. 0:0(0) ack 1 win 46720 <mss 1460>\n",
+                                                                   "+0 > S. 0:0(0) ack 1 win 65535 <mss 1460>\n",
                                     GetParam());
     EXPECT_TRUE(result.has_value()) << result.error().message;
 }

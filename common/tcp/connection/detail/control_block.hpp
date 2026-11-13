@@ -14,6 +14,7 @@
 #include <detail/frame_template.hpp>
 #include <detail/loss_recovery.hpp>
 #include <detail/receive_queue.hpp>
+#include <detail/receive_window.hpp>
 #include <detail/retransmission_queue.hpp>
 #include <detail/rtt_estimator.hpp>
 #include <detail/send_sequence.hpp>
@@ -91,6 +92,10 @@ namespace aloe::tcp::detail {
         [[nodiscard]] bool timestamps_negotiated() const noexcept {
             return timestamps.enabled() && state != State::SynSent;
         }
+        /// Packets the connection holds, on both chains (the out-of-order chain joins in Task 6).
+        [[nodiscard]] std::uint32_t held_segments() const noexcept {
+            return receive.segments();
+        }
         /// The peer's window is zero with nothing in flight: the timer sends zero-window probes until it opens.
         [[nodiscard]] bool probing() const noexcept {
             return timer_kind == TimerKind::Probe;
@@ -113,6 +118,7 @@ namespace aloe::tcp::detail {
             events           = {};
             finish_pending   = false;
             receive          = {};
+            window           = {};
             ack_policy       = {};
             send             = {};
             prepared         = std::nullopt;
@@ -149,6 +155,7 @@ namespace aloe::tcp::detail {
 
         // The protocol's state, one part per concern.
         ReceiveQueue<Packet> receive{};
+        ReceiveWindow window{};
         AckPolicy ack_policy{};
         SendSequence send{};
         std::optional<Preparation> prepared{};

@@ -100,8 +100,9 @@ namespace aloe::testing {
     inline constexpr std::uint16_t tcp_listen_port   = 7;
     inline constexpr std::uint16_t tcp_peer_port     = 40000;
     inline constexpr std::uint32_t tcp_peer_isn      = 1000;
-    inline constexpr std::uint16_t tcp_fabric_mss    = 1460;                  ///< MTU 1500 less both headers.
-    inline constexpr std::uint32_t tcp_fabric_budget = 32U * tcp_fabric_mss;  ///< 46720: the default byte budget.
+    inline constexpr std::uint16_t tcp_fabric_mss    = 1460;  ///< MTU 1500 less both headers.
+    /// The default budget against a peer without window scaling.
+    inline constexpr std::uint32_t tcp_fabric_budget = 65535;
 
     /// The peer's outbound orientation towards the stack's listener.
     [[nodiscard]] inline frames::TcpSpec peer_spec(const std::uint16_t peer_port = tcp_peer_port) {
