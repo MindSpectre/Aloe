@@ -76,6 +76,14 @@ namespace aloe::tcp::detail {
             return true;
         }
 
+        /// A run of held nodes that now follows RCV.NXT joins the tail, in order: RCV.NXT and the unread count move
+        /// past its `bytes`. The nodes stay taken; `run` is left empty.
+        void append(Pool& pool, NodeChain& run, const std::uint32_t bytes) noexcept {
+            pool.splice_back(chain_, run);
+            next_    = next_ + bytes;
+            unread_ += bytes;
+        }
+
         /// The peer's FIN, in order: it takes one number, and the peer's sequence space ends with it.
         void take_fin() noexcept {
             next_   = next_ + 1;

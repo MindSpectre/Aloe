@@ -13,6 +13,7 @@
 #include <detail/connection_list.hpp>
 #include <detail/frame_template.hpp>
 #include <detail/loss_recovery.hpp>
+#include <detail/reassembly_queue.hpp>
 #include <detail/receive_queue.hpp>
 #include <detail/receive_window.hpp>
 #include <detail/retransmission_queue.hpp>
@@ -93,9 +94,10 @@ namespace aloe::tcp::detail {
         [[nodiscard]] bool timestamps_negotiated() const noexcept {
             return timestamps.enabled() && state != State::SynSent;
         }
-        /// Packets the connection holds, on both chains (the out-of-order chain joins in Task 6).
+        /// Packets the connection holds, on both chains: in order and above a gap. Both count against
+        /// `receive_segments`.
         [[nodiscard]] std::uint32_t held_segments() const noexcept {
-            return receive.segments();
+            return receive.segments() + reassembly.segments();
         }
         /// The peer's window is zero with nothing in flight: the timer sends zero-window probes until it opens.
         [[nodiscard]] bool probing() const noexcept {
@@ -107,7 +109,8 @@ namespace aloe::tcp::detail {
         void clear() noexcept {
             assert(!timer.armed());
             assert(!event_link.linked && !ack_link.linked && !retry_link.linked && !deferred_link.linked);
-            assert(receive.segments() == 0 && queue.empty() && "the stack returns the packets first");
+            assert(receive.segments() == 0 && !reassembly.holds() && queue.empty() &&
+                   "the stack returns the packets first");
             state            = State::Closed;
             owned            = false;
             indexed          = false;
@@ -120,6 +123,7 @@ namespace aloe::tcp::detail {
             finish_pending   = false;
             receive          = {};
             window           = {};
+            reassembly       = {};
             ack_policy       = {};
             send             = {};
             prepared         = std::nullopt;
@@ -158,6 +162,7 @@ namespace aloe::tcp::detail {
         // The protocol's state, one part per concern.
         ReceiveQueue<Packet> receive{};
         ReceiveWindow window{};
+        ReassemblyQueue<Packet> reassembly{};
         AckPolicy ack_policy{};
         SendSequence send{};
         std::optional<Preparation> prepared{};

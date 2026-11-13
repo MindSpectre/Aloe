@@ -297,9 +297,9 @@ signal that a connection left the fast path: one that never does moves none of `
 |             | `dropped_bad_checksum`       | A `Bad` verdict, or an `Unknown` one that failed the software check.                                                                                                               |
 |             | `dropped_no_connection`      | No connection and no listener; answered with RST unless it was one.                                                                                                                |
 |             | `dropped_closed`             | Segments for a `Closed` connection not yet released; answered with RST.                                                                                                            |
-|             | `dropped_unexpected`         | Valid segments the state does not admit: a stray answer in `SynSent`, an ACK of unsent data, data after the peer's FIN.                                                            |
-|             | `dropped_duplicate`          | Data entirely before `rcv_nxt`.                                                                                                                                                    |
-|             | `dropped_out_of_order`       | Data starting after `rcv_nxt`, above a gap.                                                                                                                                        |
+|             | `dropped_unexpected`         | Valid segments the state does not admit: a stray answer in `SynSent`, an ACK of unsent data, data after the peer's FIN or a FIN held above a gap.                                  |
+|             | `dropped_duplicate`          | Data entirely before `rcv_nxt`, or above a gap where held data covers every byte.                                                                                                  |
+|             | `dropped_out_of_order`       | Data above a gap with no room for it: at the cap or with the pool empty, and above every segment held out of order.                                                                |
 |             | `dropped_out_of_window`      | Data reaching past the advertised edge.                                                                                                                                            |
 |             | `dropped_no_slot`            | Data for a connection already holding `receive_segments` packets.                                                                                                                  |
 |             | `dropped_no_node`            | Data when the shard's `receive_pool` is empty, and SYNs to a listener when `send_pool` has no node for the SYN-ACK.                                                                |
@@ -580,10 +580,12 @@ hold, or `receive_window` when set, at most 65535; it moves the edge it offered 
 budget, whichever is smaller, and never retracts it. A read sends a window update of its own only when the window it
 frees at least doubles the one on offer, and an ACK for a refused segment restates the edge already offered. Separately,
 a connection holds at most `receive_segments` packets, and the shard's held packets come from one pool of `receive_pool`
-nodes. Small segments can reach the packet cap before the byte window closes. A segment that arrives when either cap is
-reached is dropped, counted (`dropped_no_slot` or `dropped_no_node`) and not acknowledged: the immediate ACK reports the
-last byte accepted, the peer's retransmission recovers it, and the offered window is never taken back. The edge is
-extended only while a packet slot is free, so a connection at its cap stops offering more.
+nodes. Small segments can reach the packet cap before the byte window closes. Both chains, in order and above a gap,
+count against the cap. A segment that arrives when either cap is reached takes the node of the highest segment held
+above a gap, when that one starts above it: the lower sequence wins. Otherwise it is dropped, counted
+(`dropped_no_slot` or `dropped_no_node`, or `dropped_out_of_order` above a gap) and not acknowledged: the immediate ACK
+reports the last byte accepted, the peer's retransmission recovers it, and the offered window is never taken back. The
+edge is extended only while a packet slot is free, so a connection at its cap stops offering more.
 
 **The peer's window comes from current acknowledgements.** `writable()` is
 `min(mss, min(snd_wnd, cwnd + allowance) - in flight)`, where `cwnd` is the policy's window and the allowance is
@@ -597,8 +599,9 @@ sender to cope with a retracted edge by not sending into it.
 data segment leaving first carries it, so a request answered in the same tick costs one segment. It goes at once for
 every second full-sized segment, a full-sized segment being the connection's `mss()`, the smaller of the two MSS less
 the timestamp option on a connection that carries it; for anything that cannot be accepted (a duplicate, a segment out
-of window, above a gap or older than `TS.Recent`, data after the peer's FIN); while recovering from a gap; and for a FIN
-the connection is closing on. A refused immediate ACK stays queued for the next `flush`.
+of window or older than `TS.Recent`, data after the peer's FIN); for every segment above a gap, held or not, with the
+edge restated; for in-order data while anything is held above it, and while recovering from a gap; and for a FIN the
+connection is closing on. A refused immediate ACK stays queued for the next `flush`.
 
 **Ownership is logical state.** A passive open belongs to the stack until the handshake completes and `Accepted`
 hands it to the application; one that fails before then is freed silently. A connection from `connect` is the
@@ -607,8 +610,8 @@ the application's: a `close`, `abort`, received RST or time-out in between leave
 commit that follows drops the packet, returns false, counts `commits_refused` and raises no retry hint, since the
 events already say why. A commit the windows no longer cover is refused the same way but with a retry hint:
 prepare again for what `writable()` allows. After `Closed`, `Reset`, `TimedOut` or `Unresolved` the
-retransmission queue is gone and the held segments stay readable until `release`, the owner's last call, which
-aborts a connection that is still open and frees the slot.
+retransmission queue is gone, the segments held above a gap go back to the pool, and the in-order held segments stay
+readable until `release`, the owner's last call, which aborts a connection that is still open and frees the slot.
 
 **The table hashes on its own; placement chooses ports.** The flow table mixes a base hash into its own
 bucket hash. When the card hashes IPv4 TCP tuples the base hash is the card's RSS hash, so a received segment
@@ -638,8 +641,8 @@ loop. Aloe keeps the received packets as the read buffer, lets the application w
 keeps that packet itself, lent, as the retransmission queue's entry, and leaves the loop to the program or to the
 runtime written over the same bricks.
 
-**What is still left out, and why.** The receive side is phase 1's: out-of-order segments are dropped and the
-peer resends them, and there are no SACK blocks, no window scaling and no delayed ACK; all four come with step 4
+**What is still left out, and why.** The receive side holds segments above a gap as the packets they arrived in
+and negotiates window scaling, but sends no SACK blocks and has no delayed ACK yet; both come with the rest of step 4
 of phase 2. There is no TIME_WAIT: the slot is the owner's until `release`; it comes with step 6. The brick makes
 no deployment or latency claim yet: the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a recorded
 baseline, and its rerun with reliable send is owed, as its page says.

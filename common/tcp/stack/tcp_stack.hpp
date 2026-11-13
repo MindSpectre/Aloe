@@ -91,6 +91,7 @@ namespace aloe::tcp {
                 transmitter_.disarm(block);
                 block.prepared.reset();
                 block.receive.release(context_.pool);
+                block.reassembly.release(context_.pool);
                 transmitter_.drop_queue(block);
             }
         }

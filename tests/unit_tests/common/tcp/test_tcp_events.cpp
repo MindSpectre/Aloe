@@ -3,8 +3,11 @@
 #include <aloe/tcp>
 #include <aloe/wire>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <tcp_fixture.hpp>
@@ -22,6 +25,15 @@ namespace {
                              ::testing::Values(aloe::fabric::EmulatedOffloads::None,
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
+
+    /// The packets the port's queue-0 pool can still supply: drawn out, counted, and returned.
+    [[nodiscard]] std::size_t free_packets(aloe::fabric::Port& port) {
+        std::vector<aloe::fabric::Packet> taken;
+        for (auto packet = port.allocate(0); packet.has_value(); packet = port.allocate(0)) {
+            taken.push_back(std::move(*packet));
+        }
+        return taken.size();
+    }
 
 }  // namespace
 
@@ -128,4 +140,43 @@ TEST_P(TcpEvents, ReleasingAnotherPendingConnectionLeavesTheRest) {
     ASSERT_TRUE(event.has_value());
     EXPECT_EQ(event->connection, second);
     EXPECT_FALSE(poll().has_value());
+}
+
+TEST_P(TcpEvents, ATerminalEventReturnsTheOutOfOrderPackets) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const std::size_t nodes = tcp_->nodes_available();
+    receive(peer_.data(aloe::frames::pattern(100)));
+    for (const std::uint32_t at : {1000U, 2000U}) {
+        receive(peer_.segment(
+            {TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(100), peer_.snd_nxt() + at, peer_.rcv_nxt()));
+    }
+    EXPECT_EQ(c->out_of_order_segments(), 2U);
+    EXPECT_EQ(tcp_->nodes_available(), nodes - 3);
+    receive(peer_.rst());
+    EXPECT_EQ(c->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(c->out_of_order_segments(), 0U) << "nothing can fill the gap any more";
+    EXPECT_EQ(tcp_->nodes_available(), nodes - 1);
+    EXPECT_EQ(c->unread().size(), 100U) << "the in-order bytes stay readable until release";
+    c->release();
+    EXPECT_EQ(tcp_->nodes_available(), nodes);
+}
+
+TEST_P(TcpEvents, ReleaseReturnsBothChains) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    advance(0ms);  // the handshake's segments were lent to the device: the step brings them back
+    const std::size_t nodes   = tcp_->nodes_available();
+    const std::size_t packets = free_packets(port);
+    receive(peer_.data(aloe::frames::pattern(100)));
+    for (const std::uint32_t at : {1000U, 2000U}) {
+        receive(peer_.segment(
+            {TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(100), peer_.snd_nxt() + at, peer_.rcv_nxt()));
+    }
+    EXPECT_EQ(tcp_->nodes_available(), nodes - 3);
+    c->release();
+    EXPECT_EQ(tcp_->nodes_available(), nodes);
+    std::ignore = collect();  // the duplicate ACKs and the RST the release sent
+    advance(0ms);
+    EXPECT_EQ(free_packets(port), packets) << "every held packet is back in the port's pool";
 }

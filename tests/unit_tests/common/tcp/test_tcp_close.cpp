@@ -209,6 +209,115 @@ TEST_P(TcpClose, SecondFinAfterTheFirstIsDropped) {
     EXPECT_EQ(c->state(), State::CloseWait);
 }
 
+TEST_P(TcpClose, AFinAboveAGapTakesEffectWhenTheGapFills) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    receive(peer_.segment(
+        {TcpFlag::Psh, TcpFlag::Ack, TcpFlag::Fin}, aloe::frames::pattern(100), base + 1000U, peer_.rcv_nxt()));
+    EXPECT_EQ(c->out_of_order_segments(), 1U);
+    EXPECT_FALSE(c->events().peer_closed()) << "the FIN is remembered, not taken";
+    EXPECT_EQ(c->state(), State::Established);
+    auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, base);
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(1000), base, peer_.rcv_nxt()));
+    EXPECT_TRUE(c->events().peer_closed());
+    EXPECT_TRUE(c->peer_closed());
+    EXPECT_EQ(c->state(), State::CloseWait);
+    EXPECT_EQ(c->unread().size(), 1100U);
+    frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U) << "one ACK, at once, after the join";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, base + 1101U) << "1100 bytes and the FIN";
+    EXPECT_TRUE(collect().empty());
+}
+
+TEST_P(TcpClose, ABareFinAboveAGapIsRemembered) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    receive(peer_.segment({TcpFlag::Fin, TcpFlag::Ack}, {}, base + 1000U, peer_.rcv_nxt()));
+    EXPECT_EQ(c->out_of_order_segments(), 0U) << "no packet is held for a bare FIN";
+    EXPECT_FALSE(c->events().peer_closed());
+    EXPECT_EQ(collect_queued().size(), 1U) << "answered at once";
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(1000), base, peer_.rcv_nxt()));
+    EXPECT_TRUE(c->events().peer_closed());
+    EXPECT_EQ(c->state(), State::CloseWait);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, base + 1001U);
+}
+
+TEST_P(TcpClose, DataPastARememberedFinIsRefused) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    receive(peer_.segment({TcpFlag::Fin, TcpFlag::Ack}, {}, base + 1000U, peer_.rcv_nxt()));
+    std::ignore = collect_queued();
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(100), base + 1000U, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_unexpected, 1U) << "data at the FIN";
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(200), base + 900U, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_unexpected, 2U) << "data that runs past the FIN";
+    EXPECT_EQ(collect_queued().size(), 2U) << "each answered at once";
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+    EXPECT_EQ(tcp_->counters().out_of_order_held, 0U);
+}
+
+TEST_P(TcpClose, AnInOrderFinReleasesWhatIsHeldAbove) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const std::size_t nodes = tcp_->nodes_available();
+    receive(peer_.data(aloe::frames::pattern(10)));
+    receive(peer_.segment(
+        {TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(100), peer_.snd_nxt() + 2000U, peer_.rcv_nxt()));
+    EXPECT_EQ(c->out_of_order_segments(), 1U);
+    EXPECT_EQ(tcp_->nodes_available(), nodes - 2);
+    receive(peer_.fin());
+    EXPECT_EQ(c->state(), State::CloseWait);
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+    EXPECT_EQ(tcp_->nodes_available(), nodes - 1) << "only the in-order packet is still held";
+    EXPECT_EQ(c->unread().size(), 10U);
+}
+
+TEST_P(TcpClose, AnInOrderFinWithDataDoesNotJoinWhatIsHeldAbove) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base  = peer_.snd_nxt();
+    const std::size_t nodes = tcp_->nodes_available();
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(100), base + 10U, peer_.rcv_nxt()));
+    std::ignore = collect_queued();
+    // The peer's stream ends at 10: what it sent above that is not data.
+    receive(
+        peer_.segment({TcpFlag::Psh, TcpFlag::Ack, TcpFlag::Fin}, aloe::frames::pattern(10), base, peer_.rcv_nxt()));
+    EXPECT_EQ(c->state(), State::CloseWait);
+    EXPECT_EQ(c->unread().size(), 10U);
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+    EXPECT_EQ(tcp_->nodes_available(), nodes - 1);
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, base + 11U) << "ten bytes and the FIN";
+}
+
+TEST_P(TcpClose, AJoinThatReachesTheFinInFinWait2SendsOneAckAndCloses) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    c->close();
+    const auto fin = collect_queued();
+    ASSERT_EQ(fin.size(), 1U);
+    receive(peer_.ack(fin[0]));
+    ASSERT_EQ(c->state(), State::FinWait2);
+    std::ignore            = poll();
+    const TcpSequence base = peer_.snd_nxt();
+    receive(peer_.segment({TcpFlag::Fin, TcpFlag::Ack}, {}, base + 100U, peer_.rcv_nxt()));
+    std::ignore = collect_queued();
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(100), base, peer_.rcv_nxt()));
+    EXPECT_EQ(c->state(), State::Closed) << "the terminal ACK left";
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "one ACK, none on the closed connection";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, base + 101U);
+    EXPECT_EQ(tcp_->counters().connections_closed, 1U);
+}
+
 TEST_P(TcpClose, FinRetransmitKeepsItsSequenceThenTimesOut) {
     configure_tcp({.data_retries = 2});
     auto* c = open_passive(peer_);

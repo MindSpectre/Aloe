@@ -313,9 +313,10 @@ namespace aloe::tcp::detail {
         }
 
         /// Closed, with nothing armed, pending or queued: after a terminal event nothing is resent, so the
-        /// retransmission queue is dropped, its packets back now or when the device returns them. Held segments stay
-        /// until release, and so does an open preparation: the application may still write into its span, and the
-        /// next commit refuses it.
+        /// retransmission queue is dropped, its packets back now or when the device returns them, and the packets held
+        /// above a gap go back at once, since nothing can fill it any more. In-order held segments stay until release,
+        /// and so does an open preparation: the application may still write into its span, and the next commit
+        /// refuses it.
         void set_closed(ControlBlock& block) noexcept {
             if (block.state == State::SynSent) {
                 // The offers were never answered: nothing was negotiated.
@@ -328,6 +329,7 @@ namespace aloe::tcp::detail {
             transmitter_.forget(block);
             block.finish_pending = false;
             transmitter_.drop_queue(block);  // and off the deferred list
+            block.reassembly.release(context_.pool);
         }
 
         void finish(ControlBlock& block) noexcept {
@@ -376,8 +378,10 @@ namespace aloe::tcp::detail {
             block.retransmit_count = 0;
         }
 
+        /// Both chains back to the pool: the in-order one and the one above a gap.
         void return_chain(ControlBlock& block) noexcept {
             block.receive.release(context_.pool);
+            block.reassembly.release(context_.pool);
         }
 
         /// The retry cap or the user timeout ran out: `TimedOut` for an owned connection, counted apart when the user

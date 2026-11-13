@@ -349,7 +349,9 @@ TEST_P(TcpTwoStacks, DuplicationReorderingAndDelayAreAbsorbed) {
                                  .delay     = 5ms,
                                  .seed      = 3});  // NOLINT(cert-msc51-cpp): a fixed seed keeps the test reproducible
     EXPECT_TRUE(run_echo(5000, 4000));
-    EXPECT_GE(server_.tcp.counters().dropped_duplicate + server_.tcp.counters().dropped_out_of_order, 1U);
+    EXPECT_GE(server_.tcp.counters().dropped_duplicate, 1U) << "the seed duplicates a segment";
+    EXPECT_GE(server_.tcp.counters().out_of_order_held, 1U) << "a reordered segment is held, not dropped";
+    EXPECT_EQ(server_.tcp.counters().dropped_out_of_order, 0U);
 }
 
 TEST_P(TcpTwoStacks, ADelayBeyondTheRtoCausesASpuriousResendThatIsHarmless) {

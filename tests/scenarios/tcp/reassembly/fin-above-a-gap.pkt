@@ -1,0 +1,23 @@
+// A FIN on a segment above a gap is remembered with the segment's payload and takes effect only when the gap
+// fills: the duplicate ACK before then acknowledges 1001, and the segment that fills the gap delivers the run and
+// the FIN, acknowledged at once at 3002. The read then sees 3000 bytes and the end. The numbers: the edge stands
+// at 1 + 65535 = 65536; 65536 - 1001 = 64535; 65536 - 3002 = 62534, since the FIN takes a number and the window
+// it frees is less than a segment. This peer offered no SACK, so the duplicate carries no blocks. Linux keeps the
+// FIN with its buffer in the out-of-order queue and takes it when the buffer moves; on the wire it does the same.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 64535 <nop,nop,TS val 0 ecr 100>
++0 < FP. 2001:3001(1000) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 64535 <nop,nop,TS val 0 ecr 100>
++0 < P. 1001:2001(1000) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 3002 win 62534 <nop,nop,TS val 0 ecr 100>
++0 read(4, ..., 4000) = 3000
++0 read(4, ..., 4000) = 0

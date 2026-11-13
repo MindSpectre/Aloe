@@ -94,7 +94,7 @@ TEST_P(TcpAcks, ThreeGapSegmentsInOneBurstAttemptThreeDuplicateAcks) {
     receive(peer_.data(aloe::frames::pattern(3)));
     std::ignore                = collect();
     const TcpSequence expected = peer_.snd_nxt();  // 1004
-    // Three segments above a gap, injected together and processed in one pass.
+    // Three segments above a gap, injected together and processed in one pass: 1014..1043, held.
     for (const std::uint32_t at : {10U, 20U, 30U}) {
         auto packet = harness_->allocate(0);
         ASSERT_TRUE(packet.has_value());
@@ -105,25 +105,59 @@ TEST_P(TcpAcks, ThreeGapSegmentsInOneBurstAttemptThreeDuplicateAcks) {
         ASSERT_EQ(harness_->transmit(0, out), 1U);
     }
     process_pending();
-    EXPECT_EQ(tcp_->counters().dropped_out_of_order, 3U);
+    EXPECT_EQ(tcp_->counters().out_of_order_held, 3U);
+    EXPECT_EQ(tcp_->counters().dropped_out_of_order, 0U);
+    EXPECT_EQ(c->out_of_order_segments(), 3U);
     auto frames = collect_queued();
     EXPECT_EQ(pure_acks(frames), 3U) << "one per segment, not one coalesced at the end";
     for (const auto& frame : frames) {
         EXPECT_EQ(frame.tcp->acknowledgement, expected);
+        EXPECT_EQ(frame.tcp->window, aloe::testing::tcp_fabric_budget - 3U) << "the edge restated";
     }
-    // Recovery: every segment that advances rcv_nxt is acknowledged at once until the remembered end, 1044.
-    receive(peer_.data(aloe::frames::pattern(10)));  // 1004..1013
+    // The gap filled, 1004..1013: the run joins and one ACK goes at once, at the end of the run.
+    receive(peer_.data(aloe::frames::pattern(10)));
     frames = collect_queued();
-    EXPECT_EQ(pure_acks(frames), 1U);
-    EXPECT_EQ(frames[0].tcp->acknowledgement, expected + 10U);
-    receive(peer_.data(aloe::frames::pattern(10)));  // 1014..1023: still below the gap end
-    EXPECT_EQ(pure_acks(collect_queued()), 1U);
-    receive(peer_.data(aloe::frames::pattern(20)));  // 1024..1043
-    EXPECT_EQ(pure_acks(collect_queued()), 1U) << "reaching the remembered end";
-    receive(peer_.data(aloe::frames::pattern(5)));  // past it: ordinary again
+    ASSERT_EQ(pure_acks(frames), 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, expected + 40U);
+    EXPECT_TRUE(collect().empty()) << "and nothing more at the flush";
+    EXPECT_EQ(c->unread().size(), 43U);
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+    // Nothing held above: ordinary again.
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(5), expected + 40U, peer_.rcv_nxt()));
     EXPECT_TRUE(collect_queued().empty());
     EXPECT_EQ(pure_acks(collect()), 1U);
-    EXPECT_EQ(c->unread().size(), 48U);
+}
+
+TEST_P(TcpAcks, InOrderDataBelowHeldDataIsAcknowledgedAtOnce) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(10), base + 2000U, peer_.rcv_nxt()));
+    std::ignore = collect_queued();
+    for (const std::uint32_t at : {10U, 20U}) {
+        receive(peer_.data(aloe::frames::pattern(10)));
+        const auto frames = collect_queued();
+        ASSERT_EQ(pure_acks(frames), 1U) << "answered before the flush";
+        EXPECT_EQ(frames[0].tcp->acknowledgement, base + at);
+    }
+    EXPECT_EQ(c->out_of_order_segments(), 1U);
+}
+
+TEST_P(TcpAcks, AnAckForASegmentAboveAGapRestatesTheEdge) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    for (int index = 0; index < 3; ++index) {
+        receive(peer_.data(aloe::frames::pattern(1000)));
+    }
+    std::ignore = collect();
+    c->consume(3000);
+    EXPECT_TRUE(collect().empty()) << "65535 on offer is not twice 62535: no update";
+    receive(peer_.segment(
+        {TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(10), peer_.snd_nxt() + 1000U, peer_.rcv_nxt()));
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, peer_.snd_nxt());
+    EXPECT_EQ(frames[0].tcp->window, 62535U) << "the edge offered, 65536, less RCV.NXT, 3001";
 }
 
 TEST_P(TcpAcks, DuplicateAndOutOfWindowDataAckedAtOnceRejectedRstIsSilent) {
@@ -136,13 +170,14 @@ TEST_P(TcpAcks, DuplicateAndOutOfWindowDataAckedAtOnceRejectedRstIsSilent) {
     EXPECT_EQ(pure_acks(collect_queued()), 1U);
     const TcpSequence beyond = peer_.snd_nxt() + aloe::testing::tcp_fabric_budget + 10U;
     receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(3), beyond, peer_.rcv_nxt()));
-    EXPECT_EQ(tcp_->counters().dropped_out_of_order, 1U) << "a gap, far beyond the window";
+    EXPECT_EQ(tcp_->counters().dropped_out_of_window, 1U) << "above a gap and past the edge";
+    EXPECT_EQ(tcp_->counters().dropped_out_of_order, 0U);
     EXPECT_EQ(pure_acks(collect_queued()), 1U);
     receive(peer_.segment({TcpFlag::Rst, TcpFlag::Ack}, {}, beyond, peer_.rcv_nxt()));
     EXPECT_TRUE(collect_queued().empty()) << "a rejected RST is not answered";
     EXPECT_EQ(c->state(), aloe::tcp::State::Established);
     EXPECT_EQ(tcp_->counters().connections_reset, 0U);
-    EXPECT_EQ(tcp_->counters().dropped_out_of_window, 1U);
+    EXPECT_EQ(tcp_->counters().dropped_out_of_window, 2U);
 }
 
 TEST_P(TcpAcksRefusing, RefusalLeavesOneAckPendingWithoutReplayingDuplicates) {

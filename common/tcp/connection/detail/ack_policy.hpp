@@ -19,8 +19,8 @@ namespace aloe::tcp::detail {
             Now,      ///< Before the next segment is processed.
         };
 
-        /// Data was dropped above a gap, up to `end`: until the receive edge reaches the furthest such end, every
-        /// segment is acknowledged at once.
+        /// Data above a gap was refused, or released for room, up to `end`: until the receive edge reaches the
+        /// furthest such end, every segment is acknowledged at once.
         void gap(const wire::TcpSequence end) noexcept {
             if (!gap_end_ || end.after(*gap_end_)) {
                 gap_end_ = end;
@@ -57,7 +57,7 @@ namespace aloe::tcp::detail {
         }
 
     private:
-        std::optional<wire::TcpSequence> gap_end_{};  ///< The furthest end of data dropped above a gap.
+        std::optional<wire::TcpSequence> gap_end_{};  ///< The furthest end of data refused or released above a gap.
         std::uint8_t full_segments_ = 0;              ///< Full-sized segments since the last ACK; saturates at two.
     };
 

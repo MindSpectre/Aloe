@@ -271,7 +271,11 @@ behind every number.
 | `data/inbound-data-is-acked-at-flush`               | Data in, a pure ACK out at `+0` with the window less what is unread; `read` reopens it and the update leaves at the flush.                    |
 | `data/write-segments-by-peer-mss`                   | The peer's SYN carried `mss 1000`: a `write` of 2500 leaves as three `P.` of 988, 988 and 524, the MSS less the timestamp option.             |
 | `data/duplicate-is-acked-at-once`                   | A segment that arrives twice is answered at once with the same acknowledgement, and `read` sees its bytes once.                               |
-| `data/above-a-gap-is-acked-not-stored`              | A segment above a gap is answered at once with the acknowledgement at the gap and not kept; `read` sees what came in order.                   |
+| `reassembly/gap-filled-delivers-the-run`            | A segment above a gap is held and answered at once with the window restated; the one that fills the gap delivers both, acked at once.         |
+| `reassembly/overlap-is-trimmed`                     | Two held segments overlap in part: the held bytes win, the second is kept from the first one's end, and the run reads 2500 bytes.             |
+| `reassembly/covering-segment-replaces-a-held-one`   | A segment above a gap that covers a held one from its first byte replaces it; the gap filled, the run reads 2000 bytes.                       |
+| `reassembly/fin-above-a-gap`                        | A FIN above a gap is remembered: the duplicate ACK stays at the gap, and the FIN is acknowledged only once the gap fills.                     |
+| `reassembly/cap-drops-the-highest`                  | `--tcp_receive_segments=4`: the lower sequence wins at the cap; a new highest is dropped, a lower one or in-order data takes its node.        |
 | `close/local-close-then-remote-fin`                 | `close`, FIN out, ACK in, the peer's FIN in, ACK out at once; no TIME_WAIT.                                                                   |
 | `close/remote-fin-then-local-close`                 | The peer's FIN in, ACK out at `+0`, `read` returns 0, `close`, FIN out, ACK in; a later segment is reset.                                     |
 | `close/close-at-zero-window-holds-fin`              | `close` at a zero window: no FIN, a probe at +0.2, the answer opens the window and the FIN leaves at once; the peer's ACK and FIN end it.     |
@@ -306,9 +310,9 @@ behind every number.
 | `congestion/no-congestion-control-sends-the-window` | `--congestion=none`, `--tcp_send_segments=64`: a `write` of forty segments leaves at once.                                                    |
 
 Where Linux differs today, the script's comment says how: Linux delays the ACK of in-order data and of a FIN by
-up to 40 ms, offers `sackOK` and `wscale` beside the MSS and timestamps on its SYNs, holds a segment above a gap
-and answers it with a SACK block, retries a SYN six times, runs PRR in fast recovery, and probes a zero window
-only while it holds unsent data. The later steps of phase 2 change these scripts as SACK, window scaling and
+up to 40 ms, offers `sackOK` and `wscale` beside the MSS and timestamps on its SYNs, answers a segment above a gap
+with a SACK block when the peer offered SACK, retries a SYN six times, runs PRR in fast recovery, and probes a zero
+window only while it holds unsent data. The later steps of phase 2 change these scripts as SACK, window scaling and
 delayed ACKs land; the grammar already carries every option they need.
 
 ## Design notes

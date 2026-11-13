@@ -101,6 +101,14 @@ namespace aloe::tcp {
         [[nodiscard]] bool peer_closed() const noexcept {
             return block_.receive.closed();
         }
+        /// Packets held above a gap, waiting for the data that fills it; they count against `receive_segments`.
+        [[nodiscard]] std::uint32_t out_of_order_segments() const noexcept {
+            return block_.reassembly.segments();
+        }
+        /// Payload bytes held above a gap; not part of `unread()` until the gap fills.
+        [[nodiscard]] std::size_t out_of_order_bytes() const noexcept {
+            return block_.reassembly.bytes();
+        }
         /// The receive budget the handshake settled: half of what `receive_segments` full segments of `mss()` hold, or
         /// `receive_window`, within what the window field states.
         [[nodiscard]] std::uint32_t receive_budget() const noexcept {
