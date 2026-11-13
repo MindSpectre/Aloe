@@ -29,12 +29,16 @@ namespace aloe::tcp::detail {
         wire::TcpHeader header{};
         std::optional<std::uint16_t> mss{};  ///< The MSS option, on a handshake segment.
         std::optional<TimestampOption> timestamps{};
+        bool sack_permitted = false;                 ///< On a handshake segment.
+        std::optional<std::uint8_t> window_scale{};  ///< On a handshake segment: our shift.
 
         /// The TCP header and its options: one connection's segments of one kind keep one size, so a framed packet is
-        /// rewritten in place.
+        /// rewritten in place. SACK-permitted shares the timestamps' word when both are there.
         [[nodiscard]] std::size_t size() const noexcept {
             return wire::TcpHeader::size + (mss ? wire::TcpOptions::mss_size : 0) +
-                   (timestamps ? wire::TcpOptions::timestamps_size : 0);
+                   (timestamps ? wire::TcpOptions::timestamps_size : 0) +
+                   (sack_permitted && !timestamps ? wire::TcpOptions::sack_permitted_size : 0) +
+                   (window_scale ? wire::TcpOptions::window_scale_size : 0);
         }
     };
 
@@ -58,7 +62,7 @@ namespace aloe::tcp::detail {
         /**
          * Places the frame's headers in front of the payload, prepended when the packet is not framed yet and over the
          * old ones when it is: the template's link and network part, rebuilt first when stale, the TCP header with a
-         * zero checksum field, and the option block, the MSS first, then `nop, nop, TS`. `Ipv4::send_frame` finishes
+         * zero checksum field, and the option block in Linux's layout (`write`). `Ipv4::send_frame` finishes
          * the frame and lends the packet to the device; the packet stays with the caller, framed either way.
          */
         [[nodiscard]] std::expected<void, net::SendError> send(FrameTemplate& frame,
@@ -144,7 +148,8 @@ namespace aloe::tcp::detail {
                 .destination = destination, .protocol = wire::Ipv4Protocol::Tcp, .checksum = device::L4Checksum::Tcp};
         }
 
-        /// The TCP header and the option block, the data offset their size.
+        /// The TCP header and the option block, the data offset their size. The block is Linux's (`tcp_options_write`):
+        /// the MSS; then `sackOK, TS` or `nop, nop, TS` or `nop, nop, sackOK`; then `nop, wscale`.
         static void write(const std::span<std::byte> tcp, const OutgoingSegment& segment) noexcept {
             wire::TcpHeader header = segment.header;
             header.data_offset     = static_cast<std::uint8_t>(segment.size());
@@ -154,8 +159,19 @@ namespace aloe::tcp::detail {
                 wire::TcpOptions::write_mss(options, *segment.mss);
                 options = options.subspan(wire::TcpOptions::mss_size);
             }
-            if (segment.timestamps) {
+            if (segment.timestamps && segment.sack_permitted) {
+                wire::TcpOptions::write_sack_permitted_timestamps(
+                    options, segment.timestamps->value, segment.timestamps->echo);
+                options = options.subspan(wire::TcpOptions::timestamps_size);
+            } else if (segment.timestamps) {
                 wire::TcpOptions::write_timestamps(options, segment.timestamps->value, segment.timestamps->echo);
+                options = options.subspan(wire::TcpOptions::timestamps_size);
+            } else if (segment.sack_permitted) {
+                wire::TcpOptions::write_sack_permitted(options);
+                options = options.subspan(wire::TcpOptions::sack_permitted_size);
+            }
+            if (segment.window_scale) {
+                wire::TcpOptions::write_window_scale(options, *segment.window_scale);
             }
         }
 

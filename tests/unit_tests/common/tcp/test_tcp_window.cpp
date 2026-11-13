@@ -43,8 +43,8 @@ namespace {
 TEST_P(TcpWindow, OneByteCostsOneByteOfCreditAndKeepsTheEdge) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
-    EXPECT_EQ(tcp_->byte_budget(), 65535U) << "half of 512 packets at MSS 1460, capped at the unscaled field";
-    EXPECT_EQ(c->receive_budget(), budget);
+    EXPECT_EQ(tcp_->byte_budget(), 373760U) << "half of 512 packets at MSS 1460, within 65535 << 3";
+    EXPECT_EQ(c->receive_budget(), budget) << "a peer without window scaling: capped at the unscaled field";
     const TcpSequence initial_edge = TcpSequence{aloe::testing::tcp_peer_isn + 1} + budget;
     receive(peer_.data(aloe::frames::pattern(1)));
     auto frames = collect();
@@ -161,8 +161,8 @@ TEST_P(TcpWindow, TinySegmentsExhaustSlotsWithCreditLeft) {
 TEST_P(TcpWindow, BudgetIsCappedAtTheWireMaximum) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
-    EXPECT_EQ(tcp_->byte_budget(), 65535U) << "half of 512 slots is 373760: the unscaled field caps it";
-    EXPECT_EQ(c->receive_budget(), 65535U);
+    EXPECT_EQ(tcp_->byte_budget(), 373760U) << "half of 512 slots: the stack's largest budget, under its shift";
+    EXPECT_EQ(c->receive_budget(), 65535U) << "the peer offered no window scaling: the unscaled field caps it";
     EXPECT_EQ(peer_.stack_window(), 65535U);
 }
 

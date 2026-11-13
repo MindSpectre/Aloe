@@ -318,7 +318,9 @@ namespace aloe::tcp::detail {
         /// next commit refuses it.
         void set_closed(ControlBlock& block) noexcept {
             if (block.state == State::SynSent) {
-                block.timestamps.withdraw();  // the offer was never answered: nothing was negotiated
+                // The offers were never answered: nothing was negotiated.
+                block.timestamps.withdraw();
+                block.sack.withdraw();
             }
             block.state = State::Closed;
             transmitter_.disarm(block);
@@ -363,13 +365,14 @@ namespace aloe::tcp::detail {
         }
 
         /// Numbers the connection's SYN from a fresh ISN and starts its sender from scratch: RFC 6582's `recover` at
-        /// the ISN, no round-trip sample, the initial RTO and no retry; makes the timestamps offer.
+        /// the ISN, no round-trip sample, the initial RTO and no retry; makes the timestamps and SACK-permitted offers.
         void open(ControlBlock& block) noexcept {
             block.send.open(isn_.next());
             block.recovery.open(block.send.iss);
             block.rtt.reset(context_.config.rto_initial);
             // The SYN or SYN-ACK offers; the peer decides.
             block.timestamps.offer(context_.config.timestamps, isn_.offset());
+            block.sack.offer(context_.config.sack);
             block.retransmit_count = 0;
         }
 

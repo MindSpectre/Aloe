@@ -47,8 +47,15 @@ only make sense inside Aloe's own test binaries, such as the EAL as a gtest envi
   `ts_seen()`, and on a SYN without ACK adopts its ports. `set_timestamps(value)` makes every segment the peer
   builds carry a timestamp option with `value` and the last value seen as its echo, behind the MSS on a SYN, and
   `std::nullopt` stops it; a peer that never sets it offers no timestamps, so the stack's connection runs without
-  them and its `mss()` is the whole MSS. `set_window(window)` sets the window every later segment offers, zero to
-  make the stack probe.
+  them and its `mss()` is the whole MSS. `set_window_scale(shift)` makes a SYN or SYN-ACK the peer builds offer
+  window scaling with `shift`, and `set_sack_permitted(true)` makes it offer SACK-permitted; a peer that sets
+  neither offers neither, so the stack's connection to it scales no window, its budget is at most 65535 and its
+  SYN-ACK carries neither option. A SYN or SYN-ACK lays its options out as Linux does: the MSS; then
+  `sackOK, TS`, `nop, nop, TS` or `nop, nop, sackOK`; then `nop, wscale`. `see` also records what the stack's own
+  SYN or SYN-ACK offered, `stack_window_scale()` and `stack_sack_permitted()`, and `stack_window_bytes()` is the
+  stack's last window in bytes: the raw field, shifted by the stack's scale when both ends offered scaling and the
+  frame was not a SYN. `set_window(window)` sets the raw window field every later segment offers, zero to make the
+  stack probe; under a window scale the stack reads it shifted.
 - **`aloe::frames::fill(packet, bytes)`**, **`bytes_of(packet)`** -- bytes into and out of a packet of any
   backend. `flow_of(spec)` gives the `device::FlowTuple` a card would hash.
 

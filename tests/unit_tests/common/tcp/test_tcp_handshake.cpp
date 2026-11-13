@@ -5,9 +5,12 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <tuple>
+#include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <tcp_fixture.hpp>
@@ -31,6 +34,108 @@ namespace {
             std::span<const std::byte>{frame.l4}.subspan(20, frame.tcp->data_offset - 20U));
         return options && options->mss ? *options->mss : 0;
     }
+
+    [[nodiscard]] std::vector<std::byte> option_bytes(const aloe::frames::ParsedFrame& frame) {
+        const auto options = aloe::frames::tcp_options_of(frame);
+        return {options.begin(), options.end()};
+    }
+
+    /// The option bytes with the timestamp's TSval zeroed: a resent segment carries the clock's value then.
+    [[nodiscard]] std::vector<std::byte> without_ts_value(const aloe::frames::ParsedFrame& frame) {
+        std::vector<std::byte> bytes = option_bytes(frame);
+        for (std::size_t at = 0; at < bytes.size();) {
+            const auto kind = std::to_integer<std::uint8_t>(bytes[at]);
+            if (kind == 0 || kind == 1 || at + 1 >= bytes.size()) {
+                ++at;
+                continue;
+            }
+            if (kind == 8 && at + 6 <= bytes.size()) {
+                std::fill_n(bytes.begin() + static_cast<std::ptrdiff_t>(at + 2), 4, std::byte{0});
+            }
+            at += std::max<std::size_t>(2, std::to_integer<std::size_t>(bytes[at + 1]));
+        }
+        return bytes;
+    }
+
+    /// The handshake's options in Linux's layout: the MSS; `sackOK, TS` or `nop, nop, TS` or `nop, nop, sackOK`;
+    /// `nop, wscale`. `ts` carries the value and the echo, when the segment has the option.
+    [[nodiscard]] std::vector<std::byte> linux_layout(const std::optional<std::pair<std::uint32_t, std::uint32_t>> ts,
+                                                      const bool sack,
+                                                      const std::optional<std::uint8_t> shift) {
+        std::vector<std::vector<std::byte>> parts{aloe::frames::mss_option(aloe::testing::tcp_fabric_mss)};
+        if (ts) {
+            parts.push_back(sack ? aloe::frames::sack_permitted_timestamps_option(ts->first, ts->second)
+                                 : aloe::frames::timestamps_option(ts->first, ts->second));
+        } else if (sack) {
+            parts.push_back(aloe::frames::sack_permitted_option());
+        }
+        if (shift) {
+            parts.push_back(aloe::frames::window_scale_option(*shift));
+        }
+        return aloe::frames::joined(parts);
+    }
+
+    /// The TSval a frame carries; zero without the option.
+    [[nodiscard]] std::uint32_t ts_value_of(const aloe::frames::ParsedFrame& frame) {
+        const auto options = aloe::wire::TcpOptions::parse(aloe::frames::tcp_options_of(frame));
+        return options && options->timestamp_value ? *options->timestamp_value : 0;
+    }
+
+    /// The handshake's options from both ends: each combination of what the peer offers, against the configuration.
+    class TcpHandshakeOptions : public aloe::testing::TcpFixture {
+    protected:
+        /// A passive open per combination of the peer's offers, with and without its timestamps: the SYN-ACK's
+        /// option bytes are Linux's layout of what both ends sent, and the connection agrees.
+        void expect_negotiation(const bool sack_on, const bool scaling_on) {
+            std::uint16_t peer_port = 41000;
+            for (const bool ts : {false, true}) {
+                for (const bool sack : {false, true}) {
+                    for (const bool scaling : {false, true}) {
+                        SCOPED_TRACE(::testing::Message()
+                                     << "timestamps " << ts << ", sack " << sack << ", window scaling " << scaling);
+                        aloe::frames::TcpPeer peer{aloe::testing::peer_spec(peer_port++),
+                                                   TcpSequence{aloe::testing::tcp_peer_isn}};
+                        if (ts) {
+                            peer.set_timestamps(100);
+                        }
+                        peer.set_sack_permitted(sack);
+                        if (scaling) {
+                            peer.set_window_scale(7);
+                        }
+                        if (!tcp_->listening(aloe::testing::tcp_listen_port)) {
+                            ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+                        }
+                        receive(peer.syn());
+                        const auto syn_ack = collect();
+                        ASSERT_EQ(syn_ack.size(), 1U);
+                        const bool sack_used    = sack && sack_on;
+                        const bool scaling_used = scaling && scaling_on;
+                        const auto ts_pair =
+                            ts ? std::optional{std::pair{ts_value_of(syn_ack[0]), 100U}} : std::nullopt;
+                        EXPECT_EQ(option_bytes(syn_ack[0]),
+                                  linux_layout(ts_pair,
+                                               sack_used,
+                                               scaling_used ? std::optional<std::uint8_t>{3} : std::nullopt));
+                        peer.see(syn_ack[0]);
+                        receive(peer.ack());
+                        const auto event = poll();
+                        ASSERT_TRUE(event.has_value() && event->events.accepted());
+                        const auto& c = *event->connection;
+                        EXPECT_EQ(c.sack(), sack_used);
+                        EXPECT_EQ(c.window_scaling(), scaling_used);
+                        EXPECT_EQ(c.window_shift(), scaling_used ? 3U : 0U);
+                        EXPECT_EQ(c.peer_window_shift(), scaling_used ? 7U : 0U);
+                    }
+                }
+            }
+        }
+    };
+
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpHandshakeOptions,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
 
 }  // namespace
 
@@ -98,7 +203,7 @@ TEST_P(TcpHandshake, ActiveOpen) {
     EXPECT_GE(syn.tcp->source_port, 32768U);
     EXPECT_LE(syn.tcp->source_port, 60999U);
     EXPECT_EQ(c.local().port, syn.tcp->source_port);
-    EXPECT_EQ(syn.tcp->data_offset, 36U) << "mss, nop, nop, TS: the SYN offers timestamps";
+    EXPECT_EQ(syn.tcp->data_offset, 40U) << "mss, sackOK, TS, nop, wscale: the SYN offers every option";
     EXPECT_EQ(mss_option(syn), aloe::testing::tcp_fabric_mss);
     EXPECT_EQ(syn.tcp->window, aloe::testing::tcp_fabric_budget);
     EXPECT_EQ(syn.tcp->acknowledgement, TcpSequence{});
@@ -500,9 +605,200 @@ TEST_P(TcpHandshake, ConfigValidation) {
     EXPECT_NO_THROW((std::ignore = Tcp{
                          ip_, wheel_, {.receive_window = 65535U << 14U, .delayed_ack = 500ms}
     }));
-    const Tcp capped{ip_, wheel_, Config{.receive_segments = 1000}};
+    const Tcp capped{
+        ip_, wheel_, Config{.receive_segments = 1000, .window_scaling = false}
+    };
     EXPECT_EQ(capped.byte_budget(), 65535U) << "the byte budget never passes the wire window";
+    const Tcp scaled{ip_, wheel_, Config{.receive_segments = 1000}};
+    EXPECT_EQ(scaled.byte_budget(), 730000U) << "1000 * 1460 / 2, within 65535 << 4";
     EXPECT_EQ(capped.mss(), aloe::testing::tcp_fabric_mss);
     EXPECT_EQ(capped.capacity(), 1024U);
     EXPECT_EQ(wheel_.pending(), 0U) << "construction arms nothing";
+}
+
+TEST_P(TcpHandshakeOptions, TheOptionsAreInUseOnlyWhenBothEndsSendThem) {
+    expect_negotiation(true, true);
+}
+
+TEST_P(TcpHandshakeOptions, SackOffByConfigIsNeverOffered) {
+    configure_tcp({.sack = false});
+    expect_negotiation(false, true);
+}
+
+TEST_P(TcpHandshakeOptions, WindowScalingOffByConfigIsNeverOffered) {
+    configure_tcp({.window_scaling = false});
+    expect_negotiation(true, false);
+}
+
+TEST_P(TcpHandshake, AnActiveOpenOffersBothAndTakesThePeersAnswer) {
+    std::uint16_t peer_port = 42000;
+    for (const bool sack : {false, true}) {
+        for (const bool scaling : {false, true}) {
+            SCOPED_TRACE(::testing::Message() << "sack " << sack << ", window scaling " << scaling);
+            aloe::frames::TcpSpec spec = aloe::testing::peer_spec(peer_port++);
+            aloe::frames::TcpPeer peer{spec, TcpSequence{aloe::testing::tcp_peer_isn}};
+            peer.set_timestamps(100);
+            peer.set_sack_permitted(sack);
+            if (scaling) {
+                peer.set_window_scale(7);
+            }
+            const auto connected =
+                tcp_->connect({.address = aloe::testing::harness_ip, .port = spec.source_port}, now_);
+            ASSERT_TRUE(connected.has_value());
+            auto& c        = **connected;
+            const auto syn = collect();
+            ASSERT_EQ(syn.size(), 1U);
+            EXPECT_EQ(syn[0].tcp->data_offset, 40U) << "mss, sackOK, TS, nop, wscale";
+            EXPECT_EQ(option_bytes(syn[0]), linux_layout(std::pair{ts_value_of(syn[0]), 0U}, true, std::uint8_t{3}))
+                << "mss 1460, sackOK, TS, nop, wscale 3";
+            EXPECT_TRUE(c.sack()) << "in SynSent, the SYN's offer";
+            receive(peer.syn_ack(syn[0]));
+            const auto event = poll();
+            ASSERT_TRUE(event.has_value() && event->events.connected());
+            EXPECT_EQ(c.sack(), sack);
+            EXPECT_EQ(c.window_scaling(), scaling);
+            EXPECT_EQ(c.window_shift(), scaling ? 3U : 0U);
+            EXPECT_EQ(c.peer_window_shift(), scaling ? 7U : 0U);
+            const auto ack = collect();
+            ASSERT_EQ(ack.size(), 1U);
+            EXPECT_EQ(ack[0].tcp->window, scaling ? 46336U : 65535U) << "370688 >> 3, or the unscaled cap";
+        }
+    }
+}
+
+TEST_P(TcpHandshake, AnActiveOpenWithoutTimestampsOffersBothInTwelveBytes) {
+    configure_tcp({.timestamps = false});
+    const auto connected =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port}, now_);
+    ASSERT_TRUE(connected.has_value());
+    const auto syn = collect();
+    ASSERT_EQ(syn.size(), 1U);
+    EXPECT_EQ(syn[0].tcp->data_offset, 32U);
+    EXPECT_EQ(option_bytes(syn[0]), linux_layout(std::nullopt, true, std::uint8_t{3}))
+        << "mss, nop, nop, sackOK, nop, wscale 3";
+}
+
+TEST_P(TcpHandshake, ASynAndASynAckStateTheWindowUnscaled) {
+    const auto connected =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port}, now_);
+    ASSERT_TRUE(connected.has_value());
+    const auto syn = collect();
+    ASSERT_EQ(syn.size(), 1U);
+    EXPECT_EQ(syn[0].tcp->window, 65535U) << "min(373760, 65535), unscaled";
+    peer_.set_sack_permitted(true);
+    peer_.set_window_scale(7);
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto syn_ack = collect();
+    ASSERT_EQ(syn_ack.size(), 1U);
+    ASSERT_TRUE(aloe::testing::is_flags(syn_ack[0], {TcpFlag::Syn, TcpFlag::Ack}));
+    EXPECT_EQ(syn_ack[0].tcp->window, 65535U) << "min(budget, 65535) to a scaling peer, unscaled";
+    peer_.see(syn_ack[0]);
+    EXPECT_EQ(peer_.stack_window_scale(), std::optional<std::uint8_t>{3});
+    EXPECT_EQ(peer_.stack_window_bytes(), 65535U) << "the SYN-ACK's field is bytes";
+}
+
+TEST_P(TcpHandshake, TheFirstAckAfterTheHandshakeStatesTheBudgetScaled) {
+    peer_.set_window_scale(7);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->receive_budget(), 373760U) << "512 * 1460 / 2: no timestamps";
+    receive(peer_.data(aloe::frames::pattern(1)));
+    auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->window, (373760U - 1U + 7U) >> 3U) << "46720";
+    peer_.see(frames[0]);
+    EXPECT_EQ(peer_.stack_window_bytes(), 46720U << 3U);
+    EXPECT_EQ(c->receive_window(), 46720U << 3U) << "the edge the peer reconstructs";
+    ASSERT_TRUE(poll().has_value()) << "the byte's Readable, drained before the next open";
+
+    aloe::frames::TcpPeer stamped{aloe::testing::peer_spec(40001), TcpSequence{aloe::testing::tcp_peer_isn}};
+    stamped.set_timestamps(100);
+    stamped.set_window_scale(7);
+    auto* d = open_passive(stamped);
+    ASSERT_NE(d, nullptr);
+    EXPECT_EQ(d->receive_budget(), 370688U) << "512 * 1448 / 2";
+}
+
+TEST_P(TcpHandshake, APeerShiftAboveFourteenIsUsedAsFourteen) {
+    peer_.set_window_scale(15);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->peer_window_shift(), 14U);
+    EXPECT_TRUE(c->window_scaling());
+}
+
+TEST_P(TcpHandshake, ARetransmittedSynOffersEveryOptionAgain) {
+    const auto connected =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port}, now_);
+    ASSERT_TRUE(connected.has_value());
+    const auto first = collect();
+    ASSERT_EQ(first.size(), 1U);
+    advance(1s);
+    const auto again = collect();
+    ASSERT_EQ(again.size(), 1U);
+    ASSERT_TRUE(aloe::testing::is_flags(again[0], {TcpFlag::Syn}));
+    EXPECT_EQ(again[0].tcp->data_offset, first[0].tcp->data_offset);
+    EXPECT_EQ(without_ts_value(again[0]), without_ts_value(first[0]));
+    EXPECT_EQ(without_ts_value(again[0]), linux_layout(std::pair{0U, 0U}, true, std::uint8_t{3}));
+    EXPECT_EQ(again[0].tcp->window, first[0].tcp->window);
+}
+
+TEST_P(TcpHandshake, ARetransmittedSynAckKeepsItsOptions) {
+    peer_.set_timestamps(100);
+    peer_.set_sack_permitted(true);
+    peer_.set_window_scale(7);
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto first = collect();
+    ASSERT_EQ(first.size(), 1U);
+    advance(1s);
+    const auto again = collect();
+    ASSERT_EQ(again.size(), 1U);
+    ASSERT_TRUE(aloe::testing::is_flags(again[0], {TcpFlag::Syn, TcpFlag::Ack}));
+    EXPECT_EQ(again[0].tcp->data_offset, first[0].tcp->data_offset);
+    EXPECT_EQ(without_ts_value(again[0]), without_ts_value(first[0]));
+    EXPECT_EQ(without_ts_value(again[0]), linux_layout(std::pair{0U, 100U}, true, std::uint8_t{3}));
+    EXPECT_EQ(again[0].tcp->window, 65535U);
+}
+
+TEST_P(TcpHandshake, AnActiveOpenThatEndsUnansweredNegotiatedNothing) {
+    configure_tcp({.retries = 1});
+    const auto connected =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port}, now_);
+    ASSERT_TRUE(connected.has_value());
+    auto& c = **connected;
+    ASSERT_EQ(collect().size(), 1U);
+    EXPECT_TRUE(c.sack()) << "the SYN offers it";
+    advance(1s);
+    ASSERT_EQ(collect().size(), 1U) << "the one retry";
+    advance(2s);
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.timed_out());
+    EXPECT_EQ(c.state(), aloe::tcp::State::Closed);
+    EXPECT_FALSE(c.sack()) << "the offer was never answered";
+    EXPECT_FALSE(c.window_scaling());
+    EXPECT_EQ(c.peer_window_shift(), 0U);
+}
+
+TEST_P(TcpHandshake, ASynAckWithDataKeepsItsWindowUnscaled) {
+    peer_.set_window_scale(7);
+    peer_.set_window(1000);
+    const auto connected =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port}, now_);
+    ASSERT_TRUE(connected.has_value());
+    auto& c        = **connected;
+    const auto syn = collect();
+    ASSERT_EQ(syn.size(), 1U);
+    peer_.see(syn[0]);
+    receive(peer_.segment(
+        TcpFlags{TcpFlag::Syn, TcpFlag::Ack}, aloe::frames::pattern(1), peer_.snd_nxt(), peer_.rcv_nxt(), true));
+    ASSERT_EQ(c.state(), aloe::tcp::State::Established);
+    EXPECT_EQ(c.unread().size(), 1U) << "the SYN-ACK's byte, through the synchronized path";
+    EXPECT_EQ(c.peer_window_shift(), 7U);
+    EXPECT_EQ(c.writable(), 1000U) << "the SYN-ACK's field is bytes, its payload notwithstanding";
+    std::ignore = collect();
+    receive(peer_.segment(TcpFlags{TcpFlag::Ack}, {}, peer_.snd_nxt() + 2U, c.committed()));
+    EXPECT_EQ(c.writable(), 1460U) << "the next segment's field of 1000 is 128000 bytes";
 }

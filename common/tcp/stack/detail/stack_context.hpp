@@ -35,6 +35,11 @@ namespace aloe::tcp::detail {
             : ip{ip_brick},
               config{validated},
               mss{static_cast<std::uint16_t>(ip_brick.max_l4_size() - wire::TcpHeader::size)},
+              window_shift{
+                  config.window_scaling
+                      ? ReceiveWindow::shift_for(ReceiveWindow::budget_of(
+                            config.receive_segments, mss, config.receive_window, wire::TcpOptions::max_window_scale))
+                      : std::uint8_t{0}},
               largest_budget{
                   ReceiveWindow::budget_of(config.receive_segments, mss, config.receive_window, window_shift)},
               syn_window{static_cast<std::uint16_t>(std::min(largest_budget, ReceiveWindow::unscaled_max))},
@@ -53,7 +58,8 @@ namespace aloe::tcp::detail {
         Ip& ip;
         TcpConfig config{};
         std::uint16_t mss            = 0;  ///< Ours: `max_l4_size() - 20`.
-        /// Ours, offered on every SYN and SYN-ACK when window scaling is on; Task 4 computes it.
+        /// Ours, offered on every SYN and SYN-ACK when window scaling is on: the smallest shift under which the field
+        /// states the largest budget the configuration allows, counted in our MSS; zero with scaling off.
         std::uint8_t window_shift    = 0;
         /// `ReceiveWindow::budget_of(receive_segments, mss, receive_window, window_shift)`.
         std::uint32_t largest_budget = 0;

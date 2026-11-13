@@ -56,9 +56,9 @@ namespace aloe::tcp::detail {
         /**
          * An ACK on a synchronized connection, of nothing past SND.NXT. An ACK of new data frees what it covers,
          * samples the round trip and drives loss recovery (`acknowledge_data`). A duplicate ACK, of something in
-         * flight, is judged against the window as it stands, before this segment updates it. RFC 793 updates the
-         * window only when SND.UNA <= SEG.ACK <= SND.NXT: a stale ACK carries a stale window. `payload_length` is the
-         * segment's, since an ACK that carries data is no duplicate.
+         * flight, is judged against the window as it stands, before this segment updates it, the field scaled by the
+         * peer's shift. RFC 793 updates the window only when SND.UNA <= SEG.ACK <= SND.NXT: a stale ACK carries a
+         * stale window. `payload_length` is the segment's, since an ACK that carries data is no duplicate.
          */
         [[nodiscard]] Outcome on_ack(ControlBlock& block,
                                      const wire::TcpHeader& header,
@@ -66,9 +66,9 @@ namespace aloe::tcp::detail {
                                      const std::optional<std::uint32_t> echo) noexcept {
             const Sequence ack                = header.acknowledgement;
             const std::size_t writable_before = transmitter_.writable(block);
-            const bool duplicate              = payload_length == 0 && !header.flags.has(wire::TcpFlag::Syn) &&
-                                                !header.flags.has(wire::TcpFlag::Fin) && ack == block.send.una &&
-                                                header.window == block.send.wnd && transmitter_.in_flight(block);
+            const bool duplicate = payload_length == 0 && !header.flags.has(wire::TcpFlag::Syn) &&
+                                   !header.flags.has(wire::TcpFlag::Fin) && ack == block.send.una &&
+                                   block.send.scaled(header.window) == block.send.wnd && transmitter_.in_flight(block);
             Outcome outcome{};
             if (ack.after(block.send.una)) {
                 acknowledge_data(block, ack, echo);

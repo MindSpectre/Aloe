@@ -65,7 +65,9 @@ namespace aloe::tcp::detail {
                             .mss            = std::nullopt,
                             .base_hash      = 0,
                             .ts_value       = std::nullopt,
-                            .ts_echo        = std::nullopt};
+                            .ts_echo        = std::nullopt,
+                            .window_scale   = std::nullopt,
+                            .sack_permitted = false};
             if (header->data_offset > wire::TcpHeader::size) {
                 const auto options = wire::TcpOptions::parse(std::span<const std::byte>{l4}.subspan(
                     wire::TcpHeader::size, header->data_offset - wire::TcpHeader::size));
@@ -74,7 +76,10 @@ namespace aloe::tcp::detail {
                     return;
                 }
                 if (header->flags.has(wire::TcpFlag::Syn)) {
-                    segment.mss = options->mss;  // RFC 9293: the option means something only on a SYN
+                    // RFC 9293 and RFC 7323: these options mean something only on a SYN.
+                    segment.mss            = options->mss;
+                    segment.window_scale   = options->window_scale;
+                    segment.sack_permitted = options->sack_permitted;
                 }
                 segment.ts_value = options->timestamp_value;
                 segment.ts_echo  = options->timestamp_echo;
@@ -145,8 +150,10 @@ namespace aloe::tcp::detail {
             std::uint16_t payload_length = 0;
             std::optional<std::uint16_t> mss;  ///< From the options of a SYN.
             std::uint32_t base_hash = 0;
-            std::optional<std::uint32_t> ts_value{};  ///< RFC 7323 TSval, when the segment carries the option.
-            std::optional<std::uint32_t> ts_echo{};   ///< RFC 7323 TSecr, with it.
+            std::optional<std::uint32_t> ts_value{};     ///< RFC 7323 TSval, when the segment carries the option.
+            std::optional<std::uint32_t> ts_echo{};      ///< RFC 7323 TSecr, with it.
+            std::optional<std::uint8_t> window_scale{};  ///< From the options of a SYN, as written.
+            bool sack_permitted = false;                 ///< From the options of a SYN.
 
             /// Sequence space the segment occupies: payload, SYN and FIN.
             [[nodiscard]] std::uint32_t length() const noexcept {
@@ -161,13 +168,28 @@ namespace aloe::tcp::detail {
         }
 
         /// Opens the receive side once the handshake settled the peer's MSS and the options: RCV.NXT, then the window
-        /// with the budget counted in `mss()`. `scaling` is whether both ends offered window scaling (Task 4).
+        /// with the budget counted in `mss()`. `scaling` is whether both ends offered window scaling: the window then
+        /// uses our shift, and the budget is what the field states under it.
         void open_receive(ControlBlock& block, const Sequence next, const bool scaling) noexcept {
             block.receive.open(next);
-            const std::uint8_t shift   = scaling ? context_.window_shift : std::uint8_t{0};
-            const std::uint32_t budget = ReceiveWindow::budget_of(
-                context_.config.receive_segments, block.mss(), context_.config.receive_window, shift);
-            block.window.open(next, budget, block.mss(), scaling ? std::optional<std::uint8_t>{shift} : std::nullopt);
+            const std::optional<std::uint8_t> scale = scaling ? std::optional{context_.window_shift} : std::nullopt;
+            const std::uint32_t budget              = ReceiveWindow::budget_of(context_.config.receive_segments,
+                                                                               block.mss(),
+                                                                               context_.config.receive_window,
+                                                                               scale.value_or(std::uint8_t{0}));
+            block.window.open(next, budget, block.mss(), scale);
+        }
+
+        /// The peer's SYN or SYN-ACK answered the options: SACK-permitted is in use when both ends sent it. The peer's
+        /// window scale when both ends offered scaling, at most 14 (RFC 7323); nothing when scaling is not in use.
+        [[nodiscard]] std::optional<std::uint8_t> answer_options(ControlBlock& block,
+                                                                 const Segment& segment) const noexcept {
+            block.sack.answer(segment.sack_permitted);
+            const bool scaling = context_.config.window_scaling && segment.window_scale.has_value();
+            if (!scaling) {
+                return std::nullopt;
+            }
+            return std::min(*segment.window_scale, wire::TcpOptions::max_window_scale);
         }
 
         [[nodiscard]] static bool checksum_ok(Datagram& datagram) noexcept {
@@ -204,8 +226,10 @@ namespace aloe::tcp::detail {
             block.send.wl1      = segment.header.sequence;
             block.send.wl2      = Sequence{};
             block.timestamps.answer(segment.ts_value, context_.now);
+            const std::optional<std::uint8_t> peer_shift = answer_options(block, segment);
+            block.send.peer_shift                        = peer_shift.value_or(std::uint8_t{0});
             // `mss()` is final: the window opens, and the SYN-ACK carries its first offer.
-            open_receive(block, segment.header.sequence + 1, false);
+            open_receive(block, segment.header.sequence + 1, peer_shift.has_value());
             block.timestamps.sent_ack(block.receive.next());  // what the SYN-ACK acknowledges, as Linux's rcv_wup
             // Arms the timer on a send or an ARP wait; a refused send leaves the SYN-ACK to the RTO.
             std::ignore = transmitter_.queue_control(
@@ -234,13 +258,14 @@ namespace aloe::tcp::detail {
                 return;
             }
             block.timestamps.answer(segment.ts_value, context_.now);  // our offer, answered
+            const std::optional<std::uint8_t> peer_shift = answer_options(block, segment);
             // Frees the SYN's entry: a sample, and the timer stopped with the queue empty.
             acks_.handshake_acknowledged(block, header.acknowledgement, segment.ts_echo);
             block.send.peer_mss = segment.mss.value_or(default_peer_mss);
-            block.send.synchronize(header);
+            block.send.synchronize(header);  // the SYN-ACK's field, unscaled
             lifecycle_.connected(block);
             // Established with the peer's MSS stored: `mss()` is final, and our first ACK carries the first offer.
-            open_receive(block, header.sequence + 1, false);
+            open_receive(block, header.sequence + 1, peer_shift.has_value());
             block.timestamps.sent_ack(block.receive.next());  // as Linux's rcv_wup: data on the SYN-ACK may update it
             acks_.update_probing(block);  // a SYN-ACK offering no window starts probing as any ACK does
             // Deferred: a commit on the Connected event completes the handshake with data.
@@ -251,6 +276,9 @@ namespace aloe::tcp::detail {
                     static_cast<std::uint8_t>(header.flags.raw() & ~std::to_underlying(wire::TcpFlag::Syn)));
                 receive_synchronized(block, datagram, segment);
             }
+            // The peer's shift applies from the next segment: the ACK step above read this one's field, which a
+            // SYN-ACK states unscaled (RFC 7323), as the window update.
+            block.send.peer_shift = peer_shift.value_or(std::uint8_t{0});
         }
 
         /// A segment on a synchronized connection, in RFC 9293's order; each step may end it.

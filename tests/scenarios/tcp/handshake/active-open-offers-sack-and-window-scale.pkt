@@ -1,0 +1,9 @@
+// An active open against a peer that answers with SACK-permitted and window scaling: both are in use, and our first
+// ACK after the handshake states the budget, 512 * 1448 / 2 = 370688 bytes, in units of 8: 46336. The SYN-ACK's
+// window is taken unscaled. Linux's SYN offers the same options in the same layout; its shift depends on its buffers.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 fcntl(3, F_SETFL, O_RDWR|O_NONBLOCK) = 0
++0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)
++0 > S 0:0(0) win 65535 <mss 1460,sackOK,TS val 0 ecr 0,nop,wscale 3>
++0 < S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > . 1:1(0) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>

@@ -17,6 +17,7 @@
 #include <detail/receive_window.hpp>
 #include <detail/retransmission_queue.hpp>
 #include <detail/rtt_estimator.hpp>
+#include <detail/sack_blocks.hpp>
 #include <detail/send_sequence.hpp>
 #include <detail/tcp_timestamps.hpp>
 #include <detail/zero_window_probe.hpp>
@@ -127,6 +128,7 @@ namespace aloe::tcp::detail {
             rtt              = {};
             probe            = {};
             timestamps       = {};
+            sack             = {};
             timer_kind       = TimerKind::None;
             retransmit_count = 0;
             unresolved_polls = 0;
@@ -164,6 +166,8 @@ namespace aloe::tcp::detail {
         RttEstimator rtt{};
         ZeroWindowProbe probe{};
         Timestamps timestamps{};
+        // Behind the parts an in-order segment touches.
+        SackBlocks sack{};
 
         // The one wheel timer: the RTO, the ARP poll or the probe.
         TimerNode timer;

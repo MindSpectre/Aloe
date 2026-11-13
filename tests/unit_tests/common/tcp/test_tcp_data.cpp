@@ -41,6 +41,24 @@ namespace {
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
 
+    /// A stack without congestion control and a send cap of 64 over a port of 256 packets: the peer's window is the
+    /// only limit on the flight.
+    class TcpScaledSend : public ::testing::TestWithParam<aloe::fabric::EmulatedOffloads>,
+                          protected aloe::testing::detail::FabricPair,
+                          protected aloe::testing::TcpHarness<aloe::fabric::Port, aloe::tcp::NoCongestionControl> {
+    protected:
+        TcpScaledSend()
+            : FabricPair{GetParam(), 1, 256},
+              TcpHarness{fabric, harness, port, {.send_segments = 64}} {
+        }
+    };
+
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpScaledSend,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+
     [[nodiscard]] std::vector<std::byte> payload_of(const aloe::frames::ParsedFrame& frame) {
         const auto bytes = aloe::frames::tcp_payload(frame);
         return {bytes.begin(), bytes.end()};
@@ -550,4 +568,21 @@ TEST_P(TcpSendRefusing, PartialHelperSendStopsAtTheRefusal) {
     EXPECT_EQ(payload_of(frames[1]).size(), 1460U);
     EXPECT_EQ(payload_of(frames[3]).size(), 80U);
     EXPECT_EQ(frames[3].tcp->sequence, sequence + 100U + 2920U);
+}
+
+TEST_P(TcpScaledSend, APeersScaledWindowLetsTheFlightPass65535Bytes) {
+    peer_.set_window_scale(7);
+    peer_.set_window(1024);  // 131072 bytes once scaled
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->peer_window_shift(), 7U);
+    std::size_t sent = 0;
+    for (std::size_t accepted = c->send(aloe::frames::pattern(65535)); accepted > 0;
+         accepted             = c->send(aloe::frames::pattern(65535))) {
+        sent += accepted;
+    }
+    EXPECT_EQ(sent, c->unacknowledged());
+    EXPECT_GT(c->unacknowledged(), 65535U) << "the scaled window, not its field, bounds the flight";
+    EXPECT_EQ(c->queued_segments(), 64U) << "the send cap stops it, inside 131072 bytes";
+    std::ignore = collect();
 }

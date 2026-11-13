@@ -24,6 +24,7 @@
 #include <detail/receiver.hpp>
 #include <detail/retransmission_queue.hpp>
 #include <detail/rtt_estimator.hpp>
+#include <detail/sack_blocks.hpp>
 #include <detail/segment_writer.hpp>
 #include <detail/send_sequence.hpp>
 #include <detail/sent_segment_pool.hpp>

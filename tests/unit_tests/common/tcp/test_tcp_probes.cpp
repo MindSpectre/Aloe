@@ -248,3 +248,20 @@ TEST_P(TcpProbesRefusing, AHeldFinRefusedWhenTheWindowOpensWaitsForTheRto) {
     EXPECT_TRUE(resent[0].tcp->flags.has(TcpFlag::Fin));
     EXPECT_EQ(tcp_->counters().zero_window_probes, 0U);
 }
+
+TEST_P(TcpProbes, AZeroFieldFromAScalingPeerIsProbed) {
+    peer_.set_window_scale(7);
+    peer_.set_window(512);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    peer_.set_window(0);
+    receive(peer_.ack());
+    EXPECT_TRUE(c->probing());
+    advance(200ms);
+    EXPECT_EQ(collect().size(), 1U) << "the probe";
+    EXPECT_EQ(tcp_->counters().zero_window_probes, 1U);
+    peer_.set_window(1);
+    receive(peer_.ack());
+    EXPECT_FALSE(c->probing());
+    EXPECT_EQ(c->writable(), 128U) << "a field of 1 under shift 7";
+}

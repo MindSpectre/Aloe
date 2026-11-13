@@ -292,3 +292,81 @@ TEST(TcpFrames, SackBlocksOfReadsWhatSackOptionWrote) {
     const auto plain = aloe::frames::parse_frame(aloe::frames::tcp_frame(spec, {})).value();
     EXPECT_TRUE(aloe::frames::sack_blocks_of(plain).empty());
 }
+
+TEST(TcpPeer, APeerOffersTheOptionsInLinuxLayout) {
+    for (const bool ts : {false, true}) {
+        for (const bool sack : {false, true}) {
+            for (const bool scaling : {false, true}) {
+                SCOPED_TRACE(::testing::Message()
+                             << "timestamps " << ts << ", sack " << sack << ", window scaling " << scaling);
+                TcpPeer peer{peer_to_stack(), TcpSequence{1000U}};
+                if (ts) {
+                    peer.set_timestamps(500);
+                }
+                peer.set_sack_permitted(sack);
+                peer.set_window_scale(scaling ? std::optional<std::uint8_t>{7} : std::nullopt);
+                std::vector<std::vector<std::byte>> parts{aloe::frames::mss_option(1460)};
+                if (ts) {
+                    parts.push_back(sack ? aloe::frames::sack_permitted_timestamps_option(500, 0)
+                                         : aloe::frames::timestamps_option(500, 0));
+                } else if (sack) {
+                    parts.push_back(aloe::frames::sack_permitted_option());
+                }
+                if (scaling) {
+                    parts.push_back(aloe::frames::window_scale_option(7));
+                }
+                const auto syn     = aloe::frames::parse_frame(peer.syn()).value();
+                const auto options = aloe::frames::tcp_options_of(syn);
+                EXPECT_EQ(std::vector<std::byte>(options.begin(), options.end()), aloe::frames::joined(parts));
+                const auto parsed = aloe::wire::TcpOptions::parse(options);
+                ASSERT_TRUE(parsed.has_value());
+                EXPECT_EQ(parsed->sack_permitted, sack);
+                EXPECT_EQ(parsed->window_scale, scaling ? std::optional<std::uint8_t>{7} : std::nullopt);
+                const auto ack   = aloe::frames::parse_frame(peer.ack()).value();
+                const auto plain = aloe::frames::tcp_options_of(ack);
+                EXPECT_EQ(plain.size(), ts ? 12U : 0U) << "a segment without SYN carries no handshake option";
+            }
+        }
+    }
+}
+
+TEST(TcpPeer, ThePeerReadsTheStacksOptions) {
+    TcpSpec stack_spec          = peer_to_stack();
+    stack_spec.destination_mac  = peer_mac;
+    stack_spec.source_mac       = stack_mac;
+    stack_spec.source           = stack_ip;
+    stack_spec.destination      = peer_ip;
+    stack_spec.source_port      = 7;
+    stack_spec.destination_port = 40000;
+    stack_spec.sequence         = TcpSequence{5000U};
+    stack_spec.acknowledgement  = TcpSequence{1001U};
+    stack_spec.flags            = TcpFlags{TcpFlag::Syn, TcpFlag::Ack};
+    stack_spec.window           = 1000;
+    stack_spec.mss.reset();
+    const std::array parts{aloe::frames::mss_option(1460),
+                           aloe::frames::sack_permitted_timestamps_option(9, 0),
+                           aloe::frames::window_scale_option(3)};
+    stack_spec.options  = aloe::frames::joined(parts);
+    const auto syn_ack  = aloe::frames::parse_frame(aloe::frames::tcp_frame(stack_spec, {})).value();
+    stack_spec.options  = aloe::frames::timestamps_option(9, 0);
+    stack_spec.flags    = TcpFlags{TcpFlag::Ack};
+    stack_spec.sequence = TcpSequence{5001U};
+    stack_spec.window   = 100;
+    const auto ack      = aloe::frames::parse_frame(aloe::frames::tcp_frame(stack_spec, {})).value();
+
+    TcpPeer scaling{peer_to_stack(), TcpSequence{1000U}};
+    scaling.set_window_scale(7);
+    scaling.see(syn_ack);
+    EXPECT_EQ(scaling.stack_window_scale(), std::optional<std::uint8_t>{3});
+    EXPECT_TRUE(scaling.stack_sack_permitted());
+    EXPECT_EQ(scaling.stack_window_bytes(), 1000U) << "a SYN-ACK's field is never scaled";
+    scaling.see(ack);
+    EXPECT_EQ(scaling.stack_window(), 100U) << "the raw field";
+    EXPECT_EQ(scaling.stack_window_bytes(), 800U) << "both ends offered: shifted by 3";
+
+    TcpPeer plain{peer_to_stack(), TcpSequence{1000U}};
+    plain.see(syn_ack);
+    plain.see(ack);
+    EXPECT_EQ(plain.stack_window_scale(), std::optional<std::uint8_t>{3});
+    EXPECT_EQ(plain.stack_window_bytes(), 100U) << "the peer did not offer scaling: the field is bytes";
+}

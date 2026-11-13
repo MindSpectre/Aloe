@@ -273,7 +273,7 @@ TEST_P(RunnerTest, ActiveOpenWithConnect) {
     const auto result = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
                                  "+0 fcntl(3, F_SETFL, O_RDWR|O_NONBLOCK) = 0\n"
                                  "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
-                                 "+0 > S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 0 ecr 0>\n"
+                                 "+0 > S 0:0(0) win 65535 <mss 1460,sackOK,TS val 0 ecr 0,nop,wscale 3>\n"
                                  "+0 < S. 0:0(0) ack 1 win 65535 <mss 1460>\n"
                                  "+0 > . 1:1(0) ack 1 win 65535\n",
                                  GetParam());
@@ -339,8 +339,8 @@ TEST_P(RunnerTest, AReadWithAWindowWaitsForTheTimeout) {
     config.tcp.retries = 1;  // the SYN again at one second, TimedOut two seconds after that
     const auto result  = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
                                   "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
-                                  "+0 > S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 0 ecr 0>\n"
-                                  "+1 > S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 1000 ecr 0>\n"
+                                  "+0 > S 0:0(0) win 65535 <mss 1460,sackOK,TS val 0 ecr 0,nop,wscale 3>\n"
+                                  "+1 > S 0:0(0) win 65535 <mss 1460,sackOK,TS val 1000 ecr 0,nop,wscale 3>\n"
                                   // The window starts a second early so the read retries until TimedOut arrives at +2.
                                   "+1~+2.01 read(3, ..., 1) = -1 ETIMEDOUT\n",
                                   GetParam(),
@@ -354,7 +354,7 @@ TEST_P(RunnerTest, AReadWithoutAWindowRunsOnce) {
     config.tcp.retries = 1;
     const auto result  = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
                                   "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
-                                  "+0 > S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 0 ecr 0>\n"
+                                  "+0 > S 0:0(0) win 65535 <mss 1460,sackOK,TS val 0 ecr 0,nop,wscale 3>\n"
                                   "+0.5 read(3, ..., 1) = -1 ETIMEDOUT\n",
                                   GetParam(),
                                   {},
@@ -400,7 +400,7 @@ TEST_P(RunnerTest, AReleasedSlotIsReusedByTheNextSyn) {
 TEST_P(RunnerTest, ARefusedConnectGivesEconnrefused) {
     const auto result = run_text("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n"
                                  "+0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)\n"
-                                 "+0 > S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 0 ecr 0>\n"
+                                 "+0 > S 0:0(0) win 65535 <mss 1460,sackOK,TS val 0 ecr 0,nop,wscale 3>\n"
                                  "+0 < R. 0:0(0) ack 1 win 0\n"
                                  "+0 read(3, ..., 1) = -1 ECONNREFUSED\n",
                                  GetParam());

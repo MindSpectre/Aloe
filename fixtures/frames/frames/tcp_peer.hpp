@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <aloe/wire>
 #include <cstddef>
 #include <cstdint>
@@ -89,19 +90,38 @@ namespace aloe::frames {
             spec.flags           = flags;
             if (!with_mss) {
                 spec.mss = std::nullopt;
+                if (timestamps_) {
+                    spec.options = timestamps_option(*timestamps_, ts_seen_.value_or(0));
+                }
+                return tcp_frame(spec, payload);
+            }
+            if (!timestamps_ && !sack_permitted_ && !window_scale_) {
+                return tcp_frame(spec, payload);  // the MSS alone, as `tcp_frame` writes it
+            }
+            // Linux's layout: the MSS; `sackOK, TS` or `nop, nop, TS` or `nop, nop, sackOK`; `nop, wscale`.
+            std::vector<std::vector<std::byte>> parts;
+            if (spec.mss) {
+                parts.push_back(mss_option(*spec.mss));
             }
             if (timestamps_) {
-                const std::vector<std::byte> stamp = timestamps_option(*timestamps_, ts_seen_.value_or(0));
-                spec.options =
-                    spec.mss ? joined(std::vector<std::vector<std::byte>>{mss_option(*spec.mss), stamp}) : stamp;
-                spec.mss = std::nullopt;
+                const std::uint32_t echo = ts_seen_.value_or(0);
+                parts.push_back(sack_permitted_ ? sack_permitted_timestamps_option(*timestamps_, echo)
+                                                : timestamps_option(*timestamps_, echo));
+            } else if (sack_permitted_) {
+                parts.push_back(sack_permitted_option());
             }
+            if (window_scale_) {
+                parts.push_back(window_scale_option(*window_scale_));
+            }
+            spec.options = joined(parts);
+            spec.mss     = std::nullopt;
             return tcp_frame(spec, payload);
         }
 
         /// Observes a frame the stack transmitted, without replying. A SYN sets `rcv_nxt` outright and, when it
         /// carries no ACK, makes the peer adopt its ports to answer it; after that `rcv_nxt` only advances, so a
-        /// retransmission past the SYN changes nothing. Also tracks the stack's ACK, window and MSS.
+        /// retransmission past the SYN changes nothing. Also tracks the stack's ACK, window and MSS, and the window
+        /// scale and SACK-permitted its SYN or SYN-ACK offered.
         void see(const ParsedFrame& frame) noexcept {
             if (!frame.tcp) {
                 return;
@@ -120,7 +140,9 @@ namespace aloe::frames {
                     spec_.destination_port = tcp.source_port;
                 }
                 if (options) {
-                    stack_mss_ = options->mss;
+                    stack_mss_            = options->mss;
+                    stack_window_scale_   = options->window_scale;
+                    stack_sack_permitted_ = options->sack_permitted;
                 }
                 synchronised_ = true;
                 rcv_nxt_      = tcp.sequence + length;
@@ -134,7 +156,11 @@ namespace aloe::frames {
             if (tcp.flags.has(wire::TcpFlag::Ack) && tcp.acknowledgement.after(snd_una_)) {
                 snd_una_ = tcp.acknowledgement;
             }
-            stack_window_ = tcp.window;
+            stack_window_     = tcp.window;
+            const bool scaled = window_scale_ && stack_window_scale_ && !tcp.flags.has(wire::TcpFlag::Syn);
+            const std::uint8_t shift =
+                scaled ? std::min(*stack_window_scale_, wire::TcpOptions::max_window_scale) : std::uint8_t{0};
+            stack_window_bytes_ = std::uint32_t{tcp.window} << shift;
         }
 
         [[nodiscard]] wire::TcpSequence iss() const noexcept {
@@ -155,6 +181,18 @@ namespace aloe::frames {
         [[nodiscard]] std::optional<std::uint16_t> stack_mss() const noexcept {
             return stack_mss_;
         }
+        /// From the stack's SYN or SYN-ACK.
+        [[nodiscard]] std::optional<std::uint8_t> stack_window_scale() const noexcept {
+            return stack_window_scale_;
+        }
+        [[nodiscard]] bool stack_sack_permitted() const noexcept {
+            return stack_sack_permitted_;
+        }
+        /// The stack's window in bytes: the last field seen, shifted when both ends offered scaling and the frame was
+        /// not a SYN.
+        [[nodiscard]] std::uint32_t stack_window_bytes() const noexcept {
+            return stack_window_bytes_;
+        }
         [[nodiscard]] TcpSpec& spec() noexcept {
             return spec_;
         }
@@ -168,7 +206,18 @@ namespace aloe::frames {
             timestamps_ = value;
         }
 
-        /// The window every segment the peer builds from now on offers; zero closes it, for probing.
+        /// While engaged, a SYN or SYN-ACK the peer builds offers window scaling with `shift`; `set_window` keeps
+        /// taking the raw field.
+        void set_window_scale(const std::optional<std::uint8_t> shift) noexcept {
+            window_scale_ = shift;
+        }
+
+        /// While set, a SYN or SYN-ACK the peer builds offers SACK-permitted.
+        void set_sack_permitted(const bool offered) noexcept {
+            sack_permitted_ = offered;
+        }
+
+        /// The raw window field every segment the peer builds from now on offers; zero closes it, for probing.
         void set_window(const std::uint16_t window) noexcept {
             spec_.window = window;
         }
@@ -191,7 +240,12 @@ namespace aloe::frames {
         wire::TcpSequence snd_una_{};
         std::uint16_t stack_window_ = 0;
         std::optional<std::uint16_t> stack_mss_;
+        std::optional<std::uint8_t> stack_window_scale_{};
+        bool stack_sack_permitted_        = false;
+        std::uint32_t stack_window_bytes_ = 0;
         std::optional<std::uint32_t> timestamps_{};
+        std::optional<std::uint8_t> window_scale_{};
+        bool sack_permitted_ = false;
         std::optional<std::uint32_t> ts_seen_{};
         bool synchronised_ = false;
     };

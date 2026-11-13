@@ -72,6 +72,24 @@ namespace aloe::tcp {
             return block_.timestamps_negotiated();
         }
 
+        /// SACK-permitted is in use: both ends sent it in the handshake and the config allows it. In SynSent, whether
+        /// the SYN offers it.
+        [[nodiscard]] bool sack() const noexcept {
+            return block_.sack.in_use();
+        }
+        /// RFC 7323 window scaling is in use: both ends offered it in the handshake and the config allows it.
+        [[nodiscard]] bool window_scaling() const noexcept {
+            return block_.window.scale().has_value();
+        }
+        /// Our window scale on this connection: the stack's shift when scaling is in use, else zero.
+        [[nodiscard]] std::uint8_t window_shift() const noexcept {
+            return block_.window.shift();
+        }
+        /// The peer's window scale, at most 14: what its SYN or SYN-ACK offered when scaling is in use, else zero.
+        [[nodiscard]] std::uint8_t peer_window_shift() const noexcept {
+            return block_.send.peer_shift;
+        }
+
         /// The unconsumed payloads of the held packets, in order. Invalidated by `consume` and the next `process`.
         [[nodiscard]] View unread() const noexcept {
             return block_.stack.unread(block_);

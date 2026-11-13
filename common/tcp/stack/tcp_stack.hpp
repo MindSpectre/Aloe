@@ -53,10 +53,9 @@ namespace aloe::tcp {
         static_assert(IsIp<Ip>, "tcp::Stack needs net::Ipv4<Device>, or an IP brick with the same members");
         static_assert(IsCongestionControl<CongestionControl>,
                       "tcp::Stack needs a congestion control: a State and the reset, window and on_* hooks");
-        static_assert(net::Prebuilt::size + wire::TcpHeader::size + wire::TcpOptions::mss_size +
-                              wire::TcpOptions::timestamps_size <=
-                          device::packet_headroom,
-                      "every frame's headers fit in front of the payload of a packet from allocate()");
+        static_assert(net::Prebuilt::size + wire::TcpHeader::max_size <= device::packet_headroom,
+                      "every frame's headers, with any option block, fit in front of the payload of a packet from "
+                      "allocate()");
         // The connection and its view are templates over the IP brick: checked here, where they first have one.
         static_assert(stream::IsStream<Connection<Ip, CongestionControl>>);
         static_assert(stream::IsReadView<ReadView<typename Ip::Packet>>);
@@ -173,7 +172,8 @@ namespace aloe::tcp {
         [[nodiscard]] std::uint16_t mss() const noexcept {
             return context_.mss;
         }
-        /// The largest budget the configuration allows; a connection's own is `Connection::receive_budget()`.
+        /// The largest budget the configuration allows, under the stack's window shift; a connection's own is
+        /// `Connection::receive_budget()`.
         [[nodiscard]] std::uint32_t byte_budget() const noexcept {
             return context_.largest_budget;
         }

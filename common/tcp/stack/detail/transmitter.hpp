@@ -484,6 +484,15 @@ namespace aloe::tcp::detail {
             acks_.remove(block);
         }
 
+        /// The window scale a handshake segment offers: in SynSent the stack's shift when the configuration offers
+        /// scaling, else the shift the connection uses, when both ends offered it.
+        [[nodiscard]] std::optional<std::uint8_t> window_scale_option(const ControlBlock& block) const noexcept {
+            if (block.state == State::SynSent) {
+                return context_.config.window_scaling ? std::optional{context_.window_shift} : std::nullopt;
+            }
+            return block.window.scale();
+        }
+
         /// The timestamp option a segment of the connection carries now: the clock's value and TS.Recent as the echo.
         [[nodiscard]] std::optional<TimestampOption> timestamp_option(const ControlBlock& block) const noexcept {
             if (!block.timestamps.enabled()) {
@@ -494,11 +503,13 @@ namespace aloe::tcp::detail {
 
         /**
          * The one send function: every segment of a connection leaves here, kept or not, framed by the writer. The
-         * option block carries the MSS on a handshake segment and the timestamps on every segment of a connection
-         * that sends them. The window: a SYN states the stack's `syn_window` and records nothing, a SYN-ACK the
-         * connection's budget unscaled (`ReceiveWindow::handshake`), every other segment with ACK what `offer_of`
-         * gives for `edge`. The packet stays with the caller. Only a success records the offer and Last.ACK.sent and
-         * clears the pending ACK; a failure, counted by the writer, leaves the packet framed.
+         * option block carries the timestamps on every segment of a connection that sends them, and on a handshake
+         * segment the MSS, SACK-permitted while the connection offers or uses it, and our window scale: on a SYN when
+         * the configuration offers scaling, on a SYN-ACK when both ends do. A resent SYN or SYN-ACK carries the same.
+         * The window: a SYN states the stack's `syn_window` and records nothing, a SYN-ACK the connection's budget
+         * unscaled (`ReceiveWindow::handshake`), every other segment with ACK what `offer_of` gives for `edge`. The
+         * packet stays with the caller. Only a success records the offer and Last.ACK.sent and clears the pending ACK;
+         * a failure, counted by the writer, leaves the packet framed.
          */
         [[nodiscard]] std::expected<void, net::SendError> emit(ControlBlock& block,
                                                                Packet& packet,
@@ -513,15 +524,17 @@ namespace aloe::tcp::detail {
                                                : handshake ? block.window.handshake(next)
                                                            : offer_of(block, edge);
             const OutgoingSegment segment{
-                .header     = wire::TcpHeader{.source_port      = block.local.port,
-                                              .destination_port = block.remote.port,
-                                              .sequence         = sequence,
-                                              .acknowledgement  = with_ack ? next : Sequence{},
-                                              .flags            = flags,
-                                              .window           = offer.field},
-                .mss        = handshake ? std::optional{context_.mss}
-                      : std::nullopt,
-                .timestamps = timestamp_option(block)
+                .header         = wire::TcpHeader{.source_port      = block.local.port,
+                                                  .destination_port = block.remote.port,
+                                                  .sequence         = sequence,
+                                                  .acknowledgement  = with_ack ? next : Sequence{},
+                                                  .flags            = flags,
+                                                  .window           = offer.field},
+                .mss            = handshake ? std::optional{context_.mss}
+                          : std::nullopt,
+                .timestamps     = timestamp_option(block),
+                .sack_permitted = handshake && block.sack.in_use(),
+                .window_scale   = handshake ? window_scale_option(block) : std::nullopt
             };
             const std::expected<void, net::SendError> sent =
                 writer_.send(block.frame, block.remote.address, packet, framed, segment, context_.now);

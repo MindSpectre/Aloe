@@ -1,0 +1,27 @@
+// A peer that offers a window scale of 15 has it used as 14, as RFC 7323 requires: its field of 1 is 16384 bytes,
+// so a write of 20000 accepts 16384, eleven segments of 1448 and one of 456, with no congestion control to stop it
+// sooner. Our segments state the budget, 370688, in units of 8. Linux clamps the shift to 14 the same way and logs it.
+--congestion=none
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 15>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 1 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 20000) = 16384
++0 > P. 1:1449(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 1449:2897(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 2897:4345(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 4345:5793(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 5793:7241(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 7241:8689(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 8689:10137(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 10137:11585(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 11585:13033(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 13033:14481(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 14481:15929(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 15929:16385(456) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 16385 win 1 <nop,nop,TS val 100 ecr 0>
