@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <tuple>
@@ -185,6 +186,76 @@ TEST_F(TcpRing, ScriptedPeerConnectsSendsAndCloses) {
     EXPECT_EQ(tcp_.nodes_available(), tcp_.config().receive_pool) << "every mbuf went back";
     EXPECT_EQ(ip_.counters().dropped_martian, 0U);
     EXPECT_EQ(tcp_.counters().dropped_bad_checksum, 0U);
+    EXPECT_EQ(tcp_.counters().connections_closed, 1U);
+}
+
+// The same echo with a peer that offers what a Linux or Aloe peer offers: SACK-permitted, window scaling with
+// the shift Aloe's defaults choose, and timestamps. The negotiation two Aloe stacks reach, on real mbufs.
+TEST_F(TcpRing, ScriptedPeerNegotiatesSackAndWindowScaling) {
+    peer_.set_timestamps(1U);
+    peer_.set_window_scale(3U);
+    peer_.set_sack_permitted(true);
+    ASSERT_TRUE(tcp_.listen(7).has_value());
+    receive(peer_.syn());
+    auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->flags, (TcpFlags{TcpFlag::Syn, TcpFlag::Ack}));
+    EXPECT_EQ(frames[0].tcp->data_offset, 40U) << "mss, sackOK and TS, nop and wscale: 20 bytes of options";
+    EXPECT_EQ(frames[0].tcp->window, 65535U) << "a SYN-ACK's field is never scaled";
+    const auto offered = aloe::wire::TcpOptions::parse(aloe::frames::tcp_options_of(frames[0]));
+    ASSERT_TRUE(offered.has_value());
+    EXPECT_TRUE(offered->sack_permitted);
+    EXPECT_EQ(offered->window_scale, std::optional<std::uint8_t>{3U});
+    EXPECT_TRUE(offered->timestamp_value.has_value());
+    EXPECT_EQ(aloe::frames::l4_checksum_residue(*frames[0].ipv4, frames[0].l4), 0U);
+    peer_.see(frames[0]);
+    receive(peer_.ack());
+    const auto event = tcp_.poll_event();
+    ASSERT_TRUE(event.has_value());
+    ASSERT_TRUE(event->events.accepted());
+    auto& c = *event->connection;
+    EXPECT_TRUE(c.sack());
+    EXPECT_TRUE(c.window_scaling());
+    EXPECT_TRUE(c.timestamps());
+    EXPECT_EQ(c.window_shift(), 3U);
+    EXPECT_EQ(c.peer_window_shift(), 3U);
+    EXPECT_EQ(c.mss(), 1448U);
+    EXPECT_EQ(c.receive_budget(), 370688U) << "512 * 1448 / 2";
+
+    receive(peer_.data(text("hello ring")));
+    EXPECT_EQ(c.unread().size(), 10U);
+    c.consume(10);
+    const auto reply = text("ring");
+    const auto out   = c.prepare(reply.size());
+    ASSERT_TRUE(out.has_value());
+    std::ranges::copy(reply, out->begin());
+    ASSERT_TRUE(c.commit(reply.size()));
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "the reply carried the ACK";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, peer_.snd_nxt());
+    EXPECT_EQ(frames[0].tcp->window, 370688U >> 3U) << "the first ACK after the handshake states the scaled budget";
+    EXPECT_EQ(frames[0].ipv4->total_length, 56U) << "20 of IPv4, 20 of TCP, 12 of timestamps and the reply";
+    EXPECT_EQ(aloe::frames::l4_checksum_residue(*frames[0].ipv4, frames[0].l4), 0U);
+    const auto payload = aloe::frames::tcp_payload(frames[0]);
+    EXPECT_EQ(std::vector<std::byte>(payload.begin(), payload.end()), reply);
+
+    peer_.see(frames[0]);
+    receive(peer_.ack(frames[0]));
+    EXPECT_EQ(c.unacknowledged(), 0U);
+    receive(peer_.fin());
+    EXPECT_TRUE(c.peer_closed());
+    c.close();
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->flags, (TcpFlags{TcpFlag::Fin, TcpFlag::Ack}));
+    peer_.see(frames[0]);
+    receive(peer_.ack(frames[0]));
+    EXPECT_EQ(c.state(), aloe::tcp::State::Closed);
+    c.release();
+    EXPECT_EQ(wheel_.pending(), 0U);
+    EXPECT_EQ(tcp_.table_size(), 0U);
+    EXPECT_EQ(tcp_.nodes_available(), tcp_.config().receive_pool) << "every mbuf went back";
+    EXPECT_EQ(tcp_.counters().dropped_paws + tcp_.counters().dropped_bad_checksum, 0U);
     EXPECT_EQ(tcp_.counters().connections_closed, 1U);
 }
 

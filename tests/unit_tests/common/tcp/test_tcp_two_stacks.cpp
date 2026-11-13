@@ -85,8 +85,9 @@ namespace {
     protected:
         using Tcp = BasicBrick<CongestionControl>::Tcp;
 
-        explicit BasicTwoStacks(const Config& server_config = {})
-            : server_{server_port_, server_ip, server_config} {
+        explicit BasicTwoStacks(const Config& server_config = {}, const Config& client_config = {})
+            : server_{server_port_, server_ip, server_config},
+              client_{client_port_, client_ip, client_config} {
         }
 
         aloe::fabric::Fabric fabric_;
@@ -95,7 +96,7 @@ namespace {
         aloe::fabric::Port& client_port_ =
             fabric_.add_port({.mac = client_mac, .pool_size = 256, .offloads = GetParam()});
         BasicBrick<CongestionControl> server_;
-        BasicBrick<CongestionControl> client_{client_port_, client_ip, {}};
+        BasicBrick<CongestionControl> client_;
         TimePoint now_{};
 
         /// Learns both MACs, listens, connects, and ticks until both ends are Established. Null on failure.
@@ -216,6 +217,15 @@ namespace {
 
     class TcpTwoStacksNoCongestion : public BasicTwoStacks<aloe::tcp::NoCongestionControl> {};
 
+    /// A client whose send cap holds 128 full segments, more than an unscaled window allows, and no congestion
+    /// window to stop it first: only the server's scaled window limits what it puts in flight.
+    class TcpTwoStacksLongFlight : public BasicTwoStacks<aloe::tcp::NoCongestionControl> {
+    protected:
+        TcpTwoStacksLongFlight()
+            : BasicTwoStacks({}, {.send_segments = 128}) {
+        }
+    };
+
     /// The server holds four packets per connection: small segments reach that cap long before the byte window closes.
     class TcpTwoStacksFourSlots : public TcpTwoStacks {
     protected:
@@ -231,6 +241,11 @@ namespace {
                              aloe::testing::offloads_name);
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpTwoStacksNoCongestion,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpTwoStacksLongFlight,
                              ::testing::Values(aloe::fabric::EmulatedOffloads::None,
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
@@ -272,6 +287,9 @@ TEST_P(TcpTwoStacksFourSlots, SmallSegmentsWithinTheSlotsLoseNothing) {
     Tcp::ConnectionType* s = establish(c);
     ASSERT_NE(s, nullptr);
     EXPECT_EQ(server_.tcp.byte_budget(), 2U * 1460U) << "the byte window offers half of four slots";
+    EXPECT_EQ(s->mss(), 1448U) << "two Aloe stacks use timestamps";
+    EXPECT_EQ(s->receive_budget(), 4U * 1448U / 2U) << "the connection's budget counts its own full segments";
+    EXPECT_EQ(s->window_shift(), 0U) << "four slots' largest budget fits the field unscaled";
     for (int i = 0; i < 4; ++i) {
         EXPECT_EQ(c->send(aloe::frames::pattern(1)), 1U) << "one byte per segment: send never coalesces";
     }
@@ -285,6 +303,20 @@ TEST_P(TcpTwoStacksFourSlots, SmallSegmentsWithinTheSlotsLoseNothing) {
     exchange();
     EXPECT_EQ(s->unread().size(), 1U) << "slots freed by consume take segments again";
     EXPECT_EQ(server_.tcp.counters().dropped_no_slot, 0U);
+
+    // Full segments meet the window before the cap. Freeing four bytes moved no edge, since an update waits for a
+    // full segment's room: the handshake's edge stands, five bytes past RCV.NXT then, so the window is the budget less
+    // five. Two segments fill it, one slot stays free, and nothing is dropped.
+    const std::uint32_t window = s->receive_window();
+    EXPECT_EQ(window, s->receive_budget() - 5U);
+    EXPECT_EQ(c->send(aloe::frames::pattern(4U * 1448U)), window) << "the window stops the sender, not the cap";
+    EXPECT_EQ(c->writable(), 0U);
+    exchange();
+    EXPECT_EQ(s->unread().size(), 1U + window) << "two segments taken, three of four slots used";
+    EXPECT_EQ(s->receive_window(), 0U);
+    EXPECT_EQ(c->acknowledged(), c->committed());
+    EXPECT_EQ(c->writable(), 0U) << "the closed window, not the cap, keeps the client waiting";
+    EXPECT_EQ(server_.tcp.counters().dropped_no_slot + server_.tcp.counters().dropped_out_of_window, 0U);
     c->release();
     s->release();
 }
@@ -300,6 +332,9 @@ TEST_P(TcpTwoStacksFourSlots, SmallSegmentsBeyondTheSlotsRecoverAfterOneRto) {
     EXPECT_EQ(s->unread().size(), 4U);
     EXPECT_EQ(server_.tcp.counters().dropped_no_slot, 1U) << "the fifth found no slot";
     EXPECT_EQ(server_.tcp.counters().dropped_out_of_order, 1U) << "the sixth follows a hole";
+    EXPECT_EQ(server_.tcp.counters().dropped_out_of_window, 0U)
+        << "six bytes sit far inside the 2896-byte window: short segments meet the cap first";
+    EXPECT_EQ(s->out_of_order_segments(), 0U) << "with every slot taken in order, nothing is held above the hole";
     s->consume(4);
     for (int tick = 0; tick < 300 && s->unread().size() < 2; ++tick) {  // one RTO of 200 ms, then the resend
         exchange();
@@ -457,4 +492,97 @@ TEST_P(TcpTwoStacks, DelayedSegmentsArriveInOrderAfterTheStep) {
     client_port_.set_impairment({});
     client->release();
     server->release();
+}
+
+// The receive side between two Aloe stacks: both offer SACK-permitted, window scaling and timestamps, so the receiver
+// holds what arrives above a gap and reports it, and the sender may fill a window past what 16 bits state. Aloe's own
+// sender does not read SACK blocks: behind a loss it counts duplicate ACKs, and no case here expects new data to flow
+// while it recovers.
+
+TEST_P(TcpTwoStacks, BothOptionsAreNegotiatedBetweenTwoStacks) {
+    Tcp::ConnectionType* c = nullptr;
+    Tcp::ConnectionType* s = establish(c);
+    ASSERT_NE(s, nullptr);
+    for (const Tcp::ConnectionType* end : {c, s}) {
+        EXPECT_TRUE(end->sack());
+        EXPECT_TRUE(end->window_scaling());
+        EXPECT_TRUE(end->timestamps());
+        EXPECT_EQ(end->window_shift(), 3U) << "the smallest shift that states 512 * 1460 / 2 = 373760";
+        EXPECT_EQ(end->peer_window_shift(), 3U);
+        EXPECT_EQ(end->mss(), 1448U) << "1460 less the timestamp option";
+        EXPECT_EQ(end->receive_budget(), 370688U) << "512 * 1448 / 2";
+    }
+    c->release();
+    s->release();
+}
+
+TEST_P(TcpTwoStacks, AReorderedStreamIsHeldAndDeliveredInOrder) {
+    client_port_.set_impairment(
+        {.reorder = 0.3, .seed = 9});  // NOLINT(cert-msc51-cpp): a fixed seed keeps the test reproducible
+    EXPECT_TRUE(run_echo(50000, 4000)) << "every byte echoed in order";
+    const auto& sc = server_.tcp.counters();
+    EXPECT_GT(client_port_.impairment_counters().reordered, 0U) << "the seed reorders some of the client's frames";
+    EXPECT_GT(sc.out_of_order_held, 0U) << "a data segment that overtook the one before it is held, not dropped";
+    EXPECT_EQ(sc.dropped_out_of_order, 0U);
+    EXPECT_EQ(sc.dropped_no_slot + sc.dropped_no_node, 0U);
+    EXPECT_EQ(client_.tcp.counters().retransmits, 0U) << "a segment held one frame back is never lost";
+}
+
+TEST_P(TcpTwoStacks, ALossBehindThreeDuplicateAcksIsRepairedWithoutATimeout) {
+    constexpr std::size_t lost = 4;  // the fourth data frame, once: its retransmission is a later frame
+    client_port_.set_impairment({.script = [data_frames = std::size_t{0}](const aloe::fabric::Egress& egress) mutable
+                                     -> std::optional<aloe::fabric::Verdict> {
+        const auto frame = aloe::frames::parse_frame(egress.frame);
+        if (!frame || !frame->tcp || aloe::frames::tcp_payload(*frame).empty()) {
+            return std::nullopt;
+        }
+        return ++data_frames == lost ? std::optional{aloe::fabric::Verdict{.action = aloe::fabric::Action::Drop}}
+                                     : std::nullopt;
+    }});
+    // Fourteen full segments: the first flight of ten puts six behind the loss, and the ACKs of the three before it
+    // open room for the rest, eight or more behind it in all.
+    EXPECT_TRUE(run_echo(14U * 1448U, 2000));
+    const auto& cc = client_.tcp.counters();
+    const auto& sc = server_.tcp.counters();
+    EXPECT_EQ(client_port_.impairment_counters().dropped, 1U);
+    EXPECT_EQ(cc.retransmits, 0U) << "no retransmission timeout";
+    EXPECT_GE(cc.fast_retransmits, 1U) << "three duplicate ACKs started the repair";
+    EXPECT_GE(sc.out_of_order_held, 8U) << "eight or more segments behind the loss, each held above the gap";
+    EXPECT_GT(sc.sack_acks_sent, 0U) << "and reported with SACK blocks";
+    EXPECT_EQ(sc.dropped_out_of_order, 0U);
+}
+
+TEST_P(TcpTwoStacks, LossBothWaysStillDeliversEveryByteInOrder) {
+    client_port_.set_impairment(
+        {.loss = 0.02, .seed = 13});  // NOLINT(cert-msc51-cpp): a fixed seed keeps the test reproducible
+    server_port_.set_impairment({.loss = 0.02, .seed = 17});  // NOLINT(cert-msc51-cpp)
+    EXPECT_TRUE(run_echo(200000, 60000)) << "every byte echoed in order, whatever the counters say";
+    EXPECT_GT(client_port_.impairment_counters().dropped, 0U) << "the seed loses some of the client's frames";
+    EXPECT_GT(server_port_.impairment_counters().dropped, 0U) << "and some of the server's";
+}
+
+TEST_P(TcpTwoStacksLongFlight, AWindowPast65535BytesIsUsed) {
+    Tcp::ConnectionType* c = nullptr;
+    Tcp::ConnectionType* s = establish(c);
+    ASSERT_NE(s, nullptr);
+    // The SYN-ACK's field is unscaled, 65535; the first ACK after the handshake states the scaled budget.
+    ASSERT_EQ(c->send(aloe::frames::pattern(1)), 1U);
+    exchange();
+    ASSERT_EQ(c->unacknowledged(), 0U);
+    std::size_t past_while_open = 0;  // in flight when the client first passed 65535 with room left to send
+    while (c->writable() > 0) {
+        ASSERT_GT(c->send(aloe::frames::pattern(c->writable())), 0U);
+        if (past_while_open == 0 && c->unacknowledged() > 65535U && c->writable() > 0) {
+            past_while_open = c->unacknowledged();
+        }
+    }
+    EXPECT_GT(past_while_open, 65535U) << "more than 16 bits of window in flight, and the client could send more";
+    EXPECT_EQ(c->unacknowledged(), 128U * c->mss()) << "the send cap stopped it, not the server's window";
+    for (int round = 0; round < 4 && s->unread().size() <= 65535U; ++round) {
+        exchange();  // the server takes 64 frames per receive
+    }
+    EXPECT_GT(s->unread().size(), 65535U) << "the server holds more than 16 bits of window, unread";
+    EXPECT_EQ(server_.tcp.counters().dropped_out_of_window + server_.tcp.counters().dropped_no_slot, 0U);
+    c->release();
+    s->release();
 }
