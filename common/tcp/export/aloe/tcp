@@ -19,6 +19,7 @@
 #include <detail/lifecycle.hpp>
 #include <detail/loss_recovery.hpp>
 #include <detail/node_pool.hpp>
+#include <detail/reassembly_queue.hpp>
 #include <detail/receive_queue.hpp>
 #include <detail/receive_window.hpp>
 #include <detail/receiver.hpp>

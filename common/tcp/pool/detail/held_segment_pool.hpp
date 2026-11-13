@@ -1,6 +1,7 @@
 #pragma once
 
 #include <aloe/device>
+#include <aloe/wire>
 #include <cstdint>
 
 #include <detail/node_pool.hpp>
@@ -8,13 +9,15 @@
 namespace aloe::tcp::detail {
 
     /// A received packet a connection holds for the application: the offset of its unconsumed payload, that payload's
-    /// length and the next held packet.
+    /// length, the sequence of its first byte and the next held packet.
     template <device::IsPacket Packet>
     struct HeldSegment {
         Packet packet{};
         std::uint16_t offset = 0;  ///< Of the unconsumed payload inside the packet's data.
         std::uint16_t length = 0;  ///< Unconsumed payload bytes.
-        std::uint32_t next   = no_node;
+        /// Of the first held byte; the reassembly queue writes and reads it, the in-order chain neither.
+        wire::TcpSequence first{};
+        std::uint32_t next = no_node;
     };
 
     /// The per-shard pool a connection chains its held segments on. The caller moves the packet into a node only once

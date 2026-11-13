@@ -112,6 +112,54 @@ namespace aloe::tcp::detail {
             ++chain.count;
         }
 
+        /// Links the taken node `index` after `previous` in `chain`; `no_node` links it at the head.
+        void insert_after(NodeChain& chain, const std::uint32_t previous, const std::uint32_t index) noexcept {
+            assert(nodes_[index].next == no_node && "a node joins a chain unlinked");
+            if (previous == no_node) {
+                nodes_[index].next = chain.head;
+                chain.head         = index;
+            } else {
+                nodes_[index].next    = nodes_[previous].next;
+                nodes_[previous].next = index;
+            }
+            if (chain.tail == previous) {
+                chain.tail = index;
+            }
+            ++chain.count;
+        }
+
+        /// Unlinks the node after `previous`, the head for `no_node`, and returns it: still taken, linked to nothing.
+        [[nodiscard]] std::uint32_t unlink_after(NodeChain& chain, const std::uint32_t previous) noexcept {
+            const std::uint32_t index = previous == no_node ? chain.head : nodes_[previous].next;
+            assert(index != no_node && "an unlink past the tail");
+            if (previous == no_node) {
+                chain.head = nodes_[index].next;
+            } else {
+                nodes_[previous].next = nodes_[index].next;
+            }
+            if (chain.tail == index) {
+                chain.tail = previous;
+            }
+            nodes_[index].next = no_node;
+            --chain.count;
+            return index;
+        }
+
+        /// Links every node of `run` behind `chain`'s tail, in order, and leaves `run` empty.
+        void splice_back(NodeChain& chain, NodeChain& run) noexcept {
+            if (run.empty()) {
+                return;
+            }
+            if (chain.tail == no_node) {
+                chain.head = run.head;
+            } else {
+                nodes_[chain.tail].next = run.head;
+            }
+            chain.tail   = run.tail;
+            chain.count += run.count;
+            run          = NodeChain{};
+        }
+
         /// Releases the head of a chain that is not empty.
         void release_front(NodeChain& chain) noexcept {
             assert(!chain.empty() && "a release from an empty chain");

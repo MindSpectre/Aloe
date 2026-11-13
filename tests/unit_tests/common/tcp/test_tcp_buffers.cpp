@@ -166,3 +166,93 @@ TEST(NodePool, RejectsZeroAndUnrepresentableCountsBeforeAllocating) {
     EXPECT_THROW((std::ignore = Pool{0}), std::invalid_argument);
     EXPECT_THROW((std::ignore = Pool{static_cast<std::size_t>(aloe::tcp::detail::no_node)}), std::invalid_argument);
 }
+
+TEST(NodePool, InsertAfterAndUnlinkAfterKeepTheChainInStep) {
+    using aloe::tcp::detail::no_node;
+    aloe::tcp::detail::NodePool<Bare> pool{4};
+    Chain chain;
+    const std::uint32_t a = pool.acquire().value();
+    const std::uint32_t b = pool.acquire().value();
+    const std::uint32_t c = pool.acquire().value();
+    const std::uint32_t d = pool.acquire().value();
+
+    pool.insert_after(chain, no_node, b);  // into an empty chain: head and tail
+    EXPECT_EQ(chain.head, b);
+    EXPECT_EQ(chain.tail, b);
+    EXPECT_EQ(chain.count, 1U);
+    pool.insert_after(chain, no_node, a);  // at the head: a, b
+    EXPECT_EQ(chain.head, a);
+    EXPECT_EQ(chain.tail, b);
+    EXPECT_EQ(chain.count, 2U);
+    EXPECT_EQ(pool.node(a).next, b);
+    pool.insert_after(chain, b, d);  // at the tail: a, b, d
+    EXPECT_EQ(chain.head, a);
+    EXPECT_EQ(chain.tail, d);
+    EXPECT_EQ(chain.count, 3U);
+    EXPECT_EQ(pool.node(b).next, d);
+    EXPECT_EQ(pool.node(d).next, no_node);
+    pool.insert_after(chain, b, c);  // in the middle: a, b, c, d
+    EXPECT_EQ(chain.head, a);
+    EXPECT_EQ(chain.tail, d);
+    EXPECT_EQ(chain.count, 4U);
+    EXPECT_EQ(pool.node(b).next, c);
+    EXPECT_EQ(pool.node(c).next, d);
+
+    EXPECT_EQ(pool.unlink_after(chain, b), c);  // the middle: a, b, d
+    EXPECT_EQ(chain.head, a);
+    EXPECT_EQ(chain.tail, d);
+    EXPECT_EQ(chain.count, 3U);
+    EXPECT_EQ(pool.node(b).next, d);
+    EXPECT_EQ(pool.node(c).next, no_node) << "an unlinked node links nowhere";
+    EXPECT_EQ(pool.unlink_after(chain, b), d);  // the tail: a, b
+    EXPECT_EQ(chain.head, a);
+    EXPECT_EQ(chain.tail, b);
+    EXPECT_EQ(chain.count, 2U);
+    EXPECT_EQ(pool.node(b).next, no_node) << "the new tail links nowhere";
+    EXPECT_EQ(pool.unlink_after(chain, no_node), a);  // the head: b
+    EXPECT_EQ(chain.head, b);
+    EXPECT_EQ(chain.tail, b);
+    EXPECT_EQ(chain.count, 1U);
+    EXPECT_EQ(pool.node(a).next, no_node);
+    EXPECT_EQ(pool.unlink_after(chain, no_node), b);  // the only node
+    EXPECT_TRUE(chain.empty());
+    EXPECT_EQ(chain.tail, no_node);
+    EXPECT_EQ(chain.count, 0U);
+    EXPECT_EQ(pool.available(), 0U) << "unlinked nodes stay taken";
+}
+
+TEST(NodePool, SpliceBackLinksARunAndEmptiesIt) {
+    using aloe::tcp::detail::no_node;
+    aloe::tcp::detail::NodePool<Bare> pool{4};
+    const std::uint32_t a = pool.acquire().value();
+    const std::uint32_t b = pool.acquire().value();
+    const std::uint32_t c = pool.acquire().value();
+    const std::uint32_t d = pool.acquire().value();
+
+    Chain chain;
+    Chain run;
+    pool.push_back(run, a);
+    pool.push_back(run, b);
+    pool.splice_back(chain, run);  // onto an empty chain
+    EXPECT_EQ(chain.head, a);
+    EXPECT_EQ(chain.tail, b);
+    EXPECT_EQ(chain.count, 2U);
+    EXPECT_TRUE(run.empty());
+    EXPECT_EQ(run.tail, no_node);
+    EXPECT_EQ(run.count, 0U);
+
+    pool.push_back(run, c);
+    pool.push_back(run, d);
+    pool.splice_back(chain, run);  // onto a chain with nodes
+    EXPECT_EQ(chain.head, a);
+    EXPECT_EQ(chain.tail, d);
+    EXPECT_EQ(chain.count, 4U);
+    EXPECT_EQ(pool.node(b).next, c);
+    EXPECT_EQ(pool.node(d).next, no_node);
+    EXPECT_TRUE(run.empty());
+    EXPECT_EQ(run.count, 0U);
+
+    pool.splice_back(chain, run);  // an empty run changes nothing
+    EXPECT_EQ(chain.tail, d);
+    EXPECT_EQ(chain.count, 4U);
+}
