@@ -250,6 +250,36 @@ TEST_F(TcpReassembly, TheJoinReleasesANodeRcvNxtPassedEntirely) {
     pool.release_all(run.chain);
 }
 
+TEST_F(TcpReassembly, TheJoinStopsAtARememberedFin) {
+    Queue queue;
+    ASSERT_EQ(put(queue, 1100, 100).placed, Placed::Held);
+    ASSERT_EQ(put(queue, 1200, 100).placed, Placed::Held);  // at the FIN: past the peer's end
+    queue.remember_fin(Sequence{1200});
+    Queue::Run run = queue.take_run(pool, Sequence{1100});
+    EXPECT_EQ(run.chain.count, 1U);
+    EXPECT_EQ(run.bytes, 100U) << "the run ends at the FIN";
+    EXPECT_EQ(queue.segments(), 1U) << "the node at the FIN stays held";
+    EXPECT_EQ(queue.bytes(), 100U);
+    EXPECT_EQ(queue.fin(), Sequence{1200});
+    pool.release_all(run.chain);
+    queue.release(pool);
+}
+
+TEST_F(TcpReassembly, TheJoinCutsANodeThatStraddlesARememberedFin) {
+    Queue queue;
+    ASSERT_EQ(put(queue, 1100, 100, 3).placed, Placed::Held);
+    queue.remember_fin(Sequence{1150});
+    Queue::Run run = queue.take_run(pool, Sequence{1100});
+    EXPECT_EQ(run.chain.count, 1U);
+    EXPECT_EQ(run.bytes, 50U);
+    EXPECT_EQ(read(run), slice(100, 3, 0, 50)) << "the node's prefix, below the FIN";
+    EXPECT_EQ(queue.segments(), 0U);
+    EXPECT_EQ(queue.bytes(), 0U) << "the bytes past the FIN left the count with the node";
+    EXPECT_EQ(queue.fin(), Sequence{1150});
+    pool.release_all(run.chain);
+    queue.release(pool);
+}
+
 TEST_F(TcpReassembly, ReleaseHighestReturnsTheTailAndForgetsTheFin) {
     Queue queue;
     ASSERT_EQ(put(queue, 2000, 100).placed, Placed::Held);

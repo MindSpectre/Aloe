@@ -450,12 +450,10 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * In-order payload, held for the application and acknowledged by the ACK policy. At the per-connection cap of
-         * held packets or with the shard's pool empty it takes the node of the highest segment held above a gap
-         * (`make_room`). Refused, with an immediate ACK that reports the last byte accepted and restates the edge, past
-         * the peer's FIN, or at either cap with nothing held above a gap to give way; the FIN behind refused data is
-         * not consumed. With anything held above, the run that now follows RCV.NXT joins and the ACK goes at once.
-         * False when refused.
+         * In-order payload, held for the application and acknowledged by the ACK policy. Refused, with an immediate
+         * ACK that reports the last byte accepted and restates the edge, past the peer's FIN, past the per-connection
+         * cap of held packets or with the shard's pool empty; the FIN behind refused data is not consumed. A connection
+         * that holds something above a gap takes `receive_below_held` instead. False when refused.
          */
         [[nodiscard]] bool receive_payload(ControlBlock& block, Datagram& datagram, const Segment& segment) noexcept {
             if (block.receive.closed()) {  // the peer's sequence space ended at its FIN, whatever state we are in
@@ -463,13 +461,11 @@ namespace aloe::tcp::detail {
                 ack_now(block, Edge::Restate);
                 return false;
             }
-            const bool room = slot_free(block) && context_.pool.available() > 0;
-            if (!room && !make_room(block, block.receive.next())) {
-                if (slot_free(block)) {
-                    ++context_.counters.dropped_no_node;
-                } else {
-                    ++context_.counters.dropped_no_slot;
-                }
+            if (block.reassembly.holds()) {  // the one question a clean stream asks
+                return receive_below_held(block, datagram, segment);
+            }
+            if (!slot_free(block)) {
+                ++context_.counters.dropped_no_slot;
                 ack_now(block, Edge::Restate);
                 return false;
             }
@@ -480,15 +476,62 @@ namespace aloe::tcp::detail {
                 ack_now(block, Edge::Restate);
                 return false;
             }
-            lifecycle_.raise(block, stream::Event::Readable);  // once, for the segment and any run it joins
-            // A segment that carries the peer's FIN does not join: its FIN step releases what is held above it.
-            const bool joined = !segment.header.flags.has(wire::TcpFlag::Fin) && block.reassembly.holds();
-            if (joined) {
-                join(block);
-            }
+            lifecycle_.raise(block, stream::Event::Readable);
             // A full-sized segment is the connection's `mss()`: the peer's MSS or ours, less the timestamp option.
-            const AckPolicy::Ack ack =
-                block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next());
+            if (block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next()) ==
+                AckPolicy::Ack::Now) {
+                ack_now(block);
+            } else {
+                transmitter_.queue_ack(block);
+            }
+            return true;
+        }
+
+        /**
+         * In-order payload on a connection that holds something above a gap. Data that ends past a remembered FIN is
+         * refused as data after the peer's FIN is, so RCV.NXT never passes it. At the cap or with the pool empty the
+         * segment takes the node of the highest segment held above (`make_room`); with none above it, it is refused as
+         * on a clean stream. Once held, the run that now follows RCV.NXT joins, `Readable` covers all of it and the ACK
+         * goes at once; a segment that carries the peer's FIN does not join, since its FIN step releases what is held
+         * above. False when refused.
+         */
+        [[nodiscard]] bool
+        receive_below_held(ControlBlock& block, Datagram& datagram, const Segment& segment) noexcept {
+            const Sequence next                    = block.receive.next();
+            const std::optional<Sequence> peer_fin = block.reassembly.fin();
+            if (peer_fin && (next + segment.payload_length).after(*peer_fin)) {
+                ++context_.counters.dropped_unexpected;
+                ack_now(block, Edge::Restate);
+                return false;
+            }
+            if (!slot_free(block) && !make_room(block, next)) {
+                ++context_.counters.dropped_no_slot;
+                ack_now(block, Edge::Restate);
+                return false;
+            }
+            const auto offset =
+                static_cast<std::uint16_t>(datagram.l3_offset + datagram.l3_length + segment.payload_offset);
+            const auto hold = [this, &block, &datagram, &segment, offset] {
+                return block.receive.hold(context_.pool, datagram.packet, offset, segment.payload_length);
+            };
+            if (!hold() && (!make_room(block, next) || !hold())) {
+                ++context_.counters.dropped_no_node;
+                ack_now(block, Edge::Restate);
+                return false;
+            }
+            lifecycle_.raise(block, stream::Event::Readable);  // once, for the segment and any run it joins
+            if (segment.header.flags.has(wire::TcpFlag::Fin)) {
+                if (block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next()) ==
+                    AckPolicy::Ack::Now) {
+                    ack_now(block);
+                } else {
+                    transmitter_.queue_ack(block);
+                }
+                return true;
+            }
+            join(block);
+            // The policy still counts the segment and clears a remembered gap end RCV.NXT reached; the answer is now.
+            std::ignore = block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next());
             if (block.receive.closed()) {
                 // The join reached a remembered FIN, whose step sent its ACK or queued it: a queued one goes now. The
                 // ACK that left may have ended the connection.
@@ -497,11 +540,7 @@ namespace aloe::tcp::detail {
                 }
                 return true;
             }
-            if (joined || ack == AckPolicy::Ack::Now) {
-                ack_now(block);
-            } else {
-                transmitter_.queue_ack(block);
-            }
+            ack_now(block);
             return true;
         }
 
@@ -528,16 +567,21 @@ namespace aloe::tcp::detail {
             };
             bool held = segment.payload_length == 0;
             if (segment.payload_length > 0) {
+                // At the cap or with the pool empty the queue first places what needs no new node: a duplicate, or a
+                // newcomer that takes the slot of a node it replaces. Only a newcomer that needs one asks `make_room`.
                 const bool room = slot_free(block) && context_.pool.available() > 0;
-                if (!room && !make_room(block, sequence)) {
-                    refuse();
-                    return;
-                }
                 const auto offset =
                     static_cast<std::uint16_t>(datagram.l3_offset + datagram.l3_length + segment.payload_offset);
-                switch (
-                    block.reassembly.insert(context_.pool, datagram.packet, offset, segment.payload_length, sequence)
-                        .placed) {
+                const auto insert = [this, &block, &datagram, &segment, offset, sequence](const bool fresh_node) {
+                    return block.reassembly
+                        .insert(context_.pool, datagram.packet, offset, segment.payload_length, sequence, fresh_node)
+                        .placed;
+                };
+                auto placed = insert(room);
+                if (placed == ReassemblyQueue<Packet>::Placed::NoNode && !room && make_room(block, sequence)) {
+                    placed = insert(true);
+                }
+                switch (placed) {
                     case ReassemblyQueue<Packet>::Placed::Held:
                         ++context_.counters.out_of_order_held;
                         held = true;
@@ -550,6 +594,7 @@ namespace aloe::tcp::detail {
                         return;
                 }
             }
+            // A FIN below a remembered one replaces it; one above it was refused with the data past it, above.
             if (held && segment.header.flags.has(wire::TcpFlag::Fin)) {
                 block.reassembly.remember_fin(data_end);
             }

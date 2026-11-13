@@ -28,7 +28,8 @@ namespace aloe::tcp::detail {
         enum class Placed : std::uint8_t {
             Held,       ///< The packet was moved into a node; `kept` is the range it holds after the trims.
             Duplicate,  ///< Held data covers every byte: nothing is kept and the packet is still the caller's.
-            NoNode,     ///< The pool had no node: nothing is kept and the packet is still the caller's.
+            NoNode,     ///< No node could be taken: nothing is kept, the chain is unchanged and the packet is still
+                        ///< the caller's.
         };
 
         struct Inserted {
@@ -69,20 +70,29 @@ namespace aloe::tcp::detail {
             return fin_;
         }
 
-        /// Places `length` bytes at `offset` of `packet`, the first of which is `first`, by the three rules.
+        /**
+         * Places `length` bytes at `offset` of `packet`, the first of which is `first`, by the three rules. With
+         * `fresh_node` false the newcomer may only take the slot of a node it replaces: one that needs a node beyond
+         * those is `NoNode`, with the chain unchanged, so the caller can decide what gives way and insert again.
+         */
         [[nodiscard]] Inserted insert(Pool& pool,
                                       Packet& packet,
                                       const std::uint16_t offset,
                                       const std::uint16_t length,
-                                      const wire::TcpSequence first) noexcept {
+                                      const wire::TcpSequence first,
+                                      const bool fresh_node = true) noexcept {
             assert(length > 0 && "an out-of-order segment carries payload");
             wire::TcpSequence start = first;
             wire::TcpSequence end   = first + length;
             if (chain_.empty() || !start.before(range_of(pool.node(chain_.tail)).end)) {
+                if (!fresh_node) {
+                    return Inserted{.placed = Placed::NoNode, .kept = {}, .duplicate = std::nullopt};
+                }
                 return place(pool, packet, offset, first, start, end, chain_.tail, std::nullopt);
             }
 
             std::optional<wire::TcpSackBlock> duplicate;
+            bool replaced          = false;  // a node the newcomer covers went back: its slot is the newcomer's
             std::uint32_t previous = no_node;
             std::uint32_t current  = chain_.head;
             while (current != no_node && !start.before(range_of(pool.node(current)).end)) {
@@ -118,18 +128,29 @@ namespace aloe::tcp::detail {
                 }
                 current = pool.node(current).next;
                 drop(pool, pool.unlink_after(chain_, previous));
+                replaced = true;
             }
             if (start == end) {
                 return Inserted{.placed = Placed::Duplicate, .kept = {}, .duplicate = duplicate};
             }
+            if (!fresh_node && !replaced) {
+                return Inserted{.placed = Placed::NoNode, .kept = {}, .duplicate = std::nullopt};
+            }
             return place(pool, packet, offset, first, start, end, previous, duplicate);
         }
 
-        /// Unlinks the run that follows `next`, RCV.NXT after an in-order segment was held.
+        /**
+         * Unlinks the run that follows `next`, RCV.NXT after an in-order segment was held. The run never crosses a
+         * remembered FIN: it stops at a node that starts at or past it, and a node that straddles it gives the run only
+         * its bytes below the FIN, its length cut, so RCV.NXT never passes the peer's end.
+         */
         [[nodiscard]] Run take_run(Pool& pool, const wire::TcpSequence next) noexcept {
             Run run;
             wire::TcpSequence at = next;
             while (!chain_.empty()) {
+                if (fin_ && !at.before(*fin_)) {
+                    break;  // the run reached the peer's FIN: what is held past it is not data
+                }
                 HeldSegment<Packet>& head     = pool.node(chain_.head);
                 const wire::TcpSackBlock held = range_of(head);
                 if (held.first.after(at)) {
@@ -147,6 +168,11 @@ namespace aloe::tcp::detail {
                     head.length  = static_cast<std::uint16_t>(head.length - passed);
                     head.first   = at;
                     bytes_      -= passed;
+                }
+                if (fin_ && (head.first + head.length).after(*fin_)) {
+                    const auto past  = static_cast<std::uint16_t>((head.first + head.length) - *fin_);
+                    head.length      = static_cast<std::uint16_t>(head.length - past);
+                    bytes_          -= past;
                 }
                 run.bytes += head.length;
                 bytes_    -= head.length;

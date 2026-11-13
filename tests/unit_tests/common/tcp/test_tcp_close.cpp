@@ -318,6 +318,79 @@ TEST_P(TcpClose, AJoinThatReachesTheFinInFinWait2SendsOneAckAndCloses) {
     EXPECT_EQ(tcp_->counters().connections_closed, 1U);
 }
 
+TEST_P(TcpClose, ABareFinBelowHeldDataEndsTheRunWhenTheGapFills) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(100), base + 1000U, peer_.rcv_nxt()));
+    receive(peer_.segment({TcpFlag::Fin, TcpFlag::Ack}, {}, base + 1000U, peer_.rcv_nxt()));
+    std::ignore = collect_queued();
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(1000), base, peer_.rcv_nxt()));
+    EXPECT_TRUE(c->events().peer_closed());
+    EXPECT_EQ(c->state(), State::CloseWait);
+    EXPECT_EQ(c->unread().size(), 1000U) << "nothing past the peer's FIN is read";
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, base + 1001U);
+}
+
+TEST_P(TcpClose, AFinInsideHeldDataCutsTheRunWhenTheGapFills) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(100), base + 1100U, peer_.rcv_nxt()));
+    receive(peer_.segment(
+        {TcpFlag::Psh, TcpFlag::Ack, TcpFlag::Fin}, aloe::frames::pattern(150), base + 1000U, peer_.rcv_nxt()));
+    std::ignore = collect_queued();
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(1000), base, peer_.rcv_nxt()));
+    EXPECT_TRUE(c->events().peer_closed());
+    EXPECT_EQ(c->state(), State::CloseWait);
+    EXPECT_EQ(c->unread().size(), 1150U) << "the run ends at the FIN, inside the held node";
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, base + 1151U);
+}
+
+TEST_P(TcpClose, InOrderDataPastARememberedFinIsRefused) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    receive(peer_.segment({TcpFlag::Fin, TcpFlag::Ack}, {}, base + 1000U, peer_.rcv_nxt()));
+    std::ignore = collect_queued();
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(1100), base, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_unexpected, 1U);
+    EXPECT_TRUE(c->unread().empty());
+    auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U) << "answered at once";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, base);
+    EXPECT_EQ(frames[0].tcp->window, aloe::testing::tcp_fabric_budget) << "the edge restated";
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(1000), base, peer_.rcv_nxt()));
+    EXPECT_EQ(c->unread().size(), 1000U);
+    EXPECT_EQ(c->state(), State::CloseWait) << "the data ending at the FIN takes it";
+    frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, base + 1001U);
+}
+
+TEST_P(TcpClose, ABareFinBelowARememberedOneReplacesIt) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    receive(peer_.segment({TcpFlag::Fin, TcpFlag::Ack}, {}, base + 1000U, peer_.rcv_nxt()));
+    receive(peer_.segment({TcpFlag::Fin, TcpFlag::Ack}, {}, base + 500U, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_unexpected, 0U);
+    receive(peer_.segment({TcpFlag::Fin, TcpFlag::Ack}, {}, base + 800U, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_unexpected, 1U) << "a FIN above the remembered one is refused";
+    std::ignore = collect_queued();
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(500), base, peer_.rcv_nxt()));
+    EXPECT_EQ(c->state(), State::CloseWait);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, base + 501U);
+}
+
 TEST_P(TcpClose, FinRetransmitKeepsItsSequenceThenTimesOut) {
     configure_tcp({.data_retries = 2});
     auto* c = open_passive(peer_);

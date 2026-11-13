@@ -423,6 +423,36 @@ TEST_P(TcpReceive, AtTheCapASegmentThatWouldBeTheHighestIsDropped) {
     EXPECT_TRUE(collect_queued().empty()) << "past the remembered end: ordinary again";
 }
 
+TEST_P(TcpReceive, AtTheCapADuplicateOfTheHighestReleasesNothing) {
+    configure_tcp({.receive_segments = 4});
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    for (const std::uint32_t offset : {500U, 1000U, 1500U, 2000U}) {
+        receive(peer_.segment(data_flags, aloe::frames::pattern(100), base + offset, peer_.rcv_nxt()));
+    }
+    receive(peer_.segment(data_flags, aloe::frames::pattern(100), base + 2000U, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_duplicate, 1U);
+    EXPECT_EQ(tcp_->counters().out_of_order_released, 0U);
+    EXPECT_EQ(tcp_->counters().dropped_out_of_order, 0U);
+    EXPECT_EQ(c->out_of_order_segments(), 4U);
+}
+
+TEST_P(TcpReceive, AtTheCapACoveringNewcomerTakesTheSlotItReplaces) {
+    configure_tcp({.receive_segments = 4});
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    for (const std::uint32_t offset : {500U, 1000U, 1500U, 2000U}) {
+        receive(peer_.segment(data_flags, aloe::frames::pattern(100), base + offset, peer_.rcv_nxt()));
+    }
+    receive(peer_.segment(data_flags, aloe::frames::pattern(200), base + 1000U, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().out_of_order_released, 0U);
+    EXPECT_EQ(tcp_->counters().out_of_order_held, 5U);
+    EXPECT_EQ(c->out_of_order_segments(), 4U);
+    EXPECT_EQ(c->out_of_order_bytes(), 500U) << "1000:1200 replaced 1000:1100; 2000:2100 still held";
+}
+
 TEST_P(TcpReceive, AnEmptyPoolTakesTheConnectionsOwnHighestNode) {
     configure_tcp({.receive_segments = 4, .receive_pool = 4});
     auto* first = open_passive(peer_);

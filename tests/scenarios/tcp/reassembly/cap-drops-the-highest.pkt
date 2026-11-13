@@ -1,15 +1,15 @@
-// At the packet cap the lower sequence wins. With four slots and timestamps the budget is 4 * 1448 / 2 = 2896, so
-// the SYN-ACK states 2896, the edge stands at 1 + 2896 = 2897 and the segments are 100 bytes. Four segments above a
-// gap fill the cap; a fifth that would be the highest is dropped; one below them takes the node of the highest,
-// 2001; the in-order segment takes the node of the next highest, 1501, and joins 201:301. Every segment above the
-// gap is answered at once with the edge restated, 2897 - 1 = 2896; the join is acknowledged at once at 301, with
-// 2897 - 301 = 2596. The peer then resends what was dropped or released: 301:1001 covers the held 501:601, which
-// goes back to the pool, and joins 1001:1101 (2897 - 1101 = 1796); 1101:2601 comes again, acknowledged with the edge
-// standing (2897 - 1601 = 1296, 2897 - 2601 = 296), since the candidate, 1601 + 2896 - 500 and then
-// 2601 + 2896 - 1500, both 3997, is only 1100 past the edge, under the threshold of one segment, 1448. The read of 1500 frees every slot and doubles the window:
-// 2601 + 2896 - 2897 = 2600 past the edge and 2896 at least twice 296, so the update states 2896. Linux has no
-// packet cap: it prunes its out-of-order queue only under memory pressure (tcp_prune_ofo_queue), from the highest
-// sequence down, as here; this peer offered no SACK, so no block reports what is held.
+// At the packet cap the lower sequence wins. With four slots and timestamps the budget is 4 * 1448 / 2 = 2896, so the
+// SYN-ACK states 2896, the edge stands at 1 + 2896 = 2897 and the segments are 100 bytes. Four segments above a gap
+// fill the cap; a fifth that would be the highest is dropped; one below them takes the node of the highest, 2001; the
+// in-order segment takes the node of the next highest, 1501, and joins 201:301. Every segment above the gap is answered
+// at once with the edge restated, 2897 - 1 = 2896; the join is acknowledged at once at 301, with 2897 - 301 = 2596. The
+// peer then resends what was dropped or released: 301:1001 covers the held 501:601, which goes back to the pool, and
+// joins 1001:1101 (2897 - 1101 = 1796); 1101:2601 comes again, acknowledged with the edge standing (2897 - 1601 = 1296,
+// 2897 - 2601 = 296), since the candidate, 1601 + 2896 - 500 and then 2601 + 2896 - 1500, both 3997, is only 1100 past
+// the edge, under the threshold of one segment, 1448. The read of 1500 frees every slot and doubles the window: 2601 +
+// 2896 - 2897 = 2600 past the edge and 2896 at least twice 296, so the update states 2896. Linux has no packet cap: it
+// prunes its out-of-order queue only under memory pressure (tcp_prune_ofo_queue), from the highest sequence down, as
+// here; this peer offered no SACK, so no block reports what is held.
 --tcp_receive_segments=4
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0
