@@ -310,8 +310,7 @@ behind every number.
 | `congestion/no-congestion-control-sends-the-window` | `--congestion=none`, `--tcp_send_segments=64`: a `write` of forty segments leaves at once.                                                    |
 
 Where Linux differs today, the script's comment says how: Linux delays the ACK of in-order data and of a FIN by
-up to 40 ms, offers `sackOK` and `wscale` beside the MSS and timestamps on its SYNs, answers a segment above a gap
-with a SACK block when the peer offered SACK, retries a SYN six times, runs PRR in fast recovery, and probes a zero
+up to 40 ms, offers `sackOK` and `wscale` beside the MSS and timestamps on its SYNs, retries a SYN six times, runs PRR in fast recovery, and probes a zero
 window only while it holds unsent data. The later steps of phase 2 change these scripts as SACK, window scaling and
 delayed ACKs land; the grammar already carries every option they need.
 

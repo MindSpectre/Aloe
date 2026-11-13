@@ -293,12 +293,17 @@ namespace aloe::tcp::detail {
         void receive_synchronized(ControlBlock& block, Datagram& datagram, Segment segment) noexcept {
             const bool rst         = segment.header.flags.has(wire::TcpFlag::Rst);
             const Sequence arrived = segment.header.sequence;  // SEG.SEQ before any trim, for the TS.Recent rule
+            if (segment.payload_length > 0) {
+                block.sack.forget_duplicate();  // a duplicate not yet reported is not reported late (`tcp_data_queue`)
+            }
 
             // 0. PAWS (RFC 7323), before the sequence check as Linux's tcp_validate_incoming: a timestamp older than
-            // TS.Recent is an old duplicate, acknowledged at once and dropped. A RST is exempt; a segment without the
-            // option goes on, as Linux lets it.
+            // TS.Recent is an old duplicate, acknowledged at once and dropped, with what of it RCV.NXT passed reported
+            // as a duplicate (`tcp_send_dupack`). A RST is exempt; a segment without the option goes on, as Linux lets
+            // it.
             if (block.timestamps.rejects(segment.ts_value, rst, context_.now)) {
                 ++context_.counters.dropped_paws;
+                report_old_duplicate(block, segment);
                 ack_now(block, Edge::Restate);
                 return;
             }
@@ -348,10 +353,10 @@ namespace aloe::tcp::detail {
 
         /**
          * The sequence check against `[rcv_nxt, offered edge)`. A segment entirely before RCV.NXT or past the edge is
-         * dropped with an immediate ACK that restates the edge, unless it is a RST. One that overlaps RCV.NXT loses its
-         * old prefix, a SYN with it. One whose payload or FIN starts above RCV.NXT inside the window is above a gap; a
-         * segment that occupies no sequence space never is. A duplicate SYN in SynReceived gets the SYN-ACK again, from
-         * its entry.
+         * dropped with an immediate ACK that restates the edge, unless it is a RST; one before RCV.NXT is reported as a
+         * duplicate. One that overlaps RCV.NXT loses its old prefix, a SYN with it, and reports it as a duplicate. One
+         * whose payload or FIN starts above RCV.NXT inside the window is above a gap; a segment that occupies no
+         * sequence space never is. A duplicate SYN in SynReceived gets the SYN-ACK again, from its entry.
          */
         [[nodiscard]] Sequenced accept_sequence(ControlBlock& block, Segment& segment) noexcept {
             wire::TcpHeader& header    = segment.header;
@@ -380,6 +385,7 @@ namespace aloe::tcp::detail {
                     std::ignore = transmitter_.resend_head(block);
                     return Sequenced::Refused;
                 }
+                report_old_duplicate(block, segment);
                 return drop(context_.counters.dropped_duplicate);
             }
             if (sequence.after(next)) {  // a gap before it
@@ -388,7 +394,8 @@ namespace aloe::tcp::detail {
                 }
                 return Sequenced::AboveGap;
             }
-            if (sequence.before(next)) {  // overlap: the old prefix is already ours
+            if (sequence.before(next)) {  // overlap: the old prefix is already ours, and reported as a duplicate
+                block.sack.duplicate(sequence, next);
                 std::uint32_t trim = next.value - sequence.value;
                 if (header.flags.has(wire::TcpFlag::Syn)) {
                     header.flags = wire::TcpFlags::from_raw(
@@ -546,10 +553,12 @@ namespace aloe::tcp::detail {
 
         /**
          * The payload and FIN of a segment above a gap, after its RST, SYN and ACK were dealt with: the payload goes on
-         * the reassembly queue, the FIN is remembered, and the segment is answered at once with the edge restated.
-         * Data after the peer's FIN, or at or past a remembered one, is refused. At the cap or with the pool empty the
-         * segment takes the highest held node when it starts below it (`make_room`); otherwise it is refused, and its
-         * end is remembered so the data that fills the gap is acknowledged at once.
+         * the reassembly queue, the FIN is remembered, and the SACK blocks are told, with what was held already
+         * reported as a duplicate. The segment is answered as the ACK policy says (`AckPolicy::on_out_of_order`): at
+         * once with the edge restated, or by the flush. Data after the peer's FIN, or at or past a remembered one, is
+         * refused. At the cap or with the pool empty the segment takes the highest held node when it starts below it
+         * (`make_room`); otherwise it is refused, and its end is remembered so the data that fills the gap is
+         * acknowledged at once. A refused segment is answered at once and does not count towards the policy's three.
          */
         void receive_above_gap(ControlBlock& block, Datagram& datagram, const Segment& segment) noexcept {
             const Sequence sequence                = segment.header.sequence;
@@ -573,17 +582,21 @@ namespace aloe::tcp::detail {
                 const auto offset =
                     static_cast<std::uint16_t>(datagram.l3_offset + datagram.l3_length + segment.payload_offset);
                 const auto insert = [this, &block, &datagram, &segment, offset, sequence](const bool fresh_node) {
-                    return block.reassembly
-                        .insert(context_.pool, datagram.packet, offset, segment.payload_length, sequence, fresh_node)
-                        .placed;
+                    return block.reassembly.insert(
+                        context_.pool, datagram.packet, offset, segment.payload_length, sequence, fresh_node);
                 };
-                auto placed = insert(room);
-                if (placed == ReassemblyQueue<Packet>::Placed::NoNode && !room && make_room(block, sequence)) {
-                    placed = insert(true);
+                auto inserted = insert(room);
+                if (inserted.placed == ReassemblyQueue<Packet>::Placed::NoNode && !room && make_room(block, sequence)) {
+                    inserted = insert(true);
                 }
-                switch (placed) {
+                if (inserted.duplicate) {  // reported first, then its block, which the newcomer touched again
+                    block.sack.duplicate(inserted.duplicate->first, inserted.duplicate->end);
+                    block.sack.held(inserted.duplicate->first, inserted.duplicate->end);
+                }
+                switch (inserted.placed) {
                     case ReassemblyQueue<Packet>::Placed::Held:
                         ++context_.counters.out_of_order_held;
+                        block.sack.held(inserted.kept.first, inserted.kept.end);
                         held = true;
                         break;
                     case ReassemblyQueue<Packet>::Placed::Duplicate:
@@ -594,47 +607,79 @@ namespace aloe::tcp::detail {
                         return;
                 }
             }
-            // A FIN below a remembered one replaces it; one above it was refused with the data past it, above.
+            // A FIN below a remembered one replaces it, and the old one's number leaves the blocks; one above it was
+            // refused with the data past it, above. The FIN's number is reported with the block that ends at it.
             if (held && segment.header.flags.has(wire::TcpFlag::Fin)) {
+                if (peer_fin && *peer_fin != data_end) {
+                    block.sack.released(*peer_fin, *peer_fin + 1);
+                }
                 block.reassembly.remember_fin(data_end);
+                block.sack.held(data_end, data_end + 1);
             }
-            ack_now(block, Edge::Restate);
+            if (block.ack_policy.on_out_of_order(block.receive.next(), block.sack.in_use()) == AckPolicy::Ack::Now) {
+                ack_now(block, Edge::Restate);
+            } else {
+                transmitter_.queue_ack(block);  // an ordinary ACK, with the blocks as they stand at the flush
+            }
         }
 
         /// After an in-order segment was held with something held above: the run that now follows RCV.NXT joins the
-        /// in-order chain, and a remembered FIN it reaches is taken.
+        /// in-order chain, the blocks RCV.NXT passed go, held data RCV.NXT had passed is reported as a duplicate, and a
+        /// remembered FIN the run reaches is taken.
         void join(ControlBlock& block) noexcept {
             auto run = block.reassembly.take_run(context_.pool, block.receive.next());
             block.receive.append(context_.pool, run.chain, run.bytes);
+            block.sack.advanced(block.receive.next());
+            if (run.duplicate) {
+                block.sack.duplicate(run.duplicate->first, run.duplicate->end);
+            }
             if (block.reassembly.fin() == block.receive.next()) {
                 receive_fin(block);
             }
         }
 
         /// The connection is at its cap, or the pool is empty, and a segment that starts at `first` needs a node: the
-        /// lower sequence wins. True when the highest out-of-order node was released for it. The one place that
-        /// decides what gives way at the cap.
+        /// lower sequence wins. True when the highest out-of-order node was released for it, and its block, and a
+        /// remembered FIN's, cut back. The one place that decides what gives way at the cap.
         [[nodiscard]] bool make_room(ControlBlock& block, const Sequence first) noexcept {
             const std::optional<wire::TcpSackBlock> highest = block.reassembly.highest();
             if (!highest || !highest->first.after(first)) {
                 return false;
             }
+            if (const std::optional<Sequence> peer_fin = block.reassembly.fin()) {
+                block.sack.released(*peer_fin, *peer_fin + 1);  // the release forgets the FIN
+            }
             const wire::TcpSackBlock released = block.reassembly.release_highest(context_.pool);
+            block.sack.released(released.first, released.end);  // in the same step: no ACK reports it
             ++context_.counters.out_of_order_released;
             block.ack_policy.gap(released.end);  // as a refused segment's end: the data below it is acked at once
             return true;
         }
 
-        /// The peer's FIN, in order: the receive side ends, what is held above it is released, the Lifecycle moves
-        /// the state on and says when the ACK goes; flush retries an immediate one that was refused.
+        /// The peer's FIN, in order: the receive side ends, what is held above it is released and its blocks and a
+        /// pending duplicate go, the Lifecycle moves the state on and says when the ACK goes; flush retries an
+        /// immediate one that was refused.
         void receive_fin(ControlBlock& block) noexcept {
             block.receive.take_fin();
             block.reassembly.release(context_.pool);  // nothing above the peer's FIN is kept
+            block.sack.drop();                        // nor reported, as Linux's `tcp_fin` resets its blocks
             if (lifecycle_.peer_closed(block) == AckPolicy::Ack::Now) {
                 ack_now(block);
             } else {
                 transmitter_.queue_ack(block);
             }
+        }
+
+        /// A segment refused as old that starts before RCV.NXT: what of it RCV.NXT passed is reported as a duplicate
+        /// (`tcp_send_dupack`).
+        static void report_old_duplicate(ControlBlock& block, const Segment& segment) noexcept {
+            const Sequence sequence = segment.header.sequence;
+            const Sequence next     = block.receive.next();
+            if (segment.length() == 0 || !sequence.before(next)) {
+                return;
+            }
+            const Sequence end = sequence + segment.length();
+            block.sack.duplicate(sequence, end.before(next) ? end : next);
         }
 
         /// An immediate ACK, stating the edge `edge` names: queued through IP before the next segment is processed; a

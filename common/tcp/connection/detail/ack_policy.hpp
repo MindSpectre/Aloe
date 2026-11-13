@@ -9,14 +9,15 @@ namespace aloe::tcp::detail {
 
     /**
      * @brief RFC 5681's acknowledgement policy for in-order data: delayed to the next flush, except for every second
-     * full-sized segment and for the data that fills a gap.
+     * full-sized segment and for the data that fills a gap; and for segments above a gap, the count of those answered
+     * at once since RCV.NXT last moved.
      */
     class AckPolicy {
     public:
         /// When the data just accepted is to be acknowledged.
         enum class Ack : std::uint8_t {
-            Delayed,  ///< By the next flush, unless a data segment carries it first.
-            Now,      ///< Before the next segment is processed.
+            Flush,  ///< By the next flush, unless a segment with an ACK leaves first.
+            Now,    ///< Before the next segment is processed.
         };
 
         /// Data above a gap was refused, or released for room, up to `end`: until the receive edge reaches the
@@ -48,7 +49,24 @@ namespace aloe::tcp::detail {
                     return Ack::Now;  // a refused send leaves the count saturated at two
                 }
             }
-            return Ack::Delayed;
+            return Ack::Flush;
+        }
+
+        /// A segment above a gap was held with RCV.NXT at `next`. Without SACK every one is answered at once; with it
+        /// the first three since RCV.NXT last moved, and the rest by the flush (Linux, `__tcp_ack_snd_check`).
+        [[nodiscard]] Ack on_out_of_order(const wire::TcpSequence next, const bool sack) noexcept {
+            if (!sack) {
+                return Ack::Now;
+            }
+            if (next != out_of_order_next_) {
+                out_of_order_next_ = next;
+                out_of_order_now_  = 0;
+            }
+            if (out_of_order_now_ < out_of_order_at_once) {
+                ++out_of_order_now_;
+                return Ack::Now;
+            }
+            return Ack::Flush;
         }
 
         /// A segment carrying an ACK left: the count of full-sized segments starts again.
@@ -57,8 +75,13 @@ namespace aloe::tcp::detail {
         }
 
     private:
+        /// Linux's `TCP_FASTRETRANS_THRESH`: three duplicates start the peer's fast retransmit.
+        static constexpr std::uint8_t out_of_order_at_once = 3;
+
         std::optional<wire::TcpSequence> gap_end_{};  ///< The furthest end of data refused or released above a gap.
         std::uint8_t full_segments_ = 0;              ///< Full-sized segments since the last ACK; saturates at two.
+        wire::TcpSequence out_of_order_next_{};       ///< The RCV.NXT the count of segments above a gap is for.
+        std::uint8_t out_of_order_now_ = 0;           ///< Of them, those answered at once; at most three.
     };
 
 }  // namespace aloe::tcp::detail

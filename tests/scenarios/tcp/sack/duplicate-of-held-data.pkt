@@ -1,0 +1,22 @@
+// Data already held above the gap arrives again: it is dropped, and the ACK reports it as a duplicate SACK followed by
+// the block that holds it (RFC 2883 section 4). Both ACKs above the gap restate the edge, (370689 - 1001) / 8 = 46211.
+// The segment that fills the gap forgets nothing still owed, since the duplicate went with its ACK, and is answered at
+// once with (370689 - 3001) / 8 = 45961. Linux does the same (tcp_data_queue_ofo, tcp_dsack_set).
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100>
++0 < P. 2001:3001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2001:3001>
++0 < P. 2501:3001(500) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2501:3001 2001:3001>
++0 < P. 1001:2001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 3001 win 45961 <nop,nop,TS val 0 ecr 100>
++0 read(4, ..., 3000) = 3000

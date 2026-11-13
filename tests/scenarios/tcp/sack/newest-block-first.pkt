@@ -1,0 +1,26 @@
+// Blocks are reported in RFC 2018's order: the block of the segment just received first, then the others, most
+// recently changed first. Three segments above the gap, each answered at once with the edge restated, (370689 - 1001)
+// / 8 = 46211. The segment that fills the first gap joins 2001:3001; the ACK at once reports the two blocks still held,
+// in the order they last changed, and states (370689 - 3001) / 8 = 45961, the edge standing since the candidate,
+// 3001 + 370688 - 3000, is the edge itself. The read doubles nothing. Linux orders its blocks the same way
+// (tcp_sack_new_ofo_skb, tcp_sack_remove).
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100>
++0 < P. 2001:3001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2001:3001>
++0 < P. 6001:7001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 6001:7001 2001:3001>
++0 < P. 4001:5001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 4001:5001 6001:7001 2001:3001>
++0 < P. 1001:2001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 3001 win 45961 <nop,nop,TS val 0 ecr 100,nop,nop,sack 4001:5001 6001:7001>
++0 read(4, ..., 3000) = 3000

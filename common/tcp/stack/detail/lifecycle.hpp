@@ -209,7 +209,7 @@ namespace aloe::tcp::detail {
             switch (block.state) {
                 case State::Established:
                     block.state = State::CloseWait;
-                    return AckPolicy::Ack::Delayed;
+                    return AckPolicy::Ack::Flush;
                 case State::FinWait1:
                     block.state = State::Closing;
                     return AckPolicy::Ack::Now;
@@ -217,7 +217,7 @@ namespace aloe::tcp::detail {
                     block.finish_pending = true;  // the terminal ACK goes before Closed is published
                     return AckPolicy::Ack::Now;
                 default:
-                    return AckPolicy::Ack::Delayed;
+                    return AckPolicy::Ack::Flush;
             }
         }
 
@@ -330,6 +330,7 @@ namespace aloe::tcp::detail {
             block.finish_pending = false;
             transmitter_.drop_queue(block);  // and off the deferred list
             block.reassembly.release(context_.pool);
+            block.sack.drop();  // nothing is held above the gap any more, so nothing is reported
         }
 
         void finish(ControlBlock& block) noexcept {

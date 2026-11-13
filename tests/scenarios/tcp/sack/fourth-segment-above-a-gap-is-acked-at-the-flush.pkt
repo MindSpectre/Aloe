@@ -1,0 +1,28 @@
+// On a connection that uses SACK the first three segments above a gap since RCV.NXT last moved are answered at once,
+// each restating the edge; the fourth is owed to the flush, whose ordinary ACK may move it. A full segment, 1448
+// bytes, puts the edge at 1449 + 370688 - 1448 = 370689, stated as (370689 - 1449) / 8 = 46155 and restated three
+// times. The read of 1448 bytes puts the candidate at 1449 + 370688 = 372137, a full segment beyond the edge, the
+// threshold min(370688 / 2, 1448); the read itself queues no update, since 370688 is not twice 369240. The fourth ACK
+// offers the candidate: (372137 - 1449) / 8 = 46336. The runner flushes after every line, so the fourth ACK leaves on
+// its own line here; a burst of them in one tick, three ACKs and one, is a test of the brick. Linux sends the first
+// three at once too and the rest on a timer of at most a millisecond (__tcp_ack_snd_check).
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1449(1448) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1449 win 46155 <nop,nop,TS val 0 ecr 100>
++0 < P. 2449:3449(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1449 win 46155 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2449:3449>
++0 < P. 3449:4449(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1449 win 46155 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2449:4449>
++0 < P. 4449:5449(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1449 win 46155 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2449:5449>
++0 read(4, ..., 1448) = 1448
++0 < P. 5449:6449(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1449 win 46336 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2449:6449>

@@ -31,6 +31,7 @@ namespace aloe::tcp::detail {
         std::optional<TimestampOption> timestamps{};
         bool sack_permitted = false;                 ///< On a handshake segment.
         std::optional<std::uint8_t> window_scale{};  ///< On a handshake segment: our shift.
+        std::span<const wire::TcpSackBlock> sack{};  ///< On a pure ACK.
 
         /// The TCP header and its options: one connection's segments of one kind keep one size, so a framed packet is
         /// rewritten in place. SACK-permitted shares the timestamps' word when both are there.
@@ -38,7 +39,8 @@ namespace aloe::tcp::detail {
             return wire::TcpHeader::size + (mss ? wire::TcpOptions::mss_size : 0) +
                    (timestamps ? wire::TcpOptions::timestamps_size : 0) +
                    (sack_permitted && !timestamps ? wire::TcpOptions::sack_permitted_size : 0) +
-                   (window_scale ? wire::TcpOptions::window_scale_size : 0);
+                   (window_scale ? wire::TcpOptions::window_scale_size : 0) +
+                   (sack.empty() ? 0 : wire::TcpOptions::sack_size(sack.size()));
         }
     };
 
@@ -149,7 +151,8 @@ namespace aloe::tcp::detail {
         }
 
         /// The TCP header and the option block, the data offset their size. The block is Linux's (`tcp_options_write`):
-        /// the MSS; then `sackOK, TS` or `nop, nop, TS` or `nop, nop, sackOK`; then `nop, wscale`.
+        /// the MSS; then `sackOK, TS` or `nop, nop, TS` or `nop, nop, sackOK`; then `nop, wscale`; on a pure ACK the
+        /// timestamps, then `nop, nop, sack` and its blocks.
         static void write(const std::span<std::byte> tcp, const OutgoingSegment& segment) noexcept {
             wire::TcpHeader header = segment.header;
             header.data_offset     = static_cast<std::uint8_t>(segment.size());
@@ -172,6 +175,10 @@ namespace aloe::tcp::detail {
             }
             if (segment.window_scale) {
                 wire::TcpOptions::write_window_scale(options, *segment.window_scale);
+                options = options.subspan(wire::TcpOptions::window_scale_size);
+            }
+            if (!segment.sack.empty()) {
+                wire::TcpOptions::write_sack(options, segment.sack);
             }
         }
 

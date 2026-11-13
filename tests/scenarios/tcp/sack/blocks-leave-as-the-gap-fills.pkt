@@ -1,0 +1,24 @@
+// Two gaps, filled one at a time: each join removes the block RCV.NXT passed and the ACK at once reports what is still
+// held, then nothing. The windows: both ACKs above the gaps restate (370689 - 1001) / 8 = 46211; the joins leave the
+// edge standing, since each candidate, RCV.NXT + 370688 less the unread bytes, is the edge: (370689 - 3001) / 8 =
+// 45961 and (370689 - 5001) / 8 = 45711. The read doubles nothing. Linux removes blocks the same way (tcp_sack_remove).
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100>
++0 < P. 2001:3001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2001:3001>
++0 < P. 4001:5001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 4001:5001 2001:3001>
++0 < P. 1001:2001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 3001 win 45961 <nop,nop,TS val 0 ecr 100,nop,nop,sack 4001:5001>
++0 < P. 3001:4001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 5001 win 45711 <nop,nop,TS val 0 ecr 100>
++0 read(4, ..., 5000) = 5000

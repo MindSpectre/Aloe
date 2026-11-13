@@ -1,0 +1,24 @@
+// Beside the timestamps three blocks fit in the forty bytes of options (12 + 4 + 3 * 8 = 40), so with four ranges held
+// the oldest is left out. The first three segments above the gap are answered at once with the edge restated,
+// (370689 - 1001) / 8 = 46211; the fourth is answered by the flush with an ordinary ACK, which here states the same
+// window, since the candidate, 1001 + 370688 - 1000, is the edge. Linux sends as many blocks as the option space holds
+// (tcp_established_options), and answers the fourth on its compressed-SACK timer instead of at a flush.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100>
++0 < P. 2001:3001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2001:3001>
++0 < P. 4001:5001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 4001:5001 2001:3001>
++0 < P. 6001:7001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 6001:7001 4001:5001 2001:3001>
++0 < P. 8001:9001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 8001:9001 6001:7001 4001:5001>
