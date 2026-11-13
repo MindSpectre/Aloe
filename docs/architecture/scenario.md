@@ -90,7 +90,8 @@ the column, for anything outside it:
   `--tcp_rto_max_ms`, `--tcp_rto_initial_ms`, `--tcp_user_timeout_ms` (milliseconds), `--tcp_retries`,
   `--tcp_data_retries`, `--tcp_retransmit_defers` (0 to 255), `--tcp_send_segments`, `--tcp_timestamps=0|1`,
   `--tcp_receive_segments`, `--tcp_receive_window`, `--tcp_sack=0|1`, `--tcp_window_scaling=0|1` and
-  `--tcp_delayed_ack_ms`, which set the harness's `TcpConfig` for that script (`configured(config, script)` applies them); and
+  `--tcp_delayed_ack_ms`, which set the harness's `TcpConfig` for that script (`configured(config, script)` applies
+  them); and
   `--congestion=newreno|none|both`, the policies the script runs under (`both` when absent). Any other name is a
   parse error, and so is an option line after the first event, so the dialect grows deliberately.
 - **Backtick lines** are a parse error: the runner has no shell, and what a corpus script sets that way is the
