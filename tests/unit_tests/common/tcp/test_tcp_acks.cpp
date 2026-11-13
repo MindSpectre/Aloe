@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <span>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -212,4 +213,246 @@ TEST_P(TcpAcksRefusing, FullSegmentCountSaturatesAtTwoUntilAnAckLeaves) {
     EXPECT_TRUE(collect_queued().empty()) << "the count was reset by the ACK that left";
     receive(peer_.data(aloe::frames::pattern(mss)));
     EXPECT_EQ(pure_acks(collect_queued()), 1U);
+}
+
+namespace {
+
+    /// The ACK delay every test below configures; each steps the clock one millisecond per `advance`, since a wheel
+    /// advanced once past several deadlines fires a re-arming timer once.
+    constexpr auto delay = 40ms;
+
+    class TcpDelayedAcks : public aloe::testing::TcpFixture {
+    protected:
+        TcpDelayedAcks() {
+            configure_tcp({.delayed_ack = delay});
+        }
+
+        /// `count` steps of one millisecond, each flushed: every frame the stack sent on the way.
+        [[nodiscard]] std::vector<aloe::frames::ParsedFrame> step(const int count) {
+            std::vector<aloe::frames::ParsedFrame> frames;
+            for (int index = 0; index < count; ++index) {
+                advance(1ms);
+                for (auto& frame : collect()) {
+                    frames.push_back(std::move(frame));
+                }
+            }
+            return frames;
+        }
+    };
+
+    class TcpDelayedAcksRefusing : public aloe::testing::TcpRefusingFixture {
+    protected:
+        TcpDelayedAcksRefusing() {
+            configure_tcp({.delayed_ack = delay});
+        }
+    };
+
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpDelayedAcks,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpDelayedAcksRefusing,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+
+}  // namespace
+
+TEST_P(TcpDelayedAcks, OneSegmentIsAcknowledgedAtTheDeadline) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.data(aloe::frames::pattern(100)));
+    EXPECT_TRUE(collect().empty()) << "not at the flush of the same tick";
+    EXPECT_TRUE(step(39).empty()) << "nor before the delay ran out";
+    advance(1ms);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(pure_acks(frames), 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 101});
+    EXPECT_EQ(tcp_->counters().delayed_acks_sent, 1U);
+    EXPECT_EQ(tcp_->counters().pure_acks_sent, 1U);
+    EXPECT_TRUE(step(100).empty()) << "one ACK, once";
+}
+
+TEST_P(TcpDelayedAcks, TheDelayCountsFromTheFirstSegment) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.data(aloe::frames::pattern(100)));
+    EXPECT_TRUE(step(30).empty());
+    receive(peer_.data(aloe::frames::pattern(100)));
+    EXPECT_TRUE(step(9).empty());
+    const auto frames = step(1);
+    ASSERT_EQ(pure_acks(frames), 1U) << "at 40 ms, not extended by the second segment";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 201}) << "covering both";
+    EXPECT_TRUE(step(30).empty()) << "none at 70 ms";
+    EXPECT_EQ(tcp_->counters().delayed_acks_sent, 1U);
+}
+
+TEST_P(TcpDelayedAcks, TwoFullSegmentsWorthIsAcknowledgedAtOnce) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.data(aloe::frames::pattern(mss)));
+    EXPECT_TRUE(collect().empty());
+    receive(peer_.data(aloe::frames::pattern(mss)));
+    auto frames = collect_queued();
+    ASSERT_EQ(pure_acks(frames), 1U) << "two full segments: at once";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 1 + 2 * mss});
+    // Four half-sized segments are two full segments' worth: counted in bytes, the ACK that left started it again.
+    for (int index = 0; index < 3; ++index) {
+        receive(peer_.data(aloe::frames::pattern(mss / 2)));
+        EXPECT_TRUE(collect().empty()) << index;
+    }
+    receive(peer_.data(aloe::frames::pattern(mss / 2)));
+    frames = collect_queued();
+    ASSERT_EQ(pure_acks(frames), 1U) << "the fourth half-sized segment: at once";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 1 + 4 * mss});
+    EXPECT_TRUE(step(2 * 40).empty()) << "the ACKs that left cancelled the timer";
+    EXPECT_EQ(tcp_->counters().delayed_acks_sent, 0U);
+}
+
+TEST_P(TcpDelayedAcks, AWriteCarriesTheAckAndEndsTheDelay) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.data(aloe::frames::pattern(100)));
+    const auto span = c->prepare(4);
+    ASSERT_TRUE(span.has_value());
+    ASSERT_TRUE(c->commit(4));
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(aloe::frames::tcp_payload(frames[0]).size(), 4U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 101});
+    EXPECT_TRUE(step(40).empty()) << "the data segment ended the delay";
+    EXPECT_EQ(tcp_->counters().delayed_acks_sent, 0U);
+    EXPECT_EQ(tcp_->counters().pure_acks_sent, 0U);
+}
+
+TEST_P(TcpDelayedAcks, ASegmentAboveAGapIsAcknowledgedAtOnceAllTheSame) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.data(aloe::frames::pattern(100)));
+    const TcpSequence next = peer_.snd_nxt();
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(10), next + 100U, peer_.rcv_nxt()));
+    auto frames = collect_queued();
+    ASSERT_EQ(pure_acks(frames), 1U) << "above a gap: at once";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, next);
+    // In-order data with something held above it: at once too.
+    receive(peer_.data(aloe::frames::pattern(10)));
+    frames = collect_queued();
+    ASSERT_EQ(pure_acks(frames), 1U) << "below held data: at once";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, next + 10U);
+    EXPECT_TRUE(step(40).empty()) << "the ACKs that left ended the delay";
+    EXPECT_EQ(tcp_->counters().delayed_acks_sent, 0U);
+    EXPECT_EQ(c->out_of_order_segments(), 1U);
+}
+
+TEST_P(TcpDelayedAcks, TheHandshakesAckAndAFinsAckStayAtTheFlush) {
+    auto* c = open_active(peer_);  // expects the handshake's ACK at the first collect, not 40 ms later
+    ASSERT_NE(c, nullptr);
+    receive(peer_.fin());
+    EXPECT_EQ(c->state(), aloe::tcp::State::CloseWait);
+    EXPECT_TRUE(collect_queued().empty()) << "the FIN's ACK waits for the flush";
+    const auto frames = collect();
+    ASSERT_EQ(pure_acks(frames), 1U) << "and goes at it";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, peer_.snd_nxt());
+    EXPECT_TRUE(step(40).empty());
+    EXPECT_EQ(tcp_->counters().delayed_acks_sent, 0U);
+}
+
+TEST_P(TcpDelayedAcks, AWindowUpdateFromConsumeGoesAtTheFlushAndCarriesTheAck) {
+    // Four slots and no timestamps: a budget of 4 * 1460 / 2 = 2920 and an edge at 2921.
+    configure_tcp({.receive_segments = 4, .delayed_ack = delay});
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.data(aloe::frames::pattern(1000)));
+    receive(peer_.data(aloe::frames::pattern(1000)));
+    EXPECT_TRUE(collect().empty()) << "2000 bytes is less than two full segments: delayed";
+    // The window on offer is 920; the candidate after the read is 2920, more than twice it: an update is owed.
+    c->consume(2000);
+    const auto frames = collect();
+    ASSERT_EQ(pure_acks(frames), 1U) << "the update, at the flush";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 2001});
+    EXPECT_EQ(frames[0].tcp->window, 2920U);
+    EXPECT_TRUE(step(40).empty()) << "it carried the delayed ACK: none follows at the deadline";
+    EXPECT_EQ(tcp_->counters().delayed_acks_sent, 0U);
+}
+
+TEST_P(TcpDelayedAcksRefusing, ARefusedDelayedAckWaitsForTheFlush) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.data(aloe::frames::pattern(100)));
+    refuse();
+    for (int index = 0; index < 39; ++index) {
+        advance(1ms);
+    }
+    EXPECT_EQ(tcp_->counters().send_refused, 0U) << "nothing attempted before the deadline";
+    advance(1ms);
+    EXPECT_EQ(tcp_->counters().send_refused, 1U) << "the delayed ACK, attempted at the deadline";
+    EXPECT_EQ(tcp_->counters().delayed_acks_sent, 0U) << "counted only when it left";
+    allow();
+    const auto frames = collect();
+    ASSERT_EQ(pure_acks(frames), 1U) << "the flush sends it";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 101});
+    EXPECT_EQ(tcp_->counters().delayed_acks_sent, 0U);
+}
+
+TEST_P(TcpDelayedAcks, ReleaseWithADelayedAckPendingCancelsTheTimer) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.data(aloe::frames::pattern(100)));
+    EXPECT_EQ(wheel_.pending(), 1U) << "the ACK timer";
+    c->release();
+    EXPECT_EQ(wheel_.pending(), 0U);
+    std::ignore = collect();  // the release's RST
+    EXPECT_TRUE(step(40).empty());
+    EXPECT_EQ(tcp_->counters().delayed_acks_sent, 0U);
+
+    // The same with a RST from the peer in place of the release.
+    aloe::frames::TcpPeer other{aloe::testing::peer_spec(aloe::testing::tcp_peer_port + 1), TcpSequence{5000U}};
+    auto* d = open_passive(other);
+    ASSERT_NE(d, nullptr);
+    receive(other.data(aloe::frames::pattern(100)));
+    EXPECT_EQ(wheel_.pending(), 1U);
+    receive(other.rst());
+    EXPECT_EQ(d->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(wheel_.pending(), 0U);
+    EXPECT_TRUE(step(40).empty());
+    EXPECT_EQ(tcp_->counters().delayed_acks_sent, 0U);
+    d->release();
+}
+
+TEST_P(TcpDelayedAcks, ADataSegmentLeavesTheDuplicateItCannotCarryToTheFlush) {
+    peer_.set_sack_permitted(true);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(c->sack());
+    const TcpSequence base = peer_.snd_nxt();
+    receive(peer_.data(aloe::frames::pattern(100)));
+    // Its first 50 bytes are old: a duplicate to report, with the ACK at its ordinary time, here the delay's.
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack}, aloe::frames::pattern(100), base + 50U, peer_.rcv_nxt()));
+    EXPECT_TRUE(collect().empty());
+    const auto span = c->prepare(4);
+    ASSERT_TRUE(span.has_value());
+    ASSERT_TRUE(c->commit(4));
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 2U) << "the data segment, then the pure ACK that carries what it could not";
+    EXPECT_EQ(aloe::frames::tcp_payload(frames[0]).size(), 4U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, base + 150U);
+    EXPECT_EQ(pure_acks({frames[1]}), 1U);
+    EXPECT_EQ(frames[1].tcp->acknowledgement, base + 150U);
+    EXPECT_EQ(aloe::frames::sack_blocks_of(frames[1]).size(), 1U);
+    EXPECT_EQ(tcp_->counters().duplicate_sacks_sent, 1U);
+    EXPECT_TRUE(step(40).empty());
+    EXPECT_EQ(tcp_->counters().delayed_acks_sent, 0U);
+}
+
+TEST_P(TcpDelayedAcks, DestroyingTheStackWithADelayedAckPendingCancelsTheTimer) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.data(aloe::frames::pattern(100)));
+    EXPECT_EQ(wheel_.pending(), 1U) << "the ACK timer";
+    configure_tcp({.delayed_ack = delay});  // the old stack goes with its connection, the timer still armed
+    EXPECT_EQ(wheel_.pending(), 0U);
+    EXPECT_TRUE(step(40).empty());
 }

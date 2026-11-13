@@ -302,6 +302,7 @@ namespace aloe::tcp::detail {
                 return;
             }
             transmitter_.disarm(block);
+            transmitter_.disarm_ack(block);
             std::ignore = table_.erase(block.key, block.base_hash);
             return_chain(block);
             transmitter_.drop_queue(block);
@@ -325,6 +326,7 @@ namespace aloe::tcp::detail {
             }
             block.state = State::Closed;
             transmitter_.disarm(block);
+            transmitter_.disarm_ack(block);  // no ACK is owed to a closed connection's peer
             block.unresolved_polls = 0;
             transmitter_.forget(block);
             block.finish_pending = false;

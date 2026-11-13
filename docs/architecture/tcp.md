@@ -460,8 +460,9 @@ from the handshake. Karn's rule is applied as Linux's `tcp_clean_rtx_queue` appl
 from the oldest entry it freed, measured from that entry's last transmission, only when no entry it freed was
 sent more than once; otherwise, on a connection with timestamps, the sample comes from the echo the ACK carries,
 which names the transmission it answers (`tcp_ack_update_rtt`). A valid sample ends any backoff. The connection
-has one wheel timer. It is armed at `now + RTO` when a segment goes into an empty queue, re-armed from now by
-every ACK that advances `acknowledged()` while the queue holds more, and cancelled when the queue empties. Each
+has one wheel timer for its sends, beside the delayed ACK's. It is armed at `now + RTO` when a segment goes into an
+empty queue, re-armed from now by every ACK that advances `acknowledged()` while the queue holds more, and cancelled
+when the queue empties. Each
 expiry resends the head, counts one retry, doubles the RTO up to `rto_max` and re-arms; the retry count resets on
 every ACK that advances. The SYN and SYN-ACK are on the same timer and keep phase 1's schedule, which was an
 initial RTO of one second doubling: with the defaults they go again 1, 3, 7, 15 and 31 seconds after the first
@@ -528,7 +529,7 @@ at least once per timeout. Here Aloe departs from Linux knowingly: Linux probes 
 behind the window (`tcp_probe_timer` returns without a send head), because its socket buffer tells it the
 application wants to send. Aloe holds no unsent data, so it probes while the window is zero whether or not the
 application has data, which RFC 9293 allows and which costs an idle connection one segment per doubled RTO, at
-most one every `rto_max`. The probe shares the connection's one timer.
+most one every `rto_max`. The probe shares the connection's timer for its sends.
 
 **A FIN waits for the window.** `close` gives its FIN a sequence number and an entry at once but transmits it
 only when the peer's window covers it, Linux's `tcp_snd_wnd_test`: a Linux peer drops a FIN that arrives inside
@@ -602,7 +603,11 @@ the timestamp option on a connection that carries it; for anything that cannot b
 of window or older than `TS.Recent`, data after the peer's FIN); for a segment above a gap, with the edge restated:
 every one on a connection without SACK, the first three since `rcv_nxt` last moved on one with it, which leaves the rest
 to one ACK at the `flush`; for in-order data while anything is held above it, and while recovering from a gap; and for a
-FIN the connection is closing on. A refused immediate ACK stays queued for the next `flush`. Every pure ACK of a
+FIN the connection is closing on. A refused immediate ACK stays queued for the next `flush`. With `delayed_ack` set,
+the ACK of in-order data waits instead on a second wheel timer in the connection, counted from the first segment it
+covers and never extended, until a segment carrying an ACK leaves or two full-sized segments' worth of bytes is
+unacknowledged; the handshake's ACK, a FIN's and a window update stay at the `flush`, and a refused delayed ACK waits
+there too. Every pure ACK of a
 connection that uses SACK carries the blocks it holds above a gap and a pending duplicate SACK; a data segment carries
 none and leaves such an ACK queued.
 
@@ -645,8 +650,8 @@ keeps that packet itself, lent, as the retransmission queue's entry, and leaves 
 runtime written over the same bricks.
 
 **What is still left out, and why.** The receive side holds segments above a gap as the packets they arrived in,
-negotiates window scaling and reports what it holds with SACK blocks, but has no delayed ACK yet; it comes with the rest
-of step 4 of phase 2. There is no TIME_WAIT: the slot is the owner's until `release`; it comes with step 6. The brick
+negotiates window scaling, reports what it holds with SACK blocks and can delay its ACKs; the rest of step 4 of phase 2
+is still to come. There is no TIME_WAIT: the slot is the owner's until `release`; it comes with step 6. The brick
 makes no deployment or latency claim yet: the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a recorded
 baseline, and its rerun with reliable send is owed, as its page says.
 

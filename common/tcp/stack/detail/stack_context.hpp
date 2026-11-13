@@ -27,11 +27,13 @@ namespace aloe::tcp::detail {
         using Packet       = Ip::Packet;
         using ControlBlock = detail::ControlBlock<Ip, CongestionControl>;
 
-        /// `validated` is the config after `TcpConfig::validate`; one block per slot is built here over `owner`.
+        /// `validated` is the config after `TcpConfig::validate`; one block per slot is built here over `owner`, with
+        /// the trampolines of its two timers.
         StackContext(Ip& ip_brick,
                      const TcpConfig& validated,
                      Stack<Ip, CongestionControl>& owner,
-                     const loop::Timer::Function fire)
+                     const loop::Timer::Function fire,
+                     const loop::Timer::Function fire_ack)
             : ip{ip_brick},
               config{validated},
               mss{static_cast<std::uint16_t>(ip_brick.max_l4_size() - wire::TcpHeader::size)},
@@ -45,7 +47,7 @@ namespace aloe::tcp::detail {
               syn_window{static_cast<std::uint16_t>(std::min(largest_budget, ReceiveWindow::unscaled_max))},
               pool{config.receive_pool} {
             for (std::size_t index = 0; index < config.connections; ++index) {
-                blocks.emplace_back(owner, fire, static_cast<std::uint32_t>(index), mss);
+                blocks.emplace_back(owner, fire, fire_ack, static_cast<std::uint32_t>(index), mss);
             }
         }
 

@@ -8,16 +8,18 @@
 namespace aloe::tcp::detail {
 
     /**
-     * @brief RFC 5681's acknowledgement policy for in-order data: delayed to the next flush, except for every second
-     * full-sized segment and for the data that fills a gap; and for segments above a gap, the count of those answered
-     * at once since RCV.NXT last moved.
+     * @brief RFC 5681's acknowledgement policy for in-order data: delayed to the next flush, or with a delay configured
+     * to its deadline, except for the second full-sized segment, or two full segments' worth of bytes with the delay,
+     * and for data below what is held above or refused; and for segments above a gap, the count of those answered at
+     * once since RCV.NXT last moved.
      */
     class AckPolicy {
     public:
         /// When the data just accepted is to be acknowledged.
         enum class Ack : std::uint8_t {
-            Flush,  ///< By the next flush, unless a segment with an ACK leaves first.
-            Now,    ///< Before the next segment is processed.
+            Flush,    ///< By the next flush, unless a segment with an ACK leaves first.
+            Delayed,  ///< When the delay runs out, unless a segment with an ACK leaves first.
+            Now,      ///< Before the next segment is processed.
         };
 
         /// Data above a gap was refused, or released for room, up to `end`: until the receive edge reaches the
@@ -28,18 +30,28 @@ namespace aloe::tcp::detail {
             }
         }
 
-        /**
-         * In-order data of `accepted` bytes moved the receive edge to `next`. Filling a gap is acknowledged at once,
-         * until the edge passes the last gap's end; so is the second of two full-sized segments, `full_size` being our
-         * MSS less the timestamp option a timestamped peer puts in every segment.
-         */
-        [[nodiscard]] Ack
-        on_data(const std::size_t accepted, const std::size_t full_size, const wire::TcpSequence next) noexcept {
+        /// In-order data of `accepted` bytes moved RCV.NXT to `next`. At once while a refused end is ahead, while
+        /// anything is held above, and for the second full-sized segment; with `delay`, at once when two full segments'
+        /// worth of bytes is unacknowledged and `Delayed` otherwise. `full_size` is the connection's `mss()`.
+        [[nodiscard]] Ack on_data(const std::size_t accepted,
+                                  const std::size_t full_size,
+                                  const wire::TcpSequence next,
+                                  const bool held_above,
+                                  const bool delay) noexcept {
             if (gap_end_) {
                 if (!next.before(*gap_end_)) {
                     gap_end_.reset();
                 }
                 return Ack::Now;
+            }
+            if (held_above) {
+                return Ack::Now;
+            }
+            if (delay) {
+                // Counted in bytes, so short segments are acknowledged as often as full ones; a refused send leaves
+                // the count past the mark, and every segment tries again until an ACK leaves.
+                unacknowledged_ += accepted;
+                return unacknowledged_ >= 2 * full_size ? Ack::Now : Ack::Delayed;
             }
             if (accepted >= full_size) {
                 if (full_segments_ < 2) {
@@ -69,9 +81,11 @@ namespace aloe::tcp::detail {
             return Ack::Flush;
         }
 
-        /// A segment carrying an ACK left: the count of full-sized segments starts again.
+        /// A segment carrying an ACK left: the count of full-sized segments, and the bytes a delayed ACK covers, start
+        /// again.
         void acknowledged() noexcept {
-            full_segments_ = 0;
+            full_segments_  = 0;
+            unacknowledged_ = 0;
         }
 
     private:
@@ -80,6 +94,7 @@ namespace aloe::tcp::detail {
 
         std::optional<wire::TcpSequence> gap_end_{};  ///< The furthest end of data refused or released above a gap.
         std::uint8_t full_segments_ = 0;              ///< Full-sized segments since the last ACK; saturates at two.
+        std::size_t unacknowledged_ = 0;              ///< With a delay: in-order bytes since the last ACK left.
         wire::TcpSequence out_of_order_next_{};       ///< The RCV.NXT the count of segments above a gap is for.
         std::uint8_t out_of_order_now_ = 0;           ///< Of them, those answered at once; at most three.
     };

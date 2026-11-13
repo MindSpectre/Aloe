@@ -28,7 +28,7 @@
 
 namespace aloe::tcp::detail {
 
-    /// What the connection's one wheel timer does when it fires.
+    /// What the connection's timer for its sends, `timer`, does when it fires.
     enum class TimerKind : std::uint8_t {
         None,        ///< Not armed.
         Retransmit,  ///< The RTO: the head of the retransmission queue goes again.
@@ -38,7 +38,8 @@ namespace aloe::tcp::detail {
 
     /**
      * @brief One connection's state, RFC 9293's transmission control block: the identity, the events and the
-     * list links, the protocol's parts one per concern, and the one wheel timer.
+     * list links, the protocol's parts one per concern, and the two wheel timers: the connection's timer and the
+     * delayed ACK's.
      *
      * Plain single-thread memory that the stack's three parts read and write on the shard's thread; nothing in it
      * is shared across threads. `tcp::Connection` is the public handle over one block; the stack owns the blocks in
@@ -64,15 +65,18 @@ namespace aloe::tcp::detail {
             ControlBlock& block;
         };
 
-        /// `fire` is the stack's trampoline; `slot` the block's index in the stack's deque; `stack_mss` the stack's.
+        /// `fire` and `fire_ack` are the stack's trampolines for the two timers; `slot` the block's index in the
+        /// stack's deque; `stack_mss` the stack's.
         ControlBlock(Stack<Ip, CongestionControl>& owner,
                      const loop::Timer::Function fire,
+                     const loop::Timer::Function fire_ack,
                      const std::uint32_t slot,
                      const std::uint16_t stack_mss) noexcept
             : stack{owner},
               index{slot},
               local_mss{stack_mss},
-              timer{fire, *this} {
+              timer{fire, *this},
+              ack_timer{fire_ack, *this} {
         }
 
         ControlBlock(const ControlBlock&)            = delete;
@@ -104,10 +108,10 @@ namespace aloe::tcp::detail {
             return timer_kind == TimerKind::Probe;
         }
 
-        /// Back to the state of a fresh slot; the stack, the index, the MSS and the timer trampoline stay. The stack
-        /// unlinks the block from its lists, returns the held packets and drops the queue first.
+        /// Back to the state of a fresh slot; the stack, the index, the MSS and the timers' trampolines stay. The stack
+        /// cancels both timers, unlinks the block from its lists, returns the held packets and drops the queue first.
         void clear() noexcept {
-            assert(!timer.armed());
+            assert(!timer.armed() && !ack_timer.armed());
             assert(!event_link.linked && !ack_link.linked && !retry_link.linked && !deferred_link.linked);
             assert(receive.segments() == 0 && !reassembly.holds() && queue.empty() &&
                    "the stack returns the packets first");
@@ -174,11 +178,13 @@ namespace aloe::tcp::detail {
         // Behind the parts an in-order segment touches.
         SackBlocks sack{};
 
-        // The one wheel timer: the RTO, the ARP poll or the probe.
+        // The connection's wheel timer: the RTO, the ARP poll or the probe.
         TimerNode timer;
         TimerKind timer_kind           = TimerKind::None;  ///< What `timer` does when it fires.
         std::uint8_t retransmit_count  = 0;  ///< Expiries since the last ACK of new data, deferred and refused too.
         std::uint16_t unresolved_polls = 0;  ///< Polls since the last send that left; the config bounds them.
+        /// The delayed ACK's wheel timer: armed only while an ACK of in-order data waits for `delayed_ack`.
+        TimerNode ack_timer;
     };
 
 }  // namespace aloe::tcp::detail

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <aloe/core>
 #include <aloe/device>
 #include <aloe/net>
 #include <aloe/stream>
@@ -485,12 +486,9 @@ namespace aloe::tcp::detail {
             }
             lifecycle_.raise(block, stream::Event::Readable);
             // A full-sized segment is the connection's `mss()`: the peer's MSS or ours, less the timestamp option.
-            if (block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next()) ==
-                AckPolicy::Ack::Now) {
-                ack_now(block);
-            } else {
-                transmitter_.queue_ack(block);
-            }
+            acknowledge(
+                block,
+                block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next(), false, delay()));
             return true;
         }
 
@@ -499,8 +497,9 @@ namespace aloe::tcp::detail {
          * refused as data after the peer's FIN is, so RCV.NXT never passes it. At the cap or with the pool empty the
          * segment takes the node of the highest segment held above (`make_room`); with none above it, it is refused as
          * on a clean stream. Once held, the run that now follows RCV.NXT joins, `Readable` covers all of it and the ACK
-         * goes at once; a segment that carries the peer's FIN does not join, since its FIN step releases what is held
-         * above. False when refused.
+         * goes at once, as the policy says of data below what is held above; a segment that carries the peer's FIN
+         * does not join, since its FIN step releases what is held above, and is acknowledged as data on a clean stream
+         * is. False when refused.
          */
         [[nodiscard]] bool
         receive_below_held(ControlBlock& block, Datagram& datagram, const Segment& segment) noexcept {
@@ -528,17 +527,16 @@ namespace aloe::tcp::detail {
             }
             lifecycle_.raise(block, stream::Event::Readable);  // once, for the segment and any run it joins
             if (segment.header.flags.has(wire::TcpFlag::Fin)) {
-                if (block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next()) ==
-                    AckPolicy::Ack::Now) {
-                    ack_now(block);
-                } else {
-                    transmitter_.queue_ack(block);
-                }
+                // Nothing is held above once the FIN step that follows has run.
+                acknowledge(block,
+                            block.ack_policy.on_data(
+                                segment.payload_length, block.mss(), block.receive.next(), false, delay()));
                 return true;
             }
             join(block);
-            // The policy still counts the segment and clears a remembered gap end RCV.NXT reached; the answer is now.
-            std::ignore = block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next());
+            // After the join, so the policy clears a remembered gap end RCV.NXT reached.
+            const AckPolicy::Ack ack =
+                block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next(), true, delay());
             if (block.receive.closed()) {
                 // The join reached a remembered FIN, whose step sent its ACK or queued it: a queued one goes now. The
                 // ACK that left may have ended the connection.
@@ -547,7 +545,7 @@ namespace aloe::tcp::detail {
                 }
                 return true;
             }
-            ack_now(block);
+            acknowledge(block, ack);
             return true;
         }
 
@@ -680,6 +678,27 @@ namespace aloe::tcp::detail {
             }
             const Sequence end = sequence + segment.length();
             block.sack.duplicate(sequence, end.before(next) ? end : next);
+        }
+
+        /// The configuration delays the ACK of in-order data.
+        [[nodiscard]] bool delay() const noexcept {
+            return context_.config.delayed_ack > core::Duration::zero();
+        }
+
+        /// In-order data is acknowledged as the policy said: at once, by the flush, or when the delay runs out. A
+        /// delayed ACK does not queue the connection, so the flush does not send it early.
+        void acknowledge(ControlBlock& block, const AckPolicy::Ack ack) noexcept {
+            switch (ack) {
+                case AckPolicy::Ack::Flush:
+                    transmitter_.queue_ack(block);
+                    return;
+                case AckPolicy::Ack::Delayed:
+                    transmitter_.arm_ack(block);
+                    return;
+                case AckPolicy::Ack::Now:
+                    ack_now(block);
+                    return;
+            }
         }
 
         /// An immediate ACK, stating the edge `edge` names: queued through IP before the next segment is processed; a

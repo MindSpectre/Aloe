@@ -1,0 +1,19 @@
+// With a delay configured, a data segment that leaves before the deadline carries the ACK and ends the delay: the
+// write at 10 ms acknowledges the 100 bytes, and no pure ACK follows at 40 ms; the peer's ACK at 60 ms is the last
+// line, so one would be seen. The window is 65536 - 101 = 65435: the edge stands at 1 + 65535, since the peer
+// offered no window scaling. Linux does the same: a segment that carries an ACK stops its delayed-ACK timer
+// (tcp_event_ack_sent).
+--tcp_delayed_ack_ms=40
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:101(100) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0.01 write(4, ..., 10) = 10
++0 > P. 1:11(10) ack 101 win 65435 <nop,nop,TS val 10 ecr 100>
++0.05 < . 101:101(0) ack 11 win 65535 <nop,nop,TS val 100 ecr 0>

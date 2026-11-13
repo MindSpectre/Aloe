@@ -1,0 +1,22 @@
+// With a delay configured, a segment above a gap is still answered at once, and so is the segment that fills the
+// gap: the ACK at 10 ms restates the edge, 65536 - 101 = 65435, and the join at 20 ms states 65536 - 301 = 65235,
+// since the peer offered no window scaling and the edge stands at 1 + 65535. The ACK at 10 ms also covers the 100
+// bytes that started the delay, so nothing goes at 40 ms; the read at 70 ms does not double the window. This peer
+// offered no SACK, so the ACKs carry no blocks. Linux answers both at once too (__tcp_ack_snd_check with data out of
+// order, and tcp_data_queue when the gap fills).
+--tcp_delayed_ack_ms=40
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:101(100) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0.01 < P. 201:301(100) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 101 win 65435 <nop,nop,TS val 10 ecr 100>
++0.01 < P. 101:201(100) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 301 win 65235 <nop,nop,TS val 20 ecr 100>
++0.05 read(4, ..., 300) = 300

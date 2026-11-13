@@ -70,7 +70,11 @@ namespace aloe::tcp {
 
         /// Validates and throws std::invalid_argument; allocates everything; sends nothing.
         Stack(Ip& ip, loop::TimerWheel& wheel, const TcpConfig& config)
-            : context_{ip, config.validate(ip.max_l4_size(), wheel.resolution()), *this, &Stack::on_timer_fired},
+            : context_{ip,
+                       config.validate(ip.max_l4_size(), wheel.resolution()),
+                       *this,
+                       &Stack::on_timer_fired,
+                       &Stack::on_ack_timer_fired},
               transmitter_{context_, wheel},
               lifecycle_{context_, transmitter_},
               acks_{context_, transmitter_},
@@ -89,6 +93,7 @@ namespace aloe::tcp {
         ~Stack() {
             for (ControlBlock& block : context_.blocks) {
                 transmitter_.disarm(block);
+                transmitter_.disarm_ack(block);
                 block.prepared.reset();
                 block.receive.release(context_.pool);
                 block.reassembly.release(context_.pool);
@@ -230,6 +235,15 @@ namespace aloe::tcp {
         static void on_timer_fired(loop::Timer& timer) noexcept {
             ControlBlock& block = static_cast<ControlBlock::TimerNode&>(timer).block;
             block.stack.lifecycle_.on_timer(block);
+        }
+
+        /// The delayed ACK's callback: the pure ACK goes, and Closed follows it when the close only waited for it, as
+        /// in `flush`; a refused one waits on the ACK list for `flush`.
+        static void on_ack_timer_fired(loop::Timer& timer) noexcept {
+            ControlBlock& block = static_cast<ControlBlock::TimerNode&>(timer).block;
+            if (block.stack.transmitter_.send_delayed_ack(block)) {
+                block.stack.lifecycle_.maybe_finish(block);
+            }
         }
 
         // The handle's verbs: the Receiver's consume, the Transmitter's send side and the Lifecycle's close, abort

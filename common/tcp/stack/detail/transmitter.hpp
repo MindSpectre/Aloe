@@ -45,9 +45,9 @@ namespace aloe::tcp::detail {
     /**
      * @brief Everything that leaves a connection, and what guards it: the one send function over the segment
      * writer, the retransmission queue's entries on the shard's send pool, the resends with the busy rule and the
-     * copy fallback, the pure ACKs, probes and resets, the timers' arming and what an expiry resends, and the
-     * application's `writable`, `prepare` and `commit`. It owns the ACK, retry and deferred lists; the Receiver and the
-     * Lifecycle call down into it, and it calls neither.
+     * copy fallback, the pure ACKs, probes and resets, the timers' arming and what an expiry resends, the delayed
+     * ACK's timer, and the application's `writable`, `prepare` and `commit`. It owns the ACK, retry and deferred lists;
+     * the Receiver and the Lifecycle call down into it, and it calls neither.
      */
     template <typename Ip, typename CongestionControl>
     class Transmitter {
@@ -317,6 +317,31 @@ namespace aloe::tcp::detail {
             block.timer_kind = TimerKind::None;
         }
 
+        /// The delay starts with the first segment the pending ACK covers and is not extended: arms only an unarmed
+        /// timer.
+        void arm_ack(ControlBlock& block) noexcept {
+            if (!block.ack_timer.armed()) {
+                wheel_.arm(block.ack_timer, context_.now + context_.config.delayed_ack);
+            }
+        }
+
+        /// No delayed ACK pending any more; one branch and no wheel operation when none was.
+        void disarm_ack(ControlBlock& block) noexcept {
+            if (block.ack_timer.armed()) {
+                wheel_.cancel(block.ack_timer);
+            }
+        }
+
+        /// The delay ran out: the pure ACK now, counted in `delayed_acks_sent`; a refused one waits for the flush.
+        [[nodiscard]] bool send_delayed_ack(ControlBlock& block) noexcept {
+            if (!send_pure_ack(block)) {
+                queue_ack(block);
+                return false;
+            }
+            ++context_.counters.delayed_acks_sent;
+            return true;
+        }
+
         /**
          * The connection's timer fired, unarmed by the wheel; its kind says what for. The RTO resends the head, the
          * ARP poll tries again the send that never left, the probe timer probes, and each arms what guards the
@@ -475,7 +500,9 @@ namespace aloe::tcp::detail {
          * ordinary offer now differs from the edge just restated stays, so the flush still sends the update `consume`
          * owes; one whose ordinary offer is the same edge is satisfied, so the flush sends no identical ACK, which the
          * peer would count as a duplicate. A segment that is not a pure ACK carries no SACK option: a connection with
-         * blocks to report or a duplicate pending stays, so the flush still sends them on a pure ACK.
+         * blocks to report or a duplicate pending stays, so the flush still sends them on a pure ACK; so does one whose
+         * delayed ACK owed them, which waited on its timer and not on the list. Either way the segment acknowledged
+         * RCV.NXT, so a delayed ACK pending is done: its timer is cancelled.
          */
         void record_offer(ControlBlock& block,
                           const ReceiveWindow::Offer& offer,
@@ -485,10 +512,15 @@ namespace aloe::tcp::detail {
                 ++context_.counters.window_updates;
             }
             block.ack_policy.acknowledged();
+            const bool delayed = block.ack_timer.armed();
+            disarm_ack(block);
             if (edge == Edge::Restate && acks_.contains(block) && offer_of(block, Edge::Offer).edge != offer.edge) {
                 return;  // the update is still owed to the flush
             }
             if (!pure && block.sack.pending()) {
+                if (delayed) {
+                    queue_ack(block);  // the delayed ACK would have carried them
+                }
                 return;  // the blocks are still owed to the flush, on a pure ACK
             }
             acks_.remove(block);
