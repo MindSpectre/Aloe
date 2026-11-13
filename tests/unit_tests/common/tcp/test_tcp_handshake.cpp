@@ -490,6 +490,16 @@ TEST_P(TcpHandshake, ConfigValidation) {
         (std::ignore = Tcp{
              ip_, wheel_, Config{.rto_min = std::chrono::milliseconds{1}, .user_timeout = std::chrono::seconds{2}}
     }));
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.receive_segments = 2049}}), std::invalid_argument)
+        << "above the pool";
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.receive_window = (65535U << 14U) + 1}}), std::invalid_argument);
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.delayed_ack = -1ms}}), std::invalid_argument);
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.delayed_ack = 501ms}}), std::invalid_argument);
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.delayed_ack = 500us}}), std::invalid_argument)
+        << "below the 1 ms wheel";
+    EXPECT_NO_THROW((std::ignore = Tcp{
+                         ip_, wheel_, {.receive_window = 65535U << 14U, .delayed_ack = 500ms}
+    }));
     const Tcp capped{ip_, wheel_, Config{.receive_segments = 1000}};
     EXPECT_EQ(capped.byte_budget(), 65535U) << "the byte budget never passes the wire window";
     EXPECT_EQ(capped.mss(), aloe::testing::tcp_fabric_mss);

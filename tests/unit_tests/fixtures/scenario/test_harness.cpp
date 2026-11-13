@@ -127,6 +127,19 @@ TEST(Harness, ConfiguredAppliesTheScriptsTcpOptions) {
     EXPECT_EQ(config.tcp.rto_max, aloe::tcp::TcpConfig{}.rto_max) << "untouched";
 }
 
+TEST(Harness, ConfiguredAppliesTheReceiveSideLines) {
+    const auto script = aloe::scenario::parse_script(
+        "--tcp_receive_segments=64\n--tcp_receive_window=100000\n--tcp_sack=0\n--tcp_window_scaling=0\n"
+        "--tcp_delayed_ack_ms=40\n0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(script.has_value());
+    const HarnessConfig config = aloe::scenario::configured(HarnessConfig{}, *script);
+    EXPECT_EQ(config.tcp.receive_segments, 64U);
+    EXPECT_EQ(config.tcp.receive_window, 100000U);
+    EXPECT_FALSE(config.tcp.sack);
+    EXPECT_FALSE(config.tcp.window_scaling);
+    EXPECT_EQ(config.tcp.delayed_ack, 40ms);
+}
+
 TEST(Harness, BothPoliciesBuild) {
     aloe::scenario::NoCongestionHarness harness{HarnessConfig{}};
     EXPECT_EQ(harness.tcp().capacity(), aloe::tcp::TcpConfig{}.connections);

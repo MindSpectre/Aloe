@@ -269,6 +269,29 @@ TEST(ParseScript, ParsesTheTcpOptionLines) {
               aloe::scenario::CongestionChoice::Both);
 }
 
+TEST(ParseScript, ParsesTheReceiveSideOptionLines) {
+    const auto script = parse_script("--tcp_receive_segments=64\n--tcp_receive_window=100000\n--tcp_sack=0\n"
+                                     "--tcp_window_scaling=0\n--tcp_delayed_ack_ms=40\n"
+                                     "0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(script.has_value()) << script.error().message;
+    EXPECT_EQ(script->tcp,
+              (aloe::scenario::ScriptTcpOptions{.receive_segments = 64,
+                                                .receive_window   = 100000,
+                                                .sack             = false,
+                                                .window_scaling   = false,
+                                                .delayed_ack      = 40ms}));
+}
+
+TEST(ParseScript, ARepeatedReceiveSideLineIsAnError) {
+    const auto twice = parse_script("--tcp_sack=1\n--tcp_sack=1\n");
+    ASSERT_FALSE(twice.has_value());
+    EXPECT_EQ(twice.error().line, 2);
+    EXPECT_NE(twice.error().message.find("given twice"), std::string_view::npos);
+    const auto bad = parse_script("--tcp_sack=2\n");
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_NE(bad.error().message.find("expected 0 or 1"), std::string_view::npos);
+}
+
 TEST(ParseScript, RejectsBadTcpOptionLines) {
     EXPECT_FALSE(parse_script("--tcp_timestamps=2\n").has_value());
     EXPECT_FALSE(parse_script("--congestion=cubic\n").has_value());

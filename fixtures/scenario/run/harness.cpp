@@ -131,6 +131,21 @@ namespace aloe::scenario {
         if (options.timestamps) {
             tcp.timestamps = *options.timestamps;
         }
+        if (options.receive_segments) {
+            tcp.receive_segments = *options.receive_segments;
+        }
+        if (options.receive_window) {
+            tcp.receive_window = *options.receive_window;
+        }
+        if (options.sack) {
+            tcp.sack = *options.sack;
+        }
+        if (options.window_scaling) {
+            tcp.window_scaling = *options.window_scaling;
+        }
+        if (options.delayed_ack) {
+            tcp.delayed_ack = *options.delayed_ack;
+        }
         return base;
     }
 

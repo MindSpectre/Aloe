@@ -230,7 +230,7 @@ TEST_P(TcpReceive, SlotCapDropsWithoutAdvancingAndRecovers) {
 }
 
 TEST_P(TcpReceive, SharedPoolExhaustionNeverAdvancesRcvNxt) {
-    configure_tcp({.receive_pool = 2});
+    configure_tcp({.receive_segments = 2, .receive_pool = 2});
     auto* first = open_passive(peer_);
     ASSERT_NE(first, nullptr);
     aloe::frames::TcpPeer other{aloe::testing::peer_spec(40001), TcpSequence{2000U}};
