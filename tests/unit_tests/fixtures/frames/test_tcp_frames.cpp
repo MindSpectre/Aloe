@@ -274,3 +274,21 @@ TEST(TcpFrames, OptionHelpersAndAPeerThatStampsEverySegment) {
     peer.set_timestamps(std::nullopt);
     EXPECT_EQ(aloe::frames::parse_frame(peer.ack())->tcp->data_offset, 20U);
 }
+
+TEST(TcpFrames, SackBlocksOfReadsWhatSackOptionWrote) {
+    using aloe::wire::TcpSackBlock;
+    const std::array blocks{
+        TcpSackBlock{TcpSequence{0x01020304}, TcpSequence{0x01020404}},
+        TcpSackBlock{TcpSequence{0xfffffff0}, TcpSequence{0x00000010}}
+    };
+    TcpSpec spec = peer_to_stack();
+    spec.mss.reset();
+    spec.flags = {TcpFlag::Ack};
+    const std::array parts{aloe::frames::timestamps_option(1, 2), aloe::frames::sack_option(blocks)};
+    spec.options      = aloe::frames::joined(parts);
+    const auto parsed = aloe::frames::parse_frame(aloe::frames::tcp_frame(spec, {})).value();
+    EXPECT_EQ(aloe::frames::sack_blocks_of(parsed), std::vector<TcpSackBlock>(blocks.begin(), blocks.end()));
+    spec.options     = aloe::frames::timestamps_option(1, 2);
+    const auto plain = aloe::frames::parse_frame(aloe::frames::tcp_frame(spec, {})).value();
+    EXPECT_TRUE(aloe::frames::sack_blocks_of(plain).empty());
+}

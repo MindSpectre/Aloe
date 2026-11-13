@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <aloe/wire>
 #include <array>
 #include <cstddef>
@@ -13,6 +14,7 @@ namespace {
     using aloe::wire::TcpFlags;
     using aloe::wire::TcpHeader;
     using aloe::wire::TcpOptions;
+    using aloe::wire::TcpSackBlock;
     using aloe::wire::TcpSequence;
 
     [[nodiscard]] std::vector<std::byte> bytes(std::initializer_list<unsigned> values) {
@@ -189,4 +191,58 @@ TEST(TcpOptions, RecordsWhereTheTimestampOptionStarts) {
     const auto none = TcpOptions::parse(bytes({2, 4, 0x05, 0xb4}));
     ASSERT_TRUE(none.has_value());
     EXPECT_FALSE(none->timestamp_at.has_value());
+}
+
+TEST(TcpOptions, ParsesWindowScaleAndSackPermitted) {
+    // A Linux SYN: mss 1460, sackOK, TS val 100 ecr 0, nop, wscale 7.
+    const auto options = bytes({2, 4, 0x05, 0xb4, 4, 2, 8, 10, 0, 0, 0, 100, 0, 0, 0, 0, 1, 3, 3, 7});
+    const auto parsed  = TcpOptions::parse(options);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->mss, 1460);
+    EXPECT_TRUE(parsed->sack_permitted);
+    EXPECT_EQ(parsed->timestamp_value, 100U);
+    EXPECT_EQ(parsed->timestamp_at, 6U);
+    EXPECT_EQ(parsed->window_scale, 7);
+}
+
+TEST(TcpOptions, RejectsAWrongLengthForWindowScaleAndSackPermitted) {
+    EXPECT_FALSE(TcpOptions::parse(bytes({3, 4, 7, 0})).has_value());
+    EXPECT_FALSE(TcpOptions::parse(bytes({4, 3, 0, 0})).has_value());
+}
+
+TEST(TcpOptions, AShiftAboveFourteenIsReportedAsWritten) {
+    EXPECT_EQ(TcpOptions::parse(bytes({1, 3, 3, 15}))->window_scale, 15);
+}
+
+TEST(TcpOptions, SackBlocksAreSkippedByTheirLength) {
+    const auto parsed = TcpOptions::parse(bytes({1, 1, 5, 10, 0, 0, 0, 1, 0, 0, 0, 2}));
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_FALSE(parsed->sack_permitted);
+    EXPECT_FALSE(parsed->window_scale.has_value());
+}
+
+TEST(TcpOptions, WritesTheHandshakeBlocksInLinuxLayout) {
+    std::array<std::byte, 20> with{};
+    TcpOptions::write_mss(with, 1460);
+    TcpOptions::write_sack_permitted_timestamps(std::span{with}.subspan(4), 100, 0);
+    TcpOptions::write_window_scale(std::span{with}.subspan(16), 3);
+    EXPECT_TRUE(std::ranges::equal(with, bytes({2, 4, 0x05, 0xb4, 4, 2, 8, 10, 0, 0, 0, 100, 0, 0, 0, 0, 1, 3, 3, 3})));
+    std::array<std::byte, 12> without{};
+    TcpOptions::write_mss(without, 1460);
+    TcpOptions::write_sack_permitted(std::span{without}.subspan(4));
+    TcpOptions::write_window_scale(std::span{without}.subspan(8), 3);
+    EXPECT_TRUE(std::ranges::equal(without, bytes({2, 4, 0x05, 0xb4, 1, 1, 4, 2, 1, 3, 3, 3})));
+}
+
+TEST(TcpOptions, WritesOneToFourSackBlocks) {
+    EXPECT_EQ(TcpOptions::sack_size(1), 12U);
+    EXPECT_EQ(TcpOptions::sack_size(4), 36U);
+    const std::array blocks{
+        TcpSackBlock{TcpSequence{0x01020304}, TcpSequence{0x01020404}},
+        TcpSackBlock{TcpSequence{0xfffffff0}, TcpSequence{0x00000010}}
+    };
+    std::array<std::byte, 20> out{};
+    TcpOptions::write_sack(out, blocks);
+    EXPECT_TRUE(
+        std::ranges::equal(out, bytes({1, 1, 5, 18, 1, 2, 3, 4, 1, 2, 4, 4, 0xff, 0xff, 0xff, 0xf0, 0, 0, 0, 0x10})));
 }
