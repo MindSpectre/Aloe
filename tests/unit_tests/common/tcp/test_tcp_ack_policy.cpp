@@ -94,3 +94,54 @@ TEST(TcpAckPolicy, WithoutADelayTheRuleIsTheSecondFullSegment) {
             << "short segments wait for the flush: " << index;
     }
 }
+
+// An answer above a gap that also acknowledges in-order data still owed is a new ACK at the peer, not a duplicate: it
+// is not one of the three, which must each be a true duplicate for a sender that counts them.
+
+TEST(TcpAckPolicy, AnAnswerThatAlsoAcknowledgesNewDataIsNotOneOfTheThree) {
+    AckPolicy policy;
+    const Sequence next{1000 + full};
+    EXPECT_EQ(policy.on_data(full, full, next, false, false), Ack::Flush) << "the in-order ACK waits for the flush";
+    EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Now) << "uncounted: it acknowledges the segment below the gap";
+    policy.acknowledged();  // that answer left
+    EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Now);
+    EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Now);
+    EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Now);
+    EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Flush) << "three duplicates went: the rest wait for the flush";
+}
+
+TEST(TcpAckPolicy, OnceTheInOrderAckLeftTheFirstAnswerIsCounted) {
+    AckPolicy policy;
+    const Sequence next{1000 + full};
+    EXPECT_EQ(policy.on_data(full, full, next, false, false), Ack::Flush);
+    policy.acknowledged();  // the flush sent it
+    for (int index = 0; index < 3; ++index) {
+        EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Now) << index;
+    }
+    EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Flush);
+}
+
+TEST(TcpAckPolicy, ARefusedUncountedAnswerLeavesTheNextOneUncounted) {
+    AckPolicy policy;
+    const Sequence next{1000 + 100};
+    EXPECT_EQ(policy.on_data(100, full, next, false, false), Ack::Flush);
+    EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Now);
+    EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Now) << "refused: the data below the gap is still owed";
+    policy.acknowledged();
+    for (int index = 0; index < 3; ++index) {
+        EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Now) << index;
+    }
+    EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Flush);
+}
+
+TEST(TcpAckPolicy, WithADelayTheFirstAnswerAboveAGapIsUncountedToo) {
+    AckPolicy policy;
+    const Sequence next{1000 + 100};
+    EXPECT_EQ(policy.on_data(100, full, next, false, true), Ack::Delayed);
+    EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Now);
+    policy.acknowledged();
+    for (int index = 0; index < 3; ++index) {
+        EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Now) << index;
+    }
+    EXPECT_EQ(policy.on_out_of_order(next, true), Ack::Flush);
+}

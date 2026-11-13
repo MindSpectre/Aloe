@@ -11,7 +11,7 @@ namespace aloe::tcp::detail {
      * @brief RFC 5681's acknowledgement policy for in-order data: delayed to the next flush, or with a delay configured
      * to its deadline, except for the second full-sized segment, or two full segments' worth of bytes with the delay,
      * and for data below what is held above or refused; and for segments above a gap, the count of those answered at
-     * once since RCV.NXT last moved.
+     * once since RCV.NXT last moved, which leaves out an answer that also acknowledges in-order data.
      */
     class AckPolicy {
     public:
@@ -38,6 +38,7 @@ namespace aloe::tcp::detail {
                                   const wire::TcpSequence next,
                                   const bool held_above,
                                   const bool delay) noexcept {
+            data_owed_ = true;
             if (gap_end_) {
                 if (!next.before(*gap_end_)) {
                     gap_end_.reset();
@@ -65,7 +66,10 @@ namespace aloe::tcp::detail {
         }
 
         /// A segment above a gap was held with RCV.NXT at `next`. Without SACK every one is answered at once; with it
-        /// the first three since RCV.NXT last moved, and the rest by the flush (Linux, `__tcp_ack_snd_check`).
+        /// the first three since RCV.NXT last moved, and the rest by the flush (Linux, `__tcp_ack_snd_check`). An
+        /// answer while in-order data is still unacknowledged goes at once and is not one of the three: it moves the
+        /// peer's SND.UNA, so the peer does not count it as a duplicate. Linux charges it anyway, which a sender that
+        /// reads the blocks does not mind; Aloe departs, because a sender that counts duplicates needs three true ones.
         [[nodiscard]] Ack on_out_of_order(const wire::TcpSequence next, const bool sack) noexcept {
             if (!sack) {
                 return Ack::Now;
@@ -73,6 +77,9 @@ namespace aloe::tcp::detail {
             if (next != out_of_order_next_) {
                 out_of_order_next_ = next;
                 out_of_order_now_  = 0;
+            }
+            if (data_owed_) {
+                return Ack::Now;  // uncounted; refused, the data stays owed and the next answer is uncounted too
             }
             if (out_of_order_now_ < out_of_order_at_once) {
                 ++out_of_order_now_;
@@ -82,10 +89,11 @@ namespace aloe::tcp::detail {
         }
 
         /// A segment carrying an ACK left: the count of full-sized segments, and the bytes a delayed ACK covers, start
-        /// again.
+        /// again, and no in-order data is owed an ACK.
         void acknowledged() noexcept {
             full_segments_  = 0;
             unacknowledged_ = 0;
+            data_owed_      = false;
         }
 
     private:
@@ -97,6 +105,7 @@ namespace aloe::tcp::detail {
         std::size_t unacknowledged_ = 0;              ///< With a delay: in-order bytes since the last ACK left.
         wire::TcpSequence out_of_order_next_{};       ///< The RCV.NXT the count of segments above a gap is for.
         std::uint8_t out_of_order_now_ = 0;           ///< Of them, those answered at once; at most three.
+        bool data_owed_                = false;       ///< In-order data accepted since the last ACK left.
     };
 
 }  // namespace aloe::tcp::detail

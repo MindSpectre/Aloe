@@ -602,7 +602,8 @@ every second full-sized segment, a full-sized segment being the connection's `ms
 the timestamp option on a connection that carries it; for anything that cannot be accepted (a duplicate, a segment out
 of window or older than `TS.Recent`, data after the peer's FIN); for a segment above a gap, with the edge restated:
 every one on a connection without SACK, the first three since `rcv_nxt` last moved on one with it, which leaves the rest
-to one ACK at the `flush`; for in-order data while anything is held above it, and while recovering from a gap; and for a
+to one ACK at the `flush`, an answer that also acknowledges in-order data not yet acknowledged going at once and not
+counting as one of the three, since the peer does not count it as a duplicate; for in-order data while anything is held above it, and while recovering from a gap; and for a
 FIN the connection is closing on. A refused immediate ACK stays queued for the next `flush`. With `delayed_ack` set,
 the ACK of in-order data waits instead on a second wheel timer in the connection, counted from the first segment it
 covers and never extended, until a segment carrying an ACK leaves or two full-sized segments' worth of bytes is

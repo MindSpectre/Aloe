@@ -217,6 +217,37 @@ TEST_P(TcpSack, ABurstAboveAGapIsAnsweredByThreeAcksAndOneAtTheFlush) {
     expect_nothing_lost();
 }
 
+TEST_P(TcpSack, AnAnswerThatAcknowledgesInOrderDataIsNotOneOfTheThree) {
+    auto* c = open();
+    ASSERT_NE(c, nullptr);
+    // One pass: an in-order segment whose ACK would wait for the flush, then five above a gap.
+    std::vector<std::vector<std::byte>> frames{segment_at(0, 100)};
+    for (std::uint32_t index = 0; index < 5; ++index) {
+        frames.push_back(segment_at(200 + (index * 10), 10));
+    }
+    burst(frames);
+    EXPECT_EQ(c->unread().size(), 100U);
+    EXPECT_EQ(c->out_of_order_segments(), 5U);
+    const auto now = collect_queued();
+    ASSERT_EQ(now.size(), 4U) << "one that acknowledges the in-order segment, then three duplicates";
+    for (const auto& frame : now) {
+        EXPECT_TRUE(is_pure_ack(frame));
+        EXPECT_EQ(frame.tcp->acknowledgement, at(100));
+    }
+    EXPECT_EQ(sacks(now[0]), (Blocks{range(200, 210)}));
+    for (std::size_t index = 2; index < now.size(); ++index) {
+        EXPECT_EQ(now[index].tcp->window, now[1].tcp->window) << "same ACK, same window: RFC 5681's duplicate";
+    }
+    EXPECT_EQ(sacks(now[3]), (Blocks{range(200, 240)}));
+    const auto flushed = collect();
+    ASSERT_EQ(flushed.size(), 1U);
+    ASSERT_TRUE(is_pure_ack(flushed[0]));
+    EXPECT_EQ(flushed[0].tcp->acknowledgement, at(100));
+    EXPECT_EQ(sacks(flushed[0]), (Blocks{range(200, 250)})) << "every block";
+    EXPECT_EQ(tcp_->counters().sack_acks_sent, 5U);
+    expect_nothing_lost();
+}
+
 TEST_P(TcpSack, WithoutSackEverySegmentAboveAGapIsAnsweredAtOnce) {
     peer_.set_sack_permitted(false);
     auto* c = open();
