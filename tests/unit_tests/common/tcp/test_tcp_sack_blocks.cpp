@@ -106,6 +106,28 @@ TEST_F(TcpSackBlocks, AReleaseAtTheHeadOfABlockKeepsWhatFollows) {
     EXPECT_EQ(blocks(sack), (Blocks{B(3000, 3100)}));
 }
 
+TEST_F(TcpSackBlocks, AReleaseSpanningTwoBlocksCutsBoth) {
+    held(sack, 2000, 2100);
+    held(sack, 2200, 2300);
+    sack.released(Sequence{2050}, Sequence{2250});
+    EXPECT_EQ(blocks(sack), (Blocks{B(2250, 2300), B(2000, 2050)}));
+}
+
+TEST_F(TcpSackBlocks, AReleaseNoBlockHoldsChangesNothing) {
+    held(sack, 2000, 2100);
+    held(sack, 3000, 3100);
+    sack.released(Sequence{2500}, Sequence{2600});
+    sack.released(Sequence{2100}, Sequence{2200});  // touches the end of a block, holds none of it
+    EXPECT_EQ(blocks(sack), (Blocks{B(3000, 3100), B(2000, 2100)}));
+}
+
+TEST_F(TcpSackBlocks, AReleaseInsideABlockEndsItAtTheReleaseAndUnderReports) {
+    held(sack, 2000, 2300);
+    sack.released(Sequence{2100}, Sequence{2200});
+    // 2200:2300 is still held but no longer reported: less than is held, never more.
+    EXPECT_EQ(blocks(sack), (Blocks{B(2000, 2100)}));
+}
+
 TEST_F(TcpSackBlocks, ThreeBlocksFitBesideTimestampsAndFourWithout) {
     for (const std::uint32_t first : {2000U, 3000U, 4000U, 5000U}) {
         held(sack, first, first + 100);

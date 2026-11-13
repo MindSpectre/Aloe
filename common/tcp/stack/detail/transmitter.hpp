@@ -536,9 +536,6 @@ namespace aloe::tcp::detail {
             const ReceiveWindow::Offer offer = !with_ack   ? ReceiveWindow::Offer{.field = context_.syn_window}
                                                : handshake ? block.window.handshake(next)
                                                            : offer_of(block, edge);
-            std::array<wire::TcpSackBlock, SackBlocks::capacity> blocks{};
-            const bool reporting     = pure && block.sack.pending();
-            const std::size_t report = reporting ? block.sack.report(blocks, block.timestamps.enabled() ? 3 : 4) : 0;
             const OutgoingSegment segment{
                 .header         = wire::TcpHeader{.source_port      = block.local.port,
                                                   .destination_port = block.remote.port,
@@ -550,12 +547,12 @@ namespace aloe::tcp::detail {
                           : std::nullopt,
                 .timestamps     = timestamp_option(block),
                 .sack_permitted = handshake && block.sack.in_use(),
-                .window_scale   = handshake ? window_scale_option(block) : std::nullopt,
-                .sack           = std::span<const wire::TcpSackBlock>{blocks}
-                          .first(report)
+                .window_scale   = handshake ? window_scale_option(block) : std::nullopt
             };
+            const bool reporting = pure && block.sack.pending();
             const std::expected<void, net::SendError> sent =
-                writer_.send(block.frame, block.remote.address, packet, framed, segment, context_.now);
+                reporting ? send_reporting(block, packet, framed, segment)
+                          : writer_.send(block.frame, block.remote.address, packet, framed, segment, context_.now);
             if (sent && with_ack) {
                 if (reporting) {
                     ++context_.counters.sack_acks_sent;
@@ -568,6 +565,18 @@ namespace aloe::tcp::detail {
                 block.timestamps.sent_ack(next);
             }
             return sent;
+        }
+
+        /// `ack`, a pure ACK, sent with the SACK option it owes: three blocks beside the timestamps, four without. The
+        /// blocks and the segment that points at them live here, so only an ACK that reports touches their storage and
+        /// nothing outlives it.
+        [[nodiscard]] std::expected<void, net::SendError>
+        send_reporting(ControlBlock& block, Packet& packet, const bool framed, const OutgoingSegment& ack) noexcept {
+            std::array<wire::TcpSackBlock, SackBlocks::capacity> blocks{};
+            const std::size_t count = block.sack.report(blocks, block.timestamps.enabled() ? 3 : 4);
+            OutgoingSegment reporting{ack};
+            reporting.sack = std::span<const wire::TcpSackBlock>{blocks}.first(count);
+            return writer_.send(block.frame, block.remote.address, packet, framed, reporting, context_.now);
         }
 
         /// A queue entry for a segment about to leave, with what a rate sample reads: the delivered count, and whether

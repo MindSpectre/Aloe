@@ -600,11 +600,11 @@ data segment leaving first carries it, so a request answered in the same tick co
 every second full-sized segment, a full-sized segment being the connection's `mss()`, the smaller of the two MSS less
 the timestamp option on a connection that carries it; for anything that cannot be accepted (a duplicate, a segment out
 of window or older than `TS.Recent`, data after the peer's FIN); for a segment above a gap, with the edge restated:
-every one on a connection without SACK, the first three since `rcv_nxt` last moved on one with it, which leaves the
-rest to one ACK at the `flush`; for in-order data while anything is held above it, and while recovering from a gap;
-and for a FIN the connection is closing on. A refused immediate ACK stays queued for the next `flush`. Every pure ACK
-of a connection that uses SACK carries the blocks it holds above a gap and a pending duplicate SACK; a data segment
-carries none and leaves such an ACK queued.
+every one on a connection without SACK, the first three since `rcv_nxt` last moved on one with it, which leaves the rest
+to one ACK at the `flush`; for in-order data while anything is held above it, and while recovering from a gap; and for a
+FIN the connection is closing on. A refused immediate ACK stays queued for the next `flush`. Every pure ACK of a
+connection that uses SACK carries the blocks it holds above a gap and a pending duplicate SACK; a data segment carries
+none and leaves such an ACK queued.
 
 **Ownership is logical state.** A passive open belongs to the stack until the handshake completes and `Accepted`
 hands it to the application; one that fails before then is freed silently. A connection from `connect` is the
@@ -645,9 +645,9 @@ keeps that packet itself, lent, as the retransmission queue's entry, and leaves 
 runtime written over the same bricks.
 
 **What is still left out, and why.** The receive side holds segments above a gap as the packets they arrived in,
-negotiates window scaling and reports what it holds with SACK blocks, but has no delayed ACK yet; it comes with the
-rest of step 4 of phase 2. There is no TIME_WAIT: the slot is the owner's until `release`; it comes with step 6. The brick makes
-no deployment or latency claim yet: the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a recorded
+negotiates window scaling and reports what it holds with SACK blocks, but has no delayed ACK yet; it comes with the rest
+of step 4 of phase 2. There is no TIME_WAIT: the slot is the owner's until `release`; it comes with step 6. The brick
+makes no deployment or latency claim yet: the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a recorded
 baseline, and its rerun with reliable send is owed, as its page says.
 
 **Hardening is deferred too.** The brick is not yet meant for hostile peers. It has no SYN cookies, so a SYN

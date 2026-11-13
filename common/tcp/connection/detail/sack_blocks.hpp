@@ -2,6 +2,7 @@
 
 #include <aloe/wire>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -130,6 +131,7 @@ namespace aloe::tcp::detail {
         /// What the next pure ACK carries, at most `room` blocks: the duplicate first, then the blocks in order.
         [[nodiscard]] std::size_t report(const std::span<wire::TcpSackBlock, capacity> out,
                                          const std::size_t room) const noexcept {
+            assert(room <= capacity && "the span holds at most four blocks");
             std::size_t written = 0;
             if (duplicate_ && written < room) {
                 out[written++] = *duplicate_;

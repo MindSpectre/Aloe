@@ -4,6 +4,7 @@
 #include <aloe/tcp>
 #include <aloe/wire>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -100,6 +101,23 @@ namespace {
             EXPECT_EQ(counters.dropped_no_slot, 0U);
             EXPECT_EQ(counters.dropped_out_of_order, 0U);
             EXPECT_EQ(counters.dropped_out_of_window, 0U);
+        }
+
+        /// A segment held above a gap, then the peer's FIN in order below it, bare or on `length` bytes: what is held
+        /// above the FIN is released, and the FIN's ACK reports none of it.
+        void fin_in_order_releases_the_blocks(const std::uint16_t length) {
+            auto* c = open();
+            ASSERT_NE(c, nullptr);
+            this->receive(segment_at(500, 100));
+            std::ignore = this->collect();
+            ASSERT_EQ(c->out_of_order_segments(), 1U);
+            this->receive(segment_at(0, length, {TcpFlag::Fin, TcpFlag::Psh, TcpFlag::Ack}));
+            EXPECT_EQ(c->out_of_order_segments(), 0U);
+            EXPECT_EQ(c->state(), aloe::tcp::State::CloseWait);
+            const auto frames = this->collect();
+            ASSERT_EQ(frames.size(), 1U);
+            EXPECT_EQ(frames[0].tcp->acknowledgement, at(length + 1U));
+            EXPECT_TRUE(sacks(frames[0]).empty()) << "nothing held, so nothing reported";
         }
 
         TcpSequence base_{};
@@ -348,6 +366,32 @@ TEST_P(TcpSack, AFinBelowTheRememberedOneReplacesItInTheBlocks) {
         << "the forgotten FIN's number is no longer reported";
 }
 
+TEST_P(TcpSack, TheBlocksGoWithThePeersBareFinInOrder) {
+    fin_in_order_releases_the_blocks(0);
+}
+
+TEST_P(TcpSack, TheBlocksGoWithThePeersFinOnDataInOrder) {
+    fin_in_order_releases_the_blocks(100);
+}
+
+TEST_P(TcpSack, TheBlocksGoWhenTheJoinReachesARememberedFin) {
+    auto* c = open();
+    ASSERT_NE(c, nullptr);
+    receive(segment_at(500, 100));                                                       // held at and past the FIN
+    receive(peer_.segment({TcpFlag::Fin, TcpFlag::Ack}, {}, at(500), peer_.rcv_nxt()));  // a bare FIN below it
+    auto frames = collect();
+    ASSERT_FALSE(frames.empty());
+    EXPECT_EQ(sacks(frames.back()), (Blocks{range(500, 600)})) << "the FIN's number joins the held block";
+    receive(segment_at(0, 500));  // the gap filled up to the FIN: the join takes it
+    EXPECT_EQ(c->state(), aloe::tcp::State::CloseWait);
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, at(501));
+    EXPECT_TRUE(sacks(frames[0]).empty()) << "the data past the FIN was released, so it is not reported";
+    EXPECT_EQ(c->unread().size(), 500U);
+}
+
 TEST_P(TcpSack, ThreeBlocksBesideTimestampsAndFourWithout) {
     auto* c = open();
     ASSERT_NE(c, nullptr);
@@ -411,4 +455,23 @@ TEST_P(TcpSack, AProbeAndAResetCarryNoBlocksTheyDoNotOwe) {
     EXPECT_TRUE(aloe::testing::is_flags(frames[0], {TcpFlag::Rst, TcpFlag::Ack}));
     EXPECT_TRUE(sacks(frames[0]).empty());
     EXPECT_EQ(aloe::frames::tcp_options_of(frames[0]).size(), 12U);
+}
+
+TEST_P(TcpSack, AProbeCarriesNoBlocksAndLeavesTheOwedAck) {
+    auto* c = open();
+    ASSERT_NE(c, nullptr);
+    peer_.set_window(0);
+    receive(peer_.ack());
+    ASSERT_TRUE(c->probing());
+    burst_above(100, 4, 10);  // three answered at once, the fourth owed to the flush
+    EXPECT_EQ(pure_acks(collect_queued()), 3U);
+    advance(std::chrono::milliseconds{200});  // the probe timer, one RTO after the window closed
+    auto frames = collect_queued();           // what left without a flush: the probe
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->sequence, TcpSequence{c->acknowledged().value - 1U}) << "a probe, at snd_una - 1";
+    EXPECT_TRUE(sacks(frames[0]).empty()) << "a probe owes no blocks";
+    EXPECT_EQ(tcp_->counters().zero_window_probes, 1U);
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "the probe left the owed ACK queued";
+    EXPECT_EQ(sacks(frames[0]), (Blocks{range(100, 140)}));
 }
