@@ -1,6 +1,6 @@
 // A passive open: the peer's SYN, our SYN-ACK with the two options Aloe sends, the MSS and the timestamps, the
-// peer's ACK, accept. The SYN-ACK offers the whole byte budget, 32 segments of 1460; Linux would add sackOK and
-// wscale.
+// peer's ACK, accept. The SYN-ACK offers 65535: half of 512 slots of 1448 bytes, capped at the unscaled field;
+// Linux would add sackOK and wscale.
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 setsockopt(3, SOL_SOCKET, SO_REUSEADDR, [1], 4) = 0
 +0 bind(3, ..., ...) = 0

@@ -134,11 +134,10 @@ void echo(Tcp::ConnectionType& c) {
 }
 ```
 
-Consuming after the commit keeps the bytes if the commit is refused; the consume then frees the window after the
-segment has left, which costs a window update at the flush when it at least doubles the window on offer. An
-application that produces its own
-messages has nothing to copy: it encodes straight into the span `prepare` returns and commits what it wrote.
-`send(bytes)` is the copying convenience for bytes that already exist elsewhere, and returns the prefix it
+Consuming after the commit keeps the bytes if the commit is refused; the consume then frees the window after the segment
+has left, which costs a window update at the flush when it at least doubles the window on offer. An application that
+produces its own messages has nothing to copy: it encodes straight into the span `prepare` returns and commits what it
+wrote. `send(bytes)` is the copying convenience for bytes that already exist elsewhere, and returns the prefix it
 accepted.
 
 A program over a multi-queue device runs one such loop per queue, each with its own IP brick, TCP brick and
@@ -576,16 +575,15 @@ to peers it does not trust sets `user_timeout`, which bounds that hold to the ti
 connections it expects to stall.
 
 **Two limits on what is held, independent of each other.** The receive window is a byte window: the stack offers
-`rcv_nxt + (B - unread)`, where `B` is the connection's budget, half of what `receive_segments` segments of its
-`mss()` hold, or `receive_window` when set, at most 65535; it moves the edge it offered only by a full segment or
-half the budget, whichever is smaller, and never retracts it. A read sends a window update of its own only when the
-window it frees at least doubles the one on offer, and an ACK for a refused segment restates the edge already
-offered. Separately, a connection holds at most `receive_segments` packets, and the shard's
-held packets come from one pool of `receive_pool` nodes. Small segments can reach the packet cap before the byte
-window closes. A segment that arrives when either cap is reached is dropped, counted (`dropped_no_slot` or
-`dropped_no_node`) and not acknowledged: the immediate ACK reports the last byte accepted, the peer's
-retransmission recovers it, and the offered window is never taken back. The edge is extended only while a packet
-slot is free, so a connection at its cap stops offering more.
+`rcv_nxt + (B - unread)`, where `B` is the connection's budget, half of what `receive_segments` segments of its `mss()`
+hold, or `receive_window` when set, at most 65535; it moves the edge it offered only by a full segment or half the
+budget, whichever is smaller, and never retracts it. A read sends a window update of its own only when the window it
+frees at least doubles the one on offer, and an ACK for a refused segment restates the edge already offered. Separately,
+a connection holds at most `receive_segments` packets, and the shard's held packets come from one pool of `receive_pool`
+nodes. Small segments can reach the packet cap before the byte window closes. A segment that arrives when either cap is
+reached is dropped, counted (`dropped_no_slot` or `dropped_no_node`) and not acknowledged: the immediate ACK reports the
+last byte accepted, the peer's retransmission recovers it, and the offered window is never taken back. The edge is
+extended only while a packet slot is free, so a connection at its cap stops offering more.
 
 **The peer's window comes from current acknowledgements.** `writable()` is
 `min(mss, min(snd_wnd, cwnd + allowance) - in flight)`, where `cwnd` is the policy's window and the allowance is
@@ -595,12 +593,12 @@ so a stale or forged acknowledgement cannot rewrite it. `commit` checks the cred
 have retracted its right edge, or a loss shrunk the congestion window, since the prepare; RFC 1122 asks the
 sender to cope with a retracted edge by not sending into it.
 
-**ACKs wait, with exceptions.** An ordinary acknowledgement of in-order data is queued and sent by `flush`,
-unless a data segment leaving first carries it, so a request answered in the same tick costs one segment. It goes
-at once for every second full-sized segment, a full-sized segment being the connection's `mss()`, the smaller of
-the two MSS less the timestamp option on a connection that carries it; for anything that cannot be accepted (a duplicate, a segment out of window, above a
-gap or older than `TS.Recent`, data after the peer's FIN); while recovering from a gap; and for a FIN the
-connection is closing on. A refused immediate ACK stays queued for the next `flush`.
+**ACKs wait, with exceptions.** An ordinary acknowledgement of in-order data is queued and sent by `flush`, unless a
+data segment leaving first carries it, so a request answered in the same tick costs one segment. It goes at once for
+every second full-sized segment, a full-sized segment being the connection's `mss()`, the smaller of the two MSS less
+the timestamp option on a connection that carries it; for anything that cannot be accepted (a duplicate, a segment out
+of window, above a gap or older than `TS.Recent`, data after the peer's FIN); while recovering from a gap; and for a FIN
+the connection is closing on. A refused immediate ACK stays queued for the next `flush`.
 
 **Ownership is logical state.** A passive open belongs to the stack until the handshake completes and `Accepted`
 hands it to the application; one that fails before then is freed silently. A connection from `connect` is the

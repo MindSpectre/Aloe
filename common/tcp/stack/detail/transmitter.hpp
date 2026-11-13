@@ -266,7 +266,7 @@ namespace aloe::tcp::detail {
             if (!writer_.send_detached(block.remote.address, reset, context_.now)) {
                 return false;
             }
-            record_offer(block, offer);
+            record_offer(block, offer, Edge::Offer);
             ++context_.counters.resets_sent;
             return true;
         }
@@ -466,13 +466,22 @@ namespace aloe::tcp::detail {
         using RetryList    = ConnectionList<ControlBlock, &ControlBlock::retry_link>;
         using DeferredList = ConnectionList<ControlBlock, &ControlBlock::deferred_link>;
 
-        /// A segment with ACK left stating `offer`: the edge is recorded and the ACK that waited is done.
-        void record_offer(ControlBlock& block, const ReceiveWindow::Offer& offer) noexcept {
+        /**
+         * A segment with ACK left stating `offer`: the edge is recorded and the ACK that waited is done. A restating
+         * ACK does not do the work of an ordinary one that would move the edge: a connection waiting on the ACK list
+         * whose ordinary offer now differs from the edge just restated stays there, so the flush still sends the
+         * update `consume` owes. One whose ordinary offer is the same edge is satisfied, so the flush sends no
+         * identical ACK, which the peer would count as a duplicate.
+         */
+        void record_offer(ControlBlock& block, const ReceiveWindow::Offer& offer, const Edge edge) noexcept {
             if (block.window.record(offer)) {
                 ++context_.counters.window_updates;
             }
-            acks_.remove(block);
             block.ack_policy.acknowledged();
+            if (edge == Edge::Restate && acks_.contains(block) && offer_of(block, Edge::Offer).edge != offer.edge) {
+                return;  // the update is still owed to the flush
+            }
+            acks_.remove(block);
         }
 
         /// The timestamp option a segment of the connection carries now: the clock's value and TS.Recent as the echo.
@@ -517,7 +526,7 @@ namespace aloe::tcp::detail {
             const std::expected<void, net::SendError> sent =
                 writer_.send(block.frame, block.remote.address, packet, framed, segment, context_.now);
             if (sent && with_ack) {
-                record_offer(block, offer);
+                record_offer(block, offer, handshake ? Edge::Offer : edge);
                 block.timestamps.sent_ack(next);
             }
             return sent;

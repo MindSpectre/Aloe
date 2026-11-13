@@ -293,3 +293,71 @@ TEST_P(TcpWindowRefusing, RefusedUpdateLeavesThePreviousOffer) {
     EXPECT_EQ(frames[0].tcp->window, 2U * mss);
     EXPECT_EQ(tcp_->counters().window_updates, 1U);
 }
+
+TEST_P(TcpWindowRefusing, AProbeAnsweredAtOnceKeepsTheReopeningTheFlushOwes) {
+    constexpr std::uint16_t mss = aloe::testing::tcp_fabric_mss;
+    configure_tcp({.receive_segments = 4});
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.data(aloe::frames::pattern(mss)));
+    receive(peer_.data(aloe::frames::pattern(mss)));
+    auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->window, 0U);
+    refuse();
+    c->consume(2U * mss);
+    EXPECT_TRUE(collect().empty()) << "the reopening could not leave";
+    allow();
+    // The peer's zero-window probe: below RCV.NXT, out of the closed window, answered at once.
+    receive(peer_.segment({TcpFlag::Ack}, {}, peer_.snd_nxt() + 0xffffffffU, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_out_of_window, 1U);
+    frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->window, 0U) << "the answer restates the edge";
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "the restating ACK did not cancel the update the flush owes";
+    EXPECT_EQ(frames[0].tcp->window, 2U * mss);
+    EXPECT_TRUE(collect().empty()) << "once";
+}
+
+TEST_P(TcpWindow, ADuplicateBeforeTheFlushKeepsTheUpdateAConsumeOwes) {
+    constexpr std::uint16_t mss = aloe::testing::tcp_fabric_mss;
+    configure_tcp({.receive_segments = 4});
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.data(aloe::frames::pattern(mss)));
+    receive(peer_.data(aloe::frames::pattern(mss)));
+    auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->window, 0U);
+    c->consume(2U * mss);  // owes an update at the next flush
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack},
+                          aloe::frames::pattern(10),
+                          TcpSequence{aloe::testing::tcp_peer_isn + 1},
+                          peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_duplicate, 1U);
+    frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->window, 0U) << "a duplicate ACK stays a duplicate";
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "the flush still sends the update";
+    EXPECT_EQ(frames[0].tcp->window, 2U * mss);
+}
+
+TEST_P(TcpWindow, ARestatingAckSatisfiesTheAckOfDataItCovers) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.data(aloe::frames::pattern(100)));  // its ACK waits for the flush
+    EXPECT_TRUE(collect_queued().empty());
+    receive(peer_.segment({TcpFlag::Psh, TcpFlag::Ack},
+                          aloe::frames::pattern(10),
+                          TcpSequence{aloe::testing::tcp_peer_isn + 1},
+                          peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_duplicate, 1U);
+    const auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 101});
+    EXPECT_EQ(frames[0].tcp->window, budget - 100U);
+    EXPECT_TRUE(collect().empty()) << "the ACK at once covered the data: nothing identical follows at the flush";
+    EXPECT_EQ(c->unread().size(), 100U);
+}
