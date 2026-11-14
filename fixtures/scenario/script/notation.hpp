@@ -22,7 +22,7 @@ namespace aloe::scenario {
     /// malformed bytes as `bad options`.
     [[nodiscard]] std::string describe_options(std::span<const std::byte> options, wire::TcpSequence sack_base);
 
-    /// As written in a script: "> S. 0:0(0) ack 1 win 46720 <mss 1460>".
+    /// As written in a script: "> S. 0:0(0) ack 1 win 65535 <mss 1460>".
     [[nodiscard]] std::string describe(const PacketLine& line, wire::TcpSequence sack_base);
 
     /// The same notation for a segment the stack sent: always outbound.

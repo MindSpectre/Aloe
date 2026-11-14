@@ -1,0 +1,72 @@
+// A peer whose field of 1024 under a window scale of 7 states 131072 bytes: a write of 80000, more than an unscaled
+// window could hold, leaves whole, 55 segments of 1448 and one of 360, with no congestion control and a send cap of
+// 64 entries to hold them. Linux would send the same bytes, starting at its initial congestion window.
+--congestion=none
+--tcp_send_segments=64
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 1024 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 80000) = 80000
++0 > P. 1:1449(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 1449:2897(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 2897:4345(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 4345:5793(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 5793:7241(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 7241:8689(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 8689:10137(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 10137:11585(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 11585:13033(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 13033:14481(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 14481:15929(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 15929:17377(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 17377:18825(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 18825:20273(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 20273:21721(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 21721:23169(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 23169:24617(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 24617:26065(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 26065:27513(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 27513:28961(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 28961:30409(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 30409:31857(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 31857:33305(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 33305:34753(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 34753:36201(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 36201:37649(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 37649:39097(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 39097:40545(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 40545:41993(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 41993:43441(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 43441:44889(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 44889:46337(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 46337:47785(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 47785:49233(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 49233:50681(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 50681:52129(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 52129:53577(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 53577:55025(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 55025:56473(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 56473:57921(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 57921:59369(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 59369:60817(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 60817:62265(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 62265:63713(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 63713:65161(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 65161:66609(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 66609:68057(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 68057:69505(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 69505:70953(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 70953:72401(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 72401:73849(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 73849:75297(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 75297:76745(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 76745:78193(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 78193:79641(1448) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 > P. 79641:80001(360) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 80001 win 1024 <nop,nop,TS val 100 ecr 0>

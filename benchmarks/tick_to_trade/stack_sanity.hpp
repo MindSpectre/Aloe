@@ -11,9 +11,10 @@
 
 namespace aloe::benchmarks {
 
-    /// Fails `state` when the stack dropped, refused or starved anything during the run: a benchmark that measured
-    /// garbage must say so instead of reporting it. Only the wait for ARP is allowed: `send_unresolved` on either
-    /// brick, and `ip.dropped_arp_unsolicited`, which is the IP brick's rule rather than a loss.
+    /// Fails `state` when the stack dropped, refused or starved anything during the run, or held, reported or delayed
+    /// anything a clean ring never causes: a benchmark that measured garbage must say so instead of reporting it. Only
+    /// the wait for ARP is allowed: `send_unresolved` on either brick, and `ip.dropped_arp_unsolicited`, which is the
+    /// IP brick's rule rather than a loss.
     inline void check_stack_counters(RunState& state,
                                      const tcp::TcpCounters& tcp,
                                      const net::Ipv4Counters& ip,
@@ -44,6 +45,11 @@ namespace aloe::benchmarks {
         expect_zero(tcp.retransmits_copied, "tcp.retransmits_copied");
         expect_zero(tcp.zero_window_probes, "tcp.zero_window_probes");
         expect_zero(tcp.dropped_paws, "tcp.dropped_paws");
+        expect_zero(tcp.out_of_order_held, "tcp.out_of_order_held");  // a clean ring never reorders
+        expect_zero(tcp.out_of_order_released, "tcp.out_of_order_released");
+        expect_zero(tcp.sack_acks_sent, "tcp.sack_acks_sent");
+        expect_zero(tcp.duplicate_sacks_sent, "tcp.duplicate_sacks_sent");
+        expect_zero(tcp.delayed_acks_sent, "tcp.delayed_acks_sent");
         expect_zero(ip.transmit_refused, "ip.transmit_refused");
         expect_zero(ip.dropped_short, "ip.dropped_short");
         expect_zero(ip.dropped_not_for_us, "ip.dropped_not_for_us");

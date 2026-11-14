@@ -72,6 +72,24 @@ namespace aloe::tcp {
             return block_.timestamps_negotiated();
         }
 
+        /// SACK-permitted is in use: both ends sent it in the handshake and the config allows it. In SynSent, whether
+        /// the SYN offers it.
+        [[nodiscard]] bool sack() const noexcept {
+            return block_.sack.in_use();
+        }
+        /// RFC 7323 window scaling is in use: both ends offered it in the handshake and the config allows it.
+        [[nodiscard]] bool window_scaling() const noexcept {
+            return block_.window.scale().has_value();
+        }
+        /// Our window scale on this connection: the stack's shift when scaling is in use, else zero.
+        [[nodiscard]] std::uint8_t window_shift() const noexcept {
+            return block_.window.shift();
+        }
+        /// The peer's window scale, at most 14: what its SYN or SYN-ACK offered when scaling is in use, else zero.
+        [[nodiscard]] std::uint8_t peer_window_shift() const noexcept {
+            return block_.send.peer_shift;
+        }
+
         /// The unconsumed payloads of the held packets, in order. Invalidated by `consume` and the next `process`.
         [[nodiscard]] View unread() const noexcept {
             return block_.stack.unread(block_);
@@ -82,6 +100,23 @@ namespace aloe::tcp {
         }
         [[nodiscard]] bool peer_closed() const noexcept {
             return block_.receive.closed();
+        }
+        /// Packets held above a gap, waiting for the data that fills it; they count against `receive_segments`.
+        [[nodiscard]] std::uint32_t out_of_order_segments() const noexcept {
+            return block_.reassembly.segments();
+        }
+        /// Payload bytes held above a gap; not part of `unread()` until the gap fills.
+        [[nodiscard]] std::size_t out_of_order_bytes() const noexcept {
+            return block_.reassembly.bytes();
+        }
+        /// The receive budget the handshake settled: half of what `receive_segments` full segments of `mss()` hold, or
+        /// `receive_window`, within what the window field states.
+        [[nodiscard]] std::uint32_t receive_budget() const noexcept {
+            return block_.window.budget();
+        }
+        /// The bytes on offer to the peer: from RCV.NXT to the right edge already offered.
+        [[nodiscard]] std::uint32_t receive_window() const noexcept {
+            return block_.window.window(block_.receive.next());
         }
 
         /// `min(mss, min(peer window, congestion window + limited transmit's allowance) - in flight)` in Established or

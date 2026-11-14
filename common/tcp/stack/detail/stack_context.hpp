@@ -7,10 +7,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <limits>
 
 #include <detail/control_block.hpp>
 #include <detail/held_segment_pool.hpp>
+#include <detail/receive_window.hpp>
 #include <tcp_config.hpp>
 #include <tcp_counters.hpp>
 #include <tcp_fwd.hpp>
@@ -27,20 +27,35 @@ namespace aloe::tcp::detail {
         using Packet       = Ip::Packet;
         using ControlBlock = detail::ControlBlock<Ip, CongestionControl>;
 
-        /// `validated` is the config after `TcpConfig::validate`; one block per slot is built here over `owner`.
+        /// `validated` is the config after `TcpConfig::validate`; one block per slot is built here over `owner`, with
+        /// the trampolines of its two timers.
         StackContext(Ip& ip_brick,
                      const TcpConfig& validated,
                      Stack<Ip, CongestionControl>& owner,
-                     const loop::Timer::Function fire)
+                     const loop::Timer::Function fire,
+                     const loop::Timer::Function fire_ack)
             : ip{ip_brick},
               config{validated},
               mss{static_cast<std::uint16_t>(ip_brick.max_l4_size() - wire::TcpHeader::size)},
-              byte_budget{static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                  std::uint64_t{config.receive_segments} * mss, std::numeric_limits<std::uint16_t>::max()))},
+              window_shift{
+                  config.window_scaling
+                      ? ReceiveWindow::shift_for(ReceiveWindow::budget_of(
+                            config.receive_segments, mss, config.receive_window, wire::TcpOptions::max_window_scale))
+                      : std::uint8_t{0}},
+              largest_budget{
+                  ReceiveWindow::budget_of(config.receive_segments, mss, config.receive_window, window_shift)},
+              syn_window{static_cast<std::uint16_t>(std::min(largest_budget, ReceiveWindow::unscaled_max))},
+              delay_acks{config.delayed_ack > core::Duration::zero()},
               pool{config.receive_pool} {
             for (std::size_t index = 0; index < config.connections; ++index) {
-                blocks.emplace_back(owner, fire, static_cast<std::uint32_t>(index), mss);
+                blocks.emplace_back(owner, fire, fire_ack, static_cast<std::uint32_t>(index), mss);
             }
+        }
+
+        /// The connection holds fewer packets than its cap, on both chains: the edge may move and a segment may take a
+        /// slot. The one place that says what a free slot is.
+        [[nodiscard]] bool slot_free(const ControlBlock& block) const noexcept {
+            return block.held_segments() < config.receive_segments;
         }
 
         StackContext(const StackContext&)            = delete;
@@ -51,9 +66,16 @@ namespace aloe::tcp::detail {
 
         Ip& ip;
         TcpConfig config{};
-        std::uint16_t mss         = 0;  ///< Ours: `max_l4_size() - 20`.
-        /// `min(receive_segments * mss, 65535)`: the receive credit a connection starts with.
-        std::uint32_t byte_budget = 0;
+        std::uint16_t mss            = 0;  ///< Ours: `max_l4_size() - 20`.
+        /// Ours, offered on every SYN and SYN-ACK when window scaling is on: the smallest shift under which the field
+        /// states the largest budget the configuration allows, counted in our MSS; zero with scaling off.
+        std::uint8_t window_shift    = 0;
+        /// `ReceiveWindow::budget_of(receive_segments, mss, receive_window, window_shift)`.
+        std::uint32_t largest_budget = 0;
+        /// `min(largest_budget, 65535)`: what a SYN states, before the connection has a budget.
+        std::uint16_t syn_window     = 0;
+        /// `delayed_ack` is set: the ACK of in-order data waits for the delay rather than the flush.
+        bool delay_acks              = false;
         HeldSegmentPool<Packet> pool;
         std::deque<ControlBlock> blocks{};
         TcpCounters counters{};

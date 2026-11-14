@@ -19,10 +19,13 @@
 #include <detail/lifecycle.hpp>
 #include <detail/loss_recovery.hpp>
 #include <detail/node_pool.hpp>
+#include <detail/reassembly_queue.hpp>
 #include <detail/receive_queue.hpp>
+#include <detail/receive_window.hpp>
 #include <detail/receiver.hpp>
 #include <detail/retransmission_queue.hpp>
 #include <detail/rtt_estimator.hpp>
+#include <detail/sack_blocks.hpp>
 #include <detail/segment_writer.hpp>
 #include <detail/send_sequence.hpp>
 #include <detail/sent_segment_pool.hpp>

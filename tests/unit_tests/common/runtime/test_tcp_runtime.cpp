@@ -205,7 +205,7 @@ TEST_F(TcpRuntime, ZeroWindowReopeningIsAdvertisedInTheSameTick) {
                                                   .address = {10, 0, 0, 3},
                                                     .prefix = 24
     },
-                                              aloe::tcp::TcpConfig{.receive_segments = 1});
+                                              aloe::tcp::TcpConfig{.receive_segments = 1, .receive_window = 1460});
     tiny.stack().ip().learn(aloe::testing::harness_ip, aloe::testing::harness_mac, start);
     int echoed = 0;
     {

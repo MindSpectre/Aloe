@@ -5,6 +5,8 @@
 #include <aloe/wire>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
+#include <initializer_list>
 #include <span>
 #include <tuple>
 #include <utility>
@@ -41,6 +43,24 @@ namespace {
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
 
+    /// A stack without congestion control and a send cap of 64 over a port of 256 packets: the peer's window is the
+    /// only limit on the flight.
+    class TcpScaledSend : public ::testing::TestWithParam<aloe::fabric::EmulatedOffloads>,
+                          protected aloe::testing::detail::FabricPair,
+                          protected aloe::testing::TcpHarness<aloe::fabric::Port, aloe::tcp::NoCongestionControl> {
+    protected:
+        TcpScaledSend()
+            : FabricPair{GetParam(), 1, 256},
+              TcpHarness{fabric, harness, port, {.send_segments = 64}} {
+        }
+    };
+
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpScaledSend,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+
     [[nodiscard]] std::vector<std::byte> payload_of(const aloe::frames::ParsedFrame& frame) {
         const auto bytes = aloe::frames::tcp_payload(frame);
         return {bytes.begin(), bytes.end()};
@@ -72,6 +92,17 @@ namespace {
         }
         return out;
     }
+
+    /// The bytes of `parts`, one after another.
+    [[nodiscard]] std::vector<std::byte> joined(const std::initializer_list<std::span<const std::byte>> parts) {
+        std::vector<std::byte> out;
+        for (const std::span<const std::byte> part : parts) {
+            out.insert(out.end(), part.begin(), part.end());
+        }
+        return out;
+    }
+
+    constexpr TcpFlags data_flags{TcpFlag::Psh, TcpFlag::Ack};
 
     template <typename C>
     [[nodiscard]] std::vector<std::size_t> chunk_sizes(const C& c) {
@@ -115,7 +146,8 @@ TEST_P(TcpReceive, ThreeSegmentsGiveThreeChunksAndConsumeCrossesBoundaries) {
     ASSERT_EQ(frames.size(), 1U) << "one coalesced ACK for the three segments";
     EXPECT_EQ(frames[0].tcp->flags, TcpFlags{TcpFlag::Ack});
     EXPECT_EQ(frames[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 11});
-    EXPECT_EQ(frames[0].tcp->window, aloe::testing::tcp_fabric_budget) << "everything consumed: the full budget";
+    EXPECT_EQ(frames[0].tcp->window, aloe::testing::tcp_fabric_budget - 10U)
+        << "everything consumed, but ten bytes is less than a full segment: the edge stands";
     EXPECT_EQ(tcp_->counters().pure_acks_sent, 1U);
 }
 
@@ -214,7 +246,8 @@ TEST_P(TcpReceive, SlotCapDropsWithoutAdvancingAndRecovers) {
     auto frames = collect_queued();
     ASSERT_EQ(frames.size(), 1U) << "a refused segment is acknowledged at once";
     EXPECT_EQ(frames[0].tcp->acknowledgement, TcpSequence{aloe::testing::tcp_peer_isn + 3}) << "the last accepted byte";
-    EXPECT_EQ(frames[0].tcp->window, 2U * aloe::testing::tcp_fabric_mss - 2U) << "credit is not retracted to zero";
+    EXPECT_EQ(frames[0].tcp->window, aloe::testing::tcp_fabric_mss - 2U)
+        << "half of two slots, less two bytes: credit is not retracted to zero";
     receive(peer_.data(text("d")));  // a gap now: `c` was never accepted
     EXPECT_EQ(tcp_->counters().dropped_out_of_order, 1U);
     frames = collect_queued();
@@ -230,7 +263,7 @@ TEST_P(TcpReceive, SlotCapDropsWithoutAdvancingAndRecovers) {
 }
 
 TEST_P(TcpReceive, SharedPoolExhaustionNeverAdvancesRcvNxt) {
-    configure_tcp({.receive_pool = 2});
+    configure_tcp({.receive_segments = 2, .receive_pool = 2});
     auto* first = open_passive(peer_);
     ASSERT_NE(first, nullptr);
     aloe::frames::TcpPeer other{aloe::testing::peer_spec(40001), TcpSequence{2000U}};
@@ -252,6 +285,251 @@ TEST_P(TcpReceive, SharedPoolExhaustionNeverAdvancesRcvNxt) {
     receive(other.data(text("x")));
     EXPECT_EQ(second->unread().size(), 1U);
     EXPECT_EQ(tcp_->counters().dropped_no_node, 1U);
+}
+
+// Above a gap: the peer offers no SACK, so every such segment is answered with a plain duplicate ACK.
+
+TEST_P(TcpReceive, ASegmentAboveAGapIsHeldAndDeliveredWhenTheGapFills) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    const auto at          = [base](const std::uint32_t offset) { return base + offset; };
+    receive(peer_.segment(data_flags, aloe::frames::pattern(1000, 2), at(1000), peer_.rcv_nxt()));
+    EXPECT_EQ(c->out_of_order_segments(), 1U);
+    EXPECT_EQ(c->out_of_order_bytes(), 1000U);
+    EXPECT_TRUE(c->unread().empty());
+    EXPECT_EQ(tcp_->counters().out_of_order_held, 1U);
+    EXPECT_EQ(tcp_->counters().dropped_out_of_order, 0U);
+    EXPECT_FALSE(c->events().readable()) << "nothing was added to unread()";
+    std::ignore = collect();
+    receive(peer_.data(aloe::frames::pattern(1000, 1)));
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_EQ(event->events, aloe::stream::Events{aloe::stream::Event::Readable}) << "one Readable for the run";
+    EXPECT_FALSE(poll().has_value());
+    EXPECT_EQ(c->unread().size(), 2000U);
+    EXPECT_EQ(unread_of(*c), joined({aloe::frames::pattern(1000, 1), aloe::frames::pattern(1000, 2)}));
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+    EXPECT_EQ(c->out_of_order_bytes(), 0U);
+}
+
+TEST_P(TcpReceive, ARunIsDeliveredInOrderWhateverOrderItArrivedIn) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    for (const std::uint8_t index : std::initializer_list<std::uint8_t>{3, 1, 4, 2}) {
+        receive(peer_.segment(data_flags, aloe::frames::pattern(500, index), base + (index * 500U), peer_.rcv_nxt()));
+    }
+    EXPECT_EQ(c->out_of_order_segments(), 4U);
+    EXPECT_EQ(tcp_->counters().out_of_order_held, 4U);
+    EXPECT_TRUE(c->unread().empty());
+    receive(peer_.segment(data_flags, aloe::frames::pattern(500, 0), base, peer_.rcv_nxt()));
+    EXPECT_EQ(c->unread().size(), 2500U);
+    EXPECT_EQ(unread_of(*c),
+              joined({aloe::frames::pattern(500, 0),
+                      aloe::frames::pattern(500, 1),
+                      aloe::frames::pattern(500, 2),
+                      aloe::frames::pattern(500, 3),
+                      aloe::frames::pattern(500, 4)}));
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+}
+
+TEST_P(TcpReceive, AnOverlapAboveAGapIsTrimmedAndReadsByteExact) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    const auto first       = aloe::frames::pattern(1000, 2);
+    const auto second      = aloe::frames::pattern(1000, 100);
+    receive(peer_.segment(data_flags, first, base + 1000U, peer_.rcv_nxt()));
+    receive(peer_.segment(data_flags, second, base + 1500U, peer_.rcv_nxt()));
+    EXPECT_EQ(c->out_of_order_segments(), 2U);
+    EXPECT_EQ(c->out_of_order_bytes(), 1500U) << "the newcomer lost its front to the held bytes";
+    const auto gap = aloe::frames::pattern(1000, 1);
+    receive(peer_.segment(data_flags, gap, base, peer_.rcv_nxt()));
+    EXPECT_EQ(c->unread().size(), 2500U);
+    EXPECT_EQ(unread_of(*c), joined({gap, first, std::span<const std::byte>{second}.subspan(500)}))
+        << "[1500, 2000) is the first segment's";
+    EXPECT_EQ(tcp_->counters().dropped_duplicate, 0U);
+}
+
+TEST_P(TcpReceive, ADuplicateAboveAGapIsCountedAndDropped) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence at = peer_.snd_nxt() + 1000U;
+    receive(peer_.segment(data_flags, aloe::frames::pattern(100), at, peer_.rcv_nxt()));
+    const std::size_t nodes = tcp_->nodes_available();
+    receive(peer_.segment(data_flags, aloe::frames::pattern(100), at, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_duplicate, 1U);
+    EXPECT_EQ(tcp_->counters().out_of_order_held, 1U);
+    EXPECT_EQ(c->out_of_order_segments(), 1U);
+    EXPECT_EQ(tcp_->nodes_available(), nodes) << "the duplicate took no node";
+    EXPECT_TRUE(burst_empty());
+}
+
+TEST_P(TcpReceive, AtTheCapTheLowerSequenceWins) {
+    configure_tcp({.receive_segments = 4});
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->receive_budget(), 2920U) << "half of four slots of 1460";
+    const TcpSequence base = peer_.snd_nxt();
+    for (const std::uint32_t offset : {500U, 1000U, 1500U, 2000U}) {
+        receive(peer_.segment(data_flags, aloe::frames::pattern(100), base + offset, peer_.rcv_nxt()));
+    }
+    EXPECT_EQ(c->out_of_order_segments(), 4U) << "at the cap";
+    receive(peer_.segment(data_flags, aloe::frames::pattern(100), base + 200U, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().out_of_order_held, 5U) << "the lower sequence was held";
+    EXPECT_EQ(tcp_->counters().out_of_order_released, 1U) << "the one at 2000 gave way";
+    EXPECT_EQ(c->out_of_order_segments(), 4U);
+    receive(peer_.segment(data_flags, aloe::frames::pattern(100), base, peer_.rcv_nxt()));
+    EXPECT_EQ(c->unread().size(), 100U) << "the in-order segment was held";
+    EXPECT_EQ(tcp_->counters().out_of_order_released, 2U) << "the one at 1500 gave way";
+    EXPECT_EQ(c->out_of_order_segments(), 3U);
+    EXPECT_EQ(c->out_of_order_bytes(), 300U) << "200, 500 and 1000 remain";
+    EXPECT_EQ(tcp_->counters().dropped_no_slot, 0U);
+    EXPECT_EQ(tcp_->counters().dropped_out_of_order, 0U);
+}
+
+TEST_P(TcpReceive, AtTheCapASegmentThatWouldBeTheHighestIsDropped) {
+    configure_tcp({.receive_segments = 4});
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    for (const std::uint32_t offset : {500U, 1000U, 1500U, 2000U}) {
+        receive(peer_.segment(data_flags, aloe::frames::pattern(100), base + offset, peer_.rcv_nxt()));
+    }
+    std::ignore = collect();
+    receive(peer_.segment(data_flags, aloe::frames::pattern(100), base + 2500U, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_out_of_order, 1U);
+    EXPECT_EQ(tcp_->counters().out_of_order_released, 0U);
+    EXPECT_EQ(c->out_of_order_segments(), 4U);
+    auto frames = collect_queued();
+    ASSERT_EQ(frames.size(), 1U) << "refused, and answered at once";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, base);
+    // In-order data, each read at once so the cap never refuses it, is acknowledged at once until RCV.NXT passes the
+    // refused segment's end, 2600: the first three join what is held above (and the first takes the node at 2000),
+    // the last two only fill the remembered gap.
+    std::uint32_t next = 0;
+    for (const std::uint32_t length : {500U, 400U, 400U, 400U, 600U}) {
+        receive(peer_.segment(data_flags, aloe::frames::pattern(length), base + next, peer_.rcv_nxt()));
+        frames = collect_queued();
+        ASSERT_EQ(frames.size(), 1U) << "the segment at " << next;
+        const auto acknowledged = static_cast<std::uint32_t>(frames[0].tcp->acknowledgement - base);
+        EXPECT_GE(acknowledged, next + length);
+        next = acknowledged;
+        c->consume(c->unread().size());
+    }
+    EXPECT_EQ(next, 2600U);
+    receive(peer_.segment(data_flags, aloe::frames::pattern(100), base + next, peer_.rcv_nxt()));
+    EXPECT_TRUE(collect_queued().empty()) << "past the remembered end: ordinary again";
+}
+
+TEST_P(TcpReceive, AtTheCapADuplicateOfTheHighestReleasesNothing) {
+    configure_tcp({.receive_segments = 4});
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    for (const std::uint32_t offset : {500U, 1000U, 1500U, 2000U}) {
+        receive(peer_.segment(data_flags, aloe::frames::pattern(100), base + offset, peer_.rcv_nxt()));
+    }
+    receive(peer_.segment(data_flags, aloe::frames::pattern(100), base + 2000U, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_duplicate, 1U);
+    EXPECT_EQ(tcp_->counters().out_of_order_released, 0U);
+    EXPECT_EQ(tcp_->counters().dropped_out_of_order, 0U);
+    EXPECT_EQ(c->out_of_order_segments(), 4U);
+}
+
+TEST_P(TcpReceive, AtTheCapACoveringNewcomerTakesTheSlotItReplaces) {
+    configure_tcp({.receive_segments = 4});
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence base = peer_.snd_nxt();
+    for (const std::uint32_t offset : {500U, 1000U, 1500U, 2000U}) {
+        receive(peer_.segment(data_flags, aloe::frames::pattern(100), base + offset, peer_.rcv_nxt()));
+    }
+    receive(peer_.segment(data_flags, aloe::frames::pattern(200), base + 1000U, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().out_of_order_released, 0U);
+    EXPECT_EQ(tcp_->counters().out_of_order_held, 5U);
+    EXPECT_EQ(c->out_of_order_segments(), 4U);
+    EXPECT_EQ(c->out_of_order_bytes(), 500U) << "1000:1200 replaced 1000:1100; 2000:2100 still held";
+}
+
+TEST_P(TcpReceive, AnEmptyPoolTakesTheConnectionsOwnHighestNode) {
+    configure_tcp({.receive_segments = 4, .receive_pool = 4});
+    auto* first = open_passive(peer_);
+    ASSERT_NE(first, nullptr);
+    aloe::frames::TcpPeer other{aloe::testing::peer_spec(40001), TcpSequence{2000U}};
+    auto* second = open_passive(other);
+    ASSERT_NE(second, nullptr);
+    for (int index = 0; index < 3; ++index) {
+        receive(peer_.data(aloe::frames::pattern(10)));
+    }
+    receive(other.segment(data_flags, aloe::frames::pattern(10), other.snd_nxt() + 100U, other.rcv_nxt()));
+    EXPECT_EQ(second->out_of_order_segments(), 1U);
+    EXPECT_EQ(tcp_->nodes_available(), 0U);
+    receive(other.data(aloe::frames::pattern(10)));
+    EXPECT_EQ(second->unread().size(), 10U) << "the in-order segment took the node";
+    EXPECT_EQ(second->out_of_order_segments(), 0U);
+    EXPECT_EQ(tcp_->counters().out_of_order_released, 1U);
+    EXPECT_EQ(tcp_->counters().dropped_no_node, 0U);
+    receive(peer_.data(aloe::frames::pattern(10)));
+    EXPECT_EQ(tcp_->counters().dropped_no_node, 1U) << "nothing of its own to give way";
+    EXPECT_EQ(first->unread().size(), 30U);
+}
+
+TEST_P(TcpReceive, TheAckFieldOfASegmentAboveAGapTakesEffect) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 1U);
+    peer_.see(sent[0]);
+    receive(peer_.segment(data_flags, aloe::frames::pattern(10), peer_.snd_nxt() + 1000U, peer_.rcv_nxt()));
+    EXPECT_EQ(c->acknowledged(), c->committed());
+    EXPECT_EQ(c->out_of_order_segments(), 1U);
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.acked());
+}
+
+TEST_P(TcpReceive, APureAckAboveRcvNxtIsProcessedAndNotAnswered) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 1U);
+    peer_.see(sent[0]);
+    const std::uint64_t pure_acks = tcp_->counters().pure_acks_sent;
+    receive(peer_.segment({TcpFlag::Ack}, {}, peer_.snd_nxt() + 1000U, peer_.rcv_nxt()));
+    EXPECT_EQ(c->acknowledged(), c->committed());
+    EXPECT_TRUE(collect().empty()) << "a pure ACK during a hole is not answered";
+    EXPECT_EQ(tcp_->counters().pure_acks_sent, pure_acks);
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+}
+
+TEST_P(TcpReceive, ARstAboveAGapResets) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.segment(
+        {TcpFlag::Rst, TcpFlag::Ack}, aloe::frames::pattern(10), peer_.snd_nxt() + 1000U, peer_.rcv_nxt()));
+    EXPECT_EQ(c->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(tcp_->counters().connections_reset, 1U);
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+    EXPECT_EQ(tcp_->counters().out_of_order_held, 0U);
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.reset());
+}
+
+TEST_P(TcpReceive, ASynAboveAGapIsDropped) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    receive(peer_.segment(
+        {TcpFlag::Syn, TcpFlag::Ack}, aloe::frames::pattern(10), peer_.snd_nxt() + 1000U, peer_.rcv_nxt()));
+    EXPECT_EQ(tcp_->counters().dropped_unexpected, 1U);
+    EXPECT_EQ(tcp_->counters().dropped_out_of_order, 0U);
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+    EXPECT_EQ(tcp_->counters().out_of_order_held, 0U);
+    EXPECT_EQ(c->state(), aloe::tcp::State::Established);
 }
 
 TEST_P(TcpSend, PrepareCommitWritesInPlace) {
@@ -548,4 +826,21 @@ TEST_P(TcpSendRefusing, PartialHelperSendStopsAtTheRefusal) {
     EXPECT_EQ(payload_of(frames[1]).size(), 1460U);
     EXPECT_EQ(payload_of(frames[3]).size(), 80U);
     EXPECT_EQ(frames[3].tcp->sequence, sequence + 100U + 2920U);
+}
+
+TEST_P(TcpScaledSend, APeersScaledWindowLetsTheFlightPass65535Bytes) {
+    peer_.set_window_scale(7);
+    peer_.set_window(1024);  // 131072 bytes once scaled
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->peer_window_shift(), 7U);
+    std::size_t sent = 0;
+    for (std::size_t accepted = c->send(aloe::frames::pattern(65535)); accepted > 0;
+         accepted             = c->send(aloe::frames::pattern(65535))) {
+        sent += accepted;
+    }
+    EXPECT_EQ(sent, c->unacknowledged());
+    EXPECT_GT(c->unacknowledged(), 65535U) << "the scaled window, not its field, bounds the flight";
+    EXPECT_EQ(c->queued_segments(), 64U) << "the send cap stops it, inside 131072 bytes";
+    std::ignore = collect();
 }

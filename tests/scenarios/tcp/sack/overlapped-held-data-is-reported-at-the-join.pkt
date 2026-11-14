@@ -1,0 +1,20 @@
+// An in-order segment that runs 200 bytes into data held above the gap: at the join the held segment loses the part
+// RCV.NXT passed, which is reported as a duplicate SACK with the ACK the join sends at once. That ACK acknowledges 3001
+// and states (370689 - 3001) / 8 = 45961: 3000 bytes unread, so the candidate is the edge. Linux reports the same range
+// (tcp_ofo_queue, tcp_dsack_extend).
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100>
++0 < P. 2001:3001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2001:3001>
++0 < P. 1001:2201(1200) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 3001 win 45961 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2001:2201>
++0 read(4, ..., 4000) = 3000

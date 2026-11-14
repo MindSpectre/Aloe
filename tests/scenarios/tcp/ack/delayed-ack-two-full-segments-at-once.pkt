@@ -1,0 +1,27 @@
+// With a delay configured, two full segments' worth of unacknowledged bytes is acknowledged at once, counted in
+// bytes: two segments of 1448, the peer's MSS less the timestamp option, and then four of 724 each, whose fourth is
+// answered at 50 ms, before the deadline at 60 ms that the first of them started. Each at-once ACK comes 10 ms after
+// the segment before it, so an ACK at that segment's flush would come early. The peer offered no window scaling: the
+// edge stands at 1 + 65535 = 65536, and each ACK states 65536 less RCV.NXT, 62639 and then 59743. The read at 100 ms
+// does not double the window, so nothing follows, and no ACK was left for either deadline. Linux acknowledges once
+// more than its estimate of the peer's segment size is unacknowledged (__tcp_ack_snd_check), so it would answer the
+// second of the short segments already.
+--tcp_delayed_ack_ms=40
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1449(1448) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0.01 < P. 1449:2897(1448) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 2897 win 62639 <nop,nop,TS val 10 ecr 100>
++0.01 < P. 2897:3621(724) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0.01 < P. 3621:4345(724) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0.01 < P. 4345:5069(724) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0.01 < P. 5069:5793(724) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 5793 win 59743 <nop,nop,TS val 50 ecr 100>
++0.05 read(4, ..., 5792) = 5792

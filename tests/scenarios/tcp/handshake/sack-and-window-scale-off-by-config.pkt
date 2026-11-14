@@ -1,0 +1,19 @@
+// SACK-permitted and window scaling off by the configuration: the peer's SYN offers both, and the SYN-ACK answers
+// with the MSS and the timestamps alone, nop, nop, TS. Neither window is scaled: our budget is capped at 65535, so
+// 1000 unread bytes leave 64535 on offer, and the peer's field of 512 is 512 bytes, so a write of 1000 sends 512.
+// Linux does the same with net.ipv4.tcp_sack=0 and net.ipv4.tcp_window_scaling=0.
+--tcp_sack=0
+--tcp_window_scaling=0
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 64535 <nop,nop,TS val 0 ecr 100>
++0 write(4, ..., 1000) = 512
++0 > P. 1:513(512) ack 1001 win 64535 <nop,nop,TS val 0 ecr 100>

@@ -1,0 +1,26 @@
+// A segment held above the gap arrives again with the peer's FIN newly attached. Its payload is a duplicate, dropped,
+// but every byte below the FIN is held, so the FIN is remembered: the answer reports the duplicate, then the block
+// that holds the data, which now ends past the FIN's number, 2001:3002. When the gap fills the run and the FIN are
+// taken together and acknowledged at once at 3002, without the peer sending the FIN again. The numbers: the first ACK
+// puts the edge at 1001 + 370688 - 1000 = 370689; both ACKs above the gap restate it, (370689 - 1001) / 8 = 46211;
+// the join's ACK states (370689 - 3002 + 7) / 8 = 45961, since the candidate, 3002 + 370688 - 3000 = 370690, is less
+// than a segment past the edge. Linux keeps the FIN too: the newcomer, one number longer, replaces the held buffer (tcp_data_queue_ofo).
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100>
++0 < P. 2001:3001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2001:3001>
++0 < FP. 2001:3001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2001:3001 2001:3002>
++0 < P. 1001:2001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 3002 win 45961 <nop,nop,TS val 0 ecr 100>
++0 read(4, ..., 4000) = 3000
++0 read(4, ..., 4000) = 0

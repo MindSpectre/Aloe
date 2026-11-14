@@ -209,7 +209,7 @@ namespace aloe::tcp::detail {
             switch (block.state) {
                 case State::Established:
                     block.state = State::CloseWait;
-                    return AckPolicy::Ack::Delayed;
+                    return AckPolicy::Ack::Flush;
                 case State::FinWait1:
                     block.state = State::Closing;
                     return AckPolicy::Ack::Now;
@@ -217,7 +217,7 @@ namespace aloe::tcp::detail {
                     block.finish_pending = true;  // the terminal ACK goes before Closed is published
                     return AckPolicy::Ack::Now;
                 default:
-                    return AckPolicy::Ack::Delayed;
+                    return AckPolicy::Ack::Flush;
             }
         }
 
@@ -302,6 +302,7 @@ namespace aloe::tcp::detail {
                 return;
             }
             transmitter_.disarm(block);
+            transmitter_.disarm_ack(block);
             std::ignore = table_.erase(block.key, block.base_hash);
             return_chain(block);
             transmitter_.drop_queue(block);
@@ -313,19 +314,25 @@ namespace aloe::tcp::detail {
         }
 
         /// Closed, with nothing armed, pending or queued: after a terminal event nothing is resent, so the
-        /// retransmission queue is dropped, its packets back now or when the device returns them. Held segments stay
-        /// until release, and so does an open preparation: the application may still write into its span, and the
-        /// next commit refuses it.
+        /// retransmission queue is dropped, its packets back now or when the device returns them, and the packets held
+        /// above a gap go back at once, since nothing can fill it any more. In-order held segments stay until release,
+        /// and so does an open preparation: the application may still write into its span, and the next commit
+        /// refuses it.
         void set_closed(ControlBlock& block) noexcept {
             if (block.state == State::SynSent) {
-                block.timestamps.withdraw();  // the offer was never answered: nothing was negotiated
+                // The offers were never answered: nothing was negotiated.
+                block.timestamps.withdraw();
+                block.sack.withdraw();
             }
             block.state = State::Closed;
             transmitter_.disarm(block);
+            transmitter_.disarm_ack(block);  // no ACK is owed to a closed connection's peer
             block.unresolved_polls = 0;
             transmitter_.forget(block);
             block.finish_pending = false;
             transmitter_.drop_queue(block);  // and off the deferred list
+            block.reassembly.release(context_.pool);
+            block.sack.drop();  // nothing is held above the gap any more, so nothing is reported
         }
 
         void finish(ControlBlock& block) noexcept {
@@ -363,18 +370,21 @@ namespace aloe::tcp::detail {
         }
 
         /// Numbers the connection's SYN from a fresh ISN and starts its sender from scratch: RFC 6582's `recover` at
-        /// the ISN, no round-trip sample, the initial RTO and no retry; makes the timestamps offer.
+        /// the ISN, no round-trip sample, the initial RTO and no retry; makes the timestamps and SACK-permitted offers.
         void open(ControlBlock& block) noexcept {
             block.send.open(isn_.next());
             block.recovery.open(block.send.iss);
             block.rtt.reset(context_.config.rto_initial);
             // The SYN or SYN-ACK offers; the peer decides.
             block.timestamps.offer(context_.config.timestamps, isn_.offset());
+            block.sack.offer(context_.config.sack);
             block.retransmit_count = 0;
         }
 
+        /// Both chains back to the pool: the in-order one and the one above a gap.
         void return_chain(ControlBlock& block) noexcept {
             block.receive.release(context_.pool);
+            block.reassembly.release(context_.pool);
         }
 
         /// The retry cap or the user timeout ran out: `TimedOut` for an owned connection, counted apart when the user

@@ -1,0 +1,14 @@
+// With a delay configured, the ACK of one in-order segment waits 40 ms, counted from that segment. The default
+// is no delay: the ACK goes at the flush of the same tick. Linux delays by default, by an adaptive time.
+--tcp_delayed_ack_ms=40
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:101(100) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0.04 > . 1:1(0) ack 101 win 65435 <nop,nop,TS val 40 ecr 100>

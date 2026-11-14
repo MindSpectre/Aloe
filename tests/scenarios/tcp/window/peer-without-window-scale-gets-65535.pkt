@@ -1,0 +1,15 @@
+// A peer that offers SACK-permitted but no window scaling: the SYN-ACK carries sackOK beside the timestamps and no
+// window scale, 16 bytes of options, and the window counts bytes. The budget is capped at the unscaled field, 65535,
+// so 1000 unread bytes leave the edge where the SYN-ACK put it: 64535 on offer. Linux answers the same SYN with the
+// same options; its window is its own receive buffer's.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 64535 <nop,nop,TS val 0 ecr 100>

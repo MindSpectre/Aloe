@@ -116,6 +116,11 @@ namespace aloe::scenario {
         std::optional<std::uint8_t> retransmit_defers{};
         std::optional<std::size_t> send_segments{};
         std::optional<bool> timestamps{};
+        std::optional<std::size_t> receive_segments{};
+        std::optional<std::uint32_t> receive_window{};
+        std::optional<bool> sack{};
+        std::optional<bool> window_scaling{};
+        std::optional<core::Duration> delayed_ack{};
         friend bool operator==(const ScriptTcpOptions&, const ScriptTcpOptions&) = default;
     };
 

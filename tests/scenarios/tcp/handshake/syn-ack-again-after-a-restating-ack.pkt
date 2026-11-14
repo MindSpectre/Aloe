@@ -1,0 +1,23 @@
+// A segment past the edge while the connection is still SynReceived is answered at once with the edge restated. To a
+// scaling peer that ACK states 65535 rounded up to the unit of 8, (65535 + 7) >> 3 = 8192, so the recorded edge stands
+// at 1 + 65536, one byte past the SYN-ACK's. The SYN-ACK sent again, after the peer's SYN again and by its timer,
+// still states 65535 unscaled and leaves the recorded edge where it stands: it never moves left. Once the handshake
+// ends the first ACK of data states the budget as after any passive open, (370689 - 1001) / 8 = 46211. Linux answers
+// such a segment from its request socket with the window shifted down rather than rounded up, so its edge does not
+// run ahead of the SYN-ACK's; its windows depend on its buffers.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0 < . 70001:70001(0) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1 win 8192 <nop,nop,TS val 0 ecr 100>
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++1 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 1000 ecr 100,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 100 ecr 1000>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 1000>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 1000 ecr 100>

@@ -1,0 +1,22 @@
+// Two segments above a gap that overlap in part: the held bytes win, so the second is kept from 2001 on, by its
+// offset, with no copy; each is answered at once with a duplicate ACK that restates the window. The segment that
+// fills the gap delivers the run, 2500 bytes, acknowledged at once. The numbers: the edge stands at 1 + 65535 =
+// 65536, so a restated window at RCV.NXT 1 is 65535 and the ACK at 2501 states 65536 - 2501 = 63035. This peer
+// offered no SACK, so no block reports the overlap. Linux keeps the second buffer whole and sorts the bytes out
+// when they are read; on the wire it does the same.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1001:2001(1000) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < P. 1501:2501(1000) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < P. 1:1001(1000) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 2501 win 63035 <nop,nop,TS val 0 ecr 100>
++0 read(4, ..., 3000) = 2500

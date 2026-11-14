@@ -725,6 +725,21 @@ namespace aloe::scenario {
                 if (name == "tcp_timestamps") {
                     return set_option(cursor, tcp.timestamps, column, name, take_flag);
                 }
+                if (name == "tcp_receive_segments") {
+                    return set_count(cursor, tcp.receive_segments, column, name);
+                }
+                if (name == "tcp_receive_window") {
+                    return set_count(cursor, tcp.receive_window, column, name);
+                }
+                if (name == "tcp_sack") {
+                    return set_option(cursor, tcp.sack, column, name, take_flag);
+                }
+                if (name == "tcp_window_scaling") {
+                    return set_option(cursor, tcp.window_scaling, column, name, take_flag);
+                }
+                if (name == "tcp_delayed_ack_ms") {
+                    return set_duration(cursor, tcp.delayed_ack, column, name);
+                }
                 if (name == "congestion") {
                     if (congestion_given) {
                         return fail(column, "option '--congestion' given twice");
@@ -750,6 +765,11 @@ namespace aloe::scenario {
                                               std::string_view{"tcp_retransmit_defers"},
                                               std::string_view{"tcp_send_segments"},
                                               std::string_view{"tcp_timestamps"},
+                                              std::string_view{"tcp_receive_segments"},
+                                              std::string_view{"tcp_receive_window"},
+                                              std::string_view{"tcp_sack"},
+                                              std::string_view{"tcp_window_scaling"},
+                                              std::string_view{"tcp_delayed_ack_ms"},
                                               std::string_view{"congestion"}};
 
             [[nodiscard]] bool is_option(const std::string_view name) noexcept {

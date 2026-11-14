@@ -1,0 +1,22 @@
+// A segment above a gap is held and its ACK reports it in a SACK block after the timestamps, relative to the peer's
+// ISN; the segment that fills the gap is acknowledged at once with no block, since nothing is held any more. The
+// windows: the budget is 512 * 1448 / 2 = 370688 in units of 8, so the first ACK, with 1000 bytes unread, puts the edge
+// at 1001 + 370688 - 1000 = 370689 and states (370689 - 1001) / 8 = 46211; the ACK above the gap restates that edge;
+// after the join 370689 - 3001 = 367688, and 367688 / 8 = 45961. The read doubles nothing, so no update follows.
+// Linux reports the same block (tcp_sack_new_ofo_skb).
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100>
++0 < P. 2001:3001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1001 win 46211 <nop,nop,TS val 0 ecr 100,nop,nop,sack 2001:3001>
++0 < P. 1001:2001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 3001 win 45961 <nop,nop,TS val 0 ecr 100>
++0 read(4, ..., 3000) = 3000

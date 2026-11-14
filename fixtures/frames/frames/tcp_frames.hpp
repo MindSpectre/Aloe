@@ -50,6 +50,35 @@ namespace aloe::frames {
         return block;
     }
 
+    /// The four-byte aligned window scale block: nop, kind 3, length 3, shift.
+    [[nodiscard]] inline std::vector<std::byte> window_scale_option(const std::uint8_t shift) {
+        std::vector<std::byte> block(wire::TcpOptions::window_scale_size);
+        wire::TcpOptions::write_window_scale(block, shift);
+        return block;
+    }
+
+    /// The four-byte aligned SACK-permitted block: nop, nop, kind 4, length 2.
+    [[nodiscard]] inline std::vector<std::byte> sack_permitted_option() {
+        std::vector<std::byte> block(wire::TcpOptions::sack_permitted_size);
+        wire::TcpOptions::write_sack_permitted(block);
+        return block;
+    }
+
+    /// The twelve bytes Linux writes when it offers SACK and timestamps together.
+    [[nodiscard]] inline std::vector<std::byte> sack_permitted_timestamps_option(const std::uint32_t value,
+                                                                                 const std::uint32_t echo) {
+        std::vector<std::byte> block(wire::TcpOptions::timestamps_size);
+        wire::TcpOptions::write_sack_permitted_timestamps(block, value, echo);
+        return block;
+    }
+
+    /// The aligned SACK option for one to four blocks, in the order given.
+    [[nodiscard]] inline std::vector<std::byte> sack_option(const std::span<const wire::TcpSackBlock> blocks) {
+        std::vector<std::byte> block(wire::TcpOptions::sack_size(blocks.size()));
+        wire::TcpOptions::write_sack(block, blocks);
+        return block;
+    }
+
     /// The blocks one after the other: a SYN's `mss_option` then `timestamps_option`.
     [[nodiscard]] inline std::vector<std::byte> joined(const std::span<const std::vector<std::byte>> blocks) {
         std::vector<std::byte> out;
@@ -135,6 +164,39 @@ namespace aloe::frames {
         }
         return std::span<const std::byte>{frame.l4}.subspan(wire::TcpHeader::size,
                                                             frame.tcp->data_offset - wire::TcpHeader::size);
+    }
+
+    /// The SACK blocks of a parsed frame, in the order written; empty when it carries none or is not TCP.
+    [[nodiscard]] inline std::vector<wire::TcpSackBlock> sack_blocks_of(const ParsedFrame& frame) {
+        std::vector<wire::TcpSackBlock> blocks;
+        const std::span<const std::byte> options = tcp_options_of(frame);
+        std::size_t at                           = 0;
+        while (at < options.size()) {
+            const auto kind = std::to_integer<std::uint8_t>(options[at]);
+            if (kind == 0) {
+                break;
+            }
+            if (kind == 1) {
+                ++at;
+                continue;
+            }
+            if (at + 1 >= options.size()) {
+                break;
+            }
+            const auto length = std::to_integer<std::size_t>(options[at + 1]);
+            if (length < 2 || at + length > options.size()) {
+                break;
+            }
+            if (kind == 5) {
+                for (std::size_t block  = at + 2; block + wire::TcpOptions::sack_block_size <= at + length;
+                     block             += wire::TcpOptions::sack_block_size) {
+                    blocks.push_back({.first = wire::TcpSequence{wire::load_be32(options.subspan(block, 4))},
+                                      .end   = wire::TcpSequence{wire::load_be32(options.subspan(block + 4, 4))}});
+                }
+            }
+            at += length;
+        }
+        return blocks;
     }
 
 }  // namespace aloe::frames

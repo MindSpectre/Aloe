@@ -77,7 +77,7 @@ TEST_P(TcpTimestamps, AnActiveOpenOffersAndTakesThePeersAnswer) {
     auto& c        = **connected;
     const auto syn = collect();
     ASSERT_EQ(syn.size(), 1U);
-    EXPECT_EQ(syn[0].tcp->data_offset, 36U);
+    EXPECT_EQ(syn[0].tcp->data_offset, 40U) << "mss, sackOK, TS, nop, wscale";
     EXPECT_EQ(options_of(syn[0])->timestamp_echo, 0U) << "a SYN echoes nothing";
     peer_.set_timestamps(5);
     receive(peer_.syn_ack(syn[0]));

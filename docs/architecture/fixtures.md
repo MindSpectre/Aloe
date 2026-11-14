@@ -35,8 +35,11 @@ only make sense inside Aloe's own test binaries, such as the EAL as a gtest envi
   the IPv4 header; `tcp_payload` the bytes after the TCP header of a parsed frame, and `tcp_options_of` the
   option bytes between the fixed header and the data. `ParsedFrame::tcp` is the parsed TCP header, when the
   frame carries one. `mss_option(mss)` and `timestamps_option(value, echo)` are the four-byte MSS option and the
-  twelve-byte `nop, nop, TS` block, and `joined(blocks)` puts blocks one after the other, a SYN's MSS then its
-  timestamps, for `spec.options`.
+  twelve-byte `nop, nop, TS` block; `window_scale_option(shift)`, `sack_permitted_option()`,
+  `sack_permitted_timestamps_option(value, echo)` and `sack_option(blocks)` are the aligned blocks a Linux peer
+  writes for the other options; and `joined(blocks)` puts blocks one after the other, a SYN's MSS then its
+  timestamps, for `spec.options`. `sack_blocks_of(parsed)` reads back the SACK blocks of a frame the stack sent,
+  in the order written, since the brick's own option parser skips them; it is empty for a frame without any.
 - **`aloe::frames::TcpPeer`** -- the other end of a connection, scripted by the test. Built from a `TcpSpec`
   in the peer's outbound orientation and its initial sequence number. `syn()`, `syn_ack(seen)`, `ack()`,
   `ack(seen)`, `data(bytes)`, `fin()` and `rst()` each return one frame with the right numbers and advance the
@@ -47,8 +50,15 @@ only make sense inside Aloe's own test binaries, such as the EAL as a gtest envi
   `ts_seen()`, and on a SYN without ACK adopts its ports. `set_timestamps(value)` makes every segment the peer
   builds carry a timestamp option with `value` and the last value seen as its echo, behind the MSS on a SYN, and
   `std::nullopt` stops it; a peer that never sets it offers no timestamps, so the stack's connection runs without
-  them and its `mss()` is the whole MSS. `set_window(window)` sets the window every later segment offers, zero to
-  make the stack probe.
+  them and its `mss()` is the whole MSS. `set_window_scale(shift)` makes a SYN or SYN-ACK the peer builds offer
+  window scaling with `shift`, and `set_sack_permitted(true)` makes it offer SACK-permitted; a peer that sets
+  neither offers neither, so the stack's connection to it scales no window, its budget is at most 65535 and its
+  SYN-ACK carries neither option. A SYN or SYN-ACK lays its options out as Linux does: the MSS; then
+  `sackOK, TS`, `nop, nop, TS` or `nop, nop, sackOK`; then `nop, wscale`. `see` also records what the stack's own
+  SYN or SYN-ACK offered, `stack_window_scale()` and `stack_sack_permitted()`, and `stack_window_bytes()` is the
+  stack's last window in bytes: the raw field, shifted by the stack's scale when both ends offered scaling and the
+  frame was not a SYN. `set_window(window)` sets the raw window field every later segment offers, zero to make the
+  stack probe; under a window scale the stack reads it shifted.
 - **`aloe::frames::fill(packet, bytes)`**, **`bytes_of(packet)`** -- bytes into and out of a packet of any
   backend. `flow_of(spec)` gives the `device::FlowTuple` a card would hash.
 

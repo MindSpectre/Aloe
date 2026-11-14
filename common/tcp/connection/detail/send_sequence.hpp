@@ -8,8 +8,8 @@
 namespace aloe::tcp::detail {
 
     /**
-     * @brief RFC 793's send sequence variables, and the peer's MSS: what the sender numbered and what the peer's ACKs
-     * told it.
+     * @brief RFC 793's send sequence variables, and the peer's MSS and window scale: what the sender numbered and what
+     * the peer's ACKs told it.
      */
     struct SendSequence {
         wire::TcpSequence iss{};  ///< ISS.
@@ -18,8 +18,10 @@ namespace aloe::tcp::detail {
         std::uint32_t wnd = 0;    ///< SND.WND: the peer's window, from `una`.
         wire::TcpSequence wl1{};  ///< SND.WL1: the sequence of the segment that last updated `wnd`.
         wire::TcpSequence wl2{};  ///< SND.WL2: its acknowledgement.
-        std::uint16_t peer_mss = default_peer_mss;
-        bool fin_sent          = false;  ///< The FIN took its number, `nxt - 1`; its entry carries it.
+        std::uint16_t peer_mss  = default_peer_mss;
+        /// The peer's window scale, zero unless both ends offered the option; at most 14.
+        std::uint8_t peer_shift = 0;
+        bool fin_sent           = false;  ///< The FIN took its number, `nxt - 1`; its entry carries it.
 
         /// Numbers the SYN: `iss` is unacknowledged and the SYN takes it.
         void open(const wire::TcpSequence isn) noexcept {
@@ -28,17 +30,26 @@ namespace aloe::tcp::detail {
             nxt = isn + 1;
         }
 
-        /// The handshake's window: SND.WND from the peer's SYN or SYN-ACK, which also sets WL1 and WL2.
+        /// A window field of a segment on a synchronized connection, in bytes.
+        [[nodiscard]] std::uint32_t scaled(const std::uint16_t field) const noexcept {
+            return std::uint32_t{field} << peer_shift;
+        }
+
+        /// The handshake's window: SND.WND from the peer's SYN or SYN-ACK, whose field is never scaled (RFC 7323),
+        /// which also sets WL1 and WL2.
         void synchronize(const wire::TcpHeader& header) noexcept {
             wnd = header.window;
             wl1 = header.sequence;
             wl2 = header.acknowledgement;
         }
 
-        /// RFC 793's window update rule: a newer segment, or the same one with a newer acknowledgement.
+        /// RFC 793's window update rule: a newer segment, or the same one with a newer acknowledgement. The field is
+        /// scaled by the peer's shift.
         void update_window(const wire::TcpHeader& header) noexcept {
             if (wl1.before(header.sequence) || (wl1 == header.sequence && !wl2.after(header.acknowledgement))) {
-                synchronize(header);
+                wnd = scaled(header.window);
+                wl1 = header.sequence;
+                wl2 = header.acknowledgement;
             }
         }
 

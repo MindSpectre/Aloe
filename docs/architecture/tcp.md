@@ -2,11 +2,12 @@
 
 The tcp module (`common/tcp/`) is the TCP brick: one `tcp::Stack` per shard, over that shard's
 [`net`](net.md) IPv4 brick and its [loop](loop.md)'s timer wheel. It opens connections in both directions,
-carries in-order data both ways without copying it, closes with FIN and RST, and keeps every segment it sends,
-as the packet it left in, until the peer acknowledges it: phase 1 of the [roadmap](../roadmap.md) and step 3 of
-phase 2, reliable send. The receive side is still phase 1's. The brick has four verbs: `process` the segments IP
-sorted out, `poll_event` to drain notifications, the connections' own non-blocking operations, and `flush` for
-the resends and ACKs that waited. Every connection is a [stream](stream.md): the contract TLS and WebSocket
+carries data both ways without copying it, holds what arrives above a gap as the packets it arrived in and
+reports it with SACK blocks, scales its window, closes with FIN and RST, and keeps every segment it sends, as
+the packet it left in, until the peer acknowledges it: phase 1 of the [roadmap](../roadmap.md), and steps 3 and
+4 of phase 2, reliable send and the receive side. The brick has four verbs: `process` the segments IP sorted
+out, `poll_event` to drain notifications, the connections' own non-blocking operations, and `flush` for the
+resends and ACKs that waited. Every connection is a [stream](stream.md): the contract TLS and WebSocket
 reuse later. Everything is reached through the umbrella `#include <aloe/tcp>` (`export/aloe/tcp`), and targets
 link `Aloe::Common::Tcp`. It depends on [`net`](net.md), [`stream`](stream.md), [`loop`](loop.md),
 [`device`](device.md), [`wire`](wire.md) and [`core`](core.md), and not on [`execution`](execution.md),
@@ -15,29 +16,32 @@ link `Aloe::Common::Tcp`. It depends on [`net`](net.md), [`stream`](stream.md), 
 ## Key types
 
 - **`aloe::tcp::Stack<Ip, CongestionControl = NewReno>`** -- the brick, templated on the IP brick below it
-  (`net::Ipv4<Device>`) and on a congestion control (see [below](#congestion-control)). Constructed from the
-  IP brick, a `loop::TimerWheel&` and a `TcpConfig`, which it validates (throwing `std::invalid_argument`);
-  every slot, node and list is allocated there and never again. `process(segments, now)` takes
-  `ip.received(Ipv4Protocol::Tcp)` and leaves every packet moved out or released; `poll_event()` removes one
-  pending notification; `flush(now)` retries the resends that waited for their packet and sends the ordinary
-  ACKs that waited. `listen(port)` and `unlisten(port)` manage listeners; `connect(peer, now)` returns a
-  `SynSent` connection the caller owns, or a `ConnectError`; the slot is the caller's even while its SYN waits
-  for ARP. `counters()`, `pending_events()`, `table_size()`, `nodes_available()`, `send_nodes_available()` and
-  `sent_segment(connection, position)`, one entry of a connection's retransmission queue, are for tests and
-  monitoring; `force_next_isn(isn)` and `force_recover(connection, recover)` are for tests. The stack keeps the
-  stamp of the last `process`, `flush` or `connect` and uses it for everything a connection does in between. It
-  names its types `ConnectionType` (`Connection<Ip, CongestionControl>`), `EventType`
-  (`ConnectionEvent<Ip, CongestionControl>`) and `Policy` (the congestion control).
-- **`aloe::tcp::Connection<Ip, CongestionControl>`** -- one connection, a slot of its stack with a stable
-  `index()` and address until `release`. It models `stream::IsStream`: `unread()` and `consume(n)` on the
-  receive side; `writable()`, `prepare(n)`, `commit(n)` and the copying convenience `send(bytes)` on the
-  transmit side; `close()`, `abort()` and `release()`. TCP adds `state()`, `local()`, `remote()`, `mss()`,
-  `timestamps()`, `committed()`, `acknowledged()` and `unacknowledged()`. For tests and monitoring it reports
-  the send side: `queued_segments()` (the retransmission queue's length), `delivered()` (payload bytes the peer
-  acknowledged), `srtt()` and `rto()` (the estimator, the backoff included), `retransmit_count()` (expiries of
-  the retransmission timer since the last ACK of new data, a deferred or refused resend included),
-  `congestion_window()` and `congestion_state()` (the policy's),
-  `in_recovery()` and `duplicate_acks()` (fast recovery), and `probing()` (zero-window probes running).
+  (`net::Ipv4<Device>`) and on a congestion control (see [below](#congestion-control)). Constructed from the IP brick, a
+  `loop::TimerWheel&` and a `TcpConfig`, which it validates (throwing `std::invalid_argument`); every slot, node and
+  list is allocated there and never again. `process(segments, now)` takes `ip.received(Ipv4Protocol::Tcp)` and leaves
+  every packet moved out or released; `poll_event()` removes one pending notification; `flush(now)` retries the resends
+  that waited for their packet and sends the ordinary ACKs that waited. `listen(port)` and `unlisten(port)` manage
+  listeners; `connect(peer, now)` returns a `SynSent` connection the caller owns, or a `ConnectError`; the slot is the
+  caller's even while its SYN waits for ARP. `counters()`, `pending_events()`, `table_size()`, `nodes_available()`,
+  `send_nodes_available()`, `byte_budget()`, the largest receive budget the configuration allows, counted in the stack's
+  own MSS without timestamps (373760 bytes with the defaults, where a timestamped connection's is 370688), and
+  `sent_segment(connection, position)`, one entry of a connection's retransmission queue, are for tests and monitoring;
+  `force_next_isn(isn)` and `force_recover(connection, recover)` are for tests. The stack keeps the stamp of the last
+  `process`, `flush` or `connect` and uses it for everything a connection does in between. It names its types
+  `ConnectionType` (`Connection<Ip, CongestionControl>`), `EventType` (`ConnectionEvent<Ip, CongestionControl>`) and
+  `Policy` (the congestion control).
+- **`aloe::tcp::Connection<Ip, CongestionControl>`** -- one connection, a slot of its stack with a stable `index()` and
+  address until `release`. It models `stream::IsStream`: `unread()` and `consume(n)` on the receive side; `writable()`,
+  `prepare(n)`, `commit(n)` and the copying convenience `send(bytes)` on the transmit side; `close()`, `abort()` and
+  `release()`. TCP adds `state()`, `local()`, `remote()`, `mss()`, `timestamps()`, `sack()`, `window_scaling()`,
+  `committed()`, `acknowledged()` and `unacknowledged()`. For tests and monitoring it reports the receive side:
+  `receive_budget()` (the budget the handshake settled), `receive_window()` (the bytes on offer from RCV.NXT to the edge
+  already offered), `window_shift()` and `peer_window_shift()` (both scales, zero without scaling), and
+  `out_of_order_segments()` and `out_of_order_bytes()` (what is held above a gap, outside `unread()`); and the send
+  side: `queued_segments()` (the retransmission queue's length), `delivered()` (payload bytes the peer acknowledged),
+  `srtt()` and `rto()` (the estimator, the backoff included), `retransmit_count()` (expiries of the retransmission timer
+  since the last ACK of new data, a deferred or refused resend included), `congestion_window()` and `congestion_state()`
+  (the policy's), `in_recovery()` and `duplicate_acks()` (fast recovery), and `probing()` (zero-window probes running).
 - **`aloe::tcp::ConnectionEvent<Ip, CongestionControl>`** -- what `poll_event` returns: the connection and the
   `stream::Events` taken from it. The flags are edges; `poll_event` and `release` are the only things that
   clear them.
@@ -45,15 +49,17 @@ link `Aloe::Common::Tcp`. It depends on [`net`](net.md), [`stream`](stream.md), 
   per held packet's unconsumed payload, over the packets themselves. `size()` counts bytes. Invalidated by
   `consume` and by the next `process`.
 - **`aloe::tcp::TcpConfig`** -- slots per shard (`connections`), `listeners`, the per-connection packet cap
-  `receive_segments` (which also sizes the byte window), the shard's shared `receive_pool` of held-packet
-  nodes, the send cap `send_segments` and the shard's `send_pool` of retransmission-queue nodes, the ephemeral
-  port range, the retransmission timer's `rto_initial`, `rto_min` and `rto_max`, the caps `retries` and
-  `data_retries`, the `user_timeout`, `timestamps`, `retransmit_defers`, and the ARP wait's `unresolved_retry`
-  and `unresolved_polls`.
+  `receive_segments`, in order and above a gap together, which also sizes the default byte window, the byte
+  window `receive_window` when one is set, the shard's shared `receive_pool` of held-packet nodes, the send cap
+  `send_segments` and the shard's `send_pool` of retransmission-queue nodes, the ephemeral port range, the
+  retransmission timer's `rto_initial`, `rto_min` and `rto_max`, the caps `retries` and `data_retries`, the
+  `user_timeout`, the options `timestamps`, `sack` and `window_scaling`, the `delayed_ack`, `retransmit_defers`,
+  and the ARP wait's `unresolved_retry` and `unresolved_polls`.
 - **`aloe::tcp::TcpCounters`** -- monotonic, one per drop reason and one per send failure: what was sent by
-  kind and resent by cause, fast recoveries, duplicate ACKs and round-trip samples, connections opened,
-  accepted, closed, reset and timed out, every reason a segment was dropped, and `send_refused`,
-  `send_unresolved`, `commits_refused` and `allocation_failures`.
+  kind and resent by cause, fast recoveries, duplicate ACKs and round-trip samples, segments held above a gap
+  and released for room, ACKs that carried SACK blocks or a duplicate SACK, ACKs the delay timer sent,
+  connections opened, accepted, closed, reset and timed out, every reason a segment was dropped, and
+  `send_refused`, `send_unresolved`, `commits_refused` and `allocation_failures`.
 - **`aloe::tcp::IsCongestionControl`**, **`AckInfo`**, **`NewReno`**, **`NoCongestionControl`** -- the policy
   concept, what an ACK of new data tells it, and its two models; see [below](#congestion-control).
 - **`aloe::tcp::IsIp`** -- what the brick asks of the IP layer: `allocate`, `send`, `address`, `max_l4_size`,
@@ -134,10 +140,10 @@ void echo(Tcp::ConnectionType& c) {
 }
 ```
 
-Consuming after the commit keeps the bytes if the commit is refused; the consume then moves the window's edge
-after the segment has left, which costs a window update at the flush. An application that produces its own
-messages has nothing to copy: it encodes straight into the span `prepare` returns and commits what it wrote.
-`send(bytes)` is the copying convenience for bytes that already exist elsewhere, and returns the prefix it
+Consuming after the commit keeps the bytes if the commit is refused; the consume then frees the window after the segment
+has left, which costs a window update at the flush when it at least doubles the window on offer. An application that
+produces its own messages has nothing to copy: it encodes straight into the span `prepare` returns and commits what it
+wrote. `send(bytes)` is the copying convenience for bytes that already exist elsewhere, and returns the prefix it
 accepted.
 
 A program over a multi-queue device runs one such loop per queue, each with its own IP brick, TCP brick and
@@ -259,19 +265,25 @@ using Stack    = aloe::runtime::TcpStack<aloe::ethdev::Port, aloe::tcp::NoConges
 
 ## Counters
 
-`TcpCounters`, one per stack, monotonic, read on the owning thread or after it has stopped. Every drop and
-every send failure increments exactly one counter. Until step 6 adds an event for it, the counters are the
-signal that a connection left the fast path: one that never does moves none of `retransmits`,
-`fast_retransmits`, `retransmits_deferred`, `retransmits_copied`, `zero_window_probes` and `dropped_paws`.
+`TcpCounters`, one per stack, monotonic, read on the owning thread or after it has stopped. Every drop and every send
+failure increments exactly one counter. Until step 6 adds an event for it, the counters are the signal that a connection
+left the fast path: one that never does moves none of `retransmits`, `fast_retransmits`, `retransmits_deferred`,
+`retransmits_copied`, `zero_window_probes` and `dropped_paws`, and one whose incoming segments each arrive once and in
+order moves none of `out_of_order_held`, `out_of_order_released`, `sack_acks_sent` and `duplicate_sacks_sent`.
 
 | Group       | Counter                      | Counts                                                                                                                                                                             |
 |-------------|------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | Segments    | `segments_received`          | Segments handed to `process`.                                                                                                                                                      |
 |             | `data_segments_sent`         | Committed data segments queued.                                                                                                                                                    |
-|             | `pure_acks_sent`             | ACKs without data, from `flush` and the immediate-ACK exceptions; probes are counted apart.                                                                                        |
+|             | `pure_acks_sent`             | ACKs without data, from `flush`, the immediate-ACK exceptions and the delay timer; probes are counted apart.                                                                       |
 |             | `control_segments_sent`      | SYN, SYN-ACK and FIN transmissions: first sends, resends and copies alike.                                                                                                         |
 |             | `resets_sent`                | RSTs, from `abort`, `release` and the replies to segments with no connection.                                                                                                      |
-|             | `window_updates`             | Segments that extended the advertised right edge.                                                                                                                                  |
+|             | `window_updates`             | Segments that extended the advertised right edge; a restating ACK too, when rounding its field up moved it.                                                                        |
+|             | `out_of_order_held`          | Segments held above a gap.                                                                                                                                                         |
+|             | `out_of_order_released`      | Held out-of-order segments released to make room for a lower sequence.                                                                                                             |
+|             | `sack_acks_sent`             | Pure ACKs that carried SACK blocks.                                                                                                                                                |
+|             | `duplicate_sacks_sent`       | Of them, those whose first block reported data that arrived twice.                                                                                                                 |
+|             | `delayed_acks_sent`          | Of `pure_acks_sent`, the ACKs the delay timer sent.                                                                                                                                |
 | Resends     | `retransmits`                | Resends the retransmission timer drives, of any kept segment: one per expiry, whether the resend left, waited or was refused, and one per ACK of the loss episode after a timeout. |
 |             | `fast_retransmits`           | Resends duplicate ACKs drive: the third duplicate's, and each partial ACK's in fast recovery.                                                                                      |
 |             | `recoveries`                 | Fast-recovery episodes entered.                                                                                                                                                    |
@@ -292,9 +304,9 @@ signal that a connection left the fast path: one that never does moves none of `
 |             | `dropped_bad_checksum`       | A `Bad` verdict, or an `Unknown` one that failed the software check.                                                                                                               |
 |             | `dropped_no_connection`      | No connection and no listener; answered with RST unless it was one.                                                                                                                |
 |             | `dropped_closed`             | Segments for a `Closed` connection not yet released; answered with RST.                                                                                                            |
-|             | `dropped_unexpected`         | Valid segments the state does not admit: a stray answer in `SynSent`, an ACK of unsent data, data after the peer's FIN.                                                            |
-|             | `dropped_duplicate`          | Data entirely before `rcv_nxt`.                                                                                                                                                    |
-|             | `dropped_out_of_order`       | Data starting after `rcv_nxt`, above a gap.                                                                                                                                        |
+|             | `dropped_unexpected`         | Valid segments the state does not admit: a stray answer in `SynSent`, an ACK of unsent data, data after the peer's FIN or past one remembered above a gap.                         |
+|             | `dropped_duplicate`          | Data entirely before `rcv_nxt`, or above a gap where held data covers every byte.                                                                                                  |
+|             | `dropped_out_of_order`       | Data above a gap with no room for it: at the cap or with the pool empty, and above every segment held out of order.                                                                |
 |             | `dropped_out_of_window`      | Data reaching past the advertised edge.                                                                                                                                            |
 |             | `dropped_no_slot`            | Data for a connection already holding `receive_segments` packets.                                                                                                                  |
 |             | `dropped_no_node`            | Data when the shard's `receive_pool` is empty, and SYNs to a listener when `send_pool` has no node for the SYN-ACK.                                                                |
@@ -317,7 +329,8 @@ cannot run. Every shard gets the same config.
 |-------------------------------------|--------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------|
 | `connections`                       | 1024         | Connection slots per shard; the flow table has at least twice as many buckets.                                                                                       | zero, or more than 2^30                                                                                               |
 | `listeners`                         | 8            | Listening ports per shard.                                                                                                                                           | zero                                                                                                                  |
-| `receive_segments`                  | 32           | Packets one connection may hold; also sizes the byte window, `min(receive_segments * mss, 65535)`.                                                                   | zero                                                                                                                  |
+| `receive_segments`                  | 512          | Packets one connection may hold, in order and out of order together; half of what they hold at `mss()` is the default window.                                        | zero, or above `receive_pool`                                                                                         |
+| `receive_window`                    | 0            | The byte window when set, capped at what the slots hold; zero is half of what they hold.                                                                             | above 65535 shifted by 14                                                                                             |
 | `receive_pool`                      | 2048         | Held-packet nodes shared by every connection of the shard.                                                                                                           | zero                                                                                                                  |
 | `send_segments`                     | 32           | Data segments one connection may keep in its retransmission queue: the send cap. The FIN's entry, set aside at Established, is beyond it.                            | zero                                                                                                                  |
 | `send_pool`                         | 2048         | Retransmission-queue nodes shared by every connection of the shard; each synchronized connection has one set aside for its FIN.                                      | zero                                                                                                                  |
@@ -329,59 +342,72 @@ cannot run. Every shard gets the same config.
 | `data_retries`                      | 15           | Timer-driven resends of data and the FIN, and unanswered zero-window probes, before `TimedOut`; Linux's `tcp_retries2`.                                              | zero, or 63 and more                                                                                                  |
 | `user_timeout`                      | 0 (off)      | RFC 5482's bound: a synchronized connection whose oldest unacknowledged segment was first sent, or whose first unanswered probe went, this long ago ends `TimedOut`. | negative, or above a quarter of `core::Duration`'s range                                                              |
 | `timestamps`                        | true         | Offer and use RFC 7323 timestamps.                                                                                                                                   | never                                                                                                                 |
+| `sack`                              | true         | Offer and use SACK-permitted: report what is held, and what arrived twice.                                                                                           | never                                                                                                                 |
+| `window_scaling`                    | true         | Offer and use RFC 7323 window scaling.                                                                                                                               | never                                                                                                                 |
+| `delayed_ack`                       | 0 (off)      | How long an ACK for in-order data may wait, at most 500 ms; zero sends it at the flush of the same tick.                                                             | negative, above 500 ms, or set below the wheel's resolution                                                           |
 | `retransmit_defers`                 | 1            | Deferred resends of one segment before the copy; zero copies at once.                                                                                                | never                                                                                                                 |
 | `unresolved_retry`                  | 10 ms        | The poll interval while a SYN, SYN-ACK or FIN waits for ARP; not a try.                                                                                              | not positive                                                                                                          |
 | `unresolved_polls`                  | 300          | Polls before `Unresolved`: 3 s by default, the bound Linux's three ARP probes give.                                                                                  | zero                                                                                                                  |
 
-The constructor also refuses an MTU that leaves no room for a TCP header. The bounds on `rto_initial`,
-`rto_max` and `user_timeout` keep every deadline within a quarter of `core::Duration`'s range, so no arithmetic
-on the timer path can overflow, and `rto_min` below the wheel's resolution would ask for a timer finer than the
-wheel fires. Size the device's packet pool for the receive descriptors, `receive_pool` held packets, `send_pool`
-kept packets and the copies out beside them, the transmit ring and what the card holds, and the open
-preparations: neither node pool is carved out of it.
+The constructor also refuses an MTU that leaves no room for a TCP header. The bounds on `rto_initial`, `rto_max` and
+`user_timeout` keep every deadline within a quarter of `core::Duration`'s range, so no arithmetic on the timer path can
+overflow, and `rto_min` below the wheel's resolution would ask for a timer finer than the wheel fires; `delayed_ack` has
+the same floor. Size the device's packet pool for the receive descriptors, `receive_pool` held packets, `send_pool` kept
+packets and the copies out beside them, the transmit ring and what the card holds, and the open preparations: neither
+node pool is carved out of it. With the defaults a connection offers 370688 bytes over 512 slots, half of 512 segments
+of 1448 bytes, to a peer that scales its window and sends timestamps (373760 without timestamps, 65535 to a peer that
+does not scale). `receive_pool` at 2048 is what four connections stalled at the default cap hold between them, and the
+cap is per connection, so one stalled connection cannot take another's nodes. A window the configuration derives beyond
+what the largest shift, 14, can state is capped there.
 
 ## Design notes
 
-**One class per concern.** `tcp::Stack` is the brick's façade and owner: the four verbs, the accessors, and
-the mapping from a connection's state to its public handle. What it does is four procedure classes in
-`tcp::detail`, each in its own header in a `detail/` folder, over one `detail::ControlBlock` per connection, RFC
-9293's transmission control block as a struct with one part per concern, and one `detail::StackContext` per
-shard, what every part reads: the IP brick, the config, the held-segment pool, the counters and the stamp. The
-`Receiver` is what a datagram does to a connection: the checksum and lookup, the handshake, RFC 9293's order
-on a synchronized connection, and `consume`; it owns nothing. The `AckProcessor` is what an acknowledgement
-does to the send side: the entries it frees, the round-trip sample, loss recovery and the resends it asks for,
-the peer's window and the zero-window probes; it owns nothing either, and tells the `Receiver` what moved.
-The `Lifecycle` owns the connection table, the ISN generator and the event list: slots in and out, every
-change of a connection's state from the open to `Closed`, `close`, `abort` and `release`. It is the only part
-that writes the state: the `Receiver` tells it what arrived (the handshake answered, the peer's FIN or RST, our
-FIN acknowledged), the `Transmitter` tells it a timer gave up, and it moves the connection on. The
-`Transmitter` owns the segment writer, the send pool and the ACK, retry and deferred lists: every segment that
-leaves, the retransmission queue's entries, the resends with the busy rule and the copy, the pure ACKs, probes
-and resets, `writable`, `prepare`, `commit`, and the timers, both their arming and what an expiry resends; an
-expiry that gives the connection up is returned as a verdict for the `Lifecycle` to carry out. The dependency
-runs one way, read off the includes: the `Receiver` calls the other three, the `Lifecycle` and the
-`AckProcessor` call the `Transmitter` and not each other, and the `Transmitter` calls none, as Linux's
-`tcp_input.c` and `tcp_timer.c` call into `tcp_output.c` and
-not back; the triggers from the receive side (an immediate ACK, a fast retransmit, the SYN-ACK) are direct
-calls, and state defers work only where it must wait anyway: the ordinary ACK until `flush`, the retry hint
-until the next `process`, a resend whose packet is lent until the next `flush`. The block is plain
-single-thread memory: a connection's receive and transmit run on one shard thread, and nothing in it is
-shared. Beneath the four: per shard `ConnectionTable`, `SegmentWriter`, `IsnGenerator` and one `NodePool`
-each for held packets and retransmission-queue entries; per connection `ReceiveQueue`, `AckPolicy`,
-`SendSequence`, `RetransmissionQueue`, `LossRecovery` (over the policy's state), `RttEstimator`,
-`ZeroWindowProbe` and `Timestamps`. The folders: `connection/` the handle and its read view, with the control
-block and the connection's parts in `connection/detail/`; `stack/` the façade and the forward header, with the
-four procedure classes, the context, the connection table, the ISN generator and the segment writer in
-`stack/detail/`; `pool/detail/` the node pools; `config/` the configuration and counters; `congestion/` the
-policies; `table/` the flow table. A header whose names are all in `tcp::detail` sits in the `detail/` folder
-of the folder it belongs to and is included as `<detail/name.hpp>`.
+**One class per concern.** `tcp::Stack` is the brick's façade and owner: the four verbs, the accessors, and the mapping
+from a connection's state to its public handle. What it does is four procedure classes in `tcp::detail`, each in its own
+header in a `detail/` folder, over one `detail::ControlBlock` per connection, RFC 9293's transmission control block as a
+struct with one part per concern, and one `detail::StackContext` per shard, what every part reads: the IP brick, the
+config, the held-segment pool, the counters and the stamp. The `Receiver` is what a datagram does to a connection: the
+checksum and lookup, the handshake, RFC 9293's order on a synchronized connection, the hold of a segment above a gap and
+the join when the gap fills, what gives way at the packet cap, and `consume`; it owns nothing. The `AckProcessor` is
+what an acknowledgement does to the send side: the entries it frees, the round-trip sample, loss recovery and the
+resends it asks for, the peer's window and the zero-window probes; it owns nothing either, and tells the `Receiver` what
+moved. The `Lifecycle` owns the connection table, the ISN generator and the event list: slots in and out, every change
+of a connection's state from the open to `Closed`, `close`, `abort` and `release`. It is the only part that writes the
+state: the `Receiver` tells it what arrived (the handshake answered, the peer's FIN or RST, our FIN acknowledged), the
+`Transmitter` tells it a timer gave up, and it moves the connection on. The `Transmitter` owns the segment writer, the
+send pool and the ACK, retry and deferred lists: every segment that leaves, the retransmission queue's entries, the
+resends with the busy rule and the copy, the pure ACKs with the SACK option, probes and resets, the scaled window every
+segment states and the edge it records, `writable`, `prepare`, `commit`, and both timers, their arming and what an
+expiry sends; an expiry that gives the connection up is returned as a verdict for the `Lifecycle` to carry out. The
+dependency runs one way, read off the includes: the `Receiver` calls the other three, the `Lifecycle` and the
+`AckProcessor` call the `Transmitter` and not each other, and the `Transmitter` calls none, as Linux's `tcp_input.c` and
+`tcp_timer.c` call into `tcp_output.c` and not back; the triggers from the receive side (an immediate ACK, a fast
+retransmit, the SYN-ACK) are direct calls, and state defers work only where it must wait anyway: the ordinary ACK until
+`flush` or its delay, the retry hint until the next `process`, a resend whose packet is lent until the next `flush`. The
+block is plain single-thread memory: a connection's receive and transmit run on one shard thread, and nothing in it is
+shared. Beneath the four: per shard `ConnectionTable`, `SegmentWriter`, `IsnGenerator` and one `NodePool` each for held
+packets and retransmission-queue entries; per connection `ReceiveQueue`, `ReceiveWindow`, `ReassemblyQueue`,
+`AckPolicy`, `SendSequence`, `RetransmissionQueue`, `LossRecovery` (over the policy's state), `RttEstimator`,
+`ZeroWindowProbe`, `Timestamps` and `SackBlocks`, and two wheel timers, one for the sends and one for the delayed ACK.
+On the receive side, `ReceiveQueue` keeps RCV.NXT, the in-order chain, the unread count and whether the peer's FIN is
+in; `ReassemblyQueue` the chain above a gap and the number of a FIN that arrived above it; `SackBlocks` whether SACK is
+in use, the four blocks in the order they are reported and the pending duplicate; `ReceiveWindow` the budget, our scale
+and the edge already offered; and `AckPolicy` when the ACK of data goes, in order and above a gap: at once, at the
+`flush` or after the delay, with the count of answers above a gap. `SendSequence` keeps the peer's scale beside its
+window. The parts an in-order segment touches sit together at the front of the block, the blocks and the delayed ACK's
+timer behind them. The folders: `connection/` the handle and its read view, with the control block and the connection's
+parts in `connection/detail/`; `stack/` the façade and the forward header, with the four procedure classes, the context,
+the connection table, the ISN generator and the segment writer in `stack/detail/`; `pool/detail/` the node pools;
+`config/` the configuration and counters; `congestion/` the policies; `table/` the flow table. A header whose names are
+all in `tcp::detail` sits in the `detail/` folder of the folder it belongs to and is included as `<detail/name.hpp>`.
 
-**Zero-copy both ways.** A received segment's packet is held as it arrived and `unread()` points into it;
-`consume` advances through it and returns each packet to the pool once it is empty. A sent segment is written
-by the application into a fresh packet from IP; `commit` writes the frame's headers into its headroom, keeps
-the packet in the connection's retransmission queue and lends it to the device, and a resend sends the same
-packet again. The data path holds no stream buffer and no copy the application did not write itself; the one
-copy the brick makes is the busy rule's fallback, below, and it is counted.
+**Zero-copy both ways.** A received segment's packet is held as it arrived and `unread()` points into it; `consume`
+advances through it and returns each packet to the pool once it is empty. A segment above a gap is held the same way, on
+a second chain, and joins the first by a change of links when the gap fills; an overlap is trimmed by moving an offset
+and a length. A sent segment is written by the application into a fresh packet from IP; `commit` writes the frame's
+headers into its headroom, keeps the packet in the connection's retransmission queue and lends it to the device, and a
+resend sends the same packet again. The data path holds no stream buffer and no copy the application did not write
+itself; the one copy the brick makes is the busy rule's fallback, below, and it is counted.
 
 **Every segment that occupies sequence space is kept.** SYN, SYN-ACK, data and FIN each take an entry in the
 connection's retransmission queue, a FIFO on nodes of the shard's `send_pool`: the packet with the whole frame
@@ -451,8 +477,9 @@ from the handshake. Karn's rule is applied as Linux's `tcp_clean_rtx_queue` appl
 from the oldest entry it freed, measured from that entry's last transmission, only when no entry it freed was
 sent more than once; otherwise, on a connection with timestamps, the sample comes from the echo the ACK carries,
 which names the transmission it answers (`tcp_ack_update_rtt`). A valid sample ends any backoff. The connection
-has one wheel timer. It is armed at `now + RTO` when a segment goes into an empty queue, re-armed from now by
-every ACK that advances `acknowledged()` while the queue holds more, and cancelled when the queue empties. Each
+has one wheel timer for its sends, beside the delayed ACK's. It is armed at `now + RTO` when a segment goes into an
+empty queue, re-armed from now by every ACK that advances `acknowledged()` while the queue holds more, and cancelled
+when the queue empties. Each
 expiry resends the head, counts one retry, doubles the RTO up to `rto_max` and re-arms; the retry count resets on
 every ACK that advances. The SYN and SYN-ACK are on the same timer and keep phase 1's schedule, which was an
 initial RTO of one second doubling: with the defaults they go again 1, 3, 7, 15 and 31 seconds after the first
@@ -492,19 +519,19 @@ segment that finds no next hop is not kept: its commit is refused with a retry h
 no RST, as RFC 9293's ABORT specifies: the peer holds nothing of ours to take back.
 
 **Timestamps and PAWS.** RFC 7323 timestamps are on by default and negotiated per connection: offered in the SYN,
-answered in the SYN-ACK only when the peer's SYN offered them, and on when both carried the option. The SYN and
-SYN-ACK carry `mss, nop, nop, TS`; every later segment of a connection that negotiated them carries
-`nop, nop, TS`, 12 bytes, the alignment Linux uses. The value is the milliseconds of the stack's stamp plus a
-per-connection offset drawn at the open, as Linux offsets its clock per connection. The echo is `TS.Recent`, kept
-by RFC 7323's rule in full: a segment that passes the sequence check replaces it when its value is not older and
-it starts at or before `Last.ACK.sent`, the acknowledgement the connection last sent, which the connection tracks
-as Linux tracks `rcv_wup`. PAWS runs before the sequence check, as in Linux's `tcp_validate_incoming`: a segment
-other than a RST whose value is older than `TS.Recent`, in the option's signed 32-bit arithmetic, is dropped,
-acknowledged at once and counted as `dropped_paws`, unless `TS.Recent` is older than 24 days. A segment without
-the option on a connection that negotiated it is accepted, as Linux accepts it, where RFC 7323 would have it
-dropped. `mss()` is the payload a segment carries, the negotiated MSS less the option, 1448 at an MSS of 1460,
-while the SYN's MSS option keeps the full value as RFC 6691 prescribes: with timestamps a 1460-byte payload no
-longer fits a 1500-byte MTU.
+answered in the SYN-ACK only when the peer's SYN offered them, and on when both carried the option. Every later segment
+of a connection that negotiated them carries `nop, nop, TS`, 12 bytes, the alignment Linux uses; the SYN and SYN-ACK
+carry it beside the other options, in the layout the note on the handshake's options gives. The value is the
+milliseconds of the stack's stamp plus a per-connection offset drawn at the open, as Linux offsets its clock per
+connection. The echo is `TS.Recent`, kept by RFC 7323's rule in full: a segment that passes the sequence check replaces
+it when its value is not older and it starts at or before `Last.ACK.sent`, the acknowledgement the connection last sent,
+which the connection tracks as Linux tracks `rcv_wup`. PAWS runs before the sequence check, as in Linux's
+`tcp_validate_incoming`: a segment other than a RST whose value is older than `TS.Recent`, in the option's signed 32-bit
+arithmetic, is dropped, acknowledged at once and counted as `dropped_paws`, unless `TS.Recent` is older than 24 days. A
+segment without the option on a connection that negotiated it is accepted, as Linux accepts it, where RFC 7323 would
+have it dropped. `mss()` is the payload a segment carries, the negotiated MSS less the option, 1448 at an MSS of 1460,
+while the SYN's MSS option keeps the full value as RFC 6691 prescribes: with timestamps a 1460-byte payload no longer
+fits a 1500-byte MTU.
 
 **Zero-window probes, with or without data.** When an acceptable ACK leaves the peer's window at zero with
 nothing in flight, in `Established` or `CloseWait`, the connection probes: the first probe after one RTO, then at
@@ -519,7 +546,7 @@ at least once per timeout. Here Aloe departs from Linux knowingly: Linux probes 
 behind the window (`tcp_probe_timer` returns without a send head), because its socket buffer tells it the
 application wants to send. Aloe holds no unsent data, so it probes while the window is zero whether or not the
 application has data, which RFC 9293 allows and which costs an idle connection one segment per doubled RTO, at
-most one every `rto_max`. The probe shares the connection's one timer.
+most one every `rto_max`. The probe shares the connection's timer for its sends.
 
 **A FIN waits for the window.** `close` gives its FIN a sequence number and an entry at once but transmits it
 only when the peer's window covers it, Linux's `tcp_snd_wnd_test`: a Linux peer drops a FIN that arrives inside
@@ -565,17 +592,155 @@ its share for about fifteen minutes, the
 to peers it does not trust sets `user_timeout`, which bounds that hold to the timeout, or sizes `send_pool` for the
 connections it expects to stall.
 
-**Two limits on what is held, independent of each other.** The receive window is a byte window: the stack offers
-`rcv_nxt + (B - unread)`, where `B` is `min(receive_segments * mss, 65535)`, and only extends the edge it
-offered, never retracts it. Separately, a connection holds at most `receive_segments` packets, and the shard's
-held packets come from one pool of `receive_pool` nodes. Small segments can reach the packet cap before the byte
-window closes. A segment that arrives when either cap is reached is dropped, counted (`dropped_no_slot` or
-`dropped_no_node`) and not acknowledged: the immediate ACK reports the last byte accepted, the peer's
-retransmission recovers it, and the offered window is never taken back. The edge is extended only while a packet
-slot is free, so a connection at its cap stops offering more. `B` counts the stack's MSS, 1460, while a
-timestamped peer's full segment carries 1448: 32 of them leave up to 384 bytes of window that only a 33rd segment
-could fill, and that segment meets the packet cap and is recovered by the peer's retransmission. Sizing the
-window by the payload a segment carries belongs to step 4, with the receive pool its window scaling needs.
+**The handshake's options.** Window scaling (RFC 7323) and SACK-permitted (RFC 2018) are negotiated as the timestamps
+are: with `window_scaling` and `sack` on, the defaults, every SYN offers both, a SYN-ACK answers each option the peer's
+SYN offered, and each is in use only when both ends sent it. A resent SYN or SYN-ACK carries the same options; an offer
+never answered, or an active open that ends before the answer, negotiated nothing. The block is Linux's
+(`tcp_options_write`), so a capture or a script reads as a Linux one does: the MSS; then the timestamps as
+`nop, nop, TS`, with `sackOK` taking the place of the two `nop`s when SACK is offered, or `nop, nop, sackOK` without
+timestamps; then `nop, wscale`. That is 20 bytes with every option and 12 without timestamps. The peer's window scale
+and SACK-permitted are read from a SYN or SYN-ACK only, as its MSS is, and a wrong length makes the option list
+malformed, as a wrong MSS length does; a peer's shift above 14 is used as 14, as RFC 7323 requires. The SACK blocks the
+peer sends are skipped by their length, as every option the brick does not read is; step 5 reads them.
+
+**A budget per connection, counted in `mss()`.** The receive window is a byte window over a budget fixed once the
+handshake has settled the peer's MSS and the options: half of what `receive_segments` segments of the
+connection's `mss()` hold, or `receive_window` when set, never more than the slots hold, and never more than the
+field states, 65535 shifted by our scale to a peer that accepted scaling and 65535 to one that did not. With the
+defaults that is 512 * 1448 / 2 = 370688 bytes with timestamps and 373760 without. Both opens compute it only
+after the peer's MSS is stored and the connection has left `SynSent`, because `mss()` reads both. The half is
+the margin for what real streams carry: a short segment takes a whole slot, and every message that ends with a
+push ends with one, so a stream of full-sized segments closes the window with half the slots still free, and the
+slots outlast the window for any stream whose segments average half a full one or more. The same `mss()` is the
+full-sized segment wherever the receive side asks, so a peer with a small MSS is acknowledged every second
+segment too.
+
+**The offer moves by full segments, and never back.** A segment that carries an ACK offers the edge
+`rcv_nxt + (budget - unread)`, with `unread` the in-order bytes; what is held above a gap sits between RCV.NXT
+and the edge and changes nothing. That edge replaces the one already offered only while a packet slot is free,
+counting both chains, so a connection at its cap stops offering more, and only when it lies at least
+`min(budget / 2, mss())` beyond it, RFC 1122's rule against silly windows (4.2.3.3), which also keeps a closed
+window closed until a full segment fits. A read queues a window update of its own only when the window it could
+offer is at least twice the one on offer, Linux's rule in `__tcp_cleanup_rbuf`: that covers a window that had
+closed or nearly closed, and leaves every other movement of the edge to the segments that leave anyway, so a
+small read costs nothing.
+
+**The scale is the smallest that states the budget, and the field rounds up.** Our scale is one shift per stack,
+computed at construction: the smallest, at most 14, under which the 16-bit field states the largest budget the
+configuration allows, counted in the stack's MSS without timestamps. With the defaults that budget is 373760, the shift
+3 and the unit 8 bytes. With `window_scaling` on, every SYN offers it, a zero shift included, since offering is also
+what lets the peer scale its own window, and a SYN-ACK answers with it only when the peer's SYN offered it. The field of
+a SYN or SYN-ACK is never scaled: a SYN, written before the connection has a budget, states the stack's largest budget
+or 65535, whichever is smaller, and a SYN-ACK the connection's budget or 65535. The first segment with an ACK after the
+handshake makes the first offer from the connection's budget, scaled: 370688 >> 3 = 46336 with the defaults. Under a
+small cap or against a small MSS that can be less than the handshake's field said, which no data has relied on yet. The
+field is the distance from RCV.NXT to the edge shifted right by the scale and rounded up to the unit, as Linux's
+`tcp_select_window` and `__tcp_select_window` round, and the connection records the edge the peer reconstructs from the
+field, never the one it computed, so the edge never moves left as the peer sees it. It can move right with nothing
+consumed: each segment that leaves after RCV.NXT moved rounds again from the new RCV.NXT and can add up to a unit less a
+byte, so over many segments the edge can stand ahead of the budget by more than a unit, and a stream of segments no
+larger than the unit, each acknowledged alone, never closes the byte window. Linux's edge creeps the same way. It is
+harmless because the budget is not the memory limit, the packet cap is, and RCV.NXT moves only while a slot is free; it
+is why the shift is the smallest that states the budget. Rounding one computed edge down each time instead would move
+the reconstructed edge left by up to a unit.
+
+**A segment above a gap is held as the packet it arrived in.** A segment whose payload or FIN starts above RCV.NXT
+inside the window goes on through RFC 9293's order. A RST on it resets the connection, RFC 793's rule for a RST inside
+the window, until step 6 brings RFC 5961's challenge; a SYN is dropped; its ACK field and window are processed like any
+other, so a hole in one direction does not stall the other. Its payload goes on a second chain of the shard's
+held-segment nodes, the reassembly queue, sorted by sequence, each node the packet with the offset, length and first
+sequence of what is kept, counted in `out_of_order_held`. Three rules keep the ranges disjoint without a copy, the first
+two Linux's (`tcp_data_queue_ofo`): a newcomer that held data covers entirely is a duplicate, dropped and counted in
+`dropped_duplicate`; a held node the newcomer covers entirely is released and the newcomer takes its place; where the
+two overlap in part the held bytes win, and the newcomer loses its front up to the end of the node before it and its
+tail from the start of the node after it, by moving its offset, its length and its first sequence. A segment at or past
+the end of the chain's last node, the run after a loss, is appended without a walk, as Linux keeps `ooo_last_skb`; any
+other placement walks from the head, a walk bounded by `receive_segments`, and no tree is built. An in-order segment
+asks one question before it is held, whether anything is held above, and a clean stream never takes the branch. When
+something is, the run that now follows RCV.NXT joins the in-order chain by a change of links: a node RCV.NXT passed
+entirely is released, one it passed in part loses its front, and every node that starts at RCV.NXT moves to the tail of
+the in-order chain, RCV.NXT and `unread()` with it. `Readable` covers the whole run, and the ACK goes at once. The join
+takes no node and moves no packet, so it cannot fail. Until then `unread()` shows nothing of what is held above;
+`out_of_order_segments()` and `out_of_order_bytes()` report it. A pure ACK above RCV.NXT, which the peer sends for as
+long as a hole is open, is processed and never answered: an answer would hand the peer duplicate ACKs for segments it
+never sent.
+
+**A FIN above a gap is one number.** A FIN on a segment above the gap, or a bare one, is remembered as the sequence it
+occupies, as TLDK represents it, rather than kept with a packet, as Linux keeps it with its buffer (`tcp_ofo_queue`). It
+is remembered once every byte below it is held, newly or already, so a FIN on a segment whose payload duplicates held
+data counts too. When RCV.NXT reaches it, the FIN is taken as an in-order FIN is, through the `Lifecycle`, and whatever
+is still held above it is released, as Linux's `tcp_fin` purges its queue. RCV.NXT never passes it: the join stops
+there, and a held segment that straddles it gives the run only its bytes below it. Data whose payload ends past a
+remembered FIN, in order or above the gap, is refused as data after the peer's FIN is (`dropped_unexpected`); a FIN
+above the remembered one is refused the same way, and a FIN below it replaces it, the replaced number leaving the SACK
+blocks. An in-order segment that carries data and the peer's FIN while something is held above does not join: its FIN
+step releases what is held, so no hole is reported filled, and its ACK goes as an in-order FIN's does, at the `flush` in
+`Established`. That ACK is the segment's only one: none leaves for its data before the FIN step has dropped the blocks.
+
+**Two limits on what is held, independent of each other.** The byte window is the limit the peer obeys: when
+unread bytes fill it the peer stops and nothing is lost. Separately, a connection holds at most
+`receive_segments` packets, in order and above a gap together, and the shard's held packets come from one pool of
+`receive_pool` nodes. The cap is the limit a stream of short segments the application leaves unread can reach
+first: a window of W bytes over S slots cannot overflow the cap while the segments average W / S bytes or more,
+half a full segment with the default window. Below that, a segment that arrives at either limit takes the node of
+the highest segment held above a gap when that one starts above it, as the next note says; otherwise it is
+dropped, counted (`dropped_no_slot` or `dropped_no_node`, or `dropped_out_of_order` above a gap) and answered at
+once with the edge restated, the peer's retransmission recovers it, and the offered window is never taken back.
+`receive_window` and `receive_segments` are the controls for a feed of small segments: more slots under the same
+window. Where a backlog sits depends on who has stopped. When one thread runs the loop and the application is
+busy, the loop does not run, so the backlog waits in the device's receive ring and the peer can send no more than
+the window it was last offered; the slots fill when the stack runs and the application does not read, across
+ticks or beside a stalled reader on another core. Linux answers an in-order segment it cannot queue for memory
+with a zero window, the one case where its edge moves left (`tcp_select_window`), and collapses small buffers into
+fewer under memory pressure, as TCPDirect and Onload copy theirs; whether Aloe closes the window at the cap, or
+copies there, is open as issue #39, and the rule lives in one function of the `Receiver` so the answer changes
+one place.
+
+**At the cap the lower sequence wins.** Both chains count against one cap and take nodes from one pool. A segment
+that needs a node when the connection is at its cap, or the pool is empty, takes the node of the highest segment
+held above a gap when that one starts above it, as Linux's `tcp_prune_ofo_queue` prunes from the highest sequence
+down and never below the incoming segment. One node goes for one segment, where Linux frees an eighth of its
+buffer: Aloe's unit is the packet, and a second release would give up data nothing asked for. A newcomer that
+needs no fresh node costs nothing: a duplicate of held data is dropped, and one that replaces a node it covers
+takes that node's slot. The release is counted in `out_of_order_released`, forgets a remembered FIN, which the
+peer resends, and cuts the released node's SACK block back in the same step, so no later ACK reports what is
+gone; its end is remembered as a refused segment's is, so in-order data is acknowledged at once until RCV.NXT
+reaches what the peer was told had arrived. A segment above the gap that would itself be the highest is dropped,
+counted in `dropped_out_of_order`, and its end remembered the same way; an in-order segment with nothing held
+above is dropped as on a clean stream. A terminal event (`Closed`, `Reset`, `TimedOut`, `Unresolved`) returns the
+out-of-order packets at once, since nothing can fill the gap any more.
+
+**SACK blocks ride on pure ACKs only.** A connection that negotiated SACK keeps up to four blocks, Linux's
+`TCP_NUM_SACKS`, in RFC 2018's order: the block that holds the segment just received first, then the others, most
+recently changed first. A new segment above the gap extends the block it touches, merges blocks it joins or starts a
+block at the front, and the oldest falls off past four; blocks at or below RCV.NXT go when it moves (`tcp_sack_remove`).
+A release from the middle of a block ends the block at the release: it may under-report what is held, and never reports
+what is not. A remembered FIN's number is part of the block that ends at it, or a block of its own for a bare FIN, as
+Linux's blocks cover a held buffer's FIN; without it a Linux sender would take the segment that carried the FIN for not
+yet received and send it again. Every pure ACK the connection sends while it holds a block or owes a duplicate SACK
+carries the option after the timestamps, `nop, nop, sack` and eight bytes per block: three blocks fit beside the
+timestamps and four without (`tcp_established_options`). A data segment never carries blocks, and neither does a probe
+or a RST. A connection's data segments have one header size, so a kept packet is rewritten in place on a resend and a
+prepared payload sits at a fixed offset; an option that grew the header would move the payload. Linux carries blocks on
+data segments too and shrinks the payload for them (`tcp_current_mss`); Onload and lwIP keep them to pure ACKs, as Aloe
+does. For the same reason a data segment that leaves does not cancel an ACK that owes blocks or a duplicate: that ACK
+goes as a pure ACK at the next `flush`. Every segment above a gap is answered within its tick, so the peer learns of
+each change of the blocks in the tick it happens. Only an ACK that reports builds the option, so an ordinary ACK pays
+nothing for it.
+
+**Duplicate SACK.** RFC 2883, which Linux sends by default; `sack` turns both on. The first block of the next pure
+ACK reports payload that arrived twice, and the regular blocks follow it. There are four sources: a segment
+refused as a duplicate or by PAWS whose payload starts before RCV.NXT, its payload up to RCV.NXT, with the ACK at once
+(`tcp_send_dupack`); the old prefix of an in-order segment, from its first byte of payload to the RCV.NXT it met, with
+the ACK at its ordinary time (`tcp_data_queue`); a segment, or the part of one, already held above the gap, followed by
+the block that holds it, with the ACK timed as for any segment above a gap (`tcp_data_queue_ofo`); and at the
+join, the part of a held node that RCV.NXT had already passed, with the ACK the join sends (`tcp_ofo_queue`). A SYN's
+or a FIN's number is not payload and is never reported as a duplicate, so a SYN-ACK the peer sends again after the
+handshake is answered with no block, and a RST reports nothing; Linux's `tcp_send_dupack` counts an old FIN's number
+in its range. One duplicate is pending at a time: a second range extends it when the two touch and is dropped otherwise,
+as `tcp_dsack_extend` does. It is forgotten once an ACK carried it, or when the next segment with payload arrives, as
+Linux clears it on entry to `tcp_data_queue`. A Linux sender uses the report to undo a retransmission that reordering
+made spurious, which keeps a venue's stream fast on a path that reorders.
 
 **The peer's window comes from current acknowledgements.** `writable()` is
 `min(mss, min(snd_wnd, cwnd + allowance) - in flight)`, where `cwnd` is the policy's window and the allowance is
@@ -583,24 +748,78 @@ limited transmit's, and zero at the send cap. The peer's window is updated by RF
 the same one with a newer acknowledgement, and only from a segment whose acknowledgement is at or past `snd_una`,
 so a stale or forged acknowledgement cannot rewrite it. `commit` checks the credit again, because the peer may
 have retracted its right edge, or a loss shrunk the congestion window, since the prepare; RFC 1122 asks the
-sender to cope with a retracted edge by not sending into it.
+sender to cope with a retracted edge by not sending into it. The window field of every segment on a synchronized
+connection is shifted left by the peer's scale before anything reads it, the window update, the duplicate-ACK
+test, zero-window probing and `writable()`; the field of a SYN or SYN-ACK is taken as it is, and so is that of a
+SYN-ACK that carries data, since the peer's shift is stored only once the SYN-ACK has been processed. A peer that
+did not offer scaling has a shift of zero. `snd_wnd` was already 32 bits wide, so a window past 65535 lets
+`writable()` and the congestion window decide.
 
-**ACKs wait, with exceptions.** An ordinary acknowledgement of in-order data is queued and sent by `flush`,
-unless a data segment leaving first carries it, so a request answered in the same tick costs one segment. It goes
-at once for every second full-sized segment, a full-sized segment being our MSS less the timestamp option on a
-connection that carries it; for anything that cannot be accepted (a duplicate, a segment out of window, above a
-gap or older than `TS.Recent`, data after the peer's FIN); while recovering from a gap; and for a FIN the
+**ACKs wait, with exceptions.** With `delayed_ack` zero, the default, an ordinary acknowledgement of in-order data
+is queued and sent by `flush`, unless a segment carrying an ACK leaves first, so a request answered in the same
+tick costs one segment. It goes at once for every second full-sized segment, a full-sized segment being the
+connection's `mss()`, the smaller of the two MSS less the timestamp option on a connection that carries it. A venue
+that left Nagle on would stall behind a delayed ACK, and a client that answers ticks within the tick gains nothing
+from one, which is why the delay is off by default. With `delayed_ack` set, at most 500 ms, the ACK of in-order
+data waits instead on the connection's second wheel timer, counted from the first segment it covers and never
+extended, until a segment carrying an ACK leaves, which cancels the timer, or two full-sized segments' worth of
+bytes is unacknowledged, counted in bytes so that a stream of short segments is acknowledged as often as one of
+full segments. Linux acknowledges once more than its estimate of the peer's segment size is unacknowledged
+(`__tcp_ack_snd_check`), which follows short segments more closely still, and adapts its delay; Aloe's delay is one
+fixed duration. The timer is armed only while a delayed ACK is pending, and never with the delay off. When it
+fires the pure ACK goes at once, counted in `delayed_acks_sent` as well as `pure_acks_sent`; a refused one waits on
+the ACK list for the `flush`. Only the ACK of in-order data is delayed: the handshake's ACK, a FIN's and a window
+update stay where they were. A data segment that ends the delay while blocks or a duplicate SACK are owed leaves
+the connection queued for the `flush`, which sends them on a pure ACK.
+
+In both modes an ACK goes at once, before the next segment is processed, for a segment refused with an answer (a
+duplicate below RCV.NXT, a segment out of window or older than `TS.Recent`, data after the peer's FIN or past one
+remembered above a gap, a second FIN, an ACK of data never sent, a segment refused at the cap or for want of a node; a
+SYN inside the window and a segment without ACK are dropped unanswered); for a segment above a gap, every one on a
+connection without SACK and the first three since RCV.NXT last moved on a connection with it; for in-order data while
+anything is held above it, and until RCV.NXT reaches the end of a segment above a gap that was refused or released for
+room, except that such data on a segment with the peer's FIN is acknowledged by the FIN's ACK alone; and for a FIN the
 connection is closing on. A refused immediate ACK stays queued for the next `flush`.
 
-**Ownership is logical state.** A passive open belongs to the stack until the handshake completes and `Accepted`
-hands it to the application; one that fails before then is freed silently. A connection from `connect` is the
-caller's at once. From `prepare` to `commit` (with any count, zero discards) or `release`, the prepared packet is
-the application's: a `close`, `abort`, received RST or time-out in between leaves the span writable, and the
-commit that follows drops the packet, returns false, counts `commits_refused` and raises no retry hint, since the
-events already say why. A commit the windows no longer cover is refused the same way but with a retry hint:
-prepare again for what `writable()` allows. After `Closed`, `Reset`, `TimedOut` or `Unresolved` the
-retransmission queue is gone and the held segments stay readable until `release`, the owner's last call, which
-aborts a connection that is still open and frees the slot.
+On a connection that uses SACK, three duplicates start the peer's fast retransmit and the blocks carry everything
+else, so from the fourth segment above a gap on, until RCV.NXT moves, the answer is owed to the `flush` of the same
+tick: one pure ACK per connection, with the blocks as they then stand. A burst of thirty segments behind one loss
+costs four ACKs, not thirty, and the peer still learns everything within the tick. Linux sends three and batches
+the rest on a timer of at most a millisecond (`__tcp_ack_snd_check`); the `flush` is the boundary a polling stack
+already has. An answer that also acknowledges in-order data not yet acknowledged goes at once and is not one of
+the three: it moves the peer's `snd_una`, so the peer does not count it as a duplicate, and three true duplicates
+follow it. Linux counts it; Aloe departs because a sender that counts duplicates, Aloe's own until step 5, needs
+three true ones. On a connection without SACK every segment above a gap is answered at once, as Linux answers
+them (`__tcp_ack_snd_check` sends at once when SACK is off): such a sender reads the duplicates themselves, the
+third starting fast retransmit and each one after it growing its window by a segment (RFC 5681 3.2), which is what
+lets it send new data while it recovers.
+
+A duplicate ACK stays a duplicate. The ACK sent at once for a segment above a gap, a duplicate or any refused segment
+restates the edge already offered, whatever `consume` has freed since: RFC 5681 counts an ACK as a duplicate only when
+its window equals the last one's, and Onload freezes the edge the same way. The ACK owed to the `flush` is an ordinary
+one and may move the edge. A restating ACK that leaves never puts a connection on the ACK list. When the connection was
+already queued for the flush and its ordinary offer would move the edge, it stays queued and the flush sends that
+update; otherwise the restating ACK does the queued ACK's work and nothing more leaves, so the peer is not handed an
+identical ACK it would count. Like any segment that carries an ACK, a restating ACK also cancels a pending delayed ACK.
+An ACK at once that the device refuses is retried by the `flush` as an ordinary ACK, which may move the edge, and the
+count of three is taken when the answer is decided, not when it leaves: under device back-pressure a sender that counts
+duplicates can see fewer than three.
+
+**Two Aloe stacks recover on duplicates until step 5.** Two Aloe stacks negotiate SACK, so the receiver batches
+its answers above a gap after the third, while Aloe's own sender does not read blocks yet and counts duplicates.
+Behind a loss it sees three duplicates and then one ACK per tick: it starts fast retransmit on time, with no
+retransmission timeout, as the two-stack tests check, but with few duplicates after the third it has little to
+send new data on until the retransmission is acknowledged. Step 5's sender reads the blocks.
+
+**Ownership is logical state.** A passive open belongs to the stack until the handshake completes and `Accepted` hands
+it to the application; one that fails before then is freed silently. A connection from `connect` is the caller's at
+once. From `prepare` to `commit` (with any count, zero discards) or `release`, the prepared packet is the application's:
+a `close`, `abort`, received RST or time-out in between leaves the span writable, and the commit that follows drops the
+packet, returns false, counts `commits_refused` and raises no retry hint, since the events already say why. A commit the
+windows no longer cover is refused the same way but with a retry hint: prepare again for what `writable()` allows. After
+`Closed`, `Reset`, `TimedOut` or `Unresolved` the retransmission queue is gone, the segments held above a gap go back to
+the pool, and the in-order held segments stay readable until `release`, the owner's last call, which aborts a connection
+that is still open and frees the slot.
 
 **The table hashes on its own; placement chooses ports.** The flow table mixes a base hash into its own
 bucket hash. When the card hashes IPv4 TCP tuples the base hash is the card's RSS hash, so a received segment
@@ -630,11 +849,24 @@ loop. Aloe keeps the received packets as the read buffer, lets the application w
 keeps that packet itself, lent, as the retransmission queue's entry, and leaves the loop to the program or to the
 runtime written over the same bricks.
 
-**What is still left out, and why.** The receive side is phase 1's: out-of-order segments are dropped and the
-peer resends them, and there are no SACK blocks, no window scaling and no delayed ACK; all four come with step 4
-of phase 2. There is no TIME_WAIT: the slot is the owner's until `release`; it comes with step 6. The brick makes
-no deployment or latency claim yet: the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a recorded
-baseline, and its rerun with reliable send is owed, as its page says.
+**What is still left out, and why.** The peer's SACK blocks are skipped and loss recovery reads duplicate ACKs only:
+RACK-TLP and a scoreboard over the retransmission queue come with step 5 of phase 2. So does congestion-window growth on
+a flow the application limits: NewReno still grows its window on every ACK, and at the default `send_segments` a
+connection's flight stays below 65535 bytes, so the peer's scaled window does not become the limit the congestion window
+was hiding behind; a deployment that raises the send cap for bulk sends meets it. Not built and not planned:
+receive-window auto-tuning, since the window is what the configuration says from the handshake on; and Linux's timer for
+compressing the ACKs of out-of-order arrivals and its adaptive delayed ACK, since the `flush` of the tick does the first
+job and the delay is one fixed duration. Not built yet: copying small held segments into fewer packets, as Linux's
+`tcp_collapse` does under memory pressure, which waits on the question of the window at the cap above, issue #39. There
+is no TIME_WAIT: the slot is the owner's until `release`; it comes with step 6, which also takes two entries the receive
+side widened. The budget reads `mss()`, so a peer that states an MSS of twelve bytes or fewer beside timestamps is
+offered a zero window, which harms that peer alone, until step 6 puts a floor under the peer's MSS. And the default
+window, 370688 bytes where it was 46720, gives a blind RST nearly eight times the sequence space to land in until step 6
+brings RFC 5961's challenge ACK. The same wider target holds for a FIN forged into the window: it is remembered, and
+in-order data that crosses it is refused each time it is resent, so the stream stalls until the peer gives up, where
+Linux usually drops the stale FIN once real data passes it; step 6's challenge ACK covers both. The brick makes no
+deployment or latency claim yet: the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a recorded baseline,
+and its reruns with reliable send and with the receive side are owed, as its page says.
 
 **Hardening is deferred too.** The brick is not yet meant for hostile peers. It has no SYN cookies, so a SYN
 flood fills the fixed table until the half-open connections time out; its initial sequence numbers come from a

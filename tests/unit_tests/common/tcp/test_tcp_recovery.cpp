@@ -363,3 +363,18 @@ TEST_P(TcpRecorded, ASendAfterAnIdleLongerThanTheRtoReachesOnIdle) {
     ASSERT_EQ(c->send(aloe::frames::pattern(10)), 10U);
     EXPECT_EQ(c->congestion_state().last_hook, "on_idle") << "idle 300 ms, past the RTO of 200";
 }
+
+TEST_P(TcpRecovery, ADuplicateAckIsJudgedByTheScaledWindow) {
+    peer_.set_window_scale(7);
+    peer_.set_window(512);  // 65536 bytes once scaled
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(14600)), 14600U);
+    std::ignore    = collect();
+    const auto dup = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
+    for (int i = 0; i < 3; ++i) {
+        receive(dup());
+    }
+    EXPECT_EQ(c->duplicate_acks(), 3U) << "a field of 512 states the 65536 bytes on record";
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
+}

@@ -53,10 +53,9 @@ namespace aloe::tcp {
         static_assert(IsIp<Ip>, "tcp::Stack needs net::Ipv4<Device>, or an IP brick with the same members");
         static_assert(IsCongestionControl<CongestionControl>,
                       "tcp::Stack needs a congestion control: a State and the reset, window and on_* hooks");
-        static_assert(net::Prebuilt::size + wire::TcpHeader::size + wire::TcpOptions::mss_size +
-                              wire::TcpOptions::timestamps_size <=
-                          device::packet_headroom,
-                      "every frame's headers fit in front of the payload of a packet from allocate()");
+        static_assert(net::Prebuilt::size + wire::TcpHeader::max_size <= device::packet_headroom,
+                      "every frame's headers, with any option block, fit in front of the payload of a packet from "
+                      "allocate()");
         // The connection and its view are templates over the IP brick: checked here, where they first have one.
         static_assert(stream::IsStream<Connection<Ip, CongestionControl>>);
         static_assert(stream::IsReadView<ReadView<typename Ip::Packet>>);
@@ -71,7 +70,11 @@ namespace aloe::tcp {
 
         /// Validates and throws std::invalid_argument; allocates everything; sends nothing.
         Stack(Ip& ip, loop::TimerWheel& wheel, const TcpConfig& config)
-            : context_{ip, config.validate(ip.max_l4_size(), wheel.resolution()), *this, &Stack::on_timer_fired},
+            : context_{ip,
+                       config.validate(ip.max_l4_size(), wheel.resolution()),
+                       *this,
+                       &Stack::on_timer_fired,
+                       &Stack::on_ack_timer_fired},
               transmitter_{context_, wheel},
               lifecycle_{context_, transmitter_},
               acks_{context_, transmitter_},
@@ -90,8 +93,10 @@ namespace aloe::tcp {
         ~Stack() {
             for (ControlBlock& block : context_.blocks) {
                 transmitter_.disarm(block);
+                transmitter_.disarm_ack(block);
                 block.prepared.reset();
                 block.receive.release(context_.pool);
+                block.reassembly.release(context_.pool);
                 transmitter_.drop_queue(block);
             }
         }
@@ -173,9 +178,10 @@ namespace aloe::tcp {
         [[nodiscard]] std::uint16_t mss() const noexcept {
             return context_.mss;
         }
-        /// `min(receive_segments * mss, 65535)`: the receive credit a connection starts with.
+        /// The largest budget the configuration allows, under the stack's window shift; a connection's own is
+        /// `Connection::receive_budget()`.
         [[nodiscard]] std::uint32_t byte_budget() const noexcept {
-            return context_.byte_budget;
+            return context_.largest_budget;
         }
         [[nodiscard]] const TcpCounters& counters() const noexcept {
             return context_.counters;
@@ -229,6 +235,15 @@ namespace aloe::tcp {
         static void on_timer_fired(loop::Timer& timer) noexcept {
             ControlBlock& block = static_cast<ControlBlock::TimerNode&>(timer).block;
             block.stack.lifecycle_.on_timer(block);
+        }
+
+        /// The delayed ACK's callback: the pure ACK goes, and Closed follows it when the close only waited for it, as
+        /// in `flush`; a refused one waits on the ACK list for `flush`.
+        static void on_ack_timer_fired(loop::Timer& timer) noexcept {
+            ControlBlock& block = static_cast<ControlBlock::TimerNode&>(timer).block;
+            if (block.stack.transmitter_.send_delayed_ack(block)) {
+                block.stack.lifecycle_.maybe_finish(block);
+            }
         }
 
         // The handle's verbs: the Receiver's consume, the Transmitter's send side and the Lifecycle's close, abort

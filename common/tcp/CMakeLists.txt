@@ -31,9 +31,12 @@ add_library(${TCP}.Stack INTERFACE
         connection/detail/control_block.hpp
         connection/detail/frame_template.hpp
         connection/detail/loss_recovery.hpp
+        connection/detail/reassembly_queue.hpp
         connection/detail/receive_queue.hpp
+        connection/detail/receive_window.hpp
         connection/detail/retransmission_queue.hpp
         connection/detail/rtt_estimator.hpp
+        connection/detail/sack_blocks.hpp
         connection/detail/send_sequence.hpp
         connection/detail/tcp_timestamps.hpp
         connection/detail/zero_window_probe.hpp

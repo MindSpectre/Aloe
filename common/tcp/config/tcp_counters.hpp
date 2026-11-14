@@ -25,6 +25,12 @@ namespace aloe::tcp {
         std::uint64_t duplicate_acks       = 0;
         std::uint64_t rtt_samples          = 0;
         std::uint64_t window_updates       = 0;  ///< Segments that extended the advertised edge.
+        std::uint64_t out_of_order_held    = 0;  ///< Segments held above a gap.
+        std::uint64_t out_of_order_released =
+            0;  ///< Held out-of-order segments released to make room for a lower sequence.
+        std::uint64_t sack_acks_sent       = 0;  ///< Pure ACKs that carried SACK blocks.
+        std::uint64_t duplicate_sacks_sent = 0;  ///< Of them, those whose first block reported data that arrived twice.
+        std::uint64_t delayed_acks_sent    = 0;  ///< ACKs the delay timer sent.
 
         std::uint64_t connections_opened         = 0;  ///< Active opens that reached ESTABLISHED.
         std::uint64_t connections_accepted       = 0;

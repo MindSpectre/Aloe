@@ -1,0 +1,25 @@
+// Without timestamps four blocks fit (4 + 4 * 8 = 36 bytes), Linux's TCP_NUM_SACKS, all that is kept. A full segment is
+// the whole 1460 bytes, so the budget is 512 * 1460 / 2 = 373760: the first ACK puts the edge at 1001 + 373760 - 1000 =
+// 373761 and states (373761 - 1001) / 8 = 46595, which every later ACK restates. The fourth segment above the gap is
+// answered by the flush with an ordinary ACK, here the same window, since the candidate is the edge. Linux sends the
+// same four blocks (tcp_established_options), the fourth on its compressed-SACK timer instead of at a flush.
+--tcp_timestamps=0
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,sackOK,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,sackOK,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 512
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1001(1000) ack 1 win 512
++0 > . 1:1(0) ack 1001 win 46595
++0 < P. 2001:3001(1000) ack 1 win 512
++0 > . 1:1(0) ack 1001 win 46595 <nop,nop,sack 2001:3001>
++0 < P. 4001:5001(1000) ack 1 win 512
++0 > . 1:1(0) ack 1001 win 46595 <nop,nop,sack 4001:5001 2001:3001>
++0 < P. 6001:7001(1000) ack 1 win 512
++0 > . 1:1(0) ack 1001 win 46595 <nop,nop,sack 6001:7001 4001:5001 2001:3001>
++0 < P. 8001:9001(1000) ack 1 win 512
++0 > . 1:1(0) ack 1001 win 46595 <nop,nop,sack 8001:9001 6001:7001 4001:5001 2001:3001>

@@ -62,6 +62,11 @@ TEST(StackSanity, FailsOnEveryDropAndRefusal) {
         {&TcpCounters::commits_refused,       "tcp.commits_refused"      },
         {&TcpCounters::allocation_failures,   "tcp.allocation_failures"  },
         {&TcpCounters::retransmits,           "tcp.retransmits"          },
+        {&TcpCounters::out_of_order_held,     "tcp.out_of_order_held"    },
+        {&TcpCounters::out_of_order_released, "tcp.out_of_order_released"},
+        {&TcpCounters::sack_acks_sent,        "tcp.sack_acks_sent"       },
+        {&TcpCounters::duplicate_sacks_sent,  "tcp.duplicate_sacks_sent" },
+        {&TcpCounters::delayed_acks_sent,     "tcp.delayed_acks_sent"    },
     };
     for (const auto& [member, name] : tcp) {
         TcpCounters counters;
