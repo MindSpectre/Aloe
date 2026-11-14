@@ -354,8 +354,9 @@ namespace aloe::tcp::detail {
 
         /**
          * The sequence check against `[rcv_nxt, offered edge)`. A segment entirely before RCV.NXT or past the edge is
-         * dropped with an immediate ACK that restates the edge, unless it is a RST; one before RCV.NXT is reported as a
-         * duplicate. One that overlaps RCV.NXT loses its old prefix, a SYN with it, and reports it as a duplicate. One
+         * dropped with an immediate ACK that restates the edge, unless it is a RST; the payload of one before RCV.NXT
+         * is reported as a duplicate. One that overlaps RCV.NXT loses its old prefix, a SYN with it, and reports the
+         * prefix's payload as a duplicate; a RST reports nothing. One
          * whose payload or FIN starts above RCV.NXT inside the window is above a gap; a segment that occupies no
          * sequence space never is. A duplicate SYN in SynReceived gets the SYN-ACK again, from its entry.
          */
@@ -395,8 +396,11 @@ namespace aloe::tcp::detail {
                 }
                 return Sequenced::AboveGap;
             }
-            if (sequence.before(next)) {  // overlap: the old prefix is already ours, and reported as a duplicate
-                block.sack.duplicate(sequence, next);
+            if (sequence.before(next)) {  // overlap: the old prefix is already ours, and its payload a duplicate
+                const Sequence payload = header.flags.has(wire::TcpFlag::Syn) ? sequence + 1U : sequence;
+                if (!rst && payload.before(next)) {
+                    block.sack.duplicate(payload, next);
+                }
                 std::uint32_t trim = next.value - sequence.value;
                 if (header.flags.has(wire::TcpFlag::Syn)) {
                     header.flags = wire::TcpFlags::from_raw(
@@ -498,8 +502,8 @@ namespace aloe::tcp::detail {
          * segment takes the node of the highest segment held above (`make_room`); with none above it, it is refused as
          * on a clean stream. Once held, the run that now follows RCV.NXT joins, `Readable` covers all of it and the ACK
          * goes at once, as the policy says of data below what is held above; a segment that carries the peer's FIN
-         * does not join, since its FIN step releases what is held above, and is acknowledged as data on a clean stream
-         * is. False when refused.
+         * does not join, since its FIN step releases what is held above, and is acknowledged by that step's ACK alone,
+         * which reports nothing. False when refused.
          */
         [[nodiscard]] bool
         receive_below_held(ControlBlock& block, Datagram& datagram, const Segment& segment) noexcept {
@@ -527,10 +531,10 @@ namespace aloe::tcp::detail {
             }
             lifecycle_.raise(block, stream::Event::Readable);  // once, for the segment and any run it joins
             if (segment.header.flags.has(wire::TcpFlag::Fin)) {
-                // Nothing is held above once the FIN step that follows has run.
-                acknowledge(block,
-                            block.ack_policy.on_data(
-                                segment.payload_length, block.mss(), block.receive.next(), false, delay()));
+                // The FIN step that follows releases what is held above and drops the blocks, and its ACK, sent or
+                // queued, is the only one for the segment: an ACK here would report what that step releases.
+                std::ignore =
+                    block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next(), false, delay());
                 return true;
             }
             join(block);
@@ -551,10 +555,11 @@ namespace aloe::tcp::detail {
 
         /**
          * The payload and FIN of a segment above a gap, after its RST, SYN and ACK were dealt with: the payload goes on
-         * the reassembly queue, the FIN is remembered, and the SACK blocks are told, with what was held already
-         * reported as a duplicate. The segment is answered as the ACK policy says (`AckPolicy::on_out_of_order`): at
-         * once with the edge restated, or by the flush. Data after the peer's FIN, or at or past a remembered one, is
-         * refused. At the cap or with the pool empty the segment takes the highest held node when it starts below it
+         * the reassembly queue, the FIN is remembered once every byte below it is held, newly or already, and the SACK
+         * blocks are told, with what was held already reported as a duplicate. The segment is answered as the ACK
+         * policy says (`AckPolicy::on_out_of_order`): at once with the edge restated, or by the flush. Data after the
+         * peer's FIN, or at or past a remembered one, is refused. At the cap or with the pool empty the segment takes
+         * the highest held node when it starts below it
          * (`make_room`); otherwise it is refused, and its end is remembered so the data that fills the gap is
          * acknowledged at once. A refused segment is answered at once and does not count towards the policy's three.
          */
@@ -599,6 +604,7 @@ namespace aloe::tcp::detail {
                         break;
                     case ReassemblyQueue<Packet>::Placed::Duplicate:
                         ++context_.counters.dropped_duplicate;  // the packet stays the caller's and goes as dropped
+                        held = true;                            // every byte below a FIN it carries is held
                         break;
                     case ReassemblyQueue<Packet>::Placed::NoNode:
                         refuse();
@@ -668,16 +674,17 @@ namespace aloe::tcp::detail {
             }
         }
 
-        /// A segment refused as old that starts before RCV.NXT: what of it RCV.NXT passed is reported as a duplicate
-        /// (`tcp_send_dupack`).
+        /// A segment refused as old whose payload starts before RCV.NXT: what of the payload RCV.NXT passed is reported
+        /// as a duplicate (`tcp_send_dupack`). Payload only: a SYN's or a FIN's number is not data, and a RST reports
+        /// nothing.
         static void report_old_duplicate(ControlBlock& block, const Segment& segment) noexcept {
-            const Sequence sequence = segment.header.sequence;
-            const Sequence next     = block.receive.next();
-            if (segment.length() == 0 || !sequence.before(next)) {
+            const Sequence first = segment.header.sequence + (segment.header.flags.has(wire::TcpFlag::Syn) ? 1U : 0U);
+            const Sequence next  = block.receive.next();
+            if (segment.payload_length == 0 || segment.header.flags.has(wire::TcpFlag::Rst) || !first.before(next)) {
                 return;
             }
-            const Sequence end = sequence + segment.length();
-            block.sack.duplicate(sequence, end.before(next) ? end : next);
+            const Sequence end = first + segment.payload_length;
+            block.sack.duplicate(first, end.before(next) ? end : next);
         }
 
         /// The configuration delays the ACK of in-order data.

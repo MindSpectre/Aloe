@@ -1,0 +1,31 @@
+// The peer's FIN on in-order data, while data is held above it and a refused segment's end is remembered, is answered
+// by one ACK, at once, that acknowledges the FIN and reports no block: the FIN step releases what is held above the
+// FIN and drops the blocks before any ACK leaves. With three slots the budget is 3 * 1448 / 2 = 2172, the stack's
+// shift is 0 and the SYN-ACK offers `wscale 0`; the threshold is min(2172 / 2, 1448) = 1086. The edge stands at
+// 1 + 2172 = 2173 throughout, so each ACK states 2173 less its acknowledgement. Two segments above the gap fill the
+// slots, the third is refused at the cap and its end, 801, remembered; the FIN's segment takes the highest node's slot,
+// 501:601, which leaves 301:401 held above the FIN until the FIN step. The two reads see the 200 bytes and the end.
+// Linux has no cap in packets and prunes its out-of-order queue under memory pressure instead; for the FIN it does the
+// same, purging the out-of-order queue and resetting the blocks in tcp_fin before its one ACK.
+--tcp_receive_segments=3
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 2172 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 0>
++0 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:101(100) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 101 win 2072 <nop,nop,TS val 0 ecr 100>
++0 < P. 301:401(100) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 101 win 2072 <nop,nop,TS val 0 ecr 100,nop,nop,sack 301:401>
++0 < P. 501:601(100) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 101 win 2072 <nop,nop,TS val 0 ecr 100,nop,nop,sack 501:601 301:401>
++0 < P. 701:801(100) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 101 win 2072 <nop,nop,TS val 0 ecr 100,nop,nop,sack 501:601 301:401>
++0 < FP. 101:201(100) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 202 win 1971 <nop,nop,TS val 0 ecr 100>
++0 read(4, ..., 1000) = 200
++0 read(4, ..., 1000) = 0

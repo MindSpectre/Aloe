@@ -1,0 +1,12 @@
+// The peer's SYN-ACK arrives again after the handshake, as when our ACK of it was lost: it lies entirely before
+// RCV.NXT and is answered at once with the edge restated, 46336 units of 8 as the first ACK stated, and with no SACK
+// option. A duplicate SACK reports payload that arrived twice, and the SYN's number is not payload. Linux answers such
+// a SYN-ACK with a challenge ACK (RFC 5961, rate-limited), which reports no block either.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 fcntl(3, F_SETFL, O_RDWR|O_NONBLOCK) = 0
++0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)
++0 > S 0:0(0) win 65535 <mss 1460,sackOK,TS val 0 ecr 0,nop,wscale 3>
++0 < S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > . 1:1(0) ack 1 win 46336 <nop,nop,TS val 0 ecr 100>
++1 < S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > . 1:1(0) ack 1 win 46336 <nop,nop,TS val 1000 ecr 100>

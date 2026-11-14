@@ -405,6 +405,60 @@ TEST_P(TcpSack, TheBlocksGoWithThePeersFinOnDataInOrder) {
     fin_in_order_releases_the_blocks(100);
 }
 
+TEST_P(TcpSackRefusing, AFinBelowHeldDataIsAcknowledgedOnceAfterASecondFullSegment) {
+    auto* c = open();
+    ASSERT_NE(c, nullptr);
+    const std::uint16_t full = c->mss();
+    receive(segment_at(0, full));  // the first full segment: its ACK waits for the flush
+    refuse();
+    receive(segment_at(3U * full, 100));  // held above the gap; its answer at once is refused, so the count stays
+    allow();
+    receive(segment_at(full, full, {TcpFlag::Fin, TcpFlag::Psh, TcpFlag::Ack}));  // the second, with the FIN
+    EXPECT_EQ(c->state(), aloe::tcp::State::CloseWait);
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+    const auto frames = collect();
+    ASSERT_EQ(pure_acks(frames), 1U) << "the FIN's ACK is the only one: none for the data before the FIN step";
+    const auto ack = std::ranges::find_if(frames, is_pure_ack);
+    EXPECT_EQ(ack->tcp->acknowledgement, at((2U * full) + 1U));
+    EXPECT_TRUE(sacks(*ack).empty()) << "what was held above the FIN went before the ACK";
+}
+
+TEST_P(TcpSackRefusing, AFinBelowHeldDataIsAcknowledgedOnceAfterTwoSegmentsUnderADelay) {
+    configure_tcp({.delayed_ack = std::chrono::milliseconds{40}});
+    auto* c = open();
+    ASSERT_NE(c, nullptr);
+    const std::uint16_t full = c->mss();
+    receive(segment_at(0, full));  // a full segment's worth: the delay starts
+    refuse();
+    receive(segment_at(3U * full, 100));  // held above the gap; its answer at once is refused, so the bytes stay owed
+    allow();
+    receive(segment_at(full, full, {TcpFlag::Fin, TcpFlag::Psh, TcpFlag::Ack}));  // two segments' worth, with the FIN
+    EXPECT_EQ(c->state(), aloe::tcp::State::CloseWait);
+    EXPECT_EQ(c->out_of_order_segments(), 0U);
+    const auto frames = collect();
+    ASSERT_EQ(pure_acks(frames), 1U) << "the FIN's ACK is the only one: none for the data before the FIN step";
+    const auto ack = std::ranges::find_if(frames, is_pure_ack);
+    EXPECT_EQ(ack->tcp->acknowledgement, at((2U * full) + 1U));
+    EXPECT_TRUE(sacks(*ack).empty()) << "what was held above the FIN went before the ACK";
+    advance(std::chrono::milliseconds{40});
+    EXPECT_TRUE(collect().empty()) << "no delayed ACK is left behind";
+}
+
+TEST_P(TcpSack, AnOldResetWithPayloadIsNotReportedAsADuplicate) {
+    auto* c = open();
+    ASSERT_NE(c, nullptr);
+    receive(segment_at(0, 100));
+    std::ignore = collect();
+    receive(segment_at(0, 100, {TcpFlag::Rst, TcpFlag::Ack}));  // old, so dropped without an answer
+    EXPECT_EQ(c->state(), aloe::tcp::State::Established);
+    EXPECT_TRUE(collect().empty());
+    receive(peer_.segment({TcpFlag::Ack}, {}, at(100) + 1000000U, peer_.rcv_nxt()));  // past the edge: answered at once
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_TRUE(sacks(frames[0]).empty()) << "a RST's payload is not reported as a duplicate";
+    EXPECT_EQ(tcp_->counters().duplicate_sacks_sent, 0U);
+}
+
 TEST_P(TcpSack, TheBlocksGoWhenTheJoinReachesARememberedFin) {
     auto* c = open();
     ASSERT_NE(c, nullptr);
