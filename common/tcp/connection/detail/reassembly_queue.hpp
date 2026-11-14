@@ -203,10 +203,6 @@ namespace aloe::tcp::detail {
             fin_ = at;
         }
 
-        void forget_fin() noexcept {
-            fin_.reset();
-        }
-
         /// Every node back to the pool, and the FIN forgotten.
         void release(Pool& pool) noexcept {
             pool.release_all(chain_);

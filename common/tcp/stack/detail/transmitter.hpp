@@ -477,8 +477,7 @@ namespace aloe::tcp::detail {
             if (edge == Edge::Restate) {
                 return block.window.restate(next);
             }
-            return block.window.offer(
-                next, block.receive.unread(), block.held_segments() < context_.config.receive_segments);
+            return block.window.offer(next, block.receive.unread(), context_.slot_free(block));
         }
 
     private:

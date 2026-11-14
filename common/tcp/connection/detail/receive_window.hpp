@@ -54,10 +54,10 @@ namespace aloe::tcp::detail {
                   const std::uint32_t budget,
                   const std::uint16_t full_segment,
                   const std::optional<std::uint8_t> scale) noexcept {
-            budget_       = budget;
-            full_segment_ = full_segment;
-            scale_        = scale;
-            edge_         = next + std::min(budget, unscaled_max);
+            budget_    = budget;
+            threshold_ = std::max<std::uint32_t>(1, std::min<std::uint32_t>(budget / 2, full_segment));
+            scale_     = scale;
+            edge_      = next + std::min(budget, unscaled_max);
         }
 
         [[nodiscard]] std::uint32_t budget() const noexcept {
@@ -133,12 +133,10 @@ namespace aloe::tcp::detail {
             return next + room;
         }
 
-        /// RFC 1122's rule against silly windows: `candidate` lies at least `min(budget / 2, full segment)`, and at
-        /// least a byte, beyond the edge already offered.
+        /// RFC 1122's rule against silly windows: `candidate` lies at least the threshold beyond the edge already
+        /// offered.
         [[nodiscard]] bool reaches(const wire::TcpSequence candidate) const noexcept {
-            const std::uint32_t threshold =
-                std::max<std::uint32_t>(1, std::min<std::uint32_t>(budget_ / 2, full_segment_));
-            return std::int64_t{candidate - edge_} >= std::int64_t{threshold};
+            return std::int64_t{candidate - edge_} >= std::int64_t{threshold_};
         }
 
         /// The field that states `target`, rounded up to the unit, and the edge the peer reconstructs from it.
@@ -151,8 +149,9 @@ namespace aloe::tcp::detail {
             return Offer{.field = field, .edge = next + static_cast<std::uint32_t>(rounded << bits)};
         }
 
-        std::uint32_t budget_       = 0;
-        std::uint16_t full_segment_ = 0;
+        std::uint32_t budget_    = 0;
+        /// RFC 1122's silly-window threshold, fixed at `open`: `min(budget / 2, full segment)`, and at least a byte.
+        std::uint32_t threshold_ = 0;
         std::optional<std::uint8_t> scale_{};
         wire::TcpSequence edge_{};
     };

@@ -139,7 +139,7 @@ namespace aloe::tcp::detail {
             if (!receiving) {
                 return;  // the peer sends no more data, or the connection is closed: no offer to make
             }
-            if (block.window.update_due(block.receive.next(), block.receive.unread(), slot_free(block))) {
+            if (block.window.update_due(block.receive.next(), block.receive.unread(), context_.slot_free(block))) {
                 transmitter_.queue_ack(block);  // an ordinary window update, including the reopening of a zero window
             }
         }
@@ -170,11 +170,6 @@ namespace aloe::tcp::detail {
                        (header.flags.has(wire::TcpFlag::Fin) ? 1U : 0U);
             }
         };
-
-        /// The connection holds fewer packets than its cap: the edge may move.
-        [[nodiscard]] bool slot_free(const ControlBlock& block) const noexcept {
-            return block.held_segments() < context_.config.receive_segments;
-        }
 
         /// Opens the receive side once the handshake settled the peer's MSS and the options: RCV.NXT, then the window
         /// with the budget counted in `mss()`. `scaling` is whether both ends offered window scaling: the window then
@@ -476,7 +471,7 @@ namespace aloe::tcp::detail {
             if (block.reassembly.holds()) {  // the one question a clean stream asks
                 return receive_below_held(block, datagram, segment);
             }
-            if (!slot_free(block)) {
+            if (!context_.slot_free(block)) {
                 ++context_.counters.dropped_no_slot;
                 ack_now(block, Edge::Restate);
                 return false;
@@ -490,9 +485,9 @@ namespace aloe::tcp::detail {
             }
             lifecycle_.raise(block, stream::Event::Readable);
             // A full-sized segment is the connection's `mss()`: the peer's MSS or ours, less the timestamp option.
-            acknowledge(
-                block,
-                block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next(), false, delay()));
+            acknowledge(block,
+                        block.ack_policy.on_data(
+                            segment.payload_length, block.mss(), block.receive.next(), false, context_.delay_acks));
             return true;
         }
 
@@ -514,7 +509,7 @@ namespace aloe::tcp::detail {
                 ack_now(block, Edge::Restate);
                 return false;
             }
-            if (!slot_free(block) && !make_room(block, next)) {
+            if (!context_.slot_free(block) && !make_room(block, next)) {
                 ++context_.counters.dropped_no_slot;
                 ack_now(block, Edge::Restate);
                 return false;
@@ -533,14 +528,14 @@ namespace aloe::tcp::detail {
             if (segment.header.flags.has(wire::TcpFlag::Fin)) {
                 // The FIN step that follows releases what is held above and drops the blocks, and its ACK, sent or
                 // queued, is the only one for the segment: an ACK here would report what that step releases.
-                std::ignore =
-                    block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next(), false, delay());
+                std::ignore = block.ack_policy.on_data(
+                    segment.payload_length, block.mss(), block.receive.next(), false, context_.delay_acks);
                 return true;
             }
             join(block);
             // After the join, so the policy clears a remembered gap end RCV.NXT reached.
-            const AckPolicy::Ack ack =
-                block.ack_policy.on_data(segment.payload_length, block.mss(), block.receive.next(), true, delay());
+            const AckPolicy::Ack ack = block.ack_policy.on_data(
+                segment.payload_length, block.mss(), block.receive.next(), true, context_.delay_acks);
             if (block.receive.closed()) {
                 // The join reached a remembered FIN, whose step sent its ACK or queued it: a queued one goes now. The
                 // ACK that left may have ended the connection.
@@ -581,7 +576,7 @@ namespace aloe::tcp::detail {
             if (segment.payload_length > 0) {
                 // At the cap or with the pool empty the queue first places what needs no new node: a duplicate, or a
                 // newcomer that takes the slot of a node it replaces. Only a newcomer that needs one asks `make_room`.
-                const bool room = slot_free(block) && context_.pool.available() > 0;
+                const bool room = context_.slot_free(block) && context_.pool.available() > 0;
                 const auto offset =
                     static_cast<std::uint16_t>(datagram.l3_offset + datagram.l3_length + segment.payload_offset);
                 const auto insert = [this, &block, &datagram, &segment, offset, sequence](const bool fresh_node) {
@@ -685,11 +680,6 @@ namespace aloe::tcp::detail {
             }
             const Sequence end = first + segment.payload_length;
             block.sack.duplicate(first, end.before(next) ? end : next);
-        }
-
-        /// The configuration delays the ACK of in-order data.
-        [[nodiscard]] bool delay() const noexcept {
-            return context_.config.delayed_ack > core::Duration::zero();
         }
 
         /// In-order data is acknowledged as the policy said: at once, by the flush, or when the delay runs out. A

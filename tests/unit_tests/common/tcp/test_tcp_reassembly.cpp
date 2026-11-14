@@ -327,7 +327,7 @@ TEST_F(TcpReassembly, ARememberedFinKeepsTheQueueHolding) {
     EXPECT_TRUE(queue.holds());
     EXPECT_EQ(queue.segments(), 0U);
     EXPECT_EQ(queue.fin(), Sequence{5000});
-    queue.forget_fin();
+    queue.release(pool);  // as the peer's FIN in order and a terminal event forget it
     EXPECT_FALSE(queue.holds());
     EXPECT_FALSE(queue.fin());
 }

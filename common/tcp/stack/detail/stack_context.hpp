@@ -45,10 +45,17 @@ namespace aloe::tcp::detail {
               largest_budget{
                   ReceiveWindow::budget_of(config.receive_segments, mss, config.receive_window, window_shift)},
               syn_window{static_cast<std::uint16_t>(std::min(largest_budget, ReceiveWindow::unscaled_max))},
+              delay_acks{config.delayed_ack > core::Duration::zero()},
               pool{config.receive_pool} {
             for (std::size_t index = 0; index < config.connections; ++index) {
                 blocks.emplace_back(owner, fire, fire_ack, static_cast<std::uint32_t>(index), mss);
             }
+        }
+
+        /// The connection holds fewer packets than its cap, on both chains: the edge may move and a segment may take a
+        /// slot. The one place that says what a free slot is.
+        [[nodiscard]] bool slot_free(const ControlBlock& block) const noexcept {
+            return block.held_segments() < config.receive_segments;
         }
 
         StackContext(const StackContext&)            = delete;
@@ -67,6 +74,8 @@ namespace aloe::tcp::detail {
         std::uint32_t largest_budget = 0;
         /// `min(largest_budget, 65535)`: what a SYN states, before the connection has a budget.
         std::uint16_t syn_window     = 0;
+        /// `delayed_ack` is set: the ACK of in-order data waits for the delay rather than the flush.
+        bool delay_acks              = false;
         HeldSegmentPool<Packet> pool;
         std::deque<ControlBlock> blocks{};
         TcpCounters counters{};
