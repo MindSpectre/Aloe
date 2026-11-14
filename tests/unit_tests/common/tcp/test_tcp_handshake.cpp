@@ -605,6 +605,9 @@ TEST_P(TcpHandshake, ConfigValidation) {
     EXPECT_NO_THROW((std::ignore = Tcp{
                          ip_, wheel_, {.receive_window = 65535U << 14U, .delayed_ack = 500ms}
     }));
+    EXPECT_NO_THROW((std::ignore = Tcp{ip_, wheel_, {.receive_segments = 2048}})) << "a cap equal to the pool";
+    EXPECT_NO_THROW((std::ignore = Tcp{ip_, wheel_, {.delayed_ack = 1ms}}))
+        << "a delay equal to the wheel's resolution";
     const Tcp capped{
         ip_, wheel_, Config{.receive_segments = 1000, .window_scaling = false}
     };
@@ -718,6 +721,31 @@ TEST_P(TcpHandshake, TheFirstAckAfterTheHandshakeStatesTheBudgetScaled) {
     auto* d = open_passive(stamped);
     ASSERT_NE(d, nullptr);
     EXPECT_EQ(d->receive_budget(), 370688U) << "512 * 1448 / 2";
+}
+
+TEST_P(TcpHandshake, ABudgetTheFieldStatesUnscaledOffersAZeroShift) {
+    configure_tcp({.receive_segments = 32});
+    // The largest budget, 32 * 1460 / 2 = 23360, fits the field unscaled: the shift is 0, offered all the same.
+    const auto connected =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port}, now_);
+    ASSERT_TRUE(connected.has_value());
+    const auto syn = collect();
+    ASSERT_EQ(syn.size(), 1U);
+    EXPECT_EQ(option_bytes(syn[0]), linux_layout(std::pair{ts_value_of(syn[0]), 0U}, true, std::uint8_t{0}))
+        << "mss 1460, sackOK, TS, nop, wscale 0";
+    EXPECT_EQ(syn[0].tcp->window, 23360U);
+
+    peer_.set_timestamps(100);
+    peer_.set_sack_permitted(true);
+    peer_.set_window_scale(7);
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto syn_ack = collect();
+    ASSERT_EQ(syn_ack.size(), 1U);
+    ASSERT_TRUE(aloe::testing::is_flags(syn_ack[0], {TcpFlag::Syn, TcpFlag::Ack}));
+    EXPECT_EQ(option_bytes(syn_ack[0]), linux_layout(std::pair{ts_value_of(syn_ack[0]), 100U}, true, std::uint8_t{0}))
+        << "mss 1460, sackOK, TS, nop, wscale 0";
+    EXPECT_EQ(syn_ack[0].tcp->window, 23168U) << "32 * 1448 / 2 with timestamps";
 }
 
 TEST_P(TcpHandshake, APeerShiftAboveFourteenIsUsedAsFourteen) {

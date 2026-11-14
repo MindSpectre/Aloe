@@ -410,7 +410,6 @@ TEST_F(TcpReassembly, ARandomStreamIsReadBackByteExact) {
                 ASSERT_FALSE(ranges[at].first.before(ranges[at - 1].end)) << "held ranges overlap";
             }
             ASSERT_EQ(ranges.size(), queue.segments());
-            ASSERT_LE(queue.segments(), nodes.capacity());
             ASSERT_EQ(bytes, queue.bytes());
         }
 
@@ -420,5 +419,6 @@ TEST_F(TcpReassembly, ARandomStreamIsReadBackByteExact) {
         EXPECT_FALSE(queue.holds());
         nodes.release_all(run.chain);
         queue.release(nodes);
+        EXPECT_EQ(nodes.available(), nodes.capacity()) << "every node went back";
     }
 }

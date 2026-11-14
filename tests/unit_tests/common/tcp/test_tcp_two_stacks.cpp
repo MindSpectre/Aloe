@@ -541,15 +541,16 @@ TEST_P(TcpTwoStacks, ALossBehindThreeDuplicateAcksIsRepairedWithoutATimeout) {
         return ++data_frames == lost ? std::optional{aloe::fabric::Verdict{.action = aloe::fabric::Action::Drop}}
                                      : std::nullopt;
     }});
-    // Fourteen full segments, ten behind the loss: the first flight of ten puts six of them behind it, and the
-    // client sends the other four only once the repair has filled the gap.
+    // Fourteen full segments, ten behind the loss: the first flight of ten puts six of them behind it. The count held
+    // pins that none of the other four left before the fast retransmit, or the server would have held it too.
     EXPECT_TRUE(run_echo(14U * 1448U, 2000));
     const auto& cc = client_.tcp.counters();
     const auto& sc = server_.tcp.counters();
     EXPECT_EQ(client_port_.impairment_counters().dropped, 1U);
     EXPECT_EQ(cc.retransmits, 0U) << "no retransmission timeout";
     EXPECT_GE(cc.fast_retransmits, 1U) << "three duplicate ACKs started the repair";
-    EXPECT_EQ(sc.out_of_order_held, 6U) << "segments 5 to 10, held above the gap; no new data during the recovery";
+    EXPECT_EQ(sc.out_of_order_held, 6U)
+        << "segments 5 to 10, held above the gap: nothing past segment 10 left before the fast retransmit";
     EXPECT_GT(sc.sack_acks_sent, 0U) << "and reported with SACK blocks";
     EXPECT_EQ(sc.dropped_out_of_order, 0U);
 }

@@ -169,7 +169,8 @@ TEST(ReceiveWindow, SegmentsShorterThanTheUnitNeverCloseTheWindow) {
     for (std::uint32_t received = 4; received <= 4000; received += 4) {
         EXPECT_EQ(ack(window, start + received, received).field, 46336);
     }
-    EXPECT_EQ(window.edge(), start + 370688U + 4000U) << "the creep the spec describes: the cap bounds memory";
+    EXPECT_EQ(window.edge(), start + 370688U + 4000U)
+        << "each field rounded up and recorded moves the edge on: the cap, not the budget, bounds memory";
 }
 
 TEST(ReceiveWindow, AClosedWindowStaysClosedUntilAFullSegmentFits) {
