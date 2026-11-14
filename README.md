@@ -8,15 +8,34 @@ userspace. On top of the bricks sits a runtime that writes the loop for you and
 offers senders and receivers, and later a stream API in the spirit of
 Boost.Beast, for the code that waits.
 
-The repository contains the build skeleton, the device layer, the loop bricks,
-the shard runtime, the IP base and minimal TCP: the toolchain, the dependency
-setup, the packet and device abstraction with an in-memory backend for tests and
+The repository contains the device layer with an in-memory backend for tests and
 a DPDK backend, the queue, wheel and work node a loop is built from, the runtime
 that drives them on one thread per queue, IPv4 with ARP and ICMP echo, and a TCP
-whose connections are zero-copy streams, with senders over them in the runtime.
-The stack is built in phases: minimal TCP, then full TCP with retransmission
-and congestion control, TLS, and finally HTTP/1.1 with WebSocket. See the [architecture overview](docs/architecture/overview.md)
-for the design and the [roadmap](docs/roadmap.md) for the phases.
+whose connections are zero-copy streams: reliable on the send side, holding what
+arrives above a gap as the packets it came in, with SACK, window scaling and
+NewReno, and with senders over it in the runtime. The stack is built in phases:
+shard runtime, minimal TCP, full TCP, TLS, and finally HTTP/1.1 with WebSocket.
+See the [architecture overview](docs/architecture/overview.md) for the design
+and the [roadmap](docs/roadmap.md) for the phases.
+
+## Status
+
+Aloe is pre-v1. The public API may change at any step until it freezes as v1 at
+the end of phase 2, and the stack makes no deployment or latency claim yet.
+
+- **Done:** phase 0, the shard runtime, and phase 1, minimal TCP.
+- **Phase 2, full TCP, steps 1 to 4 landed:** the tick-to-trade benchmark
+  (its first recorded run waits for a quiet machine with hugepages), packet
+  loan with scripted impairment and a packetdrill-style scenario runner,
+  reliable send (RTO, timestamps and PAWS, zero-window probes, fast retransmit
+  and NewReno, bounded recovery) and the receive side (segments held above a
+  gap without a copy, SACK and duplicate SACK, window scaling, an optional
+  delayed ACK).
+- **Next:** loss recovery with RACK-TLP over SACK, then the lifecycle and
+  client hardening (TIME_WAIT, keepalive, path MTU, RFC 6528 and RFC 5961),
+  where the API freezes. TLS and HTTP/1.1 with WebSocket follow.
+
+Until step 6 lands the stack is not hardened against hostile peers.
 
 ## Modules
 
@@ -52,25 +71,90 @@ include it by name:
 
 ## Quick example
 
-Trimmed from `examples/hello/hello.cpp`:
+A TCP echo server, first as a loop you write over the bricks, then as a task
+on the runtime. Both are trimmed: the full programs, with the client side and
+how to run them against the kernel over a tap device, are
+`examples/tcp_echo/tcp_echo.cpp` and `examples/tcp_echo_tasks/tcp_echo_tasks.cpp`.
+
+The bricks: no coroutine and no sender on the data path. Each call returns
+before anything waits, and the program decides what happens between them:
 
 ```cpp
-#include <aloe/core>
-#include <aloe/execution>
-#include <print>
-#include <tuple>
+using Port = aloe::ethdev::Port;
+using Ipv4 = aloe::net::Ipv4<Port>;
+using Tcp  = aloe::tcp::Stack<Ipv4>;
 
-#include <rte_version.h>
+aloe::core::calibrate_clock();
+aloe::ethdev::Eal eal{eal_arguments};
+Port port{{.name = "net_tap0", .queues = 1}};
+aloe::loop::ShardCounters counters;
+aloe::loop::ShardQueue<Port> queue{port, 0, 512, counters};
+Ipv4 ip{queue, ip_config};
+aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, aloe::core::Clock::now()};
+Tcp tcp{ip, wheel, {}};
+std::vector<Port::Packet> burst(64);
+std::ignore = tcp.listen(7);
 
-int main() {
-    const auto result = aloe::execution::ex::sync_wait(aloe::execution::ex::just(41) |
-                                                       aloe::execution::ex::then([](int value) { return value + 1; }));
+for (;;) {
+    const auto now             = aloe::core::Clock::now();
+    const std::size_t received = queue.receive(burst);
+    ip.process(std::span<Port::Packet>{burst}.first(received), now);
+    tcp.process(ip.received(aloe::wire::Ipv4Protocol::Tcp), now);
+    std::ignore = wheel.advance(now);
 
-    std::println("Aloe {}", aloe::core::version_string);
-    std::println("{}", rte_version());
-    std::println("sender result {}", std::get<0>(*result));
+    while (const auto event = tcp.poll_event()) {
+        Tcp::ConnectionType& c = *event->connection;
+        if (event->events.readable() || event->events.writable()) {
+            echo(c);  // prepare, copy from c.unread(), commit, consume
+        }
+        if (c.peer_closed() && c.unread().empty()) {
+            c.close();
+        }
+        if (event->events.closed() || event->events.reset() || event->events.timed_out()) {
+            c.release();
+        }
+    }
+    tcp.flush(now);
+    std::ignore = queue.flush();
 }
 ```
+
+The runtime: the same loop, written for you on one shard per queue, with
+senders for the code that waits:
+
+```cpp
+aloe::runtime::task<void> echo(Stack::StreamType stream) {
+    while (co_await stream.readable(1)) {
+        while (!stream.unread().empty()) {
+            const auto chunk = stream.unread().front();
+            if (!co_await stream.send(chunk)) {
+                co_return;
+            }
+            stream.consume(chunk.size());
+        }
+    }
+    std::ignore = co_await stream.close();
+}
+
+aloe::runtime::task<void> serve(Stack::StreamsType* streams, aloe::runtime::Scheduler scheduler, std::uint16_t port) {
+    while (auto stream = co_await streams->accept(port)) {
+        scheduler.spawn(echo(std::move(*stream)));
+    }
+}
+```
+
+## Requirements
+
+- Linux on x86-64. Fedora 44 is the distribution the project is verified on;
+  `scripts/install-linux.sh` also covers Debian/Ubuntu and Arch.
+- A C++26 compiler: clang 22 or GCC 16, both with libstdc++ 16. The build uses
+  CMake presets, Ninja, mold and ccache; the install script provides them.
+- Everything else, DPDK included, comes through vcpkg on the first configure.
+- `core::Clock` reads the TSC by default and refuses to start without an
+  invariant TSC and the kernel's `tsc` clocksource, which most virtual machines
+  lack. On a VM, configure with `-DUSE_TSC_CLOCK=OFF`.
+- The tests need neither root, nor hugepages, nor a network card. The examples
+  and the manual tap tests need root; the benchmark needs hugepages.
 
 ## Building
 
