@@ -2,6 +2,7 @@
 
 #include <aloe/core>
 #include <cassert>
+#include <cstdint>
 #include <format>
 #include <tuple>
 #include <utility>
@@ -24,6 +25,7 @@ namespace aloe::benchmarks {
         }
 
         constexpr wire::TcpSequence peer_initial_sequence{1000};
+        constexpr std::uint8_t peer_window_scale = 7;  ///< What Linux offers with its default receive buffers.
 
     }  // namespace
 
@@ -32,6 +34,10 @@ namespace aloe::benchmarks {
           config_{config},
           script_{peer_spec(config), peer_initial_sequence},
           starts_{starts} {
+        // A venue on Linux offers SACK-permitted and window scaling in its SYN or SYN-ACK, beside the timestamps
+        // `stamp` sets; the floor builds no handshake segment, so neither reaches its fixed offsets.
+        script_.set_sack_permitted(true);
+        script_.set_window_scale(peer_window_scale);
     }
 
     std::expected<void, PeerError> VenuePeer::open_active() {

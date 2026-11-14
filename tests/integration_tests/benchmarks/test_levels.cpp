@@ -52,6 +52,20 @@ namespace {
         }
     }
 
+    /// The venue offers what a Linux venue offers, so the stack's handshake segment carries SACK-permitted and its
+    /// shift whichever end opens, and every order states its window scaled. With the defaults the shift is 3, the
+    /// smallest with `65535 << shift` at least the largest budget, 512 slots of 1460 bytes halved, 373760; the
+    /// connection's budget is 512 slots of 1448 bytes, the MSS less the timestamps, halved: 370688 bytes, beyond what
+    /// an unscaled field states.
+    void expect_options_negotiated(const VenuePeer& peer) {
+        constexpr std::uint8_t shift   = 3;
+        constexpr std::uint32_t budget = 512U * 1448U / 2U;
+        EXPECT_TRUE(peer.script().stack_sack_permitted());
+        EXPECT_EQ(peer.script().stack_window_scale(), std::optional<std::uint8_t>{shift});
+        EXPECT_GT(peer.script().stack_window_bytes(), 65535U) << "the last order's window, in bytes";
+        EXPECT_LE(peer.script().stack_window_bytes(), budget);
+    }
+
     /// Runs level 0 over a fresh pair: inline peer for same-core, a thread otherwise.
     void run_level0(const RoundConfig& config,
                     const char* name,
@@ -72,6 +86,7 @@ namespace {
             venue.join();
         }
         expect_closed_loop(state, device, peer);
+        expect_options_negotiated(peer);
         EXPECT_EQ(peer.counters().arp_replies_sent > 0, arp_on_wire) << "learned unless ARP is on the wire";
         // Every order carries the ACK of its tick, and the brick's count of full segments restarts at each ACK it
         // sends, so with one tick in flight no second-segment ACK leaves, at 1448 either.
@@ -166,6 +181,7 @@ namespace {
         run_runtime(state, device, peer_config, arp_on_wire, std::nullopt);
         venue.join();
         expect_closed_loop(state, device, peer);
+        expect_options_negotiated(peer);
         EXPECT_EQ(peer.counters().arp_replies_sent > 0, arp_on_wire) << "learned unless ARP is on the wire";
         // As at level 0: no pure ACK follows the handshake, since every order carries the ACK of its tick and a bare
         // ACK from the venue gets none back.

@@ -62,8 +62,10 @@ back onto its receive.
 **The venue.** `VenuePeer` is a `frames::TcpPeer` scripted on a thread of its own. It runs the handshake both
 ways, as the deployments do: the stack listens in the tick round and connects in the gateway round. At levels 0
 and 1 it checks every order's IPv4 and TCP checksums, its sequence number and its round number. Every frame it
-sends is built outside the timed window, on its own core. It offers RFC 7323 timestamps in its SYN or SYN-ACK and
-echoes the stack's on every frame, as a venue running Linux would, with a value that rises by one per frame.
+sends is built outside the timed window, on its own core. It offers what a venue running Linux offers in its SYN
+or SYN-ACK: RFC 7323 timestamps, which it echoes on every frame with a value that rises by one per frame,
+SACK-permitted, and a window scale of 7. The stack's connection therefore uses SACK and scales its window by 3, and
+the venue's script reads the stack's window in bytes, the field shifted by that scale.
 
 **Mbufs are recycled, never freed across cores.** DPDK's per-thread mempool cache does not amortise a one-way
 flow: with the 512-entry cache these pools get, a thread that only allocates refills it with a bulk dequeue of
@@ -88,6 +90,9 @@ nanoseconds, stripped of the warm-up and sorted only after the run.
 - any drop, refusal or allocation-failure counter of the stack, TCP's, IP's or the shard's, or TCP's counts of
   retransmissions (timeout, fast, deferred and copied), zero-window probes and PAWS drops, is not zero at the end of a configuration; only the waits for ARP and IP's refusal of
   unsolicited ARP replies are allowed;
+- any of TCP's receive-side counts, segments held out of order and released, ACKs sent with SACK blocks or a
+  duplicate report, and ACKs the delay timer sent, is not zero: a clean ring never reorders, and the delayed ACK is
+  off by default;
 - the venue sees an order for another round or, at levels 0 and 1, one with a bad checksum or out of sequence;
 - a round outlasts the deadline, one second or twice `--gap`, whichever is longer;
 - a stamp pair is missing or inverted, checked per round and per breakdown leg, and the message names the round,
@@ -513,6 +518,16 @@ comparison point, because it predates #24's copy of shared mbufs on receive. A d
 investigated before the pull request, and the finding goes in this page either way. The step 3 rerun is owed: it
 needs hugepages and root. Both result files go to `docs/benchmarks/results/<date>-<sha>-<host>.json`, one named
 for the base revision and one for the branch's.
+
+The receive side (out-of-order segments held as packets, SACK blocks, window scaling and the optional delayed ACK)
+gates the same way, on a tighter bar: p50 and p99 of the 64-byte tick at level 0, cross-core, may move no more than
+the run-to-run noise, 10 to 20 ns. Its rerun is owed too, since the machine it was built on had no hugepages and no
+root to reserve them. It is made on one machine with the `release` preset and 64 hugepages: `main` at the branch's
+base, 6a779fb, built in a worktree, and the branch's head, each with `-DDO_BENCHMARKS=ON`; three runs of each
+alternating, base first, with the options of the recorded run above; compared by the medians of the three runs, p50
+and p99, with the `tcp` leg of a `--breakdown` run beside them. A change beyond the bar is found and fixed before the
+merge, or recorded on this page with its number and its reason; the six result files go under
+`docs/benchmarks/results/`, named for their revisions.
 
 ## What comes next
 
