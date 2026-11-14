@@ -168,9 +168,12 @@ byte-exact under `netem delay 5ms reorder 25% 50%` with no retransmission timeou
 both read from the kernel's `TCP_INFO`. It caps the tap's `gso_max_segs` at 1 while netem is installed, so netem sees
 single segments rather than 64 KB bursts, needs `ip` and `tc` with `sch_netem`, and runs alone, since the earlier
 suites' loop threads keep part of the 1024-packet pool in their mempool caches:
-`sudo ./build/debug/tests/manual_tests/tcp/Aloe.Tests.Manual.Tcp.Tap --gtest_filter='TcpTapReceive.*'`. Without root
-every case is skipped. To watch the traffic while it runs, `sudo tcpdump -ni aloe-tcp tcp` in another shell; the
-interface goes away when the suite exits.
+`sudo ./build/debug/tests/manual_tests/tcp/Aloe.Tests.Manual.Tcp.Tap --gtest_filter='TcpTapReceive.*'`. The two netem
+cases read `tcpi_total_rto`, which Linux has from 6.7, and skip on an older kernel, so a run counts only on Linux 6.7 or
+later. The binary reads `tcpi_total_rto`, `tcpi_snd_wnd` and `tcpi_bytes_acked` from glibc's `<netinet/tcp.h>`: glibc
+2.43, which this machine and CI's toolchain image have, declares them, and an older glibc without them fails to compile
+it, and since every preset builds the manual tests, fails the build. Without root every case is skipped. To watch the
+traffic while it runs, `sudo tcpdump -ni aloe-tcp tcp` in another shell; the interface goes away when the suite exits.
 
 The client scenarios need the host firewall to let a SYN reach the kernel listener through the tap. Fedora's
 firewalld puts a new interface in its default zone, which opens only TCP ports 1025-65535, so a kernel

@@ -96,9 +96,9 @@ does; the scenario scripts are Aloe's own. The steps, in order:
    a field rounded up so the offered edge never moves left. Receiver-side silly window avoidance (RFC 1122) and Linux's
    doubling rule for a window update on a read; on a connection that uses SACK, the first three segments above a gap
    answered at once and the rest at the flush; and a delayed ACK, off by default. Landed; the tap cases against a Linux
-   sender under netem reordering and loss, and the benchmark's rerun, wait for a machine with root and hugepages, beside
-   step 3's. Congestion-window growth on a flow the application limits moves to step 5. See the
-   [TCP brick](architecture/tcp.md).
+   sender under netem reordering and loss, which count only on Linux 6.7 or later, and the benchmark's rerun, wait for a
+   machine with root and hugepages, beside step 3's. Congestion-window growth on a flow the application limits moves to
+   step 5. See the [TCP brick](architecture/tcp.md).
 5. **Loss recovery with SACK.** RACK-TLP (RFC 8985), what Linux runs by default, over the SACK blocks the peer
    sends. Its tail loss probe resends a lost last segment, the end of an order, after about two round trips
    instead of a full RTO. Congestion-window growth on a flow the application limits goes with it.

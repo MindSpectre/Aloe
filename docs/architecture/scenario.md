@@ -271,7 +271,7 @@ names no policy runs under both. Its opening comment says what it pins, with the
 | `handshake/active-open`                                   | `connect` returns `EINPROGRESS`, SYN out with `<mss 1460,sackOK,TS val 0 ecr 0,nop,wscale 3>`, SYN-ACK in with neither, ACK out at the flush. |
 | `handshake/active-open-offers-sack-and-window-scale`      | A SYN-ACK with `sackOK` and `wscale`: both in use, and the first ACK states the budget, 370688 bytes, in units of 8: `win 46336`.             |
 | `handshake/passive-open-negotiates-sack-and-window-scale` | A SYN that offers both is answered with both in Linux's layout; the SYN-ACK's field is unscaled, the first ACK's scaled by 3.                 |
-| `handshake/options-without-timestamps`                    | `--tcp_timestamps=0`: the SYN-ACK answers in the 12-byte `nop,nop,sackOK,nop,wscale 3`; the budget is 373760, the first ACK `win 46595`.      |
+| `handshake/options-without-timestamps`                    | `--tcp_timestamps=0`: 12 bytes of options, the MSS then `nop,nop,sackOK,nop,wscale 3`; budget 373760, `win 46595` with 1000 bytes unread.     |
 | `handshake/sack-and-window-scale-off-by-config`           | `--tcp_sack=0`, `--tcp_window_scaling=0`: the SYN-ACK carries neither; our window is at most 65535, the peer's field of 512 is 512 bytes.     |
 | `handshake/syn-retransmitted-on-schedule`                 | No answer: the SYN again 1, 3, 7, 15 and 31 seconds after the first, each with the clock's value then, and `read` reports `ETIMEDOUT` at 63.  |
 | `handshake/syn-ack-retransmitted-on-schedule`             | The passive side's backoff: the SYN-ACK again 1, 2 and 4 seconds apart, then the late ACK, echoing the last, completes the handshake.         |
