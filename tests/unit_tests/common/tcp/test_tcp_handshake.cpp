@@ -762,6 +762,60 @@ TEST_P(TcpHandshake, ARetransmittedSynAckKeepsItsOptions) {
     EXPECT_EQ(again[0].tcp->window, 65535U);
 }
 
+TEST_P(TcpHandshake, ASynAckSentAgainAfterARestatingAckNeverMovesTheEdgeLeft) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    // Two passive opens to a scaling peer, each answered with the edge restated while still SynReceived: the restating
+    // ACK states 65535 rounded up to the unit of 8, so the recorded edge stands one byte past the SYN-ACK's.
+    const auto restated = [this](aloe::frames::TcpPeer& peer, const std::uint32_t slot) {
+        peer.set_window_scale(7);
+        receive(peer.syn());
+        const auto syn_ack = collect();
+        ASSERT_EQ(syn_ack.size(), 1U);
+        peer.see(syn_ack[0]);
+        receive(peer.segment(TcpFlags{TcpFlag::Ack}, {}, peer.snd_nxt() + 70000U, peer.rcv_nxt()));
+        const auto ack = collect();
+        ASSERT_EQ(ack.size(), 1U) << "a segment past the edge, answered at once";
+        EXPECT_TRUE(aloe::testing::is_flags(ack[0], {TcpFlag::Ack}));
+        EXPECT_EQ(ack[0].tcp->window, 8192U) << "(65535 + 7) >> 3";
+        EXPECT_EQ(tcp_->connection(slot).state(), aloe::tcp::State::SynReceived);
+        EXPECT_EQ(tcp_->connection(slot).receive_window(), 65536U);
+    };
+
+    // The SYN again: the SYN-ACK from its entry.
+    restated(peer_, 0);
+    aloe::frames::TcpPeer again{aloe::testing::peer_spec(), TcpSequence{aloe::testing::tcp_peer_isn}};
+    again.set_window_scale(7);
+    receive(again.syn());
+    auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    ASSERT_TRUE(aloe::testing::is_flags(frames[0], {TcpFlag::Syn, TcpFlag::Ack}));
+    EXPECT_EQ(frames[0].tcp->window, 65535U) << "the handshake's field, unscaled";
+    EXPECT_EQ(tcp_->connection(0).receive_window(), 65536U) << "the edge did not move left";
+
+    // The SYN-ACK's timer, on a second connection that did not see its SYN again.
+    aloe::frames::TcpPeer timed{aloe::testing::peer_spec(40001), TcpSequence{aloe::testing::tcp_peer_isn}};
+    restated(timed, 1);
+    advance(1s);
+    frames = collect();
+    ASSERT_EQ(frames.size(), 2U) << "both SYN-ACKs, each by its timer";
+    for (const auto& frame : frames) {
+        ASSERT_TRUE(aloe::testing::is_flags(frame, {TcpFlag::Syn, TcpFlag::Ack}));
+        EXPECT_EQ(frame.tcp->window, 65535U);
+    }
+    EXPECT_EQ(tcp_->connection(0).receive_window(), 65536U);
+    EXPECT_EQ(tcp_->connection(1).receive_window(), 65536U);
+
+    // The handshake completes, and the first ACK of data states the budget as before.
+    peer_.see(frames[0].tcp->destination_port == peer_.spec().source_port ? frames[0] : frames[1]);
+    receive(peer_.ack());
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value() && event->events.accepted());
+    receive(peer_.data(aloe::frames::pattern(1)));
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->window, (373760U - 1U + 7U) >> 3U) << "46720, as after any passive open";
+}
+
 TEST_P(TcpHandshake, AnActiveOpenThatEndsUnansweredNegotiatedNothing) {
     configure_tcp({.retries = 1});
     const auto connected =

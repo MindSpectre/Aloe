@@ -24,23 +24,47 @@ namespace {
         return offer;
     }
 
-    /// 100000 random steps of arrivals, consumes, offers and restatements; the edge never moves left and never
-    /// stands before RCV.NXT.
+    /// What a segment of the kind `kind` draws states now: an ordinary offer, a restatement, or, while RCV.NXT has not
+    /// moved since the window opened, the handshake's segment sent again.
+    [[nodiscard]] ReceiveWindow::Offer drawn(const ReceiveWindow& window,
+                                             const int kind,
+                                             const TcpSequence next,
+                                             const std::size_t unread,
+                                             const bool slot_free,
+                                             const bool handshaking) {
+        switch (kind) {
+            case 0:
+                return window.offer(next, unread, slot_free);
+            case 1:
+                return window.restate(next);
+            default:
+                return handshaking ? window.handshake(next) : window.restate(next);
+        }
+    }
+
+    /// 100000 random steps of arrivals, consumes, offers, restatements and handshake segments, in rounds that each open
+    /// the window afresh; the edge never moves left and never stands before RCV.NXT.
     void never_moves_left(const std::uint32_t budget, const std::optional<std::uint8_t> scale) {
         std::mt19937 engine{42};  // NOLINT(cert-msc51-cpp): a fixed seed makes a failure reproducible
         std::uniform_int_distribution<int> action{0, 3};
         std::uniform_int_distribution<int> coin{0, 1};
+        std::uniform_int_distribution<int> kind{0, 2};
         ReceiveWindow window;
         TcpSequence next{0xfff00000U};  // the run crosses the top of the sequence space
         std::size_t unread = 0;
-        window.open(next, budget, 1448, scale);
+        bool handshaking   = true;  // RCV.NXT has not moved since the window opened
         for (int step = 0; step < 100000; ++step) {
+            if (step % 100 == 0) {
+                window.open(next, budget, 1448, scale);
+                handshaking = true;
+            }
             switch (action(engine)) {
                 case 0: {
                     std::uniform_int_distribution<std::uint32_t> arrive{0, window.window(next)};
                     const std::uint32_t length  = arrive(engine);
                     next                        = next + length;
                     unread                     += length;
+                    handshaking                 = handshaking && length == 0;
                     break;
                 }
                 case 1: {
@@ -52,7 +76,7 @@ namespace {
                     const TcpSequence previous = window.edge();
                     const bool slot_free       = coin(engine) == 1;
                     const ReceiveWindow::Offer offer =
-                        coin(engine) == 1 ? window.offer(next, unread, slot_free) : window.restate(next);
+                        drawn(window, kind(engine), next, unread, slot_free, handshaking);
                     std::ignore = window.record(offer);
                     ASSERT_FALSE(window.edge().before(previous)) << "step " << step;
                     ASSERT_FALSE(window.edge().before(next)) << "step " << step;
@@ -96,6 +120,20 @@ TEST(ReceiveWindow, TheHandshakeStatesTheBudgetUnscaledAndTheFirstAckScaled) {
     const auto first = window.offer(start, 0, true);
     EXPECT_EQ(first.field, 46336);
     EXPECT_EQ(first.edge, start + 370688U);
+}
+
+TEST(ReceiveWindow, AHandshakeSegmentSentAgainNeverMovesTheEdgeLeft) {
+    ReceiveWindow window;
+    window.open(start, 370688, 1448, std::uint8_t{3});
+    const auto restated = window.restate(start);
+    EXPECT_EQ(restated.field, 8192) << "65535 rounded up to the unit of 8";
+    std::ignore = window.record(restated);
+    EXPECT_EQ(window.edge(), start + 65536U);
+    const auto again = window.handshake(start);
+    EXPECT_EQ(again.field, 65535) << "the handshake's field stays unscaled";
+    EXPECT_EQ(again.edge, start + 65536U) << "the edge already recorded, one byte past the field's";
+    EXPECT_FALSE(window.record(again));
+    EXPECT_EQ(window.edge(), start + 65536U);
 }
 
 TEST(ReceiveWindow, TheEdgeMovesOnlyByAFullSegment) {

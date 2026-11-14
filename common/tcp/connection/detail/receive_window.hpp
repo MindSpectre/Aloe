@@ -83,10 +83,13 @@ namespace aloe::tcp::detail {
             return static_cast<std::uint32_t>(edge_ - next);
         }
 
-        /// What a SYN-ACK states: the field unscaled, `min(budget, 65535)`.
+        /// What a SYN-ACK states: the field unscaled, `min(budget, 65535)`. A SYN-ACK sent again may follow an ACK
+        /// whose scaled field, rounded up, recorded an edge past the field's: the edge is the later of the two, so it
+        /// never moves left.
         [[nodiscard]] Offer handshake(const wire::TcpSequence next) const noexcept {
-            const std::uint32_t field = std::min(budget_, unscaled_max);
-            return Offer{.field = static_cast<std::uint16_t>(field), .edge = next + field};
+            const std::uint32_t field        = std::min(budget_, unscaled_max);
+            const wire::TcpSequence unscaled = next + field;
+            return Offer{.field = static_cast<std::uint16_t>(field), .edge = edge_.after(unscaled) ? edge_ : unscaled};
         }
 
         /// What an ordinary segment with an ACK states now.

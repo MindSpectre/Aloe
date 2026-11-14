@@ -347,6 +347,11 @@ basenames are unique across modules: `packet.hpp` is the concept,
   edge can stand ahead of the budget by more than a unit, and what is unread can pass the budget before the window
   closes. No test bounds the window or what is held by the budget; a test bounds what is held by what the slots hold,
   `receive_segments * mss()`, as the tap window case does.
+- The SYN-ACK's field is unscaled while every later field is scaled and rounded up, so an edge recorded from a scaled
+  field can stand one unit ahead of the handshake's: 65535 restated to a peer at shift 3 is 8192 units, 65536 bytes. A
+  handshake segment sent again states the old field and must not record an edge behind the one recorded, which
+  `ReceiveWindow::handshake` keeps. A test of the handshake's window sends something between the two SYN-ACKs, as
+  `syn-ack-again-after-a-restating-ack.pkt` sends a segment past the edge, or the second SYN-ACK only repeats the first.
 - Linux's bare zero-window probe, a segment at RCV.NXT - 1, counts as `dropped_out_of_window`, and a tail it resends
   counts as `dropped_duplicate`. A test that stalls a kernel sender at a closed window asserts neither at zero.
 - `TcpTapReceive`'s netem cases set the tap's `gso_max_segs` to 1 before the kernel socket connects and put it back
