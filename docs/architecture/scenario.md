@@ -275,6 +275,7 @@ names no policy runs under both. Its opening comment says what it pins, with the
 | `handshake/sack-and-window-scale-off-by-config`           | `--tcp_sack=0`, `--tcp_window_scaling=0`: the SYN-ACK carries neither; our window is at most 65535, the peer's field of 512 is 512 bytes.     |
 | `handshake/syn-retransmitted-on-schedule`                 | No answer: the SYN again 1, 3, 7, 15 and 31 seconds after the first, each with the clock's value then, and `read` reports `ETIMEDOUT` at 63.  |
 | `handshake/syn-ack-retransmitted-on-schedule`             | The passive side's backoff: the SYN-ACK again 1, 2 and 4 seconds apart, then the late ACK, echoing the last, completes the handshake.         |
+| `handshake/syn-ack-again-after-a-restating-ack`           | A segment past the edge in SynReceived is answered with `win 8192`; the SYN-ACK again, after a SYN or its timer, states 65535 still.          |
 | `handshake/syn-to-closed-port-is-reset`                   | No listener: `R.` with sequence 0, acknowledging the SYN.                                                                                     |
 | `handshake/stray-ack-in-listen-is-reset`                  | An ACK to a listening port with no connection: `R` at its acknowledgement number.                                                             |
 | `data/inbound-data-is-acked-at-flush`                     | `--tcp_receive_segments=4`: data in, ACK at `+0` with the window less what is unread; a `read` sends an update only if it doubles it.         |
@@ -285,6 +286,8 @@ names no policy runs under both. Its opening comment says what it pins, with the
 | `reassembly/covering-segment-replaces-a-held-one`         | A segment above a gap that covers a held one from its first byte replaces it; the gap filled, the run reads 2000 bytes.                       |
 | `reassembly/fin-above-a-gap`                              | A FIN above a gap is remembered: the duplicate ACK stays at the gap, and the FIN is acknowledged only once the gap fills.                     |
 | `reassembly/cap-drops-the-highest`                        | `--tcp_receive_segments=4`: the lower sequence wins at the cap; a new highest is dropped, a lower one or in-order data takes its node.        |
+| `reassembly/fin-on-duplicate-data-is-remembered`          | Held data again with a FIN attached: the FIN is remembered, its number joins the block, and the filled gap takes run and FIN at once.         |
+| `reassembly/fin-below-held-data-is-acked-once`            | `--tcp_receive_segments=3`: the peer's FIN on in-order data below held data is answered by one ACK, of the FIN, with no block.                |
 | `sack/held-segment-is-reported`                           | A segment above a gap is answered with its SACK block after the timestamps; the one that fills the gap is acked at once with no block.        |
 | `sack/newest-block-first`                                 | Three segments above the gap: each ACK lists the block just changed first, then the others, most recently changed first.                      |
 | `sack/three-blocks-with-timestamps`                       | Four ranges held: three blocks fit beside the timestamps, so the oldest is left out; the fourth segment is answered by the flush.             |
@@ -295,6 +298,8 @@ names no policy runs under both. Its opening comment says what it pins, with the
 | `sack/duplicate-prefix`                                   | An in-order segment with 500 old bytes: the prefix is reported as a duplicate SACK on the ACK at the flush, not at once.                      |
 | `sack/duplicate-of-held-data`                             | Held data arrives again: dropped, and reported as a duplicate SACK followed by the block that holds it.                                       |
 | `sack/overlapped-held-data-is-reported-at-the-join`       | An in-order segment runs 200 bytes into held data: the join reports the overlap as a duplicate SACK on the ACK it sends.                      |
+| `sack/syn-ack-again-reports-no-duplicate`                 | The peer's SYN-ACK again after the handshake: answered at once with the edge restated and no SACK option; a SYN is not payload.               |
+| `sack/peer-sack-blocks-are-skipped`                       | `--congestion=newreno`: the peer's duplicate ACKs carry SACK blocks, which are skipped; three of them still resend the head at once.          |
 | `ack/delayed-ack-waits-for-the-deadline`                  | `--tcp_delayed_ack_ms=40`: the ACK of one in-order segment leaves 40 ms after it.                                                             |
 | `ack/delayed-ack-two-full-segments-at-once`               | `--tcp_delayed_ack_ms=40`: two full segments' worth of bytes, two of 1448 or four of 724, is acknowledged at once.                            |
 | `ack/delayed-ack-rides-a-write`                           | `--tcp_delayed_ack_ms=40`: a `write` before the deadline carries the ACK, and no pure ACK follows.                                            |

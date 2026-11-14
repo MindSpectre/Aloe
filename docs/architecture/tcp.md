@@ -278,7 +278,7 @@ order moves none of `out_of_order_held`, `out_of_order_released`, `sack_acks_sen
 |             | `pure_acks_sent`             | ACKs without data, from `flush`, the immediate-ACK exceptions and the delay timer; probes are counted apart.                                                                       |
 |             | `control_segments_sent`      | SYN, SYN-ACK and FIN transmissions: first sends, resends and copies alike.                                                                                                         |
 |             | `resets_sent`                | RSTs, from `abort`, `release` and the replies to segments with no connection.                                                                                                      |
-|             | `window_updates`             | Segments that extended the advertised right edge.                                                                                                                                  |
+|             | `window_updates`             | Segments that extended the advertised right edge; a restating ACK too, when rounding its field up moved it.                                                                        |
 |             | `out_of_order_held`          | Segments held above a gap.                                                                                                                                                         |
 |             | `out_of_order_released`      | Held out-of-order segments released to make room for a lower sequence.                                                                                                             |
 |             | `sack_acks_sent`             | Pure ACKs that carried SACK blocks.                                                                                                                                                |
@@ -666,14 +666,16 @@ long as a hole is open, is processed and never answered: an answer would hand th
 never sent.
 
 **A FIN above a gap is one number.** A FIN on a segment above the gap, or a bare one, is remembered as the sequence it
-occupies, as TLDK represents it, rather than kept with a packet, as Linux keeps it with its buffer (`tcp_ofo_queue`).
-When RCV.NXT reaches it, the FIN is taken as an in-order FIN is, through the `Lifecycle`, and whatever is still held
-above it is released, as Linux's `tcp_fin` purges its queue. RCV.NXT never passes it: the join stops there, and a held
-segment that straddles it gives the run only its bytes below it. Data whose payload ends past a remembered FIN, in order
-or above the gap, is refused as data after the peer's FIN is (`dropped_unexpected`); a FIN above the remembered one is
-refused the same way, and a FIN below it replaces it, the replaced number leaving the SACK blocks. An in-order segment
-that carries data and the peer's FIN while something is held above does not join: its FIN step releases what is held, so
-no hole is reported filled, and its ACK goes as an in-order FIN's does, at the `flush` in `Established`.
+occupies, as TLDK represents it, rather than kept with a packet, as Linux keeps it with its buffer (`tcp_ofo_queue`). It
+is remembered once every byte below it is held, newly or already, so a FIN on a segment whose payload duplicates held
+data counts too. When RCV.NXT reaches it, the FIN is taken as an in-order FIN is, through the `Lifecycle`, and whatever
+is still held above it is released, as Linux's `tcp_fin` purges its queue. RCV.NXT never passes it: the join stops
+there, and a held segment that straddles it gives the run only its bytes below it. Data whose payload ends past a
+remembered FIN, in order or above the gap, is refused as data after the peer's FIN is (`dropped_unexpected`); a FIN
+above the remembered one is refused the same way, and a FIN below it replaces it, the replaced number leaving the SACK
+blocks. An in-order segment that carries data and the peer's FIN while something is held above does not join: its FIN
+step releases what is held, so no hole is reported filled, and its ACK goes as an in-order FIN's does, at the `flush` in
+`Established`. That ACK is the segment's only one: none leaves for its data before the FIN step has dropped the blocks.
 
 **Two limits on what is held, independent of each other.** The byte window is the limit the peer obeys: when
 unread bytes fill it the peer stops and nothing is lost. Separately, a connection holds at most
@@ -727,16 +729,18 @@ each change of the blocks in the tick it happens. Only an ACK that reports build
 nothing for it.
 
 **Duplicate SACK.** RFC 2883, which Linux sends by default; `sack` turns both on. The first block of the next pure
-ACK reports a range that arrived twice, and the regular blocks follow it. There are four sources: a segment
-refused as a duplicate or by PAWS that starts before RCV.NXT, its range up to RCV.NXT, with the ACK at once
-(`tcp_send_dupack`); the old prefix of an in-order segment, from its sequence to the RCV.NXT it met, with the ACK
-at its ordinary time (`tcp_data_queue`); a segment, or the part of one, already held above the gap, followed by
+ACK reports payload that arrived twice, and the regular blocks follow it. There are four sources: a segment
+refused as a duplicate or by PAWS whose payload starts before RCV.NXT, its payload up to RCV.NXT, with the ACK at once
+(`tcp_send_dupack`); the old prefix of an in-order segment, from its first byte of payload to the RCV.NXT it met, with
+the ACK at its ordinary time (`tcp_data_queue`); a segment, or the part of one, already held above the gap, followed by
 the block that holds it, with the ACK timed as for any segment above a gap (`tcp_data_queue_ofo`); and at the
-join, the part of a held node that RCV.NXT had already passed, with the ACK the join sends (`tcp_ofo_queue`). One
-duplicate is pending at a time: a second range extends it when the two touch and is dropped otherwise, as
-`tcp_dsack_extend` does. It is forgotten once an ACK carried it, or when the next segment with payload arrives, as
-Linux clears it on entry to `tcp_data_queue`. A Linux sender uses the report to undo a retransmission that
-reordering made spurious, which keeps a venue's stream fast on a path that reorders.
+join, the part of a held node that RCV.NXT had already passed, with the ACK the join sends (`tcp_ofo_queue`). A SYN's
+or a FIN's number is not payload and is never reported as a duplicate, so a SYN-ACK the peer sends again after the
+handshake is answered with no block, and a RST reports nothing; Linux's `tcp_send_dupack` counts an old FIN's number
+in its range. One duplicate is pending at a time: a second range extends it when the two touch and is dropped otherwise,
+as `tcp_dsack_extend` does. It is forgotten once an ACK carried it, or when the next segment with payload arrives, as
+Linux clears it on entry to `tcp_data_queue`. A Linux sender uses the report to undo a retransmission that reordering
+made spurious, which keeps a venue's stream fast on a path that reorders.
 
 **The peer's window comes from current acknowledgements.** `writable()` is
 `min(mss, min(snd_wnd, cwnd + allowance) - in flight)`, where `cwnd` is the policy's window and the allowance is
@@ -774,7 +778,8 @@ remembered above a gap, a second FIN, an ACK of data never sent, a segment refus
 SYN inside the window and a segment without ACK are dropped unanswered); for a segment above a gap, every one on a
 connection without SACK and the first three since RCV.NXT last moved on a connection with it; for in-order data while
 anything is held above it, and until RCV.NXT reaches the end of a segment above a gap that was refused or released for
-room; and for a FIN the connection is closing on. A refused immediate ACK stays queued for the next `flush`.
+room, except that such data on a segment with the peer's FIN is acknowledged by the FIN's ACK alone; and for a FIN the
+connection is closing on. A refused immediate ACK stays queued for the next `flush`.
 
 On a connection that uses SACK, three duplicates start the peer's fast retransmit and the blocks carry everything
 else, so from the fourth segment above a gap on, until RCV.NXT moves, the answer is owed to the `flush` of the same
@@ -796,6 +801,9 @@ one and may move the edge. A restating ACK that leaves never puts a connection o
 already queued for the flush and its ordinary offer would move the edge, it stays queued and the flush sends that
 update; otherwise the restating ACK does the queued ACK's work and nothing more leaves, so the peer is not handed an
 identical ACK it would count. Like any segment that carries an ACK, a restating ACK also cancels a pending delayed ACK.
+An ACK at once that the device refuses is retried by the `flush` as an ordinary ACK, which may move the edge, and the
+count of three is taken when the answer is decided, not when it leaves: under device back-pressure a sender that counts
+duplicates can see fewer than three.
 
 **Two Aloe stacks recover on duplicates until step 5.** Two Aloe stacks negotiate SACK, so the receiver batches
 its answers above a gap after the third, while Aloe's own sender does not read blocks yet and counts duplicates.
@@ -854,9 +862,11 @@ is no TIME_WAIT: the slot is the owner's until `release`; it comes with step 6, 
 side widened. The budget reads `mss()`, so a peer that states an MSS of twelve bytes or fewer beside timestamps is
 offered a zero window, which harms that peer alone, until step 6 puts a floor under the peer's MSS. And the default
 window, 370688 bytes where it was 46720, gives a blind RST nearly eight times the sequence space to land in until step 6
-brings RFC 5961's challenge ACK. The brick makes no deployment or latency claim yet: the
-[tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a recorded baseline, and its reruns with reliable send and
-with the receive side are owed, as its page says.
+brings RFC 5961's challenge ACK. The same wider target holds for a FIN forged into the window: it is remembered, and
+in-order data that crosses it is refused each time it is resent, so the stream stalls until the peer gives up, where
+Linux usually drops the stale FIN once real data passes it; step 6's challenge ACK covers both. The brick makes no
+deployment or latency claim yet: the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a recorded baseline,
+and its reruns with reliable send and with the receive side are owed, as its page says.
 
 **Hardening is deferred too.** The brick is not yet meant for hostile peers. It has no SYN cookies, so a SYN
 flood fills the fixed table until the half-open connections time out; its initial sequence numbers come from a

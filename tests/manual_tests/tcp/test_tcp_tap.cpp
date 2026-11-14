@@ -68,7 +68,8 @@
 // the connection must stay open, and once the client reads, the echo completes and both sides close cleanly.
 //
 // The cases of `TcpTapReceive` turn it round: the kernel sends and the brick receives, stepped on the test's thread
-// between non-blocking calls on the kernel's socket. They check that SACK and window scaling are negotiated whichever
+// between non-blocking calls on the kernel's socket. They have not yet been run against a kernel, so a first failure
+// may be the test's. They check that SACK and window scaling are negotiated whichever
 // end opens, that a kernel sender fills a window past 65535 bytes up to the point where it stalls at the edge, and,
 // under
 //

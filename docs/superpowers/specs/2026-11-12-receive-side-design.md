@@ -68,6 +68,10 @@ Non-goals, each with the step that owns it:
 - RFC 5961's challenge ACK for a RST or SYN inside the window, TIME_WAIT, keepalive, path MTU: step 6. The
   default window is eight times the old one, so until then a blind RST has eight times the sequence space to
   land in.
+- A FIN forged into the window, the same exposure with the same eightfold target (found in the whole-branch review
+  of 2026-11-14): it is remembered, and in-order data that crosses it is refused each time it is resent, so the
+  stream stalls until the peer gives up, where Linux usually drops the stale FIN once real data passes it. Step 6's
+  challenge ACK covers it with the RST.
 - A floor under the peer's MSS: step 6, which already lists "refusing a peer MSS of zero". The receive budget
   now reads `mss()`, so a peer that states an MSS of twelve bytes or fewer beside timestamps is offered a zero
   window, where today it only stops the stack's own sends. It harms that peer alone.

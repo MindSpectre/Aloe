@@ -351,9 +351,9 @@ namespace aloe::tcp::detail {
          * The sequence check against `[rcv_nxt, offered edge)`. A segment entirely before RCV.NXT or past the edge is
          * dropped with an immediate ACK that restates the edge, unless it is a RST; the payload of one before RCV.NXT
          * is reported as a duplicate. One that overlaps RCV.NXT loses its old prefix, a SYN with it, and reports the
-         * prefix's payload as a duplicate; a RST reports nothing. One
-         * whose payload or FIN starts above RCV.NXT inside the window is above a gap; a segment that occupies no
-         * sequence space never is. A duplicate SYN in SynReceived gets the SYN-ACK again, from its entry.
+         * prefix's payload as a duplicate; a RST reports nothing. One whose payload or FIN starts above RCV.NXT inside
+         * the window is above a gap; a segment that occupies no sequence space never is. A duplicate SYN in SynReceived
+         * gets the SYN-ACK again, from its entry.
          */
         [[nodiscard]] Sequenced accept_sequence(ControlBlock& block, Segment& segment) noexcept {
             wire::TcpHeader& header    = segment.header;
@@ -554,9 +554,9 @@ namespace aloe::tcp::detail {
          * blocks are told, with what was held already reported as a duplicate. The segment is answered as the ACK
          * policy says (`AckPolicy::on_out_of_order`): at once with the edge restated, or by the flush. Data after the
          * peer's FIN, or at or past a remembered one, is refused. At the cap or with the pool empty the segment takes
-         * the highest held node when it starts below it
-         * (`make_room`); otherwise it is refused, and its end is remembered so the data that fills the gap is
-         * acknowledged at once. A refused segment is answered at once and does not count towards the policy's three.
+         * the highest held node when it starts below it (`make_room`); otherwise it is refused, and its end is
+         * remembered so the data that fills the gap is acknowledged at once. A refused segment is answered at once and
+         * does not count towards the policy's three.
          */
         void receive_above_gap(ControlBlock& block, Datagram& datagram, const Segment& segment) noexcept {
             const Sequence sequence                = segment.header.sequence;
