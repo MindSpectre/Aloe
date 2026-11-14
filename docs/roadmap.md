@@ -88,16 +88,25 @@ does; the scenario scripts are Aloe's own. The steps, in order:
    `retransmits_deferred`, `retransmits_copied`, `zero_window_probes` and `dropped_paws`, until step 6 adds an
    event for it. Landed; the tap run under netem loss and the benchmark's rerun wait for a machine with root and
    hugepages. See the [TCP brick](architecture/tcp.md).
-4. **Receive side.** Out-of-order segments held as the received packets, without copying; SACK blocks
-   (RFC 2018); window scaling (RFC 7323) with a receive pool sized for it; delayed ACK; receiver-side silly
-   window avoidance (RFC 1122).
-5. **Loss recovery with SACK.** RACK-TLP (RFC 8985), what Linux runs by default. Its tail loss probe resends
-   a lost last segment, the end of an order, after about two round trips instead of a full RTO.
+4. **Receive side.** A segment above a gap is held as the packet it arrived in, on a second chain under the connection's
+   packet cap and the shard's pool, and joins the in-order chain by a change of links when the gap fills: nothing is
+   copied, with or without loss, and at the cap the lower sequence wins. SACK blocks (RFC 2018) and duplicate SACK
+   (RFC 2883) ride on pure ACKs. Window scaling (RFC 7323) with the smallest shift that states the window, over a budget
+   of half of what `receive_segments` segments of the connection's MSS hold, 370688 bytes over 512 slots by default, and
+   a field rounded up so the offered edge never moves left. Receiver-side silly window avoidance (RFC 1122) and Linux's
+   doubling rule for a window update on a read; on a connection that uses SACK, the first three segments above a gap
+   answered at once and the rest at the flush; and a delayed ACK, off by default. Landed; the tap cases against a Linux
+   sender under netem reordering and loss, and the benchmark's rerun, wait for a machine with root and hugepages, beside
+   step 3's. Congestion-window growth on a flow the application limits moves to step 5. See the
+   [TCP brick](architecture/tcp.md).
+5. **Loss recovery with SACK.** RACK-TLP (RFC 8985), what Linux runs by default, over the SACK blocks the peer
+   sends. Its tail loss probe resends a lost last segment, the end of an order, after about two round trips
+   instead of a full RTO. Congestion-window growth on a flow the application limits goes with it.
 6. **Lifecycle and client hardening.** TIME_WAIT, keepalive, the FIN-WAIT-2 timer, ICMP destination
    unreachable and path MTU, and the edge cases the phase 1 reviews left open: a RST for a bad ACK in
-   SYN-RECEIVED, refusing a peer MSS of zero, reading the acknowledgement of a segment dropped for the window.
-   RFC 6528 initial sequence numbers, RFC 5961 challenge ACKs and ARP-reply rate limiting. The public API
-   freezes as v1 at the end of this step.
+   SYN-RECEIVED, refusing a peer MSS of zero or one too small to leave a receive window, reading the
+   acknowledgement of a segment dropped for the window. RFC 6528 initial sequence numbers, RFC 5961 challenge
+   ACKs and ARP-reply rate limiting. The public API freezes as v1 at the end of this step.
 
 Left for after this phase, because a client does not need them yet: CUBIC and pacing, since orders are small;
 SYN cookies and a keyed flow-table hash, which defend a server that accepts connections from strangers.

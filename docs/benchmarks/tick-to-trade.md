@@ -527,7 +527,13 @@ base, 6a779fb, built in a worktree, and the branch's head, each with `-DDO_BENCH
 alternating, base first, with the options of the recorded run above; compared by the medians of the three runs, p50
 and p99, with the `tcp` leg of a `--breakdown` run beside them. A change beyond the bar is found and fixed before the
 merge, or recorded on this page with its number and its reason; the six result files go under
-`docs/benchmarks/results/`, named for their revisions.
+`docs/benchmarks/results/`, named for their revisions. If the tick moves, the places to look first are what the
+receive side added to it: the one question an in-order segment asks after it is held, whether anything is held
+above; the store that forgets a pending duplicate SACK on every segment with payload; the load of whether SACK
+blocks are owed on every send; the offer's compare against the silly-window threshold and the two shifts that
+write the scaled field; and the doubling test in `consume`. The first fix to reach for is the one TLDK and Onload
+have: recognise an option block that is exactly `nop, nop, TS` with one 32-bit compare and read its two values
+directly, in place of the walk over the options every tick takes today.
 
 ## What comes next
 

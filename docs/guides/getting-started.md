@@ -151,19 +151,26 @@ The net test gives the tap's kernel end an address itself and pings through the 
 needs `CAP_NET_RAW` as well. `examples/ping_responder` is the same loop as a program you can `ping` from a
 shell.
 
-The TCP suite needs DPDK's tap driver, which every Aloe build links, and root. It creates the interface
-`aloe-tcp`, puts the kernel at 10.78.0.1/24 and Aloe at 10.78.0.2/24, and gives the kernel end its address
-itself, as `ip addr add 10.78.0.1/24 dev aloe-tcp` and `ip link set aloe-tcp up` would. Port 7007 carries an
-echo in four scenarios: a kernel client against the brick and against the runtime, and the brick and the
-runtime as clients of a kernel listener. `TcpTapLoss` repeats the four with 50 000 bytes under loss in both
-directions: `tc qdisc replace dev aloe-tcp root netem loss 5%` makes the kernel lose 5% of what it sends the
-stack, and skips the cases when `tc` or `sch_netem` is missing, while a wrapper device frees every tenth frame
-the stack sends; each case needs at least one retransmission on the stack's side and a clean close, and prints how
-far the kernel's `RetransSegs` rose, for information, since that counter is system-wide. A ninth case has a kernel
-client with an 8 KB receive buffer stop reading until the brick has sent a zero-window probe, then read the echo
-and close: the connection must stay open while the kernel's window is closed. Without root every case is skipped. To
-watch the traffic while it runs, `sudo tcpdump -ni aloe-tcp tcp` in another shell; the interface goes away when the
-suite exits.
+The TCP suite needs DPDK's tap driver, which every Aloe build links, and root. It creates the interface `aloe-tcp`, puts
+the kernel at 10.78.0.1/24 and Aloe at 10.78.0.2/24, and gives the kernel end its address itself, as
+`ip addr add 10.78.0.1/24 dev aloe-tcp` and `ip link set aloe-tcp up` would. Port 7007 carries an echo in four
+scenarios: a kernel client against the brick and against the runtime, and the brick and the runtime as clients of a
+kernel listener. `TcpTapLoss` repeats the four with 50 000 bytes under loss in both directions:
+`tc qdisc replace dev aloe-tcp root netem loss 5%` makes the kernel lose 5% of what it sends the stack, and skips the
+cases when `tc` or `sch_netem` is missing, while a wrapper device frees every tenth frame the stack sends; each case
+needs at least one retransmission on the stack's side and a clean close, and prints how far the kernel's `RetransSegs`
+rose, for information, since that counter is system-wide. A ninth case has a kernel client with an 8 KB receive buffer
+stop reading until the brick has sent a zero-window probe, then read the echo and close: the connection must stay open
+while the kernel's window is closed. `TcpTapReceive` points a kernel sender at the brick's receive side: the handshake
+negotiates SACK and window scaling in both directions, a kernel sender fills a window past 65535 bytes, and 2 MB arrive
+byte-exact under `netem delay 5ms reorder 25% 50%` with no retransmission timeout on the kernel's side and under
+`netem loss 2%` with the stack sending SACK blocks and the kernel's timeouts at most a quarter of its retransmissions,
+both read from the kernel's `TCP_INFO`. It caps the tap's `gso_max_segs` at 1 while netem is installed, so netem sees
+single segments rather than 64 KB bursts, needs `ip` and `tc` with `sch_netem`, and runs alone, since the earlier
+suites' loop threads keep part of the 1024-packet pool in their mempool caches:
+`sudo ./build/debug/tests/manual_tests/tcp/Aloe.Tests.Manual.Tcp.Tap --gtest_filter='TcpTapReceive.*'`. Without root
+every case is skipped. To watch the traffic while it runs, `sudo tcpdump -ni aloe-tcp tcp` in another shell; the
+interface goes away when the suite exits.
 
 The client scenarios need the host firewall to let a SYN reach the kernel listener through the tap. Fedora's
 firewalld puts a new interface in its default zone, which opens only TCP ports 1025-65535, so a kernel

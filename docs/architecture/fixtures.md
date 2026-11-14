@@ -35,8 +35,11 @@ only make sense inside Aloe's own test binaries, such as the EAL as a gtest envi
   the IPv4 header; `tcp_payload` the bytes after the TCP header of a parsed frame, and `tcp_options_of` the
   option bytes between the fixed header and the data. `ParsedFrame::tcp` is the parsed TCP header, when the
   frame carries one. `mss_option(mss)` and `timestamps_option(value, echo)` are the four-byte MSS option and the
-  twelve-byte `nop, nop, TS` block, and `joined(blocks)` puts blocks one after the other, a SYN's MSS then its
-  timestamps, for `spec.options`.
+  twelve-byte `nop, nop, TS` block; `window_scale_option(shift)`, `sack_permitted_option()`,
+  `sack_permitted_timestamps_option(value, echo)` and `sack_option(blocks)` are the aligned blocks a Linux peer
+  writes for the other options; and `joined(blocks)` puts blocks one after the other, a SYN's MSS then its
+  timestamps, for `spec.options`. `sack_blocks_of(parsed)` reads back the SACK blocks of a frame the stack sent,
+  in the order written, since the brick's own option parser skips them; it is empty for a frame without any.
 - **`aloe::frames::TcpPeer`** -- the other end of a connection, scripted by the test. Built from a `TcpSpec`
   in the peer's outbound orientation and its initial sequence number. `syn()`, `syn_ack(seen)`, `ack()`,
   `ack(seen)`, `data(bytes)`, `fin()` and `rst()` each return one frame with the right numbers and advance the
