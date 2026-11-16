@@ -209,6 +209,23 @@ case $scenario in
         expect_output_contains "common/tcp/stack/tcp_stack.hpp:1"
         expect_output_contains "<aloe/ethdev>"
         ;;
+    checks_includes_under_devices_and_l7)
+        two_modules
+        write_file devices/ethdev/export/aloe/ethdev '#pragma once'
+        write_file l7/http11/export/aloe/http11 '#include <request.hpp>'
+        write_file l7/http11/message/request.hpp '#pragma once'
+        git add devices/ethdev/export l7/http11
+        write_file devices/ethdev/port/port.hpp '#include <ipv4.hpp>'
+        write_file l7/http11/message/response.hpp '#include <ipv4.hpp>'
+        write_file common/tcp/stack/tcp_stack.hpp '#include <request.hpp>'
+        git add devices/ethdev/port/port.hpp l7/http11/message/response.hpp common/tcp/stack/tcp_stack.hpp
+        try_commit
+        expect_rejected
+        expect_output_contains "devices/ethdev/port/port.hpp:1"
+        expect_output_contains "l7/http11/message/response.hpp:1"
+        expect_output_contains "common/tcp/stack/tcp_stack.hpp:1"
+        expect_output_contains "<aloe/http11>"
+        ;;
     *)
         fail "unknown scenario"
         ;;
