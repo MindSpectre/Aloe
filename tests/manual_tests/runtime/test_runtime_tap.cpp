@@ -75,5 +75,5 @@ TEST(RuntimeTap, TheKernelGetsItsFramesBackWithTheAddressesSwapped) {
 
     runtime.stop();
     runtime.join();
-    EXPECT_GE(runtime.counters(0).frames_transmitted, 3U);
+    EXPECT_GE(runtime.counters(0).queue.frames_transmitted, 3U);
 }

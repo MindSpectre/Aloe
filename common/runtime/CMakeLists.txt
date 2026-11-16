@@ -1,6 +1,20 @@
 set(RUNTIME ${COMMON}.Runtime)
 
 ##############################################################################
+# The shard's counters: the queue's, and what the runtime counts beside them
+##############################################################################
+add_library(${RUNTIME}.Counters INTERFACE
+        counters/shard_counters.hpp
+)
+target_include_directories(${RUNTIME}.Counters INTERFACE
+        counters/
+)
+target_link_libraries(${RUNTIME}.Counters INTERFACE
+        Aloe::Common::Loop
+)
+##############################################################################
+
+##############################################################################
 # The per-shard counting scope
 ##############################################################################
 add_library(${RUNTIME}.Scope STATIC
@@ -11,6 +25,7 @@ target_include_directories(${RUNTIME}.Scope PUBLIC
         scope/
 )
 target_link_libraries(${RUNTIME}.Scope PUBLIC
+        ${RUNTIME}.Counters
         Aloe::Common::Loop
         Aloe::Common::Core
         Aloe::Common::Execution
@@ -160,6 +175,7 @@ add_combined_library(${RUNTIME}
         SOURCES
         export/aloe/runtime
         LIBRARIES
+        ${RUNTIME}.Counters
         ${RUNTIME}.Scope
         ${RUNTIME}.Context
         ${RUNTIME}.Scheduler

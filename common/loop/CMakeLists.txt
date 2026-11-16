@@ -32,7 +32,7 @@ target_link_libraries(${LOOP}.Timer PUBLIC
 # Counters
 ##############################################################################
 add_library(${LOOP}.Counters INTERFACE
-        counters/counters.hpp
+        counters/shard_queue_counters.hpp
 )
 target_include_directories(${LOOP}.Counters INTERFACE
         counters/

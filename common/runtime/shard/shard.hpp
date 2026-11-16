@@ -85,7 +85,7 @@ namespace aloe::runtime {
                   config
         },
               context_{{.index = index, .timer_resolution = config.timer_resolution}, start},
-              queue_{owner, index, config.transmit_ring, context_.counters()},
+              queue_{owner, index, config.transmit_ring, context_.counters().queue},
               stack_{context_, queue_, std::forward<Args>(args)...}, burst_(config.receive_burst) {
         }
 
@@ -109,7 +109,6 @@ namespace aloe::runtime {
             bool busy                  = false;
             const std::size_t received = queue_.receive(burst_);
             if (received > 0) {
-                context_.counters().frames_received += received;
                 const std::span<Packet> frames{burst_.data(), received};
                 stack_.on_receive(frames);
                 for (Packet& packet : frames) {

@@ -190,7 +190,7 @@ int main(int argc, char** argv) {
     Port port{
         {.name = arguments->port, .queues = 1}
     };
-    aloe::loop::ShardCounters counters;
+    aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<Port> queue{port, 0, 512, counters};
     Ipv4 ip{queue, arguments->ip};
     aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, aloe::core::Clock::now()};

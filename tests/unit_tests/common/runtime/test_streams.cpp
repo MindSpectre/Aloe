@@ -97,7 +97,7 @@ namespace {
         Device device_{port_};
         aloe::runtime::ShardContext context_{{.index = 0}, start};
         aloe::runtime::ShardContext::Current current_{context_};
-        aloe::loop::ShardQueue<Device> queue_{device_, 0, 1, context_.counters()};
+        aloe::loop::ShardQueue<Device> queue_{device_, 0, 1, context_.counters().queue};
         Ipv4 ip_{queue_, aloe::testing::stack_config()};
         Tcp tcp_{ip_, context_.timers(), {}};
         Streams streams_{tcp_, context_};

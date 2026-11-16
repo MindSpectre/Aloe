@@ -11,7 +11,7 @@
 #include <utility>
 #include <vector>
 
-#include <counters.hpp>
+#include <shard_queue_counters.hpp>
 
 
 namespace aloe::loop {
@@ -29,7 +29,10 @@ namespace aloe::loop {
     public:
         using Packet = Device::Packet;
 
-        ShardQueue(Device& owner, const std::uint16_t index, const std::size_t ring_capacity, ShardCounters& counters)
+        ShardQueue(Device& owner,
+                   const std::uint16_t index,
+                   const std::size_t ring_capacity,
+                   ShardQueueCounters& counters)
             : device_{owner},
               queue_{index},
               counters_{counters},
@@ -47,10 +50,12 @@ namespace aloe::loop {
             return device_.allocate(queue_);
         }
 
-        /// Fills `out` from the front and returns how many; the slots must hold empty packets.
+        /// Fills `out` from the front and returns how many, which it counts; the slots must hold empty packets.
         [[nodiscard]] std::size_t receive(std::span<Packet> out) noexcept {
             core::force_non_const(this);  // the stack's mutable view of the device, though only the pointee is written
-            return device_.receive(queue_, out);
+            const std::size_t received  = device_.receive(queue_, out);
+            counters_.frames_received  += received;
+            return received;
         }
 
         /// False when the ring is full and the device takes nothing; the packet then stays with the caller.
@@ -144,7 +149,7 @@ namespace aloe::loop {
     private:
         Device& device_;
         std::uint16_t queue_;
-        ShardCounters& counters_;
+        ShardQueueCounters& counters_;
         std::vector<Packet> ring_;
         std::size_t head_ = 0;
         std::size_t size_ = 0;

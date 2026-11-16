@@ -192,7 +192,7 @@ namespace aloe::benchmarks {
 
             RunState& state_;
             Device& device_;
-            loop::ShardCounters counters_;
+            loop::ShardQueueCounters counters_;
             loop::ShardQueue<Device> queue_;
             Ipv4 ip_;
             loop::TimerWheel wheel_;

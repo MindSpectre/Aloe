@@ -65,7 +65,7 @@ The hand-written loop that answers ARP and ping on one queue of a DPDK port, as
 #include <aloe/net>
 
 aloe::ethdev::Port port{{.name = "net_tap0", .queues = 1}};
-aloe::loop::ShardCounters counters;
+aloe::loop::ShardQueueCounters counters;
 aloe::loop::ShardQueue<aloe::ethdev::Port> queue{port, 0, 64, counters};
 aloe::net::Ipv4<aloe::ethdev::Port> ip{queue, {.address = {10, 77, 0, 2}, .prefix = 24, .gateway = {{10, 77, 0, 1}}}};
 std::vector<aloe::ethdev::Packet> burst(64);

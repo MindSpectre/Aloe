@@ -152,7 +152,7 @@ namespace aloe::benchmarks {
         check_stack_counters(state,
                              runtime.shard(0).stack().tcp().counters(),
                              runtime.shard(0).stack().ip().counters(),
-                             runtime.counters(0));
+                             runtime.counters(0).queue);
     }
 
 }  // namespace aloe::benchmarks

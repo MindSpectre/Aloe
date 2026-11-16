@@ -110,7 +110,7 @@ namespace aloe::scenario {
         fabric::Fabric fabric_;
         fabric::Port& peer_port_;
         fabric::Port& stack_port_;
-        loop::ShardCounters counters_;
+        loop::ShardQueueCounters counters_;
         loop::ShardQueue<fabric::Port> queue_;
         Ip ip_;
         loop::TimerWheel wheel_;

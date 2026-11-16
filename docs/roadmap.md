@@ -158,7 +158,6 @@ Every phase adds tests at three levels.
 - Whether DPDK is pinned to a long-term-support release instead of the version vcpkg ships.
 - The two-core shard, one core per direction: designed in phase 1, measured against the single-core shard
   after phase 2.
-- Whether `loop::ShardCounters` splits along the product boundary, or stays one struct both fill.
 
 Resolved in phase 1: errors are reported as `std::expected` in the value channel, and the stopped channel
 carries cancellation only; abseil does not enter the project, since the connection table and the ARP cache

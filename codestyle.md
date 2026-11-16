@@ -326,12 +326,12 @@ The member's type says who owns the object and whether it can be absent:
 // Good: the queue cannot exist without its device, and nothing reassigns it
 class ShardQueue {
 public:
-    ShardQueue(Device& owner, std::uint16_t index, std::size_t ring_capacity, ShardCounters& counters)
+    ShardQueue(Device& owner, std::uint16_t index, std::size_t ring_capacity, ShardQueueCounters& counters)
         : device_{owner}, counters_{counters} { /* ... */ }
 
 private:
     Device& device_;
-    ShardCounters& counters_;
+    ShardQueueCounters& counters_;
 };
 
 // Good: an empty packet has no pool

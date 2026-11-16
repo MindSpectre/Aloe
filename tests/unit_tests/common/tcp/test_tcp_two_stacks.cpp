@@ -40,7 +40,7 @@ namespace {
               ip{queue, {.address = address, .prefix = 24}}, tcp{ip, wheel, config} {
         }
 
-        aloe::loop::ShardCounters counters;
+        aloe::loop::ShardQueueCounters counters;
         aloe::loop::ShardQueue<aloe::fabric::Port> queue;
         Ipv4 ip;
         aloe::loop::TimerWheel wheel{1ms, TimePoint{}};

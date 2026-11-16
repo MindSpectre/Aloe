@@ -87,7 +87,7 @@ using Tcp  = aloe::tcp::Stack<Ipv4>;
 aloe::core::calibrate_clock();
 aloe::ethdev::Eal eal{eal_arguments};
 Port port{{.name = "net_tap0", .queues = 1}};
-aloe::loop::ShardCounters counters;
+aloe::loop::ShardQueueCounters counters;
 aloe::loop::ShardQueue<Port> queue{port, 0, 512, counters};
 Ipv4 ip{queue, ip_config};
 aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, aloe::core::Clock::now()};

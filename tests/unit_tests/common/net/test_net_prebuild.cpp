@@ -150,7 +150,7 @@ TEST_P(NetPrebuild, SendFrameLendsTransmitsAndCountsAndTheLoanComesBack) {
 
 TEST_P(NetPrebuild, ARefusedSendFrameReturnsTheLoanAndLeavesTheFrameAsBuilt) {
     aloe::testing::StuckPort stuck{port_};
-    aloe::loop::ShardCounters counters;
+    aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<aloe::testing::StuckPort> queue{stuck, 0, 1, counters};
     aloe::net::Ipv4<aloe::testing::StuckPort> ip{queue, aloe::testing::stack_config()};
     ip.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_);

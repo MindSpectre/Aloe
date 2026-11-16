@@ -105,7 +105,7 @@ int main(int argc, char** argv) {
     aloe::ethdev::Port port{
         {.name = arguments->port, .queues = 1}
     };
-    aloe::loop::ShardCounters counters;
+    aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<aloe::ethdev::Port> queue{port, 0, 64, counters};
     aloe::net::Ipv4<aloe::ethdev::Port> ip{queue, arguments->config};
     std::vector<aloe::ethdev::Packet> burst(64);

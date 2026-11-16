@@ -95,7 +95,7 @@ namespace {
     private:
         void run(aloe::ethdev::Port& port, const std::stop_token& stop) {
             aloe::ethdev::register_thread();
-            aloe::loop::ShardCounters shard_counters;
+            aloe::loop::ShardQueueCounters shard_counters;
             aloe::loop::ShardQueue<aloe::ethdev::Port> queue{port, 0, 64, shard_counters};
             aloe::net::Ipv4<aloe::ethdev::Port> ip{
                 queue, {.address = stack_ip, .prefix = 24}

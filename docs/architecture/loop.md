@@ -31,9 +31,9 @@ the asynchronous model, and a protocol module that links this target cannot incl
   No synchronisation. **`Inbox`** is the queue other threads push into, Vyukov's intrusive MPSC: one
   atomic exchange and one release store per push, one acquire load per pop, no allocation. The node is the
   pusher's and stays alive until the consumer runs it.
-- **`aloe::loop::ShardCounters`** -- ticks, frames, work, timers and tasks, all monotonic, read on the
-  owning thread or after it has stopped. One struct for both products: a loop fills the frame, work and
-  timer fields, the runtime adds the task fields.
+- **`aloe::loop::ShardQueueCounters`** -- frames received, frames transmitted and transmits refused, all
+  monotonic, written by the `ShardQueue` that holds it and read on the owning thread or after it has
+  stopped. The runtime's `ShardCounters` holds one beside its own tick, inbox, work, timer and task counts.
 
 ## Usage
 
@@ -54,7 +54,7 @@ struct Heartbeat : aloe::loop::Timer {
 
 aloe::fabric::Fabric fabric;
 aloe::fabric::Port& port = fabric.add_port({.queues = 1});
-aloe::loop::ShardCounters counters;
+aloe::loop::ShardQueueCounters counters;
 aloe::loop::ShardQueue<aloe::fabric::Port> queue{port, 0, 512, counters};
 aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, Clock::now()};
 aloe::loop::Inbox inbox;  // other threads push Work nodes here: control, never data

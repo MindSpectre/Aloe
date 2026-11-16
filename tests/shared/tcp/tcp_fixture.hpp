@@ -198,7 +198,7 @@ namespace aloe::testing {
     protected:
         fabric::Fabric* fabric_ = nullptr;
         fabric::Port* harness_  = nullptr;
-        loop::ShardCounters counters_;
+        loop::ShardQueueCounters counters_;
         loop::ShardQueue<Device> queue_;
         Ipv4 ip_;
         loop::TimerWheel wheel_{std::chrono::milliseconds{1}, TimePoint{}};

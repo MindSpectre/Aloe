@@ -49,7 +49,7 @@ namespace {
             ip.learn(peer_ip, peer_mac, TimePoint{});
         }
 
-        aloe::loop::ShardCounters counters;
+        aloe::loop::ShardQueueCounters counters;
         aloe::loop::ShardQueue<aloe::fabric::Port> queue;
         Ipv4 ip;
         aloe::loop::TimerWheel wheel{1ms, TimePoint{}};
@@ -216,7 +216,7 @@ TEST_F(TcpPlacement, AddressesOnlyRssIsUnplaceableOffItsQueue) {
     const std::uint16_t picked                  = aloe::device::queue_for(
         addresses_only, {.source = peer_ip, .destination = stack_ip, .protocol = aloe::wire::Ipv4Protocol::Tcp});
     const auto other = static_cast<std::uint16_t>((picked + 1) % queues);
-    aloe::loop::ShardCounters counters;
+    aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<aloe::testing::TcpTestDevice> queue{device, other, 16, counters};
     aloe::net::Ipv4<aloe::testing::TcpTestDevice> ip{
         queue, {.address = stack_ip, .prefix = 24}
@@ -240,7 +240,7 @@ TEST_F(TcpPlacement, AddressesOnlyRssIsUnplaceableOffItsQueue) {
 TEST_F(TcpPlacement, DisabledSteeringCannotReachNonzeroQueue) {
     aloe::testing::TcpTestDevice device{port_};
     device.steering_override = aloe::device::RssDescription{};  // off: every frame lands on queue 0
-    aloe::loop::ShardCounters counters;
+    aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<aloe::testing::TcpTestDevice> queue1{device, 1, 16, counters};
     aloe::net::Ipv4<aloe::testing::TcpTestDevice> ip1{
         queue1, {.address = stack_ip, .prefix = 24}
@@ -264,7 +264,7 @@ TEST_F(TcpPlacement, CursorWrapsSkipsListenersAndOccupiedTuplesThenNoPort) {
         .mac = {0x02, 0, 0, 0, 0, 0x03},
           .pool_size = 64
     });
-    aloe::loop::ShardCounters counters;
+    aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<aloe::fabric::Port> queue{single, 0, 16, counters};
     Ipv4 ip{
         queue, {.address = {10, 0, 0, 3}, .prefix = 24}

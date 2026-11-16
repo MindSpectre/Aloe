@@ -107,7 +107,7 @@ TEST(Steering, EveryFrameIsAnsweredOnceByTheShardItsHashSelects) {
     }
     EXPECT_EQ(answering_shards.size(), queues) << "the 256 flows spread over every shard; widen the port range if not";
     for (std::uint16_t shard = 0; shard < queues; ++shard) {
-        EXPECT_EQ(runtime.counters(shard).frames_received, expected_per_shard[shard]) << "shard " << shard;
-        EXPECT_EQ(runtime.counters(shard).frames_transmitted, expected_per_shard[shard]) << "shard " << shard;
+        EXPECT_EQ(runtime.counters(shard).queue.frames_received, expected_per_shard[shard]) << "shard " << shard;
+        EXPECT_EQ(runtime.counters(shard).queue.frames_transmitted, expected_per_shard[shard]) << "shard " << shard;
     }
 }
