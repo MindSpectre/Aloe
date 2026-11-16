@@ -56,7 +56,9 @@ them on top of it.
   port's egress is impaired, there is no loss, reordering or delay. A port with several queues steers by
   RSS exactly as a card would. A port opened with `EmulatedOffloads::Checksums` fills checksums on
   transmit and verifies them on receive, so both the offload path and the software path of the stack run
-  in CI. A transmitted loan is held in the port's in-flight list under `PortConfig::loans`: `OnStep` (the
+  in CI. The port reads a frame with `wire`'s parsers, so a frame the IPv4 brick would reject, one whose
+  total length runs past its bytes for instance, is not IPv4 to the port either: it lands on queue 0 with
+  no hash and no verdict. A transmitted loan is held in the port's in-flight list under `PortConfig::loans`: `OnStep` (the
   default) finishes at `Fabric::advance` and is released by the queue's next transmit, receive or reclaim,
   with `reclaim` releasing at once; `Held` releases only on `return_loans`, the driver that will not let
   go. `loans_outstanding(queue)` counts what is still held. Impairment and the clock are on the
