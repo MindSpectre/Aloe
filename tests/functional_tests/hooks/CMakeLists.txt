@@ -34,7 +34,9 @@ foreach (scenario IN ITEMS
         missing_clang_format_does_not_block_a_docs_commit
         rejects_an_include_of_another_modules_header
         accepts_an_include_of_another_modules_umbrella
-        whole_tree_mode_checks_files_that_are_not_staged)
+        whole_tree_mode_checks_files_that_are_not_staged
+        checks_sources_under_devices_and_l7
+        rejects_an_include_of_a_device_modules_header)
     add_test(
             NAME ${FUNCTIONAL_TESTING_TARGET}.Hooks.PreCommit.${scenario}
             COMMAND ${BASH_PROGRAM} ${CMAKE_CURRENT_SOURCE_DIR}/pre_commit.sh
