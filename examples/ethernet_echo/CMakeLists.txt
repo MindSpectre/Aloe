@@ -8,6 +8,6 @@ target_link_libraries(${EXAMPLES}.EthernetEcho
         PRIVATE
         Aloe::Common::Log
         Aloe::Common::Runtime
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
 )
 ##############################################################################

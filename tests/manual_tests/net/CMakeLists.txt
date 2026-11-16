@@ -7,7 +7,7 @@ add_manual_test(${MANUAL_TESTING_TARGET}.Net.Tap
 target_link_libraries(${MANUAL_TESTING_TARGET}.Net.Tap
         PRIVATE
         Aloe::Common::Net
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
         ${SHARED_TESTING_TARGET}.Device
         ${SHARED_TESTING_TARGET}.Ethdev
         ${TEST_LIBS}

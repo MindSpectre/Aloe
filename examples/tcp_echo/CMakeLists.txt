@@ -9,6 +9,6 @@ target_link_libraries(${EXAMPLES}.TcpEcho
         Aloe::Common::Tcp
         Aloe::Common::Net
         Aloe::Common::Loop
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
 )
 ##############################################################################

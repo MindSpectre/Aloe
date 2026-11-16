@@ -603,7 +603,7 @@ std::visit([&result]<typename E>(E&& err) { ... }, value_);
 
 ## Module Layout
 
-Each top-level module under `common/` ships an **umbrella header** at
+Each module under `common/`, `devices/`, `fixtures/` or `l7/` ships an **umbrella header** at
 `<module>/export/aloe/<module>` — a file with no extension containing only `#pragma once` and `#include` directives
 for every public header of the module:
 

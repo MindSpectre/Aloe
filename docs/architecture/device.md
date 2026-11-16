@@ -2,14 +2,15 @@
 
 The device layer is the bottom of the stack: it moves Ethernet frames between the protocols above
 and whatever carries them, and it reports what that carrier can do. It is three modules: `device`
-and `ethdev` under `common/`, and the `fabric` under [`fixtures/`](fixtures.md). Nothing above it links DPDK
+under `common/`, `ethdev` under `devices/`, where the production backends live, and the `fabric` under
+[`fixtures/`](fixtures.md). Nothing above it links DPDK
 unless it chooses the DPDK backend.
 
 | Module   | Include                  | Target                    | Holds                                                                                                        |
 |----------|--------------------------|---------------------------|--------------------------------------------------------------------------------------------------------------|
 | `device` | `#include <aloe/device>` | `Aloe::Common::Device` | The `IsPacket` and `IsDevice` concepts, the packet metadata and receive-side scaling. Header-only, no DPDK.  |
 | `fabric` | `#include <aloe/fabric>` | `Aloe::Fixtures::Fabric` | The in-memory backend: a broadcast domain of ports, the fixture for tests, simulation and demos. No DPDK.    |
-| `ethdev` | `#include <aloe/ethdev>` | `Aloe::Common::Ethdev` | The DPDK backend: one port of any driver. The only module that links `Aloe::Dpdk`.                           |
+| `ethdev` | `#include <aloe/ethdev>` | `Aloe::Devices::Ethdev` | The DPDK backend: one port of any driver. The only module that links `Aloe::Dpdk`.                           |
 
 The layer exists because network cards differ in what they can do. It hides everything about the
 card; the shard runtime receives packets and a capability report, and nothing else that is
@@ -156,7 +157,7 @@ vectors apply, and an IPv4 4-tuple uses only the first 16 bytes of it, so a card
 bytes and one that takes 52 compute the same hash.
 
 **The fabric is a fixture.** It exists for tests, simulation and demos and never carries production
-traffic, which is why it lives in [`fixtures/`](fixtures.md) and not in `common/`. Delivery takes a lock per receive queue and copies frames twice, on
+traffic, which is why it lives in [`fixtures/`](fixtures.md) and not in `devices/`. Delivery takes a lock per receive queue and copies frames twice, on
 transmit and on receive, so a packet pool is only ever touched by its queue's thread. Simplicity
 wins over speed. Scripted impairment, loss, duplication, reordering and delay, sits on a port's egress;
 see the [fixtures page](fixtures.md).

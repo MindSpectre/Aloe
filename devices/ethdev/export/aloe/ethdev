@@ -2,7 +2,7 @@
 
 /**
  * Public umbrella for the Aloe ethdev module: the DPDK device backend.
- * Consumers link Aloe::Common::Ethdev and write `#include <aloe/ethdev>`.
+ * Consumers link Aloe::Devices::Ethdev and write `#include <aloe/ethdev>`.
  */
 
 #include <eal.hpp>

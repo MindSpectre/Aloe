@@ -42,7 +42,7 @@ target_include_directories(${TICK_TO_TRADE}.Harness PUBLIC
 target_link_libraries(${TICK_TO_TRADE}.Harness PUBLIC
         Aloe::Common::Core
         Aloe::Common::Device
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
         Aloe::Common::Loop
         Aloe::Common::Net
         Aloe::Common::Stream

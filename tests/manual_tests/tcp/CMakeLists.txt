@@ -9,7 +9,7 @@ target_link_libraries(${MANUAL_TESTING_TARGET}.Tcp.Tap
         Aloe::Common::Runtime
         Aloe::Common::Tcp
         Aloe::Common::Net
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
         ${SHARED_TESTING_TARGET}.Ethdev
         ${SHARED_TESTING_TARGET}.Log
         ${TEST_LIBS}

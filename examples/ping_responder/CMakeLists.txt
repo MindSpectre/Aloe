@@ -8,6 +8,6 @@ target_link_libraries(${EXAMPLES}.PingResponder
         PRIVATE
         Aloe::Common::Net
         Aloe::Common::Loop
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
 )
 ##############################################################################

@@ -8,7 +8,7 @@ target_link_libraries(${INTEGRATION_TESTING_TARGET}.Tcp.Ring
         PRIVATE
         Aloe::Common::Tcp
         Aloe::Common::Net
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
         Aloe::Fixtures::Frames
         ${SHARED_TESTING_TARGET}.Ethdev
         ${TEST_LIBS}
