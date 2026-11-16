@@ -19,26 +19,26 @@
 namespace {
     using namespace std::chrono_literals;
     using aloe::device::L4Checksum;
-    using aloe::net::Prebuilt;
+    using aloe::net::Ipv4Prebuilt;
     using aloe::net::SendError;
     using aloe::wire::Ipv4Protocol;
     class NetPrebuild : public aloe::testing::NetFixture {
     protected:
         /// A frame from `prebuilt` with a TCP header of ACK only (window 0xffff) and `payload`, checksum field zero.
-        [[nodiscard]] Packet frame_from(const Prebuilt& prebuilt, const std::span<const std::byte> payload) {
+        [[nodiscard]] Packet frame_from(const Ipv4Prebuilt& prebuilt, const std::span<const std::byte> payload) {
             auto packet = ip_.allocate();
             EXPECT_TRUE(packet.has_value());
-            const auto room = packet->append(Prebuilt::size + 20 + payload.size());
+            const auto room = packet->append(Ipv4Prebuilt::size + 20 + payload.size());
             EXPECT_TRUE(room.has_value());
             std::ranges::copy(prebuilt.headers, room->begin());
-            const auto tcp = room->subspan(Prebuilt::size, 20);
+            const auto tcp = room->subspan(Ipv4Prebuilt::size, 20);
             std::ranges::fill(tcp, std::byte{0});
             aloe::wire::store_be16(tcp.subspan(0, 2), 40000);
             aloe::wire::store_be16(tcp.subspan(2, 2), 80);
             tcp[12] = std::byte{0x50};
             tcp[13] = std::byte{0x10};
             aloe::wire::store_be16(tcp.subspan(14, 2), 0xffff);
-            std::ranges::copy(payload, room->begin() + Prebuilt::size + 20);
+            std::ranges::copy(payload, room->begin() + Ipv4Prebuilt::size + 20);
             return std::move(*packet);
         }
         [[nodiscard]] static aloe::net::SendRequest tcp_to(const aloe::wire::Ipv4Address destination) {

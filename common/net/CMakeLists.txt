@@ -1,14 +1,15 @@
 set(NET ${COMMON}.Net)
 
 ##############################################################################
-# Wire formats: Ethernet, ARP, IPv4 and ICMP headers as functions over bytes
+# The ARP cache
 ##############################################################################
 add_library(${NET}.Arp STATIC
-        arp/arp_cache.hpp
-        arp/arp_cache.cpp
+        ipv4/arp/arp_cache.hpp
+        ipv4/arp/arp_cache.cpp
+        ipv4/arp/arp_resolution.hpp
 )
 target_include_directories(${NET}.Arp PUBLIC
-        arp/
+        ipv4/arp/
 )
 target_link_libraries(${NET}.Arp PUBLIC
         Aloe::Common::Wire
@@ -20,19 +21,19 @@ target_link_libraries(${NET}.Arp PUBLIC
 # The brick: IPv4 over a shard queue, with ARP and ICMP echo
 ##############################################################################
 add_library(${NET}.Stack INTERFACE
-        stack/datagram.hpp
-        stack/detail/ipv4_arp.hpp
-        stack/detail/ipv4_input.hpp
-        stack/detail/ipv4_output.hpp
-        stack/detail/ipv4_routing.hpp
-        stack/detail/ipv4_transmit.hpp
-        stack/ipv4.hpp
-        stack/ipv4_config.hpp
-        stack/ipv4_counters.hpp
-        stack/prebuilt.hpp
+        ipv4/stack/detail/ipv4_arp.hpp
+        ipv4/stack/detail/ipv4_input.hpp
+        ipv4/stack/detail/ipv4_output.hpp
+        ipv4/stack/detail/ipv4_routing.hpp
+        ipv4/stack/detail/ipv4_transmit.hpp
+        ipv4/stack/ipv4.hpp
+        ipv4/stack/ipv4_config.hpp
+        ipv4/stack/ipv4_counters.hpp
+        ipv4/stack/ipv4_datagram.hpp
+        ipv4/stack/ipv4_prebuilt.hpp
 )
 target_include_directories(${NET}.Stack INTERFACE
-        stack/
+        ipv4/stack/
 )
 target_link_libraries(${NET}.Stack INTERFACE
         Aloe::Common::Wire

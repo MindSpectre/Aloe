@@ -12,7 +12,7 @@
 #include <vector>
 
 #include <arp_cache.hpp>
-#include <datagram.hpp>
+#include <arp_resolution.hpp>
 #include <detail/ipv4_transmit.hpp>
 #include <ipv4_config.hpp>
 #include <ipv4_counters.hpp>

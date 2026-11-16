@@ -16,7 +16,7 @@
 #include <detail/ipv4_routing.hpp>
 #include <ipv4_config.hpp>
 #include <ipv4_counters.hpp>
-#include <prebuilt.hpp>
+#include <ipv4_prebuilt.hpp>
 
 namespace aloe::net::detail {
 
@@ -87,14 +87,14 @@ namespace aloe::net::detail {
         }
 
         /// Routes, resolves and writes both headers into a kept packet's template; the contract is on `Ipv4::prebuild`.
-        [[nodiscard]] std::expected<Prebuilt, SendError> prebuild(const wire::Ipv4Address destination,
-                                                                  const wire::Ipv4Protocol protocol,
-                                                                  const core::TimePoint now) noexcept {
+        [[nodiscard]] std::expected<Ipv4Prebuilt, SendError> prebuild(const wire::Ipv4Address destination,
+                                                                      const wire::Ipv4Protocol protocol,
+                                                                      const core::TimePoint now) noexcept {
             const std::expected<wire::MacAddress, SendError> mac = next_mac(destination, now);
             if (!mac) {
                 return std::unexpected{mac.error()};
             }
-            Prebuilt prebuilt{};
+            Ipv4Prebuilt prebuilt{};
             wire::EthernetHeader{
                 .destination = *mac, .source = queue_.mac(), .ethertype = std::to_underlying(wire::EtherType::Ipv4)}
                 .write(std::span<std::byte>{prebuilt.headers}.first(wire::EthernetHeader::size));
@@ -120,7 +120,7 @@ namespace aloe::net::detail {
         send_frame(Packet& packet, const SendRequest& request, [[maybe_unused]] const core::TimePoint now) noexcept {
             assert(!packet.empty() && !packet.lent() && "a frame that is empty or still on loan");
             assert((request.checksum == device::L4Checksum::None ||
-                    packet.size() >= Prebuilt::size + checksum_offset(request.checksum) + 2) &&
+                    packet.size() >= Ipv4Prebuilt::size + checksum_offset(request.checksum) + 2) &&
                    "a segment shorter than its checksum field");
             const std::size_t frame_size = packet.size();
             if (frame_size > queue_.mtu() + wire::EthernetHeader::size) {
@@ -129,7 +129,7 @@ namespace aloe::net::detail {
             }
             const std::span<std::byte> frame = packet.data();
             const std::span<std::byte> ip    = frame.subspan(wire::EthernetHeader::size, wire::Ipv4Header::size);
-            // The header as the Prebuilt wrote it, from what the caller holds rather than a parse of the frame: the
+            // The header as the Ipv4Prebuilt wrote it, from what the caller holds rather than a parse of the frame: the
             // checksums need the addresses, the protocol and the total length only.
             const wire::Ipv4Header header{.total_length =
                                               static_cast<std::uint16_t>(frame_size - wire::EthernetHeader::size),
@@ -139,7 +139,7 @@ namespace aloe::net::detail {
             wire::store_be16(ip.subspan(ipv4_total_length_offset, 2), header.total_length);
             wire::store_be16(ip.subspan(ipv4_identification_offset, 2), next_identification());
             wire::store_be16(ip.subspan(wire::ipv4_checksum_offset, 2), 0);
-            assert(prebuilt_names(frame, header) && "the frame's IPv4 header is not the request's Prebuilt");
+            assert(prebuilt_names(frame, header) && "the frame's IPv4 header is not the request's Ipv4Prebuilt");
             packet.set_tx(finish_checksums(frame, header, request.checksum));
             Packet handle = packet.lend();
             if (queue_.transmit(std::move(handle))) {
@@ -153,7 +153,7 @@ namespace aloe::net::detail {
             wire::store_be16(ip.subspan(ipv4_identification_offset, 2), 0);
             wire::store_be16(ip.subspan(wire::ipv4_checksum_offset, 2), 0);
             if (request.checksum != device::L4Checksum::None) {
-                wire::store_be16(frame.subspan(Prebuilt::size + checksum_offset(request.checksum), 2), 0);
+                wire::store_be16(frame.subspan(Ipv4Prebuilt::size + checksum_offset(request.checksum), 2), 0);
             }
             packet.set_tx(device::TxMetadata{});
             // NOLINTEND(bugprone-use-after-move)

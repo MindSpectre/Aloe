@@ -542,12 +542,12 @@ responsibilities of their own, each in its own file.
 template <typename Ip>
 class Stack {
 public:
-    void process(std::span<Datagram> segments, core::TimePoint now) noexcept { /* ... */ }
+    void process(std::span<Ipv4Datagram> segments, core::TimePoint now) noexcept { /* ... */ }
 };
 
 // Bad: tcp_receive.hpp, tcp_transmit.hpp and tcp_control.hpp each defining members of Stack<Ip>
 template <typename Ip>
-void Stack<Ip>::process(std::span<Datagram> segments, core::TimePoint now) noexcept { /* ... */ }
+void Stack<Ip>::process(std::span<Ipv4Datagram> segments, core::TimePoint now) noexcept { /* ... */ }
 ```
 
 ## Lambda Captures

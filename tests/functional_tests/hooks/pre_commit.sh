@@ -45,7 +45,7 @@ setup_repository() {
 # two_modules: a module net with one header and a module tcp, each with its umbrella.
 two_modules() {
     write_file common/net/export/aloe/net '#include <ipv4.hpp>'
-    write_file common/net/stack/ipv4.hpp '#pragma once'
+    write_file common/net/ipv4/stack/ipv4.hpp '#pragma once'
     write_file common/tcp/export/aloe/tcp '#pragma once'
     git add common/net common/tcp/export
 }

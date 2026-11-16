@@ -53,7 +53,7 @@ namespace aloe::tcp {
         static_assert(IsIp<Ip>, "tcp::Stack needs net::Ipv4<Device>, or an IP brick with the same members");
         static_assert(IsCongestionControl<CongestionControl>,
                       "tcp::Stack needs a congestion control: a State and the reset, window and on_* hooks");
-        static_assert(net::Prebuilt::size + wire::TcpHeader::max_size <= device::packet_headroom,
+        static_assert(net::Ipv4Prebuilt::size + wire::TcpHeader::max_size <= device::packet_headroom,
                       "every frame's headers, with any option block, fit in front of the payload of a packet from "
                       "allocate()");
         // The connection and its view are templates over the IP brick: checked here, where they first have one.
@@ -103,7 +103,7 @@ namespace aloe::tcp {
 
         /// Records the stamp, publishes deferred retry hints, then processes each datagram. Every packet is moved
         /// out or released. An empty span is valid.
-        void process(const std::span<net::Datagram<Packet>> segments, const core::TimePoint now) noexcept {
+        void process(const std::span<net::Ipv4Datagram<Packet>> segments, const core::TimePoint now) noexcept {
             context_.now = now;
             for (ControlBlock* block = transmitter_.pop_retry(); block != nullptr; block = transmitter_.pop_retry()) {
                 // The deferred retry hint, at most one per marked connection.
@@ -228,7 +228,7 @@ namespace aloe::tcp {
         friend class Connection<Ip, CongestionControl>;
 
         using ControlBlock = detail::ControlBlock<Ip, CongestionControl>;
-        using Datagram     = net::Datagram<Packet>;
+        using Datagram     = net::Ipv4Datagram<Packet>;
         using Transmitter  = detail::Transmitter<Ip, CongestionControl>;
 
         /// The wheel's callback: the node's block, then the Lifecycle's timer handling.
