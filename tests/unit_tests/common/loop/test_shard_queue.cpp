@@ -68,6 +68,7 @@ TEST_F(QueueFixture, ReceiveCountsTheFramesItReturns) {
     std::array<aloe::fabric::Packet, 4> burst;
     EXPECT_EQ(queue.receive(burst), 1);
     EXPECT_EQ(counters.frames_received, 1);
-    EXPECT_EQ(queue.receive(burst), 0);
+    std::array<aloe::fabric::Packet, 4> empty;
+    EXPECT_EQ(queue.receive(empty), 0);
     EXPECT_EQ(counters.frames_received, 1) << "an empty receive counts nothing";
 }

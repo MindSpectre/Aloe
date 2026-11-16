@@ -4,6 +4,19 @@ Status: design, approved by the author on 2026-11-16 with two rulings added the 
 and the round is one pull request, not two. From the discussion of that day, checked against `main` at a2844ae
 (receive side merged as #40). Private, like every file under `docs/superpowers/`.
 
+## Amended on 2026-11-16, after the branch review
+
+The branch differs from the text below in three places; this section wins where they disagree.
+
+- **The test count grows.** "The test count is unchanged" under Verification meant that no test is removed. The
+  branch adds three hook scenarios (`ctest` lists 63 tests in `debug`, from 60) and three gtest cases, and
+  replaces one gtest case.
+- **The DPDK rule in `AGENTS.md` is unchanged.** Decision 1 lists its wording among the docs to edit. The rule says
+  to link `Aloe::Dpdk` and nothing else, which is still true, and "only `devices/` links it" would not be:
+  `examples/hello` links it too. The layout table's `devices/` row carries the statement instead.
+- **A trap is recorded.** `AGENTS.md` gained a line under "Traps already found" for decision 4's behaviour change:
+  a malformed IPv4 frame on a multi-queue fabric port lands on queue 0.
+
 ## Why
 
 The layout should say what each group holds, and production code should sit apart from testing code. Today

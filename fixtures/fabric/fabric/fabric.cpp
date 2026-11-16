@@ -63,9 +63,9 @@ namespace aloe::fabric {
             return good ? device::ChecksumVerdict::Good : device::ChecksumVerdict::Bad;
         }
 
-        inline constexpr std::size_t udp_header_size     = 8;  // wire has no UDP format
-        inline constexpr std::size_t udp_checksum_offset = 6;
-        inline constexpr std::size_t ports_size          = 4;  // source and destination port lead both TCP and UDP
+        constexpr std::size_t udp_header_size     = 8;  // wire has no UDP format
+        constexpr std::size_t udp_checksum_offset = 6;
+        constexpr std::size_t ports_size          = 4;  // source and destination port lead both TCP and UDP
 
         /// The IPv4 header of an Ethernet frame, as wire parses it. Nothing for any other frame, a truncated one
         /// included.

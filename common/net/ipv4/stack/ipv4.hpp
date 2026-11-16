@@ -119,13 +119,13 @@ namespace aloe::net {
             return output_.prebuild(destination, protocol, now);
         }
 
-        /// Moves when a cached MAC changes or goes: a `Ipv4Prebuilt` of an older generation may name a stale next hop.
+        /// Moves when a cached MAC changes or goes: an `Ipv4Prebuilt` of an older generation may name a stale next hop.
         [[nodiscard]] std::uint64_t generation() const noexcept {
             return arp_.generation();
         }
 
         /**
-         * @brief Finishes and transmits a frame the caller built from a `Ipv4Prebuilt`, and keeps the packet.
+         * @brief Finishes and transmits a frame the caller built from an `Ipv4Prebuilt`, and keeps the packet.
          *
          * `packet` holds a whole frame: the first `Ipv4Prebuilt::size` bytes from `prebuild`, then the segment, whose
          * checksum field is zero when one is requested. The brick writes the total length, a fresh identification

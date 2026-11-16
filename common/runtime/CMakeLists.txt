@@ -26,7 +26,6 @@ target_include_directories(${RUNTIME}.Scope PUBLIC
 )
 target_link_libraries(${RUNTIME}.Scope PUBLIC
         ${RUNTIME}.Counters
-        Aloe::Common::Loop
         Aloe::Common::Core
         Aloe::Common::Execution
         Aloe::Common::Log
@@ -45,6 +44,7 @@ target_include_directories(${RUNTIME}.Context PUBLIC
 )
 target_link_libraries(${RUNTIME}.Context PUBLIC
         ${RUNTIME}.Scope
+        ${RUNTIME}.Counters
         Aloe::Common::Loop
         Aloe::Common::Core
         Aloe::Common::Log
@@ -157,6 +157,7 @@ target_include_directories(${RUNTIME}.Runtime INTERFACE
 )
 target_link_libraries(${RUNTIME}.Runtime INTERFACE
         ${RUNTIME}.Shard
+        ${RUNTIME}.Counters
         Aloe::Common::Core
         Aloe::Common::Device
         Aloe::Common::Execution

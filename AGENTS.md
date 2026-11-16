@@ -363,6 +363,9 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - clang-tidy rejects a member stubbed out for a failing test run when the stub ignores `this`
   (`readability-convert-member-functions-to-static`), so the clang presets do not build it. Take such a run on
   `gcc-debug`, which runs no clang-tidy.
+- The fabric reads a frame with `wire`'s parsers, so an IPv4 frame `wire` rejects, one whose total length runs past
+  its bytes for instance, is not steered: it lands on queue 0 with no hash and no checksum verdict. A test of a
+  malformed frame on a multi-queue port looks for it, and for the drop it is counted under, on shard 0.
 
 ## Documentation
 

@@ -20,7 +20,7 @@ here names the asynchronous model, logs, or reads a clock.
   lists, valid until the next `process`. `allocate()` gives a packet with room for both headers;
   `send(packet, request, now)` routes it, prepends the headers, fills the checksums and queues it, or
   returns a `SendError` and hands the packet back exactly as it was. For a transport that keeps its packets,
-  `prebuild(destination, protocol, now)` returns the link and network headers to a destination as a
+  `prebuild(destination, protocol, now)` returns the link and network headers to a destination as an
   `Ipv4Prebuilt`, and `send_frame(packet, request, now)` finishes a frame built from them, lends the packet to the
   device and transmits the loan, leaving the packet with the caller; `generation()` says when headers built
   earlier may name a stale next hop. `resolve(next_hop, now)` and `learn(address, mac, now)` are the two ways

@@ -28,6 +28,7 @@
 #include <sched.h>
 #include <scheduler.hpp>
 #include <shard.hpp>
+#include <shard_counters.hpp>
 
 namespace aloe::runtime {
 

@@ -2,7 +2,6 @@
 
 #include <aloe/execution>
 #include <aloe/log>
-#include <aloe/loop>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
