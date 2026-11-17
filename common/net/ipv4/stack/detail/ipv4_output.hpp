@@ -198,11 +198,10 @@ namespace aloe::net::detail {
             4096;  ///< Per queue index, so shards do not collide early.
         static constexpr std::size_t ipv4_total_length_offset   = 2;
         static constexpr std::size_t ipv4_identification_offset = 4;
-        static constexpr std::size_t tcp_checksum_offset        = 16;
         static constexpr std::size_t udp_checksum_offset        = 6;
 
         [[nodiscard]] static constexpr std::size_t checksum_offset(const device::L4Checksum l4) noexcept {
-            return l4 == device::L4Checksum::Tcp ? tcp_checksum_offset : udp_checksum_offset;
+            return l4 == device::L4Checksum::Tcp ? wire::TcpHeader::checksum_offset : udp_checksum_offset;
         }
 
         /// Whether the frame's IPv4 header names what `header` does: the check behind `send_frame`'s trust in the

@@ -53,8 +53,10 @@ namespace aloe::loop {
         /// Fills `out` from the front and returns how many, which it counts; the slots must hold empty packets.
         [[nodiscard]] std::size_t receive(std::span<Packet> out) noexcept {
             core::force_non_const(this);  // the stack's mutable view of the device, though only the pointee is written
-            const std::size_t received  = device_.receive(queue_, out);
-            counters_.frames_received  += received;
+            const std::size_t received = device_.receive(queue_, out);
+            if (received != 0) {
+                counters_.frames_received += received;  // an idle poll leaves the counters' line alone
+            }
             return received;
         }
 

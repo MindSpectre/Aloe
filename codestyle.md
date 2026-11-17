@@ -538,16 +538,17 @@ The reader of a class sees every member in one place; a class too big for that i
 responsibilities of their own, each in its own file.
 
 ```cpp
-// Good: every member of the template defined in its body, in tcp_stack.hpp
-template <typename Ip>
-class Stack {
+// Good: every member of the template defined in its body, in session.hpp
+template <typename Transport>
+class Session {
 public:
-    void process(std::span<Ipv4Datagram> segments, core::TimePoint now) noexcept { /* ... */ }
+    void receive(std::span<const std::byte> bytes) noexcept { /* ... */ }
+    void send(std::span<const std::byte> bytes) noexcept { /* ... */ }
 };
 
-// Bad: tcp_receive.hpp, tcp_transmit.hpp and tcp_control.hpp each defining members of Stack<Ip>
-template <typename Ip>
-void Stack<Ip>::process(std::span<Ipv4Datagram> segments, core::TimePoint now) noexcept { /* ... */ }
+// Bad: session_receive.hpp and session_send.hpp each defining members of Session<Transport>
+template <typename Transport>
+void Session<Transport>::receive(std::span<const std::byte> bytes) noexcept { /* ... */ }
 ```
 
 ## Lambda Captures

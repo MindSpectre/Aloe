@@ -77,14 +77,18 @@ namespace aloe::fabric {
             return wire::Ipv4Header::parse(frame.subspan(wire::EthernetHeader::size));
         }
 
-        /// Where the segment starts in the frame. Inside the frame for any header `ipv4_of` returned.
-        [[nodiscard]] std::size_t l4_offset_of(const wire::Ipv4Header& ipv4) noexcept {
-            return wire::EthernetHeader::size + std::size_t{ipv4.header_length};
+        /// The IPv4 header's bytes, options included. Inside the frame for any header `ipv4_of` returned.
+        template <typename Byte>
+        [[nodiscard]] std::span<Byte> ipv4_header_of(const std::span<Byte> frame,
+                                                     const wire::Ipv4Header& ipv4) noexcept {
+            return frame.subspan(wire::EthernetHeader::size, ipv4.header_length);
         }
 
-        /// How long the total length says the segment is. Inside the frame for any header `ipv4_of` returned.
-        [[nodiscard]] std::size_t l4_length_of(const wire::Ipv4Header& ipv4) noexcept {
-            return std::size_t{ipv4.total_length} - std::size_t{ipv4.header_length};
+        /// The segment, as long as the total length says. Inside the frame for any header `ipv4_of` returned.
+        template <typename Byte>
+        [[nodiscard]] std::span<Byte> l4_of(const std::span<Byte> frame, const wire::Ipv4Header& ipv4) noexcept {
+            return frame.subspan(wire::EthernetHeader::size + std::size_t{ipv4.header_length},
+                                 std::size_t{ipv4.total_length} - std::size_t{ipv4.header_length});
         }
 
         /// The flow a card steers the frame by. A fragment keeps only its addresses. The ports take part only for an
@@ -152,15 +156,14 @@ namespace aloe::fabric {
         if (!ipv4) {
             return rx;
         }
-        const std::span<const std::byte> l4 = frame.subspan(l4_offset_of(*ipv4), l4_length_of(*ipv4));
+        const std::span<const std::byte> l4 = l4_of(frame, *ipv4);
         const device::FlowTuple flow        = flow_of(*ipv4, l4);
         if (steering_.enabled) {
             rx.rss_hash = device::flow_hash(steering_, flow);
             queue       = device::queue_for(steering_, flow);
         }
         if (config_.offloads == EmulatedOffloads::Checksums) {
-            rx.l3 =
-                verdict(wire::internet_checksum(frame.subspan(wire::EthernetHeader::size, ipv4->header_length)) == 0);
+            rx.l3 = verdict(wire::internet_checksum(ipv4_header_of(frame, *ipv4)) == 0);
             if (const auto offset = l4_checksum_offset(*ipv4, l4.size())) {
                 const bool udp_without_checksum =
                     ipv4->protocol == wire::Ipv4Protocol::Udp && wire::load_be16(l4.subspan(*offset, 2)) == 0;
@@ -232,6 +235,7 @@ namespace aloe::fabric {
         if (!ipv4) {
             return;
         }
+        const std::span<std::byte> header = ipv4_header_of(frame, *ipv4);
         // A card finds the headers by the metadata, not by parsing; a wrong length fails there, so it fails here.
         assert(tx.l2_length == wire::EthernetHeader::size &&
                "device::TxMetadata::l2_length is not the Ethernet header");
@@ -240,16 +244,13 @@ namespace aloe::fabric {
                "a TCP checksum was requested for a segment that is not TCP");
         assert((tx.fill_l4_checksum != device::L4Checksum::Udp || ipv4->protocol == wire::Ipv4Protocol::Udp) &&
                "a UDP checksum was requested for a segment that is not UDP");
-        assert((!tx.fill_ipv4_checksum ||
-                wire::load_be16(frame.subspan(wire::EthernetHeader::size + wire::ipv4_checksum_offset, 2)) == 0) &&
+        assert((!tx.fill_ipv4_checksum || wire::load_be16(header.subspan(wire::ipv4_checksum_offset, 2)) == 0) &&
                "an IPv4 checksum fill needs zero in the field");
         if (tx.fill_ipv4_checksum) {
-            const std::uint16_t checksum =
-                wire::ipv4_header_checksum(frame.subspan(wire::EthernetHeader::size, ipv4->header_length));
-            wire::store_be16(frame.subspan(wire::EthernetHeader::size + wire::ipv4_checksum_offset, 2), checksum);
+            wire::store_be16(header.subspan(wire::ipv4_checksum_offset, 2), wire::ipv4_header_checksum(header));
         }
         if (tx.fill_l4_checksum != device::L4Checksum::None) {
-            const std::span<std::byte> l4 = frame.subspan(l4_offset_of(*ipv4), l4_length_of(*ipv4));
+            const std::span<std::byte> l4 = l4_of(frame, *ipv4);
             if (const auto offset = l4_checksum_offset(*ipv4, l4.size())) {
                 // The field holds the pseudo-header sum; summing the segment as it is completes it.
                 std::uint16_t checksum = wire::internet_checksum(l4);
