@@ -20,8 +20,8 @@ here names the asynchronous model, logs, or reads a clock.
   lists, valid until the next `process`. `allocate()` gives a packet with room for both headers;
   `send(packet, request, now)` routes it, prepends the headers, fills the checksums and queues it, or
   returns a `SendError` and hands the packet back exactly as it was. For a transport that keeps its packets,
-  `prebuild(destination, protocol, now)` returns the link and network headers to a destination as a
-  `Prebuilt`, and `send_frame(packet, request, now)` finishes a frame built from them, lends the packet to the
+  `prebuild(destination, protocol, now)` returns the link and network headers to a destination as an
+  `Ipv4Prebuilt`, and `send_frame(packet, request, now)` finishes a frame built from them, lends the packet to the
   device and transmits the loan, leaving the packet with the caller; `generation()` says when headers built
   earlier may name a stale next hop. `resolve(next_hop, now)` and `learn(address, mac, now)` are the two ways
   into the ARP cache from outside. Nothing here blocks, throws after construction, or allocates anything but
@@ -34,14 +34,14 @@ here names the asynchronous model, logs, or reads a clock.
   the shard whose queue receives a reply that a sibling shard solicited learn it and report it in `resolved()`
   for forwarding, since a multi-queue device's shards share one address; only a reply addressed to our
   address from a plausible sender is accepted.
-- **`aloe::net::Datagram<Packet>`** -- one received datagram for a transport: the whole frame as a packet
+- **`aloe::net::Ipv4Datagram<Packet>`** -- one received datagram for a transport: the whole frame as a packet
   the transport moves out to keep, the two addresses, the protocol, the header offsets, the L4 length from
   the IPv4 total length, and the device's L4 checksum verdict. `l4()` is the segment.
 - **`aloe::net::Ipv4Config`** -- the address and prefix, an optional gateway, the TTL, the burst capacity
   the lists are sized to, and the ARP capacity and timings. The same config goes to every shard.
 - **`aloe::net::SendRequest`**, **`SendError`** -- the destination, the protocol and which L4 checksum to
   fill; `NoRoute`, `Unresolved`, `Oversized` or `Refused`.
-- **`aloe::net::Prebuilt`** -- the 34 bytes of an Ethernet and an IPv4 header to one destination, with the
+- **`aloe::net::Ipv4Prebuilt`** -- the 34 bytes of an Ethernet and an IPv4 header to one destination, with the
   IPv4 total length, identification and checksum zero; `valid_until`, the stamp from which they should be
   built again; and `generation`, the brick's generation when they were built.
 - **`aloe::net::ArpResolution`** -- a mapping learned from an ARP frame, reported for the loop to forward
@@ -65,7 +65,7 @@ The hand-written loop that answers ARP and ping on one queue of a DPDK port, as
 #include <aloe/net>
 
 aloe::ethdev::Port port{{.name = "net_tap0", .queues = 1}};
-aloe::loop::ShardCounters counters;
+aloe::loop::ShardQueueCounters counters;
 aloe::loop::ShardQueue<aloe::ethdev::Port> queue{port, 0, 64, counters};
 aloe::net::Ipv4<aloe::ethdev::Port> ip{queue, {.address = {10, 77, 0, 2}, .prefix = 24, .gateway = {{10, 77, 0, 1}}}};
 std::vector<aloe::ethdev::Packet> burst(64);
@@ -126,7 +126,12 @@ if (now >= built->valid_until || ip.generation() != built->generation) {
 
 ## Design notes
 
-**Four parts behind one façade.** `net::Ipv4` is the brick's public face and the owner of its config and counters; what it does is four classes in `net::detail`, each in its own header under `stack/detail/`: `Routing` (the subnet, the gateway and the broadcast rules, as route questions with no side effect), `Arp` (the cache, the requests, the replies and the `resolved()` list; it reaches the queue alone), `Output` (`send`, `prebuild`, `send_frame`, the headers and checksums in one place and the identification counter; it routes through `Routing` and resolves through `Arp`) and `Input` (the frame sorted by ethertype, the IPv4 checks, delivery into one list per transport, the echo reply built in its own packet and framed by `Output`, as `send` frames a datagram once the hop is known). The dependency runs one way, input to output to ARP, read off the includes. The counters are one struct every part writes through a reference, so a reader of `Ipv4Counters` sees the whole brick.
+**IPv4 in a folder of its own.** The brick, its four parts and the ARP cache live under `ipv4/`, and a type that
+is IPv4's alone says so in its name: `Ipv4Datagram`, `Ipv4Prebuilt`, `Ipv4Config`, `Ipv4Counters`. `SendRequest`
+and `SendError` are what a transport is written against and carry no prefix. An IPv6 brick would sit beside
+`ipv4/` in the same module.
+
+**Four parts behind one façade.** `net::Ipv4` is the brick's public face and the owner of its config and counters; what it does is four classes in `net::detail`, each in its own header under `ipv4/stack/detail/`: `Routing` (the subnet, the gateway and the broadcast rules, as route questions with no side effect), `Arp` (the cache, the requests, the replies and the `resolved()` list; it reaches the queue alone), `Output` (`send`, `prebuild`, `send_frame`, the headers and checksums in one place and the identification counter; it routes through `Routing` and resolves through `Arp`) and `Input` (the frame sorted by ethertype, the IPv4 checks, delivery into one list per transport, the echo reply built in its own packet and framed by `Output`, as `send` frames a datagram once the hop is known). The dependency runs one way, input to output to ARP, read off the includes. The counters are one struct every part writes through a reference, so a reader of `Ipv4Counters` sees the whole brick.
 
 **The seam is a list, not a call.** IPv4 cannot be templated on who reads it, so it does not call anyone.
 It sorts the datagrams it accepts into one list per transport, and the loop hands each list to its brick.

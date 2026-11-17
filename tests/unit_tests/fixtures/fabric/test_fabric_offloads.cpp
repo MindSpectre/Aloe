@@ -123,6 +123,15 @@ TEST_F(FabricOffloads, LeavesNonIpv4AndUdpWithoutChecksumUnknown) {
     EXPECT_EQ(received.rx().l4, aloe::device::ChecksumVerdict::Unknown);
 }
 
+TEST_F(FabricOffloads, LeavesATruncatedFrameUnknown) {
+    auto frame = aloe::frames::ipv4_frame(spec(aloe::wire::Ipv4Protocol::Udp, aloe::frames::Checksums::Correct),
+                                          aloe::frames::pattern(64));
+    frame.resize(frame.size() - 40);  // the total length now claims more than the frame carries
+    aloe::fabric::Packet received = exchange(frame, aloe::device::TxMetadata{});
+    EXPECT_EQ(received.rx().l3, aloe::device::ChecksumVerdict::Unknown);
+    EXPECT_EQ(received.rx().l4, aloe::device::ChecksumVerdict::Unknown);
+}
+
 TEST(FabricOffloadsNone, APlainPortReportsNothingAndVerifiesNothing) {
     aloe::fabric::Fabric fabric;
     auto& a = fabric.add_port({.mac = client, .pool_size = 16});

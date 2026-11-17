@@ -107,9 +107,9 @@ TEST(RuntimeRing, EachShardEchoesOnItsOwnQueueWithARegisteredThread) {
         EXPECT_EQ(outcomes[index].load(), 1) << "shard " << index << ": -1 could not inject, -2 never saw the echo";
         EXPECT_NE(lcores[index].load(), LCORE_ID_ANY) << "the hook registered the thread";
         distinct.insert(lcores[index].load());
-        EXPECT_EQ(runtime.counters(index).frames_received, 2)
+        EXPECT_EQ(runtime.counters(index).queue.frames_received, 2)
             << "shard " << index << ": the injected frame and its own answer";
-        EXPECT_EQ(runtime.counters(index).frames_transmitted, 2) << "shard " << index;
+        EXPECT_EQ(runtime.counters(index).queue.frames_transmitted, 2) << "shard " << index;
         EXPECT_EQ(runtime.shard(index).stack().echoed(), 1) << "shard " << index;
         EXPECT_EQ(runtime.shard(index).stack().dropped(), 1) << "shard " << index;
     }

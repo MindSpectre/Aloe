@@ -97,7 +97,7 @@ namespace {
 
     class TaskScopeTest : public testing::Test {
     protected:
-        aloe::loop::ShardCounters counters_;
+        aloe::runtime::ShardCounters counters_;
         aloe::runtime::TaskScope scope_{aloe::log::logger("aloe.runtime"), 0, counters_};
         std::vector<ManualSender::Handle*> handles_;
 

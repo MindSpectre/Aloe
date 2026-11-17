@@ -17,7 +17,6 @@
 #include <utility>
 #include <vector>
 
-#include <detail/frame.hpp>
 #include <impairment.hpp>
 
 namespace aloe::fabric {
@@ -64,6 +63,66 @@ namespace aloe::fabric {
             return good ? device::ChecksumVerdict::Good : device::ChecksumVerdict::Bad;
         }
 
+        constexpr std::size_t udp_header_size     = 8;  // wire has no UDP format
+        constexpr std::size_t udp_checksum_offset = 6;
+        constexpr std::size_t ports_size          = 4;  // source and destination port lead both TCP and UDP
+
+        /// The IPv4 header of an Ethernet frame, as wire parses it. Nothing for any other frame, a truncated one
+        /// included.
+        [[nodiscard]] std::optional<wire::Ipv4Header> ipv4_of(const std::span<const std::byte> frame) noexcept {
+            const auto ethernet = wire::EthernetHeader::parse(frame);
+            if (!ethernet || ethernet->ethertype != std::to_underlying(wire::EtherType::Ipv4)) {
+                return std::nullopt;
+            }
+            return wire::Ipv4Header::parse(frame.subspan(wire::EthernetHeader::size));
+        }
+
+        /// The IPv4 header's bytes, options included. Inside the frame for any header `ipv4_of` returned.
+        template <typename Byte>
+        [[nodiscard]] std::span<Byte> ipv4_header_of(const std::span<Byte> frame,
+                                                     const wire::Ipv4Header& ipv4) noexcept {
+            return frame.subspan(wire::EthernetHeader::size, ipv4.header_length);
+        }
+
+        /// The segment, as long as the total length says. Inside the frame for any header `ipv4_of` returned.
+        template <typename Byte>
+        [[nodiscard]] std::span<Byte> l4_of(const std::span<Byte> frame, const wire::Ipv4Header& ipv4) noexcept {
+            return frame.subspan(wire::EthernetHeader::size + std::size_t{ipv4.header_length},
+                                 std::size_t{ipv4.total_length} - std::size_t{ipv4.header_length});
+        }
+
+        /// The flow a card steers the frame by. A fragment keeps only its addresses. The ports take part only for an
+        /// unfragmented TCP or UDP segment of at least `ports_size` bytes.
+        [[nodiscard]] device::FlowTuple flow_of(const wire::Ipv4Header& ipv4,
+                                                const std::span<const std::byte> l4) noexcept {
+            device::FlowTuple flow{.source = ipv4.source, .destination = ipv4.destination};
+            if (ipv4.is_fragment()) {
+                return flow;
+            }
+            flow.protocol     = ipv4.protocol;
+            const bool ported = ipv4.protocol == wire::Ipv4Protocol::Tcp || ipv4.protocol == wire::Ipv4Protocol::Udp;
+            if (ported && l4.size() >= ports_size) {
+                flow.source_port      = wire::load_be16(l4.first(2));
+                flow.destination_port = wire::load_be16(l4.subspan(2, 2));
+            }
+            return flow;
+        }
+
+        /// The offset of the checksum field inside the segment: unfragmented TCP or UDP with a whole header.
+        [[nodiscard]] std::optional<std::size_t> l4_checksum_offset(const wire::Ipv4Header& ipv4,
+                                                                    const std::size_t l4_length) noexcept {
+            if (ipv4.is_fragment()) {
+                return std::nullopt;
+            }
+            if (ipv4.protocol == wire::Ipv4Protocol::Tcp && l4_length >= wire::TcpHeader::size) {
+                return wire::TcpHeader::checksum_offset;
+            }
+            if (ipv4.protocol == wire::Ipv4Protocol::Udp && l4_length >= udp_header_size) {
+                return udp_checksum_offset;
+            }
+            return std::nullopt;
+        }
+
     }  // namespace
 
     Port::Port(PrivateTag, Fabric& fabric, const PortConfig& config)
@@ -93,24 +152,25 @@ namespace aloe::fabric {
     device::RxMetadata Port::inspect(const std::span<const std::byte> frame, std::uint16_t& queue) const noexcept {
         device::RxMetadata rx;
         queue           = 0;
-        const auto ipv4 = detail::parse_ipv4(frame);
+        const auto ipv4 = ipv4_of(frame);
         if (!ipv4) {
             return rx;
         }
-        const device::FlowTuple flow = detail::flow_of(*ipv4);
+        const std::span<const std::byte> l4 = l4_of(frame, *ipv4);
+        const device::FlowTuple flow        = flow_of(*ipv4, l4);
         if (steering_.enabled) {
             rx.rss_hash = device::flow_hash(steering_, flow);
             queue       = device::queue_for(steering_, flow);
         }
         if (config_.offloads == EmulatedOffloads::Checksums) {
-            rx.l3 = verdict(wire::internet_checksum(ipv4->header(frame)) == 0);
-            if (const auto offset = ipv4->l4_checksum_offset()) {
+            rx.l3 = verdict(wire::internet_checksum(ipv4_header_of(frame, *ipv4)) == 0);
+            if (const auto offset = l4_checksum_offset(*ipv4, l4.size())) {
                 const bool udp_without_checksum =
-                    ipv4->protocol == wire::Ipv4Protocol::Udp && wire::load_be16(frame.subspan(*offset, 2)) == 0;
+                    ipv4->protocol == wire::Ipv4Protocol::Udp && wire::load_be16(l4.subspan(*offset, 2)) == 0;
                 if (!udp_without_checksum) {
                     const std::uint32_t pseudo = wire::ipv4_pseudo_header_sum(
-                        ipv4->source, ipv4->destination, ipv4->protocol, static_cast<std::uint16_t>(ipv4->l4_length));
-                    rx.l4 = verdict(wire::checksum_finish(wire::checksum_add(pseudo, ipv4->l4(frame))) == 0);
+                        ipv4->source, ipv4->destination, ipv4->protocol, static_cast<std::uint16_t>(l4.size()));
+                    rx.l4 = verdict(wire::checksum_finish(wire::checksum_add(pseudo, l4)) == 0);
                 }
             }
         }
@@ -170,11 +230,12 @@ namespace aloe::fabric {
             return;
         }
         const std::span<std::byte> frame = packet.data();
-        const auto ipv4                  = detail::parse_ipv4(frame);
+        const auto ipv4                  = ipv4_of(frame);
         assert(ipv4.has_value() && "a checksum fill was requested for a frame that is not IPv4");
         if (!ipv4) {
             return;
         }
+        const std::span<std::byte> header = ipv4_header_of(frame, *ipv4);
         // A card finds the headers by the metadata, not by parsing; a wrong length fails there, so it fails here.
         assert(tx.l2_length == wire::EthernetHeader::size &&
                "device::TxMetadata::l2_length is not the Ethernet header");
@@ -183,21 +244,20 @@ namespace aloe::fabric {
                "a TCP checksum was requested for a segment that is not TCP");
         assert((tx.fill_l4_checksum != device::L4Checksum::Udp || ipv4->protocol == wire::Ipv4Protocol::Udp) &&
                "a UDP checksum was requested for a segment that is not UDP");
-        assert((!tx.fill_ipv4_checksum ||
-                wire::load_be16(frame.subspan(wire::EthernetHeader::size + wire::ipv4_checksum_offset, 2)) == 0) &&
+        assert((!tx.fill_ipv4_checksum || wire::load_be16(header.subspan(wire::ipv4_checksum_offset, 2)) == 0) &&
                "an IPv4 checksum fill needs zero in the field");
         if (tx.fill_ipv4_checksum) {
-            const std::uint16_t checksum = wire::ipv4_header_checksum(ipv4->header(frame));
-            wire::store_be16(frame.subspan(wire::EthernetHeader::size + wire::ipv4_checksum_offset, 2), checksum);
+            wire::store_be16(header.subspan(wire::ipv4_checksum_offset, 2), wire::ipv4_header_checksum(header));
         }
         if (tx.fill_l4_checksum != device::L4Checksum::None) {
-            if (const auto offset = ipv4->l4_checksum_offset()) {
+            const std::span<std::byte> l4 = l4_of(frame, *ipv4);
+            if (const auto offset = l4_checksum_offset(*ipv4, l4.size())) {
                 // The field holds the pseudo-header sum; summing the segment as it is completes it.
-                std::uint16_t checksum = wire::internet_checksum(ipv4->l4(frame));
+                std::uint16_t checksum = wire::internet_checksum(l4);
                 if (ipv4->protocol == wire::Ipv4Protocol::Udp && checksum == 0) {
                     checksum = 0xffff;  // zero means "no checksum" in UDP
                 }
-                wire::store_be16(frame.subspan(*offset, 2), checksum);
+                wire::store_be16(l4.subspan(*offset, 2), checksum);
             }
         }
     }

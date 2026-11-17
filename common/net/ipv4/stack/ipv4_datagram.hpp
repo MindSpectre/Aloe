@@ -16,7 +16,7 @@ namespace aloe::net {
      * the brick's list until the next `process`, which frees whatever was not taken.
      */
     template <device::IsPacket Packet>
-    struct Datagram {
+    struct Ipv4Datagram {
         Packet packet{};
         wire::Ipv4Address source{};
         wire::Ipv4Address destination{};
@@ -31,14 +31,6 @@ namespace aloe::net {
             assert(!packet.empty() && "l4() on a datagram whose packet was moved out");
             return packet.data().subspan(static_cast<std::size_t>(l3_offset) + l3_length, l4_length);
         }
-    };
-
-    /// A mapping learned from an ARP frame, reported so a loop can forward it to the other shards.
-    struct ArpResolution {
-        wire::Ipv4Address address{};
-        wire::MacAddress mac{};
-
-        friend constexpr bool operator==(const ArpResolution&, const ArpResolution&) noexcept = default;
     };
 
 }  // namespace aloe::net

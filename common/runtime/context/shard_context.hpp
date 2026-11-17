@@ -10,6 +10,7 @@
 #include <span>
 #include <vector>
 
+#include <shard_counters.hpp>
 #include <task_scope.hpp>
 
 namespace aloe::runtime {
@@ -152,18 +153,18 @@ namespace aloe::runtime {
             return scope_;
         }
 
-        [[nodiscard]] loop::ShardCounters& counters() noexcept {
+        [[nodiscard]] ShardCounters& counters() noexcept {
             return counters_;
         }
 
-        [[nodiscard]] const loop::ShardCounters& counters() const noexcept {
+        [[nodiscard]] const ShardCounters& counters() const noexcept {
             return counters_;
         }
 
     private:
         std::uint16_t index_;
         log::Logger logger_;
-        loop::ShardCounters counters_;
+        ShardCounters counters_;
         core::TimePoint now_;
         loop::RunQueue ready_;
         loop::Inbox inbox_;

@@ -13,12 +13,13 @@ namespace {
 
     using aloe::benchmarks::RoundConfig;
     using aloe::benchmarks::RunState;
-    using IpCounters    = aloe::net::Ipv4Counters;
-    using TcpCounters   = aloe::tcp::TcpCounters;
-    using ShardCounters = aloe::loop::ShardCounters;
+    using IpCounters         = aloe::net::Ipv4Counters;
+    using TcpCounters        = aloe::tcp::TcpCounters;
+    using ShardQueueCounters = aloe::loop::ShardQueueCounters;
 
     /// The failure `check_stack_counters` records for these counters; empty when the run stays clean.
-    [[nodiscard]] std::string failure_for(const TcpCounters& tcp, const IpCounters& ip, const ShardCounters& shard) {
+    [[nodiscard]] std::string
+    failure_for(const TcpCounters& tcp, const IpCounters& ip, const ShardQueueCounters& shard) {
         RunState state{
             RoundConfig{.rounds = 1, .warmup = 0}
         };
@@ -96,7 +97,7 @@ TEST(StackSanity, FailsOnEveryDropAndRefusal) {
         counters.*member = 1;
         EXPECT_NE(failure_for({}, counters, {}).find(std::string{name} + "=1"), std::string::npos) << name;
     }
-    ShardCounters shard;
+    ShardQueueCounters shard;
     shard.transmit_refused = 1;
     EXPECT_NE(failure_for({}, {}, shard).find("shard.transmit_refused=1"), std::string::npos);
 }

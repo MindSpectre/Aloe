@@ -28,6 +28,7 @@
 #include <sched.h>
 #include <scheduler.hpp>
 #include <shard.hpp>
+#include <shard_counters.hpp>
 
 namespace aloe::runtime {
 
@@ -135,7 +136,7 @@ namespace aloe::runtime {
                         return;
                     }
                     shards_[index]->run();
-                    const loop::ShardCounters& counters = shards_[index]->context().counters();
+                    const ShardCounters& counters = shards_[index]->context().counters();
                     shards_[index]
                         ->context()
                         .logger()
@@ -143,8 +144,8 @@ namespace aloe::runtime {
                             "shard {} drained after {} ticks: {} frames in, {} out, {} tasks ran, {} failed">(
                             index,
                             counters.ticks,
-                            counters.frames_received,
-                            counters.frames_transmitted,
+                            counters.queue.frames_received,
+                            counters.queue.frames_transmitted,
                             counters.tasks_completed + counters.tasks_stopped,
                             counters.tasks_failed);
                 };
@@ -231,7 +232,7 @@ namespace aloe::runtime {
             return *shards_[index];
         }
 
-        [[nodiscard]] const loop::ShardCounters& counters(const std::uint16_t index) const noexcept {
+        [[nodiscard]] const ShardCounters& counters(const std::uint16_t index) const noexcept {
             return shards_[index]->context().counters();
         }
 

@@ -128,13 +128,31 @@ TEST_F(FabricSteering, ASingleQueuePortHashesNothing) {
     EXPECT_FALSE(received[0].rx().rss_hash.has_value());
 }
 
-TEST_F(FabricSteering, ATruncatedFrameIsStillSteeredAndDoesNotCrash) {
-    const auto frame_spec = spec(aloe::wire::Ipv4Protocol::Tcp, 40000);
-    auto frame            = aloe::frames::ipv4_frame(frame_spec, aloe::frames::pattern(64));
-    frame.resize(frame.size() - 40);  // the total length now claims more than the frame carries
-    const std::uint16_t expected = aloe::device::queue_for(server_port_.steering(), aloe::frames::flow_of(frame_spec));
+TEST_F(FabricSteering, ASegmentTooShortForPortsIsSteeredWithoutThem) {
+    auto frame = aloe::frames::ipv4_frame(spec(aloe::wire::Ipv4Protocol::Tcp, 40000), aloe::frames::pattern(0));
+    frame.resize(14 + 20 + 2);                                        // two bytes of segment: no room for the ports
+    aloe::wire::store_be16(std::span{frame}.subspan(14 + 2, 2), 22);  // total length: the header and those two bytes
+    const aloe::device::FlowTuple flow{
+        .source = client_ip, .destination = server_ip, .protocol = aloe::wire::Ipv4Protocol::Tcp};
+    const std::uint16_t expected = aloe::device::queue_for(server_port_.steering(), flow);
     send(frame);
-    EXPECT_FALSE(receive_only_on(expected).empty());
+    aloe::fabric::Packet packet = receive_only_on(expected);
+    ASSERT_FALSE(packet.empty());
+    EXPECT_EQ(packet.rx().rss_hash, aloe::device::flow_hash(server_port_.steering(), flow));
+}
+
+TEST_F(FabricSteering, ATruncatedFrameGoesToQueueZeroWithoutAHash) {
+    std::uint16_t source_port = 40000;
+    while (aloe::device::queue_for(server_port_.steering(),
+                                   aloe::frames::flow_of(spec(aloe::wire::Ipv4Protocol::Tcp, source_port))) == 0) {
+        ++source_port;  // a flow the hash would send elsewhere, so queue 0 below is not the hash's choice
+    }
+    auto frame = aloe::frames::ipv4_frame(spec(aloe::wire::Ipv4Protocol::Tcp, source_port), aloe::frames::pattern(64));
+    frame.resize(frame.size() - 40);  // the total length now claims more than the frame carries
+    send(frame);
+    aloe::fabric::Packet packet = receive_only_on(0);
+    ASSERT_FALSE(packet.empty());
+    EXPECT_FALSE(packet.rx().rss_hash.has_value());
 }
 
 TEST_F(FabricSteering, AnIpv4HeaderWithOptionsIsParsedByItsLength) {

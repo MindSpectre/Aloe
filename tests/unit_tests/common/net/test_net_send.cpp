@@ -220,7 +220,7 @@ TEST_P(NetSend, AnOversizedSegmentIsRefusedUnchangedAndTheLargestOneGoes) {
 
 TEST_P(NetSend, ARefusedSendReturnsThePacketExactlyAsBuilt) {
     aloe::testing::StuckPort stuck{port_};
-    aloe::loop::ShardCounters counters;
+    aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<aloe::testing::StuckPort> queue{stuck, 0, 1, counters};  // a ring of one
     aloe::net::Ipv4<aloe::testing::StuckPort> ip{queue, aloe::testing::stack_config()};
     ip.learn(harness_ip, harness_mac, now_);

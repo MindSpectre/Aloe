@@ -32,6 +32,8 @@ namespace aloe::tcp::detail {
         }
     };
 
+    // TODO: move to core when a second module needs a fixed pool, and decide then whether the reservation, which
+    // exists for TCP's FIN node, moves with it
     /**
      * @brief A fixed array of nodes with an intrusive free list: the storage behind the per-shard pools.
      *

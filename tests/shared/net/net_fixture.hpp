@@ -116,7 +116,7 @@ namespace aloe::testing {
         fabric::Fabric fabric_;
         fabric::Port& harness_ = fabric_.add_port({.mac = harness_mac, .pool_size = 64, .offloads = GetParam()});
         fabric::Port& port_    = fabric_.add_port({.mac = stack_mac, .pool_size = 64, .offloads = GetParam()});
-        loop::ShardCounters counters_;
+        loop::ShardQueueCounters counters_;
         loop::ShardQueue<fabric::Port> queue_{port_, 0, ring_capacity, counters_};
         Ipv4 ip_{queue_, stack_config()};
         TimePoint now_{};

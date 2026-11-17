@@ -9,6 +9,6 @@ target_link_libraries(${EXAMPLES}.TcpEchoTasks
         Aloe::Common::Runtime
         Aloe::Common::Tcp
         Aloe::Common::Net
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
 )
 ##############################################################################

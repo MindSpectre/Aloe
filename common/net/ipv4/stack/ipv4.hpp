@@ -13,14 +13,15 @@
 #include <stdexcept>
 #include <utility>
 
-#include <datagram.hpp>
+#include <arp_resolution.hpp>
 #include <detail/ipv4_arp.hpp>
 #include <detail/ipv4_input.hpp>
 #include <detail/ipv4_output.hpp>
 #include <detail/ipv4_routing.hpp>
 #include <ipv4_config.hpp>
 #include <ipv4_counters.hpp>
-#include <prebuilt.hpp>
+#include <ipv4_datagram.hpp>
+#include <ipv4_prebuilt.hpp>
 
 namespace aloe::net {
 
@@ -77,7 +78,7 @@ namespace aloe::net {
         }
 
         /// The datagrams of `protocol`, TCP or UDP, from the last `process`, until the next one.
-        [[nodiscard]] std::span<Datagram<Packet>> received(const wire::Ipv4Protocol protocol) noexcept {
+        [[nodiscard]] std::span<Ipv4Datagram<Packet>> received(const wire::Ipv4Protocol protocol) noexcept {
             return input_.received(protocol);
         }
 
@@ -112,21 +113,21 @@ namespace aloe::net {
          * ARP request when the cache asks. `valid_until` is the end of the entry's reachable time while it is fresh, a
          * request interval from `now` while it is stale, and never for a broadcast or multicast destination.
          */
-        [[nodiscard]] std::expected<Prebuilt, SendError> prebuild(const wire::Ipv4Address destination,
-                                                                  const wire::Ipv4Protocol protocol,
-                                                                  const core::TimePoint now) noexcept {
+        [[nodiscard]] std::expected<Ipv4Prebuilt, SendError> prebuild(const wire::Ipv4Address destination,
+                                                                      const wire::Ipv4Protocol protocol,
+                                                                      const core::TimePoint now) noexcept {
             return output_.prebuild(destination, protocol, now);
         }
 
-        /// Moves when a cached MAC changes or goes: a `Prebuilt` of an older generation may name a stale next hop.
+        /// Moves when a cached MAC changes or goes: an `Ipv4Prebuilt` of an older generation may name a stale next hop.
         [[nodiscard]] std::uint64_t generation() const noexcept {
             return arp_.generation();
         }
 
         /**
-         * @brief Finishes and transmits a frame the caller built from a `Prebuilt`, and keeps the packet.
+         * @brief Finishes and transmits a frame the caller built from an `Ipv4Prebuilt`, and keeps the packet.
          *
-         * `packet` holds a whole frame: the first `Prebuilt::size` bytes from `prebuild`, then the segment, whose
+         * `packet` holds a whole frame: the first `Ipv4Prebuilt::size` bytes from `prebuild`, then the segment, whose
          * checksum field is zero when one is requested. The brick writes the total length, a fresh identification
          * and the checksums, lends the packet to the device and transmits the loan, so `packet` stays with the
          * caller for a later resend once `lent()` is false. On `Refused` the frame is as the caller built it (the

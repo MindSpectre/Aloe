@@ -326,12 +326,12 @@ The member's type says who owns the object and whether it can be absent:
 // Good: the queue cannot exist without its device, and nothing reassigns it
 class ShardQueue {
 public:
-    ShardQueue(Device& owner, std::uint16_t index, std::size_t ring_capacity, ShardCounters& counters)
+    ShardQueue(Device& owner, std::uint16_t index, std::size_t ring_capacity, ShardQueueCounters& counters)
         : device_{owner}, counters_{counters} { /* ... */ }
 
 private:
     Device& device_;
-    ShardCounters& counters_;
+    ShardQueueCounters& counters_;
 };
 
 // Good: an empty packet has no pool
@@ -538,16 +538,17 @@ The reader of a class sees every member in one place; a class too big for that i
 responsibilities of their own, each in its own file.
 
 ```cpp
-// Good: every member of the template defined in its body, in tcp_stack.hpp
-template <typename Ip>
-class Stack {
+// Good: every member of the template defined in its body, in session.hpp
+template <typename Transport>
+class Session {
 public:
-    void process(std::span<Datagram> segments, core::TimePoint now) noexcept { /* ... */ }
+    void receive(std::span<const std::byte> bytes) noexcept { /* ... */ }
+    void send(std::span<const std::byte> bytes) noexcept { /* ... */ }
 };
 
-// Bad: tcp_receive.hpp, tcp_transmit.hpp and tcp_control.hpp each defining members of Stack<Ip>
-template <typename Ip>
-void Stack<Ip>::process(std::span<Datagram> segments, core::TimePoint now) noexcept { /* ... */ }
+// Bad: session_receive.hpp and session_send.hpp each defining members of Session<Transport>
+template <typename Transport>
+void Session<Transport>::receive(std::span<const std::byte> bytes) noexcept { /* ... */ }
 ```
 
 ## Lambda Captures
@@ -603,7 +604,7 @@ std::visit([&result]<typename E>(E&& err) { ... }, value_);
 
 ## Module Layout
 
-Each top-level module under `common/` ships an **umbrella header** at
+Each module under `common/`, `devices/`, `fixtures/` or `l7/` ships an **umbrella header** at
 `<module>/export/aloe/<module>` — a file with no extension containing only `#pragma once` and `#include` directives
 for every public header of the module:
 

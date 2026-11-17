@@ -236,7 +236,7 @@ the table, and the recorded results.
 ## Formatting, includes and the pre-commit hook
 
 `.clang-format` decides how C++ is laid out. `./scripts/check-format.sh` checks every
-`.cpp` and `.hpp` under `common/`, `tests/`, `examples/` and `benchmarks/`
+`.cpp` and `.hpp` under `common/`, `devices/`, `l7/`, `fixtures/`, `tests/`, `examples/` and `benchmarks/`
 against it and fails if any of them differs, and `clang-format -i <files>` fixes them.
 `clang-format` comes with the toolchain that `scripts/install-linux.sh` installs.
 

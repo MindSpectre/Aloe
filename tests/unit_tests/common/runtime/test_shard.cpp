@@ -274,8 +274,8 @@ TEST_F(ShardTest, TheEchoRepliesInTheTickTheFrameArrived) {
     EXPECT_EQ(aloe::testing::stamp_of(reply), 0);
     EXPECT_EQ(std::vector<std::byte>(reply.begin() + 12, reply.end() - 2),
               std::vector<std::byte>(frame.begin() + 12, frame.end() - 2));
-    EXPECT_EQ(shard.context().counters().frames_received, 1);
-    EXPECT_EQ(shard.context().counters().frames_transmitted, 1);
+    EXPECT_EQ(shard.context().counters().queue.frames_received, 1);
+    EXPECT_EQ(shard.context().counters().queue.frames_transmitted, 1);
     EXPECT_EQ(shard.context().counters().ticks, 1);
     EXPECT_EQ(shard.stack().echoed(), 1);
 }
@@ -296,10 +296,10 @@ TEST_F(ShardTest, PacketsTheStackLeavesAreFreedSoThePoolNeverRunsDry) {
             std::ignore = shard.step(start);
         }
     }
-    EXPECT_EQ(shard.context().counters().frames_received, rounds * per_round)
+    EXPECT_EQ(shard.context().counters().queue.frames_received, rounds * per_round)
         << "a leaked packet would have starved the pool";
     EXPECT_EQ(shard.stack().dropped(), rounds * per_round);
-    EXPECT_EQ(shard.context().counters().frames_transmitted, 0);
+    EXPECT_EQ(shard.context().counters().queue.frames_transmitted, 0);
     EXPECT_TRUE(drain(client_).empty());
 }
 
@@ -318,14 +318,14 @@ TEST_F(ShardTest, TheTransmitRingFlushesWhenFullAndRefusesWhenTheDeviceDoes) {
     EXPECT_EQ(shard.stack().echoed(), 4) << "the ring holds four";
     EXPECT_EQ(shard.stack().refused(), 2)
         << "the fifth filled it, the flush took nothing, so it and the sixth were refused";
-    EXPECT_EQ(shard.context().counters().transmit_refused, 2);
+    EXPECT_EQ(shard.context().counters().queue.transmit_refused, 2);
     EXPECT_EQ(shard.queue().pending(), 4);
     EXPECT_TRUE(drain(client_).empty());
 
     throttled.accept = 64;
     EXPECT_TRUE(shard.step(start)) << "the flush at the end of the tick sent the ring";
     EXPECT_EQ(shard.queue().pending(), 0);
-    EXPECT_EQ(shard.context().counters().frames_transmitted, 4);
+    EXPECT_EQ(shard.context().counters().queue.frames_transmitted, 4);
     EXPECT_EQ(drain(client_).size(), 4);
 }
 

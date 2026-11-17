@@ -13,7 +13,7 @@ namespace aloe::tcp::detail {
      * and a patch and keeps one path for every segment kind; the option block per kind is the stack's.
      */
     struct FrameTemplate {
-        net::Prebuilt headers{};
+        net::Ipv4Prebuilt headers{};
         bool built = false;
 
         /// Rebuild before the next send: never built, past its validity, or the IP brick's generation moved.

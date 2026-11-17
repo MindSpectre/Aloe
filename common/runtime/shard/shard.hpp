@@ -72,7 +72,7 @@ namespace aloe::runtime {
         requires IsStack<Stack, Device>
     class Shard {
     public:
-        using Packet = typename Device::Packet;
+        using Packet = Device::Packet;
 
         template <typename... Args>
             requires std::constructible_from<Stack, ShardContext&, loop::ShardQueue<Device>&, Args...>
@@ -85,7 +85,7 @@ namespace aloe::runtime {
                   config
         },
               context_{{.index = index, .timer_resolution = config.timer_resolution}, start},
-              queue_{owner, index, config.transmit_ring, context_.counters()},
+              queue_{owner, index, config.transmit_ring, context_.counters().queue},
               stack_{context_, queue_, std::forward<Args>(args)...}, burst_(config.receive_burst) {
         }
 
@@ -106,10 +106,8 @@ namespace aloe::runtime {
         bool step(const core::TimePoint now) noexcept {
             const ShardContext::Current current{context_};
             context_.set_now(now);
-            bool busy                  = false;
-            const std::size_t received = queue_.receive(burst_);
-            if (received > 0) {
-                context_.counters().frames_received += received;
+            bool busy = false;
+            if (const std::size_t received = queue_.receive(burst_); received > 0) {
                 const std::span<Packet> frames{burst_.data(), received};
                 stack_.on_receive(frames);
                 for (Packet& packet : frames) {

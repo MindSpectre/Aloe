@@ -40,7 +40,7 @@ target_include_directories(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
 )
 target_link_libraries(${SHARED_TESTING_TARGET}.Ethdev INTERFACE
         ${SHARED_TESTING_TARGET}.Dpdk
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
         Aloe::Common::Device
 )
 ##############################################################################

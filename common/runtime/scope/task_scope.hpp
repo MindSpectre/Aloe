@@ -2,7 +2,6 @@
 
 #include <aloe/execution>
 #include <aloe/log>
-#include <aloe/loop>
 #include <cassert>
 #include <concepts>
 #include <cstddef>
@@ -12,6 +11,8 @@
 #include <thread>
 #include <type_traits>
 #include <utility>
+
+#include <shard_counters.hpp>
 
 namespace aloe::runtime {
 
@@ -82,7 +83,7 @@ namespace aloe::runtime {
     public:
         class JoinSender;
 
-        TaskScope(log::Logger logger, std::uint16_t index, loop::ShardCounters& counters) noexcept;
+        TaskScope(log::Logger logger, std::uint16_t index, ShardCounters& counters) noexcept;
         TaskScope(const TaskScope&)            = delete;
         TaskScope& operator=(const TaskScope&) = delete;
         TaskScope(TaskScope&&)                 = delete;
@@ -129,7 +130,7 @@ namespace aloe::runtime {
 
         log::Logger logger_;
         std::uint16_t index_;
-        loop::ShardCounters& counters_;
+        ShardCounters& counters_;
         execution::ex::inplace_stop_source stop_source_;
         std::size_t live_         = 0;
         detail::JoinBase* joiner_ = nullptr;

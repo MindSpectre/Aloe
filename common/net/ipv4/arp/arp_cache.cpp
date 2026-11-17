@@ -112,7 +112,7 @@ namespace aloe::net {
             victim = victim != nullptr ? victim : candidate;
         }
         if (victim->state == State::Reachable) {
-            ++generation_;  // its MAC goes, expired or not: a Prebuilt of this generation may still name it
+            ++generation_;  // its MAC goes, expired or not: an Ipv4Prebuilt of this generation may still name it
         }
         reset(*victim, address);
         victim->state = State::Incomplete;

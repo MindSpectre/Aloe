@@ -85,7 +85,7 @@ using Clock = aloe::core::Clock;
 using Ip    = aloe::net::Ipv4<aloe::fabric::Port>;
 using Tcp   = aloe::tcp::Stack<Ip>;
 
-aloe::loop::ShardCounters counters;
+aloe::loop::ShardQueueCounters counters;
 aloe::loop::ShardQueue<aloe::fabric::Port> queue{port, 0, 64, counters};
 Ip ip{queue, {.address = {10, 0, 0, 10}, .prefix = 24}};
 aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, Clock::now()};

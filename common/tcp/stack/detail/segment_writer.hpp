@@ -74,7 +74,7 @@ namespace aloe::tcp::detail {
                                                                const OutgoingSegment& segment,
                                                                const core::TimePoint now) noexcept {
             assert(!packet.lent() && "a lent packet is not written");
-            const std::size_t header_size = net::Prebuilt::size + segment.size();
+            const std::size_t header_size = net::Ipv4Prebuilt::size + segment.size();
             assert((!framed || packet.size() >= header_size) && "a framed packet holds its headers");
             const std::optional<std::span<std::byte>> headers =
                 framed ? std::optional{packet.data().first(header_size)} : packet.prepend(header_size);
@@ -88,7 +88,7 @@ namespace aloe::tcp::detail {
                 return built;
             }
             std::ranges::copy(frame.headers.headers, headers->begin());
-            write(headers->subspan(net::Prebuilt::size), segment);
+            write(headers->subspan(net::Ipv4Prebuilt::size), segment);
             const std::expected<void, net::SendError> sent = ip_.send_frame(packet, request(destination), now);
             if (!sent) {
                 count(sent.error());
@@ -189,7 +189,7 @@ namespace aloe::tcp::detail {
             if (!frame.stale(now, ip_.generation())) {
                 return {};
             }
-            const std::expected<net::Prebuilt, net::SendError> built =
+            const std::expected<net::Ipv4Prebuilt, net::SendError> built =
                 ip_.prebuild(destination, wire::Ipv4Protocol::Tcp, now);
             if (!built) {
                 return std::unexpected{built.error()};

@@ -45,7 +45,7 @@ setup_repository() {
 # two_modules: a module net with one header and a module tcp, each with its umbrella.
 two_modules() {
     write_file common/net/export/aloe/net '#include <ipv4.hpp>'
-    write_file common/net/stack/ipv4.hpp '#pragma once'
+    write_file common/net/ipv4/stack/ipv4.hpp '#pragma once'
     write_file common/tcp/export/aloe/tcp '#pragma once'
     git add common/net common/tcp/export
 }
@@ -187,6 +187,44 @@ case $scenario in
         fi
         write_file common/core/bad.cpp "$formatted"
         scripts/check-format.sh >/dev/null 2>&1 || fail "the whole-tree check failed on a formatted tree"
+        ;;
+    checks_sources_under_devices_and_l7)
+        write_file devices/ethdev/bad.cpp "$unformatted"
+        write_file l7/http11/bad.hpp "$unformatted"
+        git add devices/ethdev/bad.cpp l7/http11/bad.hpp
+        try_commit
+        expect_rejected
+        expect_output_contains "devices/ethdev/bad.cpp"
+        expect_output_contains "l7/http11/bad.hpp"
+        ;;
+    rejects_an_include_of_a_device_modules_header)
+        write_file devices/ethdev/export/aloe/ethdev '#include <port.hpp>'
+        write_file devices/ethdev/port/port.hpp '#pragma once'
+        write_file common/tcp/export/aloe/tcp '#pragma once'
+        git add devices/ethdev common/tcp/export
+        write_file common/tcp/stack/tcp_stack.hpp '#include <port.hpp>'
+        git add common/tcp/stack/tcp_stack.hpp
+        try_commit
+        expect_rejected
+        expect_output_contains "common/tcp/stack/tcp_stack.hpp:1"
+        expect_output_contains "<aloe/ethdev>"
+        ;;
+    checks_includes_under_devices_and_l7)
+        two_modules
+        write_file devices/ethdev/export/aloe/ethdev '#pragma once'
+        write_file l7/http11/export/aloe/http11 '#include <request.hpp>'
+        write_file l7/http11/message/request.hpp '#pragma once'
+        git add devices/ethdev/export l7/http11
+        write_file devices/ethdev/port/port.hpp '#include <ipv4.hpp>'
+        write_file l7/http11/message/response.hpp '#include <ipv4.hpp>'
+        write_file common/tcp/stack/tcp_stack.hpp '#include <request.hpp>'
+        git add devices/ethdev/port/port.hpp l7/http11/message/response.hpp common/tcp/stack/tcp_stack.hpp
+        try_commit
+        expect_rejected
+        expect_output_contains "devices/ethdev/port/port.hpp:1"
+        expect_output_contains "l7/http11/message/response.hpp:1"
+        expect_output_contains "common/tcp/stack/tcp_stack.hpp:1"
+        expect_output_contains "<aloe/http11>"
         ;;
     *)
         fail "unknown scenario"

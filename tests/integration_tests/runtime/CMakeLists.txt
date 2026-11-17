@@ -7,7 +7,7 @@ add_integration_test(${INTEGRATION_TESTING_TARGET}.Runtime.Ring
 target_link_libraries(${INTEGRATION_TESTING_TARGET}.Runtime.Ring
         PRIVATE
         Aloe::Common::Runtime
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
         ${SHARED_TESTING_TARGET}.Device
         ${SHARED_TESTING_TARGET}.Ethdev
         ${SHARED_TESTING_TARGET}.Runtime

@@ -348,7 +348,7 @@ namespace {
         void
         run(Device& port, const bool listen, const std::span<const std::byte> to_send, const std::stop_token& stop) {
             aloe::ethdev::register_thread();
-            aloe::loop::ShardCounters shard_counters;
+            aloe::loop::ShardQueueCounters shard_counters;
             aloe::loop::ShardQueue<Device> queue{port, 0, 64, shard_counters};
             Ipv4 ip{
                 queue, {.address = stack_ip, .prefix = 24}
@@ -1017,7 +1017,7 @@ namespace {
         }
 
     private:
-        aloe::loop::ShardCounters shard_counters_;
+        aloe::loop::ShardQueueCounters shard_counters_;
         aloe::loop::ShardQueue<Port> queue_;
         Ipv4T<Port> ip_;
         aloe::loop::TimerWheel wheel_;

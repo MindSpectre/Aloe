@@ -42,7 +42,7 @@ namespace aloe::tcp::detail {
         using Lifecycle    = detail::Lifecycle<Ip, CongestionControl>;
         using AckProcessor = detail::AckProcessor<Ip, CongestionControl>;
         using Transmitter  = detail::Transmitter<Ip, CongestionControl>;
-        using Datagram     = net::Datagram<Packet>;
+        using Datagram     = net::Ipv4Datagram<Packet>;
         using Sequence     = wire::TcpSequence;
 
         Receiver(Context& context, Lifecycle& lifecycle, AckProcessor& acks, Transmitter& transmitter) noexcept

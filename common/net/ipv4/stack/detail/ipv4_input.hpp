@@ -12,13 +12,13 @@
 #include <utility>
 #include <vector>
 
-#include <datagram.hpp>
 #include <detail/ipv4_arp.hpp>
 #include <detail/ipv4_output.hpp>
 #include <detail/ipv4_routing.hpp>
 #include <detail/ipv4_transmit.hpp>
 #include <ipv4_config.hpp>
 #include <ipv4_counters.hpp>
+#include <ipv4_datagram.hpp>
 
 namespace aloe::net::detail {
 
@@ -79,10 +79,10 @@ namespace aloe::net::detail {
         }
 
         /// The datagrams of `protocol`, TCP or UDP, since the last `clear`.
-        [[nodiscard]] std::span<Datagram<Packet>> received(const wire::Ipv4Protocol protocol) noexcept {
+        [[nodiscard]] std::span<Ipv4Datagram<Packet>> received(const wire::Ipv4Protocol protocol) noexcept {
             assert(protocol == wire::Ipv4Protocol::Tcp || protocol == wire::Ipv4Protocol::Udp);
-            return protocol == wire::Ipv4Protocol::Tcp ? std::span<Datagram<Packet>>{tcp_}
-                                                       : std::span<Datagram<Packet>>{udp_};
+            return protocol == wire::Ipv4Protocol::Tcp ? std::span<Ipv4Datagram<Packet>>{tcp_}
+                                                       : std::span<Ipv4Datagram<Packet>>{udp_};
         }
 
     private:
@@ -138,19 +138,19 @@ namespace aloe::net::detail {
             }
         }
 
-        void deliver(std::vector<Datagram<Packet>>& list,
+        void deliver(std::vector<Ipv4Datagram<Packet>>& list,
                      Packet& packet,
                      const wire::Ipv4Header& header,
                      const device::RxMetadata& rx) noexcept {
-            list.push_back(
-                Datagram<Packet>{.packet      = std::move(packet),
-                                 .source      = header.source,
-                                 .destination = header.destination,
-                                 .protocol    = header.protocol,
-                                 .l3_offset   = static_cast<std::uint8_t>(wire::EthernetHeader::size),
-                                 .l3_length   = header.header_length,
-                                 .l4_length   = static_cast<std::uint16_t>(header.total_length - header.header_length),
-                                 .l4_checksum = rx.l4});
+            list.push_back(Ipv4Datagram<Packet>{
+                .packet      = std::move(packet),
+                .source      = header.source,
+                .destination = header.destination,
+                .protocol    = header.protocol,
+                .l3_offset   = static_cast<std::uint8_t>(wire::EthernetHeader::size),
+                .l3_length   = header.header_length,
+                .l4_length   = static_cast<std::uint16_t>(header.total_length - header.header_length),
+                .l4_checksum = rx.l4});
         }
 
         /// An echo request to our unicast address becomes the reply, in the same packet, back to the frame's source
@@ -198,8 +198,8 @@ namespace aloe::net::detail {
         const Routing& routing_;
         const Ipv4Config& config_;
         Ipv4Counters& counters_;
-        std::vector<Datagram<Packet>> tcp_;
-        std::vector<Datagram<Packet>> udp_;
+        std::vector<Ipv4Datagram<Packet>> tcp_;
+        std::vector<Ipv4Datagram<Packet>> udp_;
     };
 
 }  // namespace aloe::net::detail

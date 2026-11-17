@@ -6,7 +6,7 @@ add_integration_test(${INTEGRATION_TESTING_TARGET}.Ethdev.Ring
 )
 target_link_libraries(${INTEGRATION_TESTING_TARGET}.Ethdev.Ring
         PRIVATE
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
         ${SHARED_TESTING_TARGET}.Device
         ${SHARED_TESTING_TARGET}.Ethdev
         ${TEST_LIBS}
@@ -23,7 +23,7 @@ add_integration_test(${INTEGRATION_TESTING_TARGET}.Ethdev.Null
 )
 target_link_libraries(${INTEGRATION_TESTING_TARGET}.Ethdev.Null
         PRIVATE
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
         ${SHARED_TESTING_TARGET}.Ethdev
         ${TEST_LIBS}
 )

@@ -34,7 +34,7 @@ namespace {
         aloe::ethdev::Port port_{
             aloe::ethdev::PortConfig{.name = aloe::testing::probe_vdev("net_ring"), .queues = 1, .pool_size = 256}
         };
-        aloe::loop::ShardCounters counters_;
+        aloe::loop::ShardQueueCounters counters_;
         aloe::loop::ShardQueue<aloe::ethdev::Port> queue_{port_, 0, 16, counters_};
         Ipv4 ip_{
             queue_, {.address = stack_ip, .prefix = 24}

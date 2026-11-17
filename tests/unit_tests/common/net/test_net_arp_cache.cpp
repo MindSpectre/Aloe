@@ -211,7 +211,8 @@ TEST(ArpCache, EvictingAReachableEntryMovesTheGeneration) {
     EXPECT_EQ(cache.lookup(host(8), at(1s)), (Lookup{.mac = std::nullopt, .send_request = true}));
     EXPECT_TRUE(cache.contains(host(8)));
     EXPECT_EQ(cache.size(), 8);
-    EXPECT_EQ(cache.generation(), before + 1) << "the evicted entry's MAC went: a Prebuilt of its generation is stale";
+    EXPECT_EQ(cache.generation(), before + 1)
+        << "the evicted entry's MAC went: an Ipv4Prebuilt of its generation is stale";
     const std::uint64_t learned = cache.generation();
     cache.learn(host(9), other_mac, at(2s));  // evicts another reachable entry and brings a MAC of its own
     EXPECT_GT(cache.generation(), learned);

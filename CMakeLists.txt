@@ -132,6 +132,7 @@ PrintLineSeparator()
 message("\tPROJECT TARGETS LOGS")
 
 add_subdirectory(common)
+add_subdirectory(devices)
 add_subdirectory(fixtures)
 
 ##############################################################################

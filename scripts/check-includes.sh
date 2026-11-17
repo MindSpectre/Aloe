@@ -21,8 +21,8 @@ set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 
-source_directories=(common component fixtures tests examples benchmarks)
-module_directories=(common component fixtures)
+source_directories=(common devices l7 fixtures tests examples benchmarks)
+module_directories=(common devices l7 fixtures)
 
 staged=false
 case ${1:-} in

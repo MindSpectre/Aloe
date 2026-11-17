@@ -22,7 +22,9 @@ per packet.
 ### The context
 
 - **`aloe::runtime::ShardContext`** -- everything of a shard that does not touch the device: the run queue,
-  the inbox, the timer wheel and the counters from [`loop`](loop.md), the task scope, and the tick stamp.
+  the inbox and the timer wheel from [`loop`](loop.md), the task scope, the tick stamp and the shard's
+  counters. **`ShardCounters`** is the runtime's own struct: ticks, idle ticks, inbox, work, timer and task
+  counts, and in `queue` the `loop::ShardQueueCounters` the shard's device queue writes.
   `run_once(now)` is its one verb: move the inbox onto the run queue, advance the wheel to `now`, run the
   work that was queued when the step began. `set_now(now)` records the step's stamp before any stack
   callback and runs nothing. `request_stop()` sets the stop flag and stops the scope; `drained()` observes
@@ -70,7 +72,7 @@ per packet.
   sizes, and the idle policy, `Spin` or `Yield`.
 - **`aloe::runtime::Runtime<Device, Stack>`** -- one shard per device queue, each on its own thread with an
   optional CPU to pin to and a hook that runs first (`ethdev::register_thread` for DPDK). `start`, `stop`
-  from any thread, `join`; `scheduler(i)` and `spawn(i, sender)` from any thread; `counters(i)` after `join`.
+  from any thread, `join`; `scheduler(i)` and `spawn(i, sender)` from any thread; `counters(i)`, a `ShardCounters`, after `join`.
   Every context's siblings are bound in the constructor, which also calls `core::calibrate_clock()`, so the
   TSC clock's calibration and any refusal happen there and not in a shard's first step. `stop` posts one owned stop node per shard through
   `post_control`; a shard that already finished rejects it and the runtime keeps the node. A thread whose

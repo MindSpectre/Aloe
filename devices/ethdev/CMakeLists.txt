@@ -1,4 +1,4 @@
-set(ETHDEV ${COMMON}.Ethdev)
+set(ETHDEV ${DEVICES}.Ethdev)
 
 ##############################################################################
 # The environment abstraction layer, started once per process
@@ -64,5 +64,5 @@ add_combined_library(${ETHDEV}
         ${ETHDEV}.Port
 )
 
-add_library(Aloe::Common::Ethdev ALIAS ${ETHDEV})
+add_library(Aloe::Devices::Ethdev ALIAS ${ETHDEV})
 ##############################################################################

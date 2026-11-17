@@ -18,7 +18,7 @@ namespace aloe::benchmarks {
     inline void check_stack_counters(RunState& state,
                                      const tcp::TcpCounters& tcp,
                                      const net::Ipv4Counters& ip,
-                                     const loop::ShardCounters& shard) {
+                                     const loop::ShardQueueCounters& shard) {
         std::string problems;
         const auto expect_zero = [&problems](const std::uint64_t value, const char* name) {
             if (value != 0) {

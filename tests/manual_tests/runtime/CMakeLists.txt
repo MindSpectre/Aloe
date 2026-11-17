@@ -7,7 +7,7 @@ add_manual_test(${MANUAL_TESTING_TARGET}.Runtime.Tap
 target_link_libraries(${MANUAL_TESTING_TARGET}.Runtime.Tap
         PRIVATE
         Aloe::Common::Runtime
-        Aloe::Common::Ethdev
+        Aloe::Devices::Ethdev
         ${SHARED_TESTING_TARGET}.Device
         ${SHARED_TESTING_TARGET}.Ethdev
         ${SHARED_TESTING_TARGET}.Runtime

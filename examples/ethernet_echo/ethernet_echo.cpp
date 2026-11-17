@@ -152,9 +152,9 @@ int main(int argc, char** argv) {
         std::println("shard {}: {} ticks, {} frames in, {} out, {} refused, {} idle ticks",
                      index,
                      counters.ticks,
-                     counters.frames_received,
-                     counters.frames_transmitted,
-                     counters.transmit_refused + runtime.shard(index).stack().refused(),
+                     counters.queue.frames_received,
+                     counters.queue.frames_transmitted,
+                     counters.queue.transmit_refused + runtime.shard(index).stack().refused(),
                      counters.idle_ticks);
     }
     return EXIT_SUCCESS;
