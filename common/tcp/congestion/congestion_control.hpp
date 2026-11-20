@@ -8,7 +8,9 @@
 
 namespace aloe::tcp {
 
-    /// What an ACK of new data tells the congestion control; later models read more fields, the concept stays.
+    /// What an ACK of new data tells the congestion control; later models read more fields, the concept stays. The
+    /// window's use, `window_limited` and `largest_flight`, is the connection's record of the round's sends, Linux's
+    /// `tcp_cwnd_validate`; left at their defaults, they let the window grow as if every send had been limited.
     struct AckInfo {
         std::uint32_t acked  = 0;  ///< Bytes of sequence space newly acknowledged.
         std::uint32_t flight = 0;  ///< Bytes in flight before this ACK.
@@ -19,6 +21,8 @@ namespace aloe::tcp {
         std::uint64_t delivered         = 0;      ///< The connection's delivered bytes after this ACK.
         std::uint64_t delivered_at_send = 0;      ///< The connection's delivered bytes when that entry was sent.
         bool app_limited                = false;  ///< That send left window unused.
+        bool window_limited             = true;   ///< The window limited the last send of the round.
+        std::uint32_t largest_flight    = 0;      ///< The most in flight in that round.
     };
 
     /**

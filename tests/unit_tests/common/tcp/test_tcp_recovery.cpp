@@ -15,9 +15,10 @@
 // by a segment and so lets new data out (RFC 3042's limited transmit); the third duplicate, which marks the head lost
 // under RFC 6582's guard and begins recovery, with PRR (RFC 9937) for the window; the partial ACK, which marks the new
 // head; the loss state after a timeout, where the marked entries leave as slow start opens the window; and the window
-// in writable(). The peer offers no timestamps and no SACK, so a segment carries 1460 bytes, NewReno's initial window
-// is ten of them, and the duplicates stand for what the peer holds; a handshake with a zero round trip leaves the RTO
-// at rto_min, 200 ms. The recorder's tests check which hook the stack calls, when, with what.
+// in writable(); and the window's growth, only while it limits what is sent. The peer offers no timestamps and no
+// SACK, so a segment carries 1460 bytes, NewReno's initial window is ten of them, and the duplicates stand for what the
+// peer holds; a handshake with a zero round trip leaves the RTO at rto_min, 200 ms. The recorder's tests check which
+// hook the stack calls, when, with what.
 namespace {
 
     using namespace std::chrono_literals;
@@ -218,6 +219,64 @@ TEST_P(TcpRecovery, WritableIsBoundedByTheCongestionWindow) {
     ASSERT_NE(c, nullptr);
     EXPECT_EQ(c->send(aloe::frames::pattern(20000)), 14600U) << "ten segments of 1460: RFC 6928";
     EXPECT_EQ(c->writable(), 0U);
+}
+
+TEST_P(TcpRecovery, AnApplicationLimitedFlowKeepsItsInitialWindow) {
+    // A venue client's orders, one at a time: 100 bytes in flight at each send, never the window, and slow start
+    // grows only below twice the most in flight, 200. Growing on every ACK would have made it 14600 + 100 * 100.
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    for (int order = 0; order < 100; ++order) {
+        ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+        const auto sent = collect();
+        ASSERT_EQ(sent.size(), 1U);
+        receive(peer_.ack(sent[0]));
+        advance(0ms);  // the step brings the packet back from the device, so a hundred fit the port's pool
+    }
+    EXPECT_EQ(c->congestion_window(), 14600U);
+}
+
+TEST_P(TcpRecovery, AWindowLimitedFlowGrows) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(20000)), 14600U) << "the tenth segment fills the window";
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 10U);
+    receive(peer_.ack(sent[9]));
+    EXPECT_EQ(c->congestion_window(), 16060U) << "slow start: one segment for the ACK of the window";
+}
+
+TEST_P(TcpRecovery, AnOfferTheCongestionWindowCutShortCountsAsTheWindowInUse) {
+    // Congestion avoidance at the target of a recovery, 2920. Sends of 1460 and 1000 leave 2460 in flight, below the
+    // window. A prepare of 3000 is offered 460, what the window has left, where the segment and the peer's window
+    // would allow 1460: the window held the send back, so the round counts as limited however little is committed.
+    // Of the 460, 200 are: 2660 in flight, still below the window. The ACK of the round then adds its 2660 to the
+    // avoidance count; a round seen as unlimited would add nothing.
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(4380)), 4380U);
+    const auto sent = collect();
+    const auto dup  = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    ASSERT_EQ(collect().size(), 1U);
+    receive(peer_.ack(sent[2]));
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Open);
+    ASSERT_EQ(c->congestion_window(), 2920U);
+    ASSERT_EQ(c->congestion_state().ssthresh, 2920U) << "congestion avoidance";
+    ASSERT_EQ(c->send(aloe::frames::pattern(1460)), 1460U);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1000)), 1000U);
+    const auto span = c->prepare(3000);
+    ASSERT_TRUE(span.has_value());
+    ASSERT_EQ(span->size(), 460U);
+    ASSERT_TRUE(c->commit(200));
+    ASSERT_EQ(c->in_flight(), 2660U);
+    const auto round = collect();
+    ASSERT_EQ(round.size(), 3U);
+    receive(peer_.ack(round[2]));
+    EXPECT_EQ(c->congestion_state().acked_bytes, 2660U);
+    EXPECT_EQ(c->congestion_window(), 2920U) << "a window of acknowledged bytes is not reached yet";
 }
 
 TEST_P(TcpRecovery, LimitedTransmitAllowsTwoSegmentsBeyondTheWindowThenTheThirdDuplicateResendsTheHead) {
@@ -640,10 +699,14 @@ TEST_P(TcpRecovery, AfterATimeoutNothingNewIsOfferedWhileMarkedEntriesWaitForThe
     EXPECT_EQ(c->lost_bytes(), 400U);
     EXPECT_EQ(c->writable(), 0U) << "the rest of the window is the marked entries': a resend goes before anything new";
     EXPECT_EQ(c->send(aloe::frames::pattern(100)), 0U);
-    receive(peer_.ack(sent[0]));  // slow start: 1560, and the four marked entries leave
+    // The head's ACK grows nothing: no send before the timeout was limited by the window, and the most in flight was
+    // 500, so slow start would grow only a window below 1000. Linux, counting packets, grows here: five against one.
+    // The four marked entries leave all the same, within the 1460.
+    receive(peer_.ack(sent[0]));
+    EXPECT_EQ(c->congestion_window(), 1460U);
     EXPECT_EQ(collect().size(), 4U);
     EXPECT_EQ(c->lost_bytes(), 0U);
-    EXPECT_EQ(c->writable(), 1160U) << "nothing owes a resend any more: 1560 less the 400 in flight";
+    EXPECT_EQ(c->writable(), 1060U) << "nothing owes a resend any more: 1460 less the 400 in flight";
 }
 
 TEST_P(TcpRecovery, TheAckThatEndsTheLossStateGrowsTheWindowToo) {
@@ -726,6 +789,8 @@ TEST_P(TcpRecorded, TheHooksFireInOrderWithTheirValues) {
     EXPECT_EQ(s.last_delivered, 1460U);
     EXPECT_EQ(s.last_delivered_at_send, 0U);
     EXPECT_TRUE(s.last_app_limited) << "an unbounded window: every send left window unused";
+    EXPECT_FALSE(s.last_window_limited) << "and limited none";
+    EXPECT_EQ(s.last_largest_flight, 2920U) << "both segments were in flight after the second send";
 }
 
 TEST_P(TcpRecorded, AnAckInsideAnEntryCountsItsBytesAsDeliveredAtOnce) {

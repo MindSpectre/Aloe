@@ -21,6 +21,7 @@
 #include <detail/sack_blocks.hpp>
 #include <detail/send_sequence.hpp>
 #include <detail/tcp_timestamps.hpp>
+#include <detail/window_use.hpp>
 #include <detail/zero_window_probe.hpp>
 #include <flow_table.hpp>
 #include <tcp_config.hpp>
@@ -136,6 +137,7 @@ namespace aloe::tcp::detail {
             rtt              = {};
             probe            = {};
             timestamps       = {};
+            window_use       = {};
             sack             = {};
             timer_kind       = TimerKind::None;
             retransmit_count = 0;
@@ -175,6 +177,8 @@ namespace aloe::tcp::detail {
         RttEstimator rtt{};
         ZeroWindowProbe probe{};
         Timestamps timestamps{};
+        // Behind the parts an in-order ACK touches.
+        WindowUse window_use{};  ///< Written by each send of new data, read once by an ACK of new data.
         // Behind the parts an in-order segment touches.
         SackBlocks sack{};
 

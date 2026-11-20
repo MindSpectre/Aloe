@@ -245,7 +245,8 @@ namespace aloe::tcp::detail {
         }
 
         /// An ACK of new data on a synchronized connection: the entries it frees, SND.UNA, the sample and the timer
-        /// (`on_acknowledged`). Returns what the policy reads of it, should it hear of this ACK (`update_recovery`).
+        /// (`on_acknowledged`). Returns what the policy reads of it, should it hear of this ACK (`update_recovery`),
+        /// with the window's use as the sends recorded it (`WindowUse`), before anything this ACK lets out.
         [[nodiscard]] AckInfo
         acknowledge_data(ControlBlock& block, const Sequence ack, const std::optional<std::uint32_t> echo) noexcept {
             const std::uint32_t flight_before = block.send.flight();
@@ -262,7 +263,9 @@ namespace aloe::tcp::detail {
                            .sent              = freed.newest_sent,
                            .delivered         = block.queue.delivered(),
                            .delivered_at_send = freed.delivered_at_send,
-                           .app_limited       = freed.app_limited};
+                           .app_limited       = freed.app_limited,
+                           .window_limited    = block.window_use.limited(),
+                           .largest_flight    = block.window_use.largest_flight()};
         }
 
         /**

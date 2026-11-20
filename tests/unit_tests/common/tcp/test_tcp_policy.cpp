@@ -65,6 +65,44 @@ TEST(NewReno, CongestionAvoidanceAddsOneSegmentPerWindowAcknowledged) {
     EXPECT_EQ(s.acked_bytes, 0U);
 }
 
+TEST(NewReno, NoGrowthWhileTheWindowIsNotInUse) {
+    NewReno::State s{.cwnd = 5000, .ssthresh = 5000, .acked_bytes = 3000};
+    NewReno::on_ack(
+        s, AckInfo{.acked = 2000, .flight = 3000, .mss = mss, .window_limited = false, .largest_flight = 5000});
+    EXPECT_EQ(NewReno::window(s), 5000U);
+    EXPECT_EQ(s.acked_bytes, 3000U) << "congestion avoidance counts nothing for a window that limited no send";
+}
+
+TEST(NewReno, SlowStartGrowsUntilTwiceTheLargestFlight) {
+    NewReno::State s;
+    NewReno::reset(s, 1460);
+    NewReno::on_ack(
+        s, AckInfo{.acked = 1460, .flight = 8000, .mss = 1460, .window_limited = false, .largest_flight = 8000});
+    EXPECT_EQ(NewReno::window(s), 16060U) << "14600 is less than twice 8000";
+    NewReno::reset(s, 1460);
+    NewReno::on_ack(
+        s, AckInfo{.acked = 1460, .flight = 7000, .mss = 1460, .window_limited = false, .largest_flight = 7000});
+    EXPECT_EQ(NewReno::window(s), 14600U) << "14600 is not less than twice 7000";
+    NewReno::on_ack(
+        s, AckInfo{.acked = 1460, .flight = 7300, .mss = 1460, .window_limited = false, .largest_flight = 7300});
+    EXPECT_EQ(NewReno::window(s), 14600U) << "nor than twice 7300";
+}
+
+TEST(NewReno, ALimitedSendGrowsAsBefore) {
+    NewReno::State s;
+    NewReno::reset(s, mss);
+    NewReno::on_ack(s, AckInfo{.acked = 1500, .flight = 10000, .mss = mss, .window_limited = true});
+    EXPECT_EQ(NewReno::window(s), 11000U) << "slow start, whatever the largest flight";
+    NewReno::State avoiding{.cwnd = 5000, .ssthresh = 5000, .acked_bytes = 4000};
+    NewReno::on_ack(avoiding, AckInfo{.acked = 1000, .flight = 5000, .mss = mss, .window_limited = true});
+    EXPECT_EQ(NewReno::window(avoiding), 6000U) << "congestion avoidance: a window acknowledged adds a segment";
+    EXPECT_EQ(avoiding.acked_bytes, 0U);
+    NewReno::State defaults;
+    NewReno::reset(defaults, mss);
+    NewReno::on_ack(defaults, AckInfo{.acked = 1000, .flight = 10000, .mss = mss});
+    EXPECT_EQ(NewReno::window(defaults), 11000U) << "AckInfo's defaults grow, for a model that ignores the fields";
+}
+
 TEST(NewReno, CongestionHalvesTheFlightAndLeavesTheWindow) {
     NewReno::State s;
     NewReno::reset(s, 1460);

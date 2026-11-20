@@ -543,7 +543,8 @@ namespace aloe::tcp::detail {
          * A span of `min(count, writable())` bytes inside a fresh packet. The packet belongs to the application until
          * `commit` (with any count) or `release`: the span stays valid through any state change in between. Nothing,
          * without allocating, for a count of zero or nothing writable; an allocation failure counts one
-         * `allocation_failures`, marks a retry hint and retains nothing.
+         * `allocation_failures`, marks a retry hint and retains nothing. An offer the congestion window cut short is
+         * a send the window held back, whatever is committed of it (`record_held_back`).
          */
         [[nodiscard]] std::optional<std::span<std::byte>> prepare(ControlBlock& block,
                                                                   const std::size_t count) noexcept {
@@ -552,6 +553,9 @@ namespace aloe::tcp::detail {
                 return std::nullopt;
             }
             const std::size_t room = writable(block);
+            if (room < std::min<std::size_t>(count, block.mss())) {
+                record_held_back(block, count);
+            }
             if (room == 0) {
                 return std::nullopt;  // nothing allocates when nothing is writable
             }
@@ -582,7 +586,9 @@ namespace aloe::tcp::detail {
          * with no hint: the events say why. A window that no longer covers `count`, because the peer retracted its
          * right edge or a loss shrank the congestion window since the prepare, refuses the commit with a hint: prepare
          * again for what `writable()` allows. No queue node free refuses it with a hint too. A segment that left in
-         * recovery counts against the rate reduction (`LossRecovery::on_sent`).
+         * recovery counts against the rate reduction (`LossRecovery::on_sent`), and every segment that left is recorded
+         * for the window's use (`WindowUse::on_send`), limited when what is in flight after it leaves nothing more to
+         * send under the window (`LossRecovery::may_send`).
          */
         [[nodiscard]] bool commit(ControlBlock& block, const std::size_t count) noexcept {
             assert(block.prepared && "commit without a prepare");
@@ -631,6 +637,8 @@ namespace aloe::tcp::detail {
             }
             block.send.nxt = block.send.nxt + static_cast<std::uint32_t>(count);
             block.recovery.on_sent(payload);
+            const std::uint32_t in_flight = in_flight_bytes(block);
+            block.window_use.on_send(block.send.una, block.send.nxt, in_flight, !block.recovery.may_send(in_flight));
             ++context_.counters.data_segments_sent;
             return true;
         }
@@ -705,9 +713,32 @@ namespace aloe::tcp::detail {
             if (block.queue.lost_bytes() > 0) {
                 return 0;
             }
+            return std::min(peer_room(block), block.recovery.room(in_flight_bytes(block)));
+        }
+
+        /// What the peer's window allows beyond the sequence space outstanding, floored at zero.
+        [[nodiscard]] static std::uint64_t peer_room(const ControlBlock& block) noexcept {
             const std::uint32_t flight = block.send.flight();
-            const std::uint64_t peer   = block.send.wnd > flight ? block.send.wnd - flight : 0;
-            return std::min(peer, block.recovery.room(in_flight_bytes(block)));
+            return block.send.wnd > flight ? block.send.wnd - flight : 0;
+        }
+
+        /**
+         * A prepare of `count` was offered less than it asked, one segment at most. When the congestion window, and
+         * not the peer's, cut it short, its room below what the peer's window and the segment would allow, the send is
+         * recorded as one the window limited (`WindowUse::on_send`), with what is in flight before it: the round used
+         * the window though the commit, of any part of the offer or of none, may leave what is in flight below it.
+         * Linux's `tcp_write_xmit` sets `is_cwnd_limited` for a send its congestion window held back
+         * (`tcp_tso_should_defer`, and a window with no room left) and records it even when nothing left. Only where
+         * data may be sent: before Established the policy has no window.
+         */
+        void record_held_back(ControlBlock& block, const std::size_t count) noexcept {
+            if (block.state != State::Established && block.state != State::CloseWait) {
+                return;
+            }
+            const std::uint32_t in_flight = in_flight_bytes(block);
+            if (block.recovery.room(in_flight) < std::min<std::uint64_t>({count, block.mss(), peer_room(block)})) {
+                block.window_use.on_send(block.send.una, block.send.nxt, in_flight, /*limited=*/true);
+            }
         }
 
         /**

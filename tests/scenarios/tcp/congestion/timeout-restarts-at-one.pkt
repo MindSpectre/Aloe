@@ -1,12 +1,15 @@
 // A timeout restarts the window at one segment: three segments of 988, all lost. The expiry at +0.2 marks all three
 // lost, sets the target max(2964 / 2, 2 * 988) = 1976, and restarts the window at what is in flight after the
 // marking, nothing, plus one segment: the head goes again alone. Its ACK, a tenth of a second later so that an
-// earlier resend would fail the line, grows the window by slow start to 1976, and the two entries still marked fill
-// it. The window is at the target now, and from there a full window of acknowledged bytes adds one segment: the next
-// two ACKs cover 1976 between them, and the second, which also ends the loss state, makes the window 2964, so the
-// write after it accepts three segments. Linux marks all three at the timeout too, resends two after the first ACK
-// (tcp_enter_loss, tcp_xmit_retransmit_queue) and grows its window on every ACK of new data in its loss state, the
-// last one included.
+// earlier resend would fail the line, grows the window by slow start to 1976, since 988 is below twice the 2964 the
+// write left in flight, and the two entries still marked fill it. The window is at the target now, and congestion
+// avoidance grows only a window that limited a send of new data: the write left 2964 in flight under a window of
+// 9880, and a resend is not such a send, as Linux's resends never reach tcp_cwnd_validate. So the next two ACKs, the
+// second of which ends the loss state, grow nothing, and the write after them accepts two segments, which fill the
+// window. Linux marks all three at the timeout too and resends two after the first ACK (tcp_enter_loss,
+// tcp_xmit_retransmit_queue), but its target is half its window, five segments (tcp_reno_ssthresh), so it is still
+// in slow start, where a window below twice the most in flight, three segments, grows on every ACK
+// (tcp_is_cwnd_limited), the last one included.
 --congestion=newreno
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0
@@ -27,11 +30,10 @@
 +0 > P. 1977:2965(988) ack 1 win 65535 <nop,nop,TS val 300 ecr 100>
 +0 < . 1:1(0) ack 1977 win 65535 <nop,nop,TS val 100 ecr 300>
 +0 < . 1:1(0) ack 2965 win 65535 <nop,nop,TS val 100 ecr 300>
-+0 write(4, ..., 9880) = 2964
++0 write(4, ..., 9880) = 1976
 +0 > P. 2965:3953(988) ack 1 win 65535 <nop,nop,TS val 300 ecr 100>
 +0 > P. 3953:4941(988) ack 1 win 65535 <nop,nop,TS val 300 ecr 100>
-+0 > P. 4941:5929(988) ack 1 win 65535 <nop,nop,TS val 300 ecr 100>
-+0 < . 1:1(0) ack 5929 win 65535 <nop,nop,TS val 100 ecr 300>
++0 < . 1:1(0) ack 4941 win 65535 <nop,nop,TS val 100 ecr 300>
 +2 close(4) = 0
-+0 > F. 5929:5929(0) ack 1 win 65535 <nop,nop,TS val 2300 ecr 100>
-+0 < . 1:1(0) ack 5930 win 65535 <nop,nop,TS val 100 ecr 2300>
++0 > F. 4941:4941(0) ack 1 win 65535 <nop,nop,TS val 2300 ecr 100>
++0 < . 1:1(0) ack 4942 win 65535 <nop,nop,TS val 100 ecr 2300>

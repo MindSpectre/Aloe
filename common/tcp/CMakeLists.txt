@@ -40,6 +40,7 @@ add_library(${TCP}.Stack INTERFACE
         connection/detail/sack_blocks.hpp
         connection/detail/send_sequence.hpp
         connection/detail/tcp_timestamps.hpp
+        connection/detail/window_use.hpp
         connection/detail/zero_window_probe.hpp
         connection/read_view.hpp
         connection/tcp_connection.hpp

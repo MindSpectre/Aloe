@@ -39,6 +39,8 @@ namespace aloe::testing {
             std::uint64_t last_delivered         = 0;
             std::uint64_t last_delivered_at_send = 0;
             bool last_app_limited                = false;
+            bool last_window_limited             = false;
+            std::uint32_t last_largest_flight    = 0;
         };
 
         static constexpr void reset(State& state, const std::uint16_t /*mss*/) noexcept {
@@ -63,6 +65,8 @@ namespace aloe::testing {
             state.last_delivered         = info.delivered;
             state.last_delivered_at_send = info.delivered_at_send;
             state.last_app_limited       = info.app_limited;
+            state.last_window_limited    = info.window_limited;
+            state.last_largest_flight    = info.largest_flight;
         }
 
         static constexpr void

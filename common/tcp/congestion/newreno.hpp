@@ -8,9 +8,9 @@
 
 namespace aloe::tcp {
 
-    /// RFC 5681 slow start and congestion avoidance, its target on congestion and RFC 6928's initial window. The
-    /// window while a loss is repaired is not kept here: the connection's rate reduction regulates it down to the
-    /// target (RFC 9937), where RFC 6582 inflated and deflated it.
+    /// RFC 5681 slow start and congestion avoidance, while the window is in use, its target on congestion and RFC
+    /// 6928's initial window. The window while a loss is repaired is not kept here: the connection's rate reduction
+    /// regulates it down to the target (RFC 9937), where RFC 6582 inflated and deflated it.
     struct NewReno {
         struct State {
             std::uint32_t cwnd     = 0;
@@ -39,7 +39,12 @@ namespace aloe::tcp {
             return state.ssthresh;
         }
 
+        /// Slow start below the target, congestion avoidance at or above it, and nothing while the window is not in
+        /// use (`in_use`): a flow the application limits keeps the window it has.
         static constexpr void on_ack(State& state, const AckInfo& info) noexcept {
+            if (!in_use(state, info)) {
+                return;
+            }
             if (state.cwnd < state.ssthresh) {
                 state.cwnd = add(state.cwnd, std::min<std::uint32_t>(info.acked, info.mss));
                 return;
@@ -85,6 +90,14 @@ namespace aloe::tcp {
         }
 
     private:
+        /// Linux's `tcp_is_cwnd_limited`, which `tcp_reno_cong_avoid` asks before it grows anything: the window limited
+        /// the last send of the round, or, in slow start, it is less than twice the most in flight in that round, no
+        /// further than slow start overshoots anyway.
+        [[nodiscard]] static constexpr bool in_use(const State& state, const AckInfo& info) noexcept {
+            return info.window_limited ||
+                   (state.cwnd < state.ssthresh && state.cwnd < 2 * std::uint64_t{info.largest_flight});
+        }
+
         [[nodiscard]] static constexpr std::uint32_t add(const std::uint32_t a, const std::uint32_t b) noexcept {
             return b > std::numeric_limits<std::uint32_t>::max() - a ? std::numeric_limits<std::uint32_t>::max()
                                                                      : a + b;
