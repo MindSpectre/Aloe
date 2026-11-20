@@ -31,6 +31,9 @@ namespace aloe::tcp {
         std::uint64_t sack_acks_sent       = 0;  ///< Pure ACKs that carried SACK blocks.
         std::uint64_t duplicate_sacks_sent = 0;  ///< Of them, those whose first block reported data that arrived twice.
         std::uint64_t delayed_acks_sent    = 0;  ///< ACKs the delay timer sent.
+        std::uint64_t sack_acks_received   = 0;  ///< ACKs received whose SACK option was read.
+        /// Of them, those whose first block was a believed duplicate report.
+        std::uint64_t duplicate_sacks_received = 0;
 
         std::uint64_t connections_opened         = 0;  ///< Active opens that reached ESTABLISHED.
         std::uint64_t connections_accepted       = 0;

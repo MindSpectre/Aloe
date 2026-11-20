@@ -7,6 +7,7 @@
 #include <aloe/wire>
 #include <array>
 #include <cassert>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -58,6 +59,7 @@ namespace aloe::tcp::detail {
         using Sequence     = wire::TcpSequence;
         using SentNode     = SentSegment<Packet>;
         using Freed        = RetransmissionQueue<Packet>::Freed;
+        using Reported     = RetransmissionQueue<Packet>::Reported;
 
         Transmitter(Context& context, loop::TimerWheel& wheel)
             : context_{context},
@@ -197,14 +199,37 @@ namespace aloe::tcp::detail {
             return sent;
         }
 
-        /// The queue frees what `ack` covers (`RetransmissionQueue::acknowledge`); a resend that waited on the deferred
-        /// list is moot once its entry is freed. Called before SND.UNA moves.
-        [[nodiscard]] Freed acknowledge(ControlBlock& block, const Sequence ack) noexcept {
-            const Freed freed = block.queue.acknowledge(send_pool_, ack, block.send.una);
+        /// The queue frees what `ack` covers (`RetransmissionQueue::acknowledge`), `each` running for every entry it
+        /// frees that no block reported; a resend that waited on the deferred list is moot once its entry is freed.
+        /// Called before SND.UNA moves.
+        template <std::invocable<const SentNode&> Each>
+        [[nodiscard]] Freed acknowledge(ControlBlock& block, const Sequence ack, Each&& each) noexcept {
+            const Freed freed = block.queue.acknowledge(send_pool_, ack, block.send.una, std::forward<Each>(each));
             if (freed.length > 0) {
                 deferred_.remove(block);
             }
             return freed;
+        }
+
+        /// The entries `sack_block` covers whole marked received (`RetransmissionQueue::report`).
+        template <std::invocable<const SentNode&> Each>
+        [[nodiscard]] Reported report(ControlBlock& block, const wire::TcpSackBlock& sack_block, Each&& each) noexcept {
+            return block.queue.report(send_pool_, sack_block, std::forward<Each>(each));
+        }
+
+        /// Whether the option's `first` block is a believed duplicate report (`RetransmissionQueue::duplicate_report`),
+        /// against the largest window the peer offered and the connection's MSS.
+        [[nodiscard]] bool duplicate_report(ControlBlock& block,
+                                            const wire::TcpSackBlock& first,
+                                            const std::optional<wire::TcpSackBlock>& second,
+                                            const Sequence ack) noexcept {
+            return block.queue.duplicate_report(first, second, ack, block.send.max_wnd, block.mss());
+        }
+
+        /// `sack_block` names a resent entry a block reported (`RetransmissionQueue::names_reported_resend`).
+        [[nodiscard]] bool names_reported_resend(const ControlBlock& block,
+                                                 const wire::TcpSackBlock& sack_block) const noexcept {
+            return block.queue.names_reported_resend(send_pool_, sack_block);
         }
 
         /// Established: one node of the pool is set aside for the connection's FIN. The ACK that brought the

@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <aloe/core>
 #include <aloe/wire>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <tuple>
 
 #include <congestion_control.hpp>
@@ -31,6 +33,8 @@ namespace aloe::tcp::detail {
         using Transmitter  = detail::Transmitter<Ip, CongestionControl>;
         using Sequence     = wire::TcpSequence;
         using Freed        = Transmitter::Freed;
+        using Reported     = Transmitter::Reported;
+        using SentNode     = Transmitter::SentNode;
 
         /// What an acceptable ACK did, for the Receiver to publish.
         struct Outcome {
@@ -48,25 +52,29 @@ namespace aloe::tcp::detail {
         void handshake_acknowledged(ControlBlock& block,
                                     const Sequence ack,
                                     const std::optional<std::uint32_t> echo) noexcept {
-            const Freed freed = transmitter_.acknowledge(block, ack);
+            const Freed freed = transmitter_.acknowledge(block, ack, [](const SentNode&) noexcept {});
             block.send.una    = ack;
             on_acknowledged(block, freed, echo);
         }
 
         /**
-         * An ACK on a synchronized connection, of nothing past SND.NXT. An ACK of new data frees what it covers,
-         * samples the round trip and drives loss recovery (`acknowledge_data`). A duplicate ACK, of something in
-         * flight, is judged against the window as it stands, before this segment updates it, the field scaled by the
-         * peer's shift. RFC 793 updates the window only when SND.UNA <= SEG.ACK <= SND.NXT: a stale ACK carries a
-         * stale window. `payload_length` is the segment's, since an ACK that carries data is no duplicate.
+         * An ACK on a synchronized connection, of nothing past SND.NXT. First its SACK option's blocks, `sack`, eight
+         * bytes each and empty without one, are read into the scoreboard (`read_blocks`), on an ACK below SND.UNA too,
+         * for which nothing else runs. An ACK of new data frees what it covers, samples the round trip and drives loss
+         * recovery (`acknowledge_data`). A duplicate ACK, of something in flight, is judged against the window as it
+         * stands, before this segment updates it, the field scaled by the peer's shift. RFC 793 updates the window
+         * only when SND.UNA <= SEG.ACK <= SND.NXT: a stale ACK carries a stale window. `payload_length` is the
+         * segment's, since an ACK that carries data is no duplicate.
          */
         [[nodiscard]] Outcome on_ack(ControlBlock& block,
                                      const wire::TcpHeader& header,
                                      const std::uint16_t payload_length,
                                      const std::optional<std::uint32_t> echo,
-                                     [[maybe_unused]] const std::span<const std::byte> sack) noexcept {
+                                     const std::span<const std::byte> sack) noexcept {
             const Sequence ack                = header.acknowledgement;
             const std::size_t writable_before = transmitter_.writable(block);
+            // The marks it sets are the scoreboard's; no step below reads what it returns yet.
+            std::ignore                       = read_blocks(block, ack, sack);
             const bool duplicate = payload_length == 0 && !header.flags.has(wire::TcpFlag::Syn) &&
                                    !header.flags.has(wire::TcpFlag::Fin) && ack == block.send.una &&
                                    block.send.scaled(header.window) == block.send.wnd && transmitter_.in_flight(block);
@@ -107,6 +115,72 @@ namespace aloe::tcp::detail {
         }
 
     private:
+        /// What an ACK's SACK option said.
+        struct Blocks {
+            std::uint32_t reported = 0;  ///< Sequence space newly marked received.
+            bool reordering        = false;
+            std::optional<wire::TcpSackBlock> duplicate{};  ///< A believed duplicate report.
+        };
+
+        /**
+         * The first step of an acceptable ACK: its SACK option read into the scoreboard. Nothing on a connection that
+         * does not use SACK, with no option, or for an ACK older than SND.UNA by more than the largest window the peer
+         * offered (`tcp_sacktag_write_queue`). The duplicate report is recognised first, from the option alone, and
+         * counted when believed (`RetransmissionQueue::duplicate_report`); then each other block that is valid marks
+         * the entries it covers whole, lowest first, as Linux sorts them, so lower data reported in the same option
+         * is not taken for reordering. A believed duplicate report that is valid and names a resent entry a block
+         * reported shows reordering. Blocks a correct peer never sends mark nothing and are not an error.
+         */
+        [[nodiscard]] Blocks
+        read_blocks(ControlBlock& block, const Sequence ack, const std::span<const std::byte> sack) noexcept {
+            if (!block.sack.in_use() || sack.empty() ||
+                ack.before(Sequence{block.send.una.value - block.send.max_wnd})) {
+                return {};
+            }
+            ++context_.counters.sack_acks_received;
+            const std::size_t count =
+                std::min(sack.size() / wire::TcpOptions::sack_block_size, wire::TcpOptions::max_sack_blocks);
+            const Sequence edge            = ack.after(block.send.una) ? ack : block.send.una;
+            const wire::TcpSackBlock first = wire::TcpOptions::read_sack_block(sack, 0);
+            const std::optional<wire::TcpSackBlock> second =
+                count > 1 ? std::optional{wire::TcpOptions::read_sack_block(sack, 1)} : std::nullopt;
+            Blocks blocks{};
+            if (transmitter_.duplicate_report(block, first, second, ack)) {
+                blocks.duplicate  = first;
+                blocks.reordering = valid_block(block, first, edge) && transmitter_.names_reported_resend(block, first);
+                ++context_.counters.duplicate_sacks_received;
+            }
+            std::array<wire::TcpSackBlock, wire::TcpOptions::max_sack_blocks> ordinary{};
+            std::size_t used = 0;
+            for (std::size_t index = blocks.duplicate ? 1 : 0; index < count; ++index) {
+                if (const wire::TcpSackBlock candidate = wire::TcpOptions::read_sack_block(sack, index);
+                    valid_block(block, candidate, edge)) {
+                    ordinary[used++] = candidate;
+                }
+            }
+            const std::span<wire::TcpSackBlock> valid = std::span{ordinary}.first(used);
+            std::ranges::sort(valid, [](const wire::TcpSackBlock& one, const wire::TcpSackBlock& other) noexcept {
+                return one.first.before(other.first);  // valid blocks lie within the window: serial order is total
+            });
+            for (const wire::TcpSackBlock& sack_block : valid) {
+                const Reported reported  = transmitter_.report(block, sack_block, [](const SentNode&) noexcept {});
+                blocks.reported         += reported.bytes;
+                blocks.reordering        = blocks.reordering || reported.reordering;
+            }
+            return blocks;
+        }
+
+        /**
+         * Linux's `tcp_is_sackblock_valid` for a block that touches the entries, with `edge` the later of the ACK and
+         * SND.UNA, where SND.UNA is about to be: it starts before it ends and before SND.NXT, it ends at or before
+         * SND.NXT, and it starts after `edge`. A duplicate report at or below `edge` touches no entry.
+         */
+        [[nodiscard]] static bool
+        valid_block(const ControlBlock& block, const wire::TcpSackBlock& sack_block, const Sequence edge) noexcept {
+            return sack_block.first.before(sack_block.end) && sack_block.first.before(block.send.nxt) &&
+                   !sack_block.end.after(block.send.nxt) && sack_block.first.after(edge);
+        }
+
         /// The head that never left, the FIN of a close the peer's window did not cover: sent once the window covers
         /// it, as Linux's `tcp_push_pending_frames` on an ACK. A head waiting for the next hop is the ARP poll's. The
         /// send arms the RTO (`transmit_entry`); a refused one leaves the RTO to try again, as `close` does.
@@ -165,7 +239,7 @@ namespace aloe::tcp::detail {
             const std::uint32_t flight_before = block.send.flight();
             const auto acked                  = static_cast<std::uint32_t>(ack - block.send.una);
             const typename Transmitter::Freed freed =
-                transmitter_.acknowledge(block, ack);  // a partial entry stays whole
+                transmitter_.acknowledge(block, ack, [](const SentNode&) noexcept {});  // a partial entry stays whole
             block.send.una                          = ack;
             const std::optional<core::Duration> rtt = on_acknowledged(block, freed, echo);
             const AckInfo info{.acked             = acked,

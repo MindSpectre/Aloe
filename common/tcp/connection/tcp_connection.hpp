@@ -151,9 +151,24 @@ namespace aloe::tcp {
         [[nodiscard]] std::size_t queued_segments() const noexcept {
             return block_.queue.size();
         }
-        /// Payload bytes the peer acknowledged, counted as each ACK advances `acknowledged()`.
+        /// Payload bytes the peer acknowledged, each once: when a SACK block first reported it, or when an ACK first
+        /// advanced `acknowledged()` past it.
         [[nodiscard]] std::uint64_t delivered() const noexcept {
             return block_.queue.delivered();
+        }
+        /// For tests and monitoring: what is in flight, `unacknowledged()` less what the peer reported received with
+        /// SACK blocks and less what is marked lost and not resent since.
+        [[nodiscard]] std::uint32_t in_flight() const noexcept {
+            return block_.queue.in_flight_bytes(block_.send.flight());
+        }
+        /// For tests and monitoring: the sequence space the peer reported received with SACK blocks and no cumulative
+        /// ACK has covered yet.
+        [[nodiscard]] std::uint32_t reported_bytes() const noexcept {
+            return block_.queue.reported_bytes();
+        }
+        /// For tests and monitoring: the sequence space marked lost and not resent since.
+        [[nodiscard]] std::uint32_t lost_bytes() const noexcept {
+            return block_.queue.lost_bytes();
         }
 
         /// FIN after what was committed; no more sends. Nothing outside Established and CloseWait.
