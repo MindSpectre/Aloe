@@ -277,12 +277,14 @@ namespace aloe::tcp::detail {
          *   runs one step of PRR with what it delivered and what is in flight now; one that moved SND.UNA is RFC
          *   6582's partial ACK and marks the new head first, as Linux's `tcp_newreno_mark_lost` does, which makes it
          *   no safe ACK for PRR.
-         * - Loss. The ACK that covers `recover` ends it. Any other ACK of new data is the policy's to hear, which
-         *   grows its window by slow start; the entries the timeout marked are left as they are.
+         * - Loss. Every ACK of new data is the policy's to hear, which grows its window by slow start; the entries the
+         *   timeout marked are left as they are. The ACK that covers `recover` then ends the state: it is heard like
+         *   the others, as Linux's `tcp_cong_control` grows the window on the ACK `tcp_process_loss` ended the state
+         *   on.
          *
-         * The policy hears of an ACK of new data only where the ACK ended no episode. In this order the duplicate
-         * count detects for every connection, with SACK and without; what differs is how what an ACK delivered is
-         * counted (`delivered`).
+         * In recovery no ACK reaches the policy's `on_ack`, the one that ends it included: the window there is the
+         * rate reduction's, and its end is `on_recovery_end`. The duplicate count detects for every connection, with
+         * SACK and without; what differs is how what an ACK delivered is counted (`delivered`).
          */
         void update_recovery(ControlBlock& block,
                              const Found& found,
@@ -312,10 +314,11 @@ namespace aloe::tcp::detail {
                     break;
                 }
                 case RecoveryState::Loss:
+                    if (info) {
+                        block.recovery.on_ack(*info, ack);
+                    }
                     if (block.recovery.recovered(ack)) {
                         block.recovery.end(ack);
-                    } else if (info) {
-                        block.recovery.on_ack(*info, ack);
                     }
                     break;
             }

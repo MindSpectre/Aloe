@@ -122,6 +122,29 @@ TEST(TcpLossRecovery, TheEpisodeCountsNoMoreThanTheFlightItRecorded) {
     EXPECT_EQ(recovery.undelivered(), 0U) << "RFC 9937 6.2: a duplicate past this delivers nothing";
 }
 
+TEST(TcpLossRecovery, TheTargetLeavesOutWhatWasSentBeyondTheWindow) {
+    Recovery recovery;
+    recovery.open(aloe::wire::TcpSequence{1000});
+    recovery.establish(1460);
+    ASSERT_EQ(recovery.window(), 14600U);
+    // Two segments went out beyond the window while duplicates lowered what was in flight: 17520 outstanding.
+    recovery.begin_recovery(aloe::wire::TcpSequence{18521}, 17520, 17520, 1460);
+    EXPECT_EQ(recovery.congestion().ssthresh, 7300U) << "RFC 5681 3.2: half of 14600, not of 17520";
+    EXPECT_EQ(recovery.undelivered(), 17520U) << "RecoverFS is the whole flight";
+
+    Recovery within;
+    within.open(aloe::wire::TcpSequence{1000});
+    within.establish(1460);
+    within.begin_recovery(aloe::wire::TcpSequence{5381}, 4380, 4380, 1460);
+    EXPECT_EQ(within.congestion().ssthresh, 2920U) << "a flight inside the window is halved as it is: two segments";
+
+    Recovery timed_out;
+    timed_out.open(aloe::wire::TcpSequence{1000});
+    timed_out.establish(1460);
+    timed_out.on_timeout(aloe::wire::TcpSequence{1001}, aloe::wire::TcpSequence{18521}, 17520, 0, 1460, true);
+    EXPECT_EQ(timed_out.congestion().ssthresh, 8760U) << "a timeout halves the flight it found";
+}
+
 TEST(TcpLossRecovery, RoomIsWhatTheWindowAllowsBeyondWhatIsInFlight) {
     Recovery recovery;
     recovery.open(aloe::wire::TcpSequence{1000});
@@ -185,13 +208,14 @@ TEST_P(TcpRecovery, LimitedTransmitAllowsTwoSegmentsBeyondTheWindowThenTheThirdD
     EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
     EXPECT_EQ(tcp_->counters().recoveries, 1U);
     // The flight is 17520, of which three duplicates stand for 4380 and the head, 1460, is lost: 11680 in flight. The
-    // target is 17520 / 2 = 8760 and RecoverFS 17520, so this ACK's 1460 delivered allow
-    // ceil(1460 * 8760 / 17520) = 730 above what is in flight, and the head leaves.
-    EXPECT_EQ(c->congestion_state().ssthresh, 8760U);
-    EXPECT_EQ(c->congestion_window(), 12410U) << "11680 in flight and 730";
+    // target leaves out the two segments sent beyond the window (RFC 5681 3.2): half of 14600, 7300. RecoverFS is
+    // the whole flight, 17520, so this ACK's 1460 delivered allow ceil(1460 * 7300 / 17520) = 609 above what is in
+    // flight, and the head leaves.
+    EXPECT_EQ(c->congestion_state().ssthresh, 7300U);
+    EXPECT_EQ(c->congestion_window(), 12289U) << "11680 in flight and 609";
     EXPECT_EQ(c->in_flight(), 13140U) << "the head, resent, is in flight again";
     receive(dup());
-    // Four duplicates: 11680 in flight; 2920 delivered allow 1460, which the head's resend already used.
+    // Four duplicates: 11680 in flight; 2920 delivered allow 1217, less than the head's resend already used.
     EXPECT_EQ(c->congestion_window(), 11680U);
     EXPECT_EQ(c->writable(), 0U);
 }
@@ -331,17 +355,17 @@ TEST_P(TcpRecovery, ATimeoutInRecoveryKeepsTheTarget) {
     ASSERT_EQ(c->send(aloe::frames::pattern(1460)), 1460U);
     receive(dup());
     ASSERT_EQ(c->recovery_state(), RecoveryState::Recovery);
-    ASSERT_EQ(c->congestion_state().ssthresh, 8760U) << "half of the 17520 outstanding at the third duplicate";
+    ASSERT_EQ(c->congestion_state().ssthresh, 7300U) << "half of the window the 17520 outstanding had passed";
     receive(dup());
     receive(dup());
-    // Five duplicates: 4380 delivered allow ceil(4380 * 8760 / 17520) = 2190, of which the head took 1460. The 730
+    // Five duplicates: 4380 delivered allow ceil(4380 * 7300 / 17520) = 1825, of which the head took 1460. The 365
     // left go as new data, so the flight a timeout would halve is no longer the one recovery halved.
-    ASSERT_EQ(c->writable(), 730U);
-    ASSERT_EQ(c->send(aloe::frames::pattern(730)), 730U);
-    ASSERT_EQ(c->unacknowledged(), 18250U);
+    ASSERT_EQ(c->writable(), 365U);
+    ASSERT_EQ(c->send(aloe::frames::pattern(365)), 365U);
+    ASSERT_EQ(c->unacknowledged(), 17885U);
     advance(200ms);  // the RTO, restarted by the fast retransmit, before any ACK of new data
     EXPECT_EQ(c->recovery_state(), RecoveryState::Loss);
-    EXPECT_EQ(c->congestion_state().ssthresh, 8760U) << "this window was reduced already: not 18250 / 2";
+    EXPECT_EQ(c->congestion_state().ssthresh, 7300U) << "this window was reduced already: not 17885 / 2";
     EXPECT_EQ(c->congestion_window(), 1460U) << "everything was marked, so one segment";
     EXPECT_EQ(c->duplicate_acks(), 0U);
     EXPECT_EQ(tcp_->counters().retransmits, 1U);
@@ -491,10 +515,27 @@ TEST_P(TcpRecovery, AfterATimeoutTheMarkedEntriesAreResentUnderSlowStart) {
     EXPECT_EQ(c->recovery_state(), RecoveryState::Loss);
     receive(peer_.ack(sent[9]));  // everything sent before the timeout
     EXPECT_EQ(c->recovery_state(), RecoveryState::Open);
+    EXPECT_EQ(c->congestion_window(), 5840U) << "slow start once more, on the ACK that ends the loss state";
     EXPECT_EQ(c->lost_bytes(), 0U);
     EXPECT_TRUE(collect().empty());
     EXPECT_EQ(tcp_->counters().retransmits, 1U);
     EXPECT_EQ(tcp_->counters().recoveries, 0U) << "a timeout's episode is not a recovery";
+}
+
+TEST_P(TcpRecovery, TheAckThatEndsTheLossStateGrowsTheWindowToo) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1460)), 1460U);  // a lone segment, lost
+    const auto sent = collect();
+    advance(200ms);
+    ASSERT_EQ(collect().size(), 1U);
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Loss);
+    ASSERT_EQ(c->congestion_window(), 1460U);
+    ASSERT_EQ(c->congestion_state().ssthresh, 2920U);
+    receive(peer_.ack(sent[0]));  // covers everything sent before the timeout
+    EXPECT_EQ(c->recovery_state(), RecoveryState::Open);
+    EXPECT_EQ(c->congestion_window(), 2920U) << "an ACK of new data in the loss state: slow start, as Linux grows too";
+    EXPECT_EQ(c->writable(), 1460U);
 }
 
 TEST_P(TcpRecoveryRefusing, AResendTheDeviceRefusedIsTriedAgainByTheNextPassAndCountedOnce) {
@@ -593,7 +634,7 @@ TEST_P(TcpRecorded, ThreeDuplicatesReachOnCongestion) {
     receive(dup());
     const auto& s = c->congestion_state();
     EXPECT_EQ(s.last_hook, "on_congestion");
-    EXPECT_EQ(s.last_flight, 2920U);
+    EXPECT_EQ(s.last_flight, 2920U) << "the flight, all of it within the recorder's unbounded window";
     EXPECT_EQ(s.calls, 1U);
     receive(dup());
     EXPECT_EQ(s.calls, 1U) << "a duplicate in recovery is the rate reduction's, when there is one";
@@ -649,7 +690,7 @@ TEST_P(TcpRecorded, ATimeoutSetsTheTargetOnceAndRestartsTheWindowAtEachExpiry) {
     EXPECT_EQ(s.calls, 3U) << "one episode, one target: on_timeout alone";
 }
 
-TEST_P(TcpRecorded, InTheLossStateAnAckOfNewDataReachesOnAckUntilTheOneThatEndsIt) {
+TEST_P(TcpRecorded, InTheLossStateEveryAckOfNewDataReachesOnAckTheOneThatEndsItToo) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
     ASSERT_EQ(c->send(aloe::frames::pattern(2920)), 2920U);
@@ -663,7 +704,9 @@ TEST_P(TcpRecorded, InTheLossStateAnAckOfNewDataReachesOnAckUntilTheOneThatEndsI
     EXPECT_EQ(c->recovery_state(), RecoveryState::Loss);
     receive(peer_.ack(sent[1]));
     EXPECT_EQ(c->recovery_state(), RecoveryState::Open);
-    EXPECT_EQ(s.calls, 3U) << "the ACK that ends the episode reaches no hook";
+    EXPECT_EQ(s.last_hook, "on_ack");
+    EXPECT_EQ(s.last_acked, 1460U);
+    EXPECT_EQ(s.calls, 4U) << "the ACK that ends the loss state is an ACK of new data like the one before it";
 }
 
 TEST_P(TcpRecorded, ASendAfterAnIdleLongerThanTheRtoReachesOnIdle) {

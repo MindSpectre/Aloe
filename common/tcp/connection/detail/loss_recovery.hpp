@@ -127,8 +127,16 @@ namespace aloe::tcp::detail {
             return ack.after(recover_);
         }
 
-        /// The first entry was marked lost while open: `recover` is one before `nxt`, the policy's state is copied for
-        /// the undo, the policy is told of the congestion with `flight`, and PRR begins with `recover_fs`.
+        /**
+         * The first entry was marked lost while open: `recover` is one before `nxt`, the policy's state is copied for
+         * the undo, the policy is told of the congestion, and PRR begins with `recover_fs`.
+         *
+         * The policy hears `flight`, SND.NXT - SND.UNA, less what was sent beyond its window. RFC 5681 3.2 step 2: data
+         * sent by limited transmit "MUST NOT be included" in the flight the target is computed from. Limited transmit
+         * has no allowance of its own here: it is what went out beyond the policy's window because reports or
+         * duplicates lowered what is in flight, and a send never passes the peer's window, so the cap is the policy's
+         * window as it stands. RecoverFS is not capped: RFC 9937 6.1 counts the whole flight.
+         */
         void begin_recovery(const wire::TcpSequence nxt,
                             const std::uint32_t flight,
                             const std::uint32_t recover_fs,
@@ -136,7 +144,8 @@ namespace aloe::tcp::detail {
             assert(state_ != RecoveryState::Recovery && "an episode of recovery begins once");
             recover_ = wire::TcpSequence{nxt.value - 1};
             prior_   = congestion_;
-            CongestionControl::on_congestion(congestion_, flight, mss);
+            CongestionControl::on_congestion(
+                congestion_, std::min(flight, CongestionControl::window(congestion_)), mss);
             state_ = RecoveryState::Recovery;
             if (regulated()) {
                 rate_.begin(recover_fs, CongestionControl::target(congestion_));
@@ -188,9 +197,9 @@ namespace aloe::tcp::detail {
         /**
          * The RTO expired. The policy's target is set again only when this window was not reduced yet: the state was
          * open, or `una` already covers `recover`, or the state was loss and `first_expiry` (the first since an ACK of
-         * new data); Linux's `tcp_enter_loss`. Then the policy's state is copied first, as when recovery begins. In
-         * every case the policy's window restarts at `in_flight` plus one segment, the state is loss, `recover` is one
-         * before `nxt` and the duplicate count is cleared.
+         * new data); Linux's `tcp_enter_loss`. Then the policy's state is copied first, as when recovery begins, and
+         * the policy hears the flight as it is. In every case the policy's window restarts at `in_flight` plus one
+         * segment, the state is loss, `recover` is one before `nxt` and the duplicate count is cleared.
          */
         void on_timeout(const wire::TcpSequence una,
                         const wire::TcpSequence nxt,

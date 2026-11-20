@@ -280,15 +280,14 @@ namespace aloe::tcp::detail {
          * The first entry was marked lost on a connection that is open: recovery begins. `delivered` is what the ACK
          * that showed it delivered; zero at a timer.
          *
-         * The policy hears of the congestion with the flight, SND.NXT - SND.UNA, and sets its target. That flight
-         * counts what the reports before this one let out, the limited transmit, which RFC 5681 3.2 leaves out of the
-         * target's calculation: with no allowance of its own, limited transmit is not told apart from other data here.
-         * RFC 9937 6.1's RecoverFS is the flight, less the bytes blocks reported received, plus what this ACK
-         * delivered, which on a connection that uses SACK is what it newly reported and newly acknowledged; without
-         * SACK no block reports anything and a duplicate's segment is an estimate, so RecoverFS is the flight. Then
-         * PRR's first step, with what is in flight after the marking: RFC 9937 6.2 with what the ACK delivered, counted
-         * no further than RecoverFS; with nothing delivered, at a timer or on an ACK that reported nothing new, no step
-         * runs and one segment may leave.
+         * The policy hears of the congestion and sets its target from the flight, SND.NXT - SND.UNA, less what was
+         * sent beyond its window: RFC 5681 3.2 step 2 leaves the data limited transmit sent out of that calculation
+         * (`LossRecovery::begin_recovery` applies the cap). RFC 9937 6.1's RecoverFS is the whole flight, less the
+         * bytes blocks reported received, plus what this ACK delivered, which on a connection that uses SACK is what
+         * it newly reported and newly acknowledged; without SACK no block reports anything and a duplicate's segment
+         * is an estimate, so RecoverFS is the flight. Then PRR's first step, with what is in flight after the marking:
+         * RFC 9937 6.2 with what the ACK delivered, counted no further than RecoverFS; with nothing delivered, at a
+         * timer or on an ACK that reported nothing new, no step runs and one segment may leave.
          */
         void begin_recovery(ControlBlock& block, const std::uint32_t delivered) noexcept {
             const std::uint32_t flight = block.send.flight();
