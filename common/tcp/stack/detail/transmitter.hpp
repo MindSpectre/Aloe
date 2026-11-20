@@ -18,6 +18,7 @@
 
 #include <detail/connection_list.hpp>
 #include <detail/control_block.hpp>
+#include <detail/node_pool.hpp>
 #include <detail/receive_window.hpp>
 #include <detail/retransmission_queue.hpp>
 #include <detail/sack_blocks.hpp>
@@ -45,10 +46,11 @@ namespace aloe::tcp::detail {
 
     /**
      * @brief Everything that leaves a connection, and what guards it: the one send function over the segment
-     * writer, the retransmission queue's entries on the shard's send pool, the resends with the busy rule and the
-     * copy fallback, the pure ACKs, probes and resets, the timers' arming and what an expiry resends, the delayed
-     * ACK's timer, and the application's `writable`, `prepare` and `commit`. It owns the ACK, retry and deferred lists;
-     * the Receiver and the Lifecycle call down into it, and it calls neither.
+     * writer, the retransmission queue's entries on the shard's send pool, the resend of any entry with the busy rule
+     * and the copy fallback and the pass over those marked lost, the pure ACKs, probes and resets, the timers' arming
+     * and what an expiry resends, the delayed ACK's timer, and the application's `writable`, `prepare` and `commit`.
+     * It owns the ACK, retry and deferred lists; the Receiver and the Lifecycle call down into it, and it calls
+     * neither.
      */
     template <typename Ip, typename CongestionControl>
     class Transmitter {
@@ -95,7 +97,7 @@ namespace aloe::tcp::detail {
             return acks_.contains(block);
         }
 
-        /// A resend waits for its packet.
+        /// A resend of one of the connection's entries marked lost waits for its packet.
         [[nodiscard]] bool deferred(const ControlBlock& block) const noexcept {
             return deferred_.contains(block);
         }
@@ -106,12 +108,13 @@ namespace aloe::tcp::detail {
             retries_.remove(block);
         }
 
-        /// The resends that found their packet lent: the first loop of `Stack::flush`.
+        /// The resends that found their packet lent: the first loop of `Stack::flush`, the pass again for each
+        /// connection that waits (`resend_lost`).
         void flush_deferred() noexcept {
             for (ControlBlock* block = deferred_.front(); block != nullptr;) {
                 ControlBlock* next = DeferredList::next_of(*block);  // a resend that leaves unlinks block
-                std::ignore        = resend_head(*block);
-                block              = next;
+                resend_lost(*block);
+                block = next;
             }
         }
 
@@ -172,32 +175,80 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * The head entry again. A copy out is reconciled first. Still lent: the device is asked to reclaim, and if it
-         * still holds the packet nothing is written into it and the busy rule decides (`resend_busy`). Back: when
-         * SND.UNA passed the entry's first byte, the acknowledged front is trimmed off (`SentSegment::trim_to`), and
-         * `transmit_entry` sends what is left. IP's error, or nothing when the resend left or was deferred. A send that
-         * failed leaves the deferred list too: the timer's next expiry tries again.
+         * The entry at `index` again. A copy out is reconciled first. Still lent: the device is asked to reclaim, and
+         * if it still holds the packet nothing is written into it and the busy rule decides (`resend_busy`). Back: when
+         * SND.UNA passed the entry's first byte, which only the head can need, the acknowledged front is trimmed off
+         * (`RetransmissionQueue::trim_to`), and `transmit_entry` writes the headers over the old ones and sends what is
+         * left. IP's error, or nothing when the resend left or was deferred. A resend that left, in place or as a copy,
+         * clears the entry's lost mark; an entry not marked has none to clear. A send that failed leaves the deferred
+         * list too: the timer's next expiry tries again.
          */
-        [[nodiscard]] std::expected<void, net::SendError> resend_head(ControlBlock& block) noexcept {
-            assert(!block.queue.empty() && "a resend with nothing queued");
-            const std::uint32_t head = block.queue.head();
-            SentNode& node           = send_pool_.node(head);
-            block.queue.reconcile(send_pool_, head);  // the queue owns every change to an entry's length
+        [[nodiscard]] std::expected<void, net::SendError> resend(ControlBlock& block,
+                                                                 const std::uint32_t index) noexcept {
+            assert(index != no_node && "a resend of no entry");
+            SentNode& node = send_pool_.node(index);
+            block.queue.reconcile(send_pool_, index);  // the queue owns every change to an entry's length
             if (node.packet.lent() && context_.ip.queue().reclaim() > 0) {
-                block.queue.reconcile(send_pool_, head);  // what the device let go of may be either packet
+                block.queue.reconcile(send_pool_, index);  // what the device let go of may be either packet
             }
             if (node.packet.lent()) {
-                return resend_busy(block, node);
+                const std::expected<void, net::SendError> busy = resend_busy(block, node);
+                if (busy && !deferred_.contains(block)) {
+                    block.queue.clear_lost(send_pool_, index);  // the copy left
+                }
+                return busy;
             }
             if (block.send.una.after(node.first)) {
-                block.queue.trim_to(send_pool_, head, block.send.una);
+                block.queue.trim_to(send_pool_, index, block.send.una);
             }
             deferred_.remove(block);  // the packet is back: whatever IP answers, this resend is not waiting any more
-            const std::expected<void, net::SendError> sent = transmit_entry(block, block.queue.head());
+            const std::expected<void, net::SendError> sent = transmit_entry(block, index);
             if (sent) {
                 node.deferrals = 0;
+                block.queue.clear_lost(send_pool_, index);
             }
             return sent;
+        }
+
+        /**
+         * The resend pass, Linux's `tcp_xmit_retransmit_queue`: the entries marked lost, lowest sequence first, each
+         * through `resend`, until none is marked or one could not leave, refused or waiting for its packet; one that
+         * waits keeps the connection on the deferred list, and the flush runs the pass again. Counts one
+         * `fast_retransmits` per marked entry, at its first attempt, whether it left, waited or was refused; a retry of
+         * a waiting entry, which is the entry the pass reaches while the connection is on the deferred list, counts
+         * nothing. When the head left at its first attempt, the RTO is armed from now, as Linux re-arms it on resending
+         * the head, so the timer an earlier send armed does not expire before the resend's ACK can return; a retry that
+         * left does not move the timer. Returns the sequence space that left.
+         */
+        std::uint32_t resend_lost(ControlBlock& block) noexcept {
+            std::uint32_t left  = 0;
+            std::uint32_t index = block.queue.first_lost(send_pool_);
+            while (index != no_node) {
+                const bool retry = deferred_.contains(block);
+                if (!retry) {
+                    ++context_.counters.fast_retransmits;
+                }
+                if (!resend(block, index) || deferred_.contains(block)) {
+                    break;  // refused, or waiting for its packet: the timer or the flush tries again
+                }
+                // What left: the entry, from SND.UNA on when it lies inside, where a copy is cut and to which a resend
+                // in place was trimmed.
+                const SentNode& node  = send_pool_.node(index);
+                const Sequence from   = block.send.una.after(node.first) ? block.send.una : node.first;
+                left                 += static_cast<std::uint32_t>(node.first + node.length - from);
+                if (!retry && index == block.queue.head()) {
+                    arm_retransmit(block);
+                }
+                index = block.queue.first_lost(send_pool_);  // the resend that left cleared this one's mark
+            }
+            return left;
+        }
+
+        /// Marks the head lost; nothing when the queue is empty or nothing is in flight.
+        void mark_head_lost(ControlBlock& block) noexcept {
+            if (in_flight(block)) {
+                block.queue.mark_lost(send_pool_, block.queue.head());
+            }
         }
 
         /// The queue frees what `ack` covers (`RetransmissionQueue::acknowledge`), `each` running for every entry it
@@ -682,7 +733,7 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * The busy rule, for a head whose packet the device still holds after a reclaim. A resend at the stamp of the
+         * The busy rule, for an entry whose packet the device still holds after a reclaim. A resend at the stamp of the
          * last deferral is that deferral again, since the device had no time to finish: it stays on the deferred list
          * and counts nothing. Below `retransmit_defers` deferrals the resend waits for the next flush, counted once
          * per deferral; at the bound, with no copy out, the copy goes (`send_copy`); with a copy out and both packets
@@ -790,14 +841,15 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * The RTO ran out: one retry, the head of the queue again. First the user timeout, counted from the head's
-         * first transmission on a synchronized connection, and then the cap, `retries` in the handshake and
-         * `data_retries` after it, may give the connection up instead. The first expiry since an ACK of new data
-         * starts the loss episode (`LossRecovery::on_timeout`); each expiry doubles the RTO up to `rto_max` and
-         * re-arms. A resend deferred or refused counts as the retry all the same: the next expiry tries again. A
-         * first send, of a SYN, SYN-ACK or FIN the device refused before, that finds no next hop arms the ARP poll
-         * instead (`transmit_entry`), and the expiry leaves the timer to it: nothing left, so no backoff; the poll
-         * arms the RTO once the send leaves, or gives the connection up as `Unresolved`.
+         * The RTO ran out: one retry, the head of the queue marked lost and sent again (`resend`). First the user
+         * timeout, counted from the head's first transmission on a synchronized connection, and then the cap,
+         * `retries` in the handshake and `data_retries` after it, may give the connection up instead. The first expiry
+         * since an ACK of new data starts the loss episode (`LossRecovery::on_timeout`); each expiry doubles the RTO up
+         * to `rto_max` and re-arms. A resend deferred or refused counts as the retry all the same: a deferred one
+         * leaves at the flush (`flush_deferred`), and the next expiry tries again. A first send, of a SYN, SYN-ACK or
+         * FIN the device refused before, that finds no next hop arms the ARP poll instead (`transmit_entry`), and the
+         * expiry leaves the timer to it: nothing left, so no backoff; the poll arms the RTO once the send leaves, or
+         * gives the connection up as `Unresolved`.
          */
         [[nodiscard]] TimerExpiry on_retransmit_timeout(ControlBlock& block) noexcept {
             assert(!block.queue.empty() && "the RTO runs while something is queued");
@@ -812,7 +864,8 @@ namespace aloe::tcp::detail {
             if (++block.retransmit_count == 1) {
                 block.recovery.on_timeout(block.send, block.mss());
             }
-            std::ignore = resend_head(block);
+            mark_head_lost(block);
+            std::ignore = resend(block, block.queue.head());
             ++context_.counters.retransmits;
             if (block.timer_kind == TimerKind::ArpPoll) {
                 return TimerExpiry::Handled;  // a first send that found no next hop: the poll retries it
@@ -865,7 +918,7 @@ namespace aloe::tcp::detail {
         SentSegmentPool<Packet> send_pool_;
         AckList acks_          = {};
         RetryList retries_     = {};
-        DeferredList deferred_ = {};  ///< Connections whose head resend waits for its packet.
+        DeferredList deferred_ = {};  ///< Connections one of whose entries marked lost waits for its packet.
         SegmentWriter<Ip> writer_;    ///< Counts into the context's counters.
     };
 

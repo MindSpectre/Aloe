@@ -232,7 +232,9 @@ namespace aloe::tcp::detail {
          * An ACK of new data on a synchronized connection: the entries it frees, the sample and the timer
          * (`on_acknowledged`), then loss recovery (`LossRecovery::on_ack`), which hears the ACK with what the policy
          * reads and says what to resend: the head as a fast retransmit on a partial ACK in fast recovery, or the new
-         * head in the loss episode after a timeout, counted in `retransmits`.
+         * head in the loss episode after a timeout, marked lost and resent by the pass. That one is counted in
+         * `retransmits` alone, as it was before the pass: what the pass counted in `fast_retransmits` is taken back, an
+         * interim count that goes with the `Resend` result.
          */
         void
         acknowledge_data(ControlBlock& block, const Sequence ack, const std::optional<std::uint32_t> echo) noexcept {
@@ -255,12 +257,14 @@ namespace aloe::tcp::detail {
                 case Resend::Fast:
                     fast_retransmit(block);
                     break;
-                case Resend::Head:
-                    if (!block.queue.empty()) {
-                        std::ignore = transmitter_.resend_head(block);
-                    }
+                case Resend::Head: {
+                    const std::uint64_t fast_retransmits = context_.counters.fast_retransmits;
+                    transmitter_.mark_head_lost(block);
+                    transmitter_.resend_lost(block);
+                    context_.counters.fast_retransmits = fast_retransmits;
                     ++context_.counters.retransmits;
                     break;
+                }
                 case Resend::None:
                     break;
             }
@@ -277,17 +281,20 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * The head again, driven by the third duplicate or a partial ACK, counted in `fast_retransmits`. When it
-         * leaves, in place or as a copy, the RTO restarts from now, as Linux re-arms it on resending the head
-         * (`tcp_xmit_retransmit_queue`), so the timer the first send armed does not expire before the resend's ACK can
-         * return. A resend deferred, or refused, leaves the timer as it was.
+         * The head again, driven by the third duplicate or a partial ACK: marked lost, and resent by the pass
+         * (`Transmitter::resend_lost`), which counts it in `fast_retransmits` and, when it leaves, in place or as a
+         * copy, restarts the RTO from now. A resend deferred, or refused, leaves the timer as it was. With nothing in
+         * flight the head, if any, waits for the window. Until the one recovery replaces this call, it counts once per
+         * call, as it did before the pass: where the pass counts no first attempt, with nothing in flight or the head
+         * already waiting for its packet, the call counts, and restarts the RTO when such a waiting head leaves.
          */
         void fast_retransmit(ControlBlock& block) noexcept {
-            ++context_.counters.fast_retransmits;
-            if (!transmitter_.in_flight(block)) {
-                return;  // nothing in flight: the head, if any, waits for the window
+            const bool uncounted = !transmitter_.in_flight(block) || transmitter_.deferred(block);
+            if (uncounted) {
+                ++context_.counters.fast_retransmits;
             }
-            if (transmitter_.resend_head(block) && !transmitter_.deferred(block)) {
+            transmitter_.mark_head_lost(block);
+            if (transmitter_.resend_lost(block) > 0 && uncounted) {
                 transmitter_.arm_retransmit(block);
             }
         }

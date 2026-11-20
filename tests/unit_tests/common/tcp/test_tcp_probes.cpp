@@ -195,6 +195,29 @@ TEST_P(TcpProbes, ACloseWhileProbingHoldsTheFinUntilTheWindowOpens) {
     EXPECT_EQ(tcp_->counters().retransmits, 0U) << "the FIN's first send is no retransmission";
 }
 
+TEST_P(TcpProbes, AfterATimeoutTheAckOfTheDataLeavesAHeldFinToTheWindow) {
+    peer_.set_window(100);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    ASSERT_EQ(collect().size(), 1U);
+    c->close();
+    EXPECT_TRUE(collect().empty()) << "the FIN does not fit behind the data: it waits, unsent";
+    advance(200ms);
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 1U) << "the timeout's resend of the data, which starts the loss episode";
+    EXPECT_FALSE(resent[0].tcp->flags.has(TcpFlag::Fin));
+    peer_.set_window(0);
+    receive(peer_.ack(resent[0]));  // short of recover, the FIN's number: the episode would resend the next head
+    EXPECT_TRUE(collect().empty()) << "the next head is the FIN that never left: no FIN into a zero window";
+    EXPECT_TRUE(c->probing());
+    peer_.set_window(65535);
+    receive(peer_.ack());
+    const auto fin = collect();
+    ASSERT_EQ(fin.size(), 1U);
+    EXPECT_TRUE(fin[0].tcp->flags.has(TcpFlag::Fin)) << "the ACK that opened the window sent the FIN";
+}
+
 TEST_P(TcpProbes, AcksAtAZeroWindowDoNotFastRetransmitAHeldFin) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);

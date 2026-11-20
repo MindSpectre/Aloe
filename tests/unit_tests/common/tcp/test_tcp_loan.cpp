@@ -51,6 +51,50 @@ TEST_P(TcpLoan, AResendThatFindsThePacketLentIsDeferredAndGoesOnceReturned) {
     return_loans();
 }
 
+TEST_P(TcpLoan, AFastRetransmitThatFindsThePacketLentIsCountedOnceAndGoesOnceReturned) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(4380)), 4380U);  // three segments
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 3U);
+    const auto dup = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    EXPECT_TRUE(c->in_recovery());
+    EXPECT_TRUE(collect().empty()) << "deferred: the head's packet is still lent";
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 1U);
+    EXPECT_EQ(c->lost_bytes(), 1460U) << "marked lost while it waits";
+    return_loans();
+    const auto resent = collect();  // the flush runs the pass again
+    ASSERT_EQ(resent.size(), 1U);
+    EXPECT_EQ(resent[0].tcp->sequence, sent[0].tcp->sequence);
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U) << "a retry of a waiting entry counts nothing";
+    EXPECT_EQ(tcp_->counters().retransmits_copied, 0U);
+    EXPECT_EQ(c->lost_bytes(), 0U) << "the resend that left cleared the mark";
+    return_loans();
+}
+
+TEST_P(TcpLoan, ADuplicateSynWhileTheSynAckIsLentGetsItOnceReturned) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto first = collect();
+    ASSERT_EQ(first.size(), 1U);
+    aloe::frames::TcpPeer again{aloe::testing::peer_spec(), aloe::wire::TcpSequence{aloe::testing::tcp_peer_isn}};
+    receive(again.syn());
+    EXPECT_TRUE(collect().empty()) << "deferred: the SYN-ACK's packet is still lent";
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 1U);
+    return_loans();
+    const auto resent = collect();  // the flush retries the deferred resend
+    ASSERT_EQ(resent.size(), 1U);
+    EXPECT_TRUE(aloe::testing::is_flags(resent[0], {aloe::wire::TcpFlag::Syn, aloe::wire::TcpFlag::Ack}));
+    EXPECT_EQ(resent[0].tcp->sequence, first[0].tcp->sequence);
+    EXPECT_EQ(tcp_->counters().retransmits, 0U) << "an answer to the peer, not a timer's resend";
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 0U);
+    return_loans();
+}
+
 TEST_P(TcpLoan, AfterTheBoundACopyIsSentAndBothPacketsAreFreedOnce) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);

@@ -386,8 +386,10 @@ namespace aloe::tcp::detail {
             if (!end.after(next)) {  // entirely before rcv_nxt
                 if (block.state == State::SynReceived && header.flags.has(wire::TcpFlag::Syn) &&
                     !header.flags.has(wire::TcpFlag::Ack)) {
-                    // A duplicate SYN: the SYN-ACK again, from its entry.
-                    std::ignore = transmitter_.resend_head(block);
+                    // A duplicate SYN: the SYN-ACK again, from its entry, marked lost so a resend that waits for its
+                    // packet leaves at the flush.
+                    transmitter_.mark_head_lost(block);
+                    std::ignore = transmitter_.resend(block, block.queue.head());
                     return Sequenced::Refused;
                 }
                 report_old_duplicate(block, segment);
