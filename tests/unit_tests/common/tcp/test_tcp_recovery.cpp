@@ -246,12 +246,50 @@ TEST_P(TcpRecovery, AWindowLimitedFlowGrows) {
     EXPECT_EQ(c->congestion_window(), 16060U) << "slow start: one segment for the ACK of the window";
 }
 
-TEST_P(TcpRecovery, AnOfferTheCongestionWindowCutShortCountsAsTheWindowInUse) {
-    // Congestion avoidance at the target of a recovery, 2920. Sends of 1460 and 1000 leave 2460 in flight, below the
-    // window. A prepare of 3000 is offered 460, what the window has left, where the segment and the peer's window
-    // would allow 1460: the window held the send back, so the round counts as limited however little is committed.
-    // Of the 460, 200 are: 2660 in flight, still below the window. The ACK of the round then adds its 2660 to the
-    // avoidance count; a round seen as unlimited would add nothing.
+TEST_P(TcpRecovery, MessagesSentWhileWritableCoversOneGrowTheWindowInCongestionAvoidance) {
+    // A recovery from nine segments in flight sets the target, and then the window, to max(13140 / 2, 2920) = 6570:
+    // congestion avoidance. The sender writes a 1460-byte message only while writable() covers one, and never
+    // prepares in between: four go, 5840 in flight, and the 730 left is less than a segment, so the fourth send is
+    // limited by the window though what is in flight is below it. The round's ACK adds 5840 to the avoidance count;
+    // the second round's makes it 11680, a window of 6570 and 5110 over: one segment more, 8030.
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(13140)), 13140U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 9U);
+    const auto dup = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    ASSERT_EQ(collect().size(), 1U);
+    receive(peer_.ack(sent[8]));
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Open);
+    ASSERT_EQ(c->congestion_window(), 6570U);
+    ASSERT_EQ(c->congestion_state().ssthresh, 6570U) << "congestion avoidance";
+    const auto round = [&] {
+        int messages = 0;
+        while (messages < 8 && c->writable() >= 1460) {
+            EXPECT_EQ(c->send(aloe::frames::pattern(1460)), 1460U);
+            ++messages;
+        }
+        EXPECT_EQ(messages, 4);
+        EXPECT_EQ(c->in_flight(), 5840U);
+        const auto frames = collect();
+        EXPECT_EQ(frames.size(), 4U);
+        receive(peer_.ack(frames.back()));
+    };
+    round();
+    EXPECT_EQ(c->congestion_state().acked_bytes, 5840U);
+    EXPECT_EQ(c->congestion_window(), 6570U);
+    round();
+    EXPECT_EQ(c->congestion_state().acked_bytes, 5110U);
+    EXPECT_EQ(c->congestion_window(), 8030U);
+}
+
+TEST_P(TcpRecovery, ASendThatFillsTheWindowGrowsItInCongestionAvoidance) {
+    // Congestion avoidance at the target of a recovery, 2920. A write of 2920 fills the window with its second
+    // segment, and nothing is prepared after it: the commit alone records the round as limited, and the ACK of the
+    // window adds a segment.
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
     ASSERT_EQ(c->send(aloe::frames::pattern(4380)), 4380U);
@@ -262,20 +300,46 @@ TEST_P(TcpRecovery, AnOfferTheCongestionWindowCutShortCountsAsTheWindowInUse) {
     receive(dup());
     ASSERT_EQ(collect().size(), 1U);
     receive(peer_.ack(sent[2]));
-    ASSERT_EQ(c->recovery_state(), RecoveryState::Open);
     ASSERT_EQ(c->congestion_window(), 2920U);
     ASSERT_EQ(c->congestion_state().ssthresh, 2920U) << "congestion avoidance";
-    ASSERT_EQ(c->send(aloe::frames::pattern(1460)), 1460U);
-    ASSERT_EQ(c->send(aloe::frames::pattern(1000)), 1000U);
-    const auto span = c->prepare(3000);
+    ASSERT_EQ(c->send(aloe::frames::pattern(2920)), 2920U);
+    const auto round = collect();
+    ASSERT_EQ(round.size(), 2U);
+    receive(peer_.ack(round[1]));
+    EXPECT_EQ(c->congestion_window(), 4380U);
+    EXPECT_EQ(c->congestion_state().acked_bytes, 0U);
+}
+
+TEST_P(TcpRecovery, AnOfferTheCongestionWindowCutShortCountsAsTheWindowInUse) {
+    // The record a prepare makes alone, with no commit after it. Segments of 1460, 1460 and 1000, 3920 in flight and
+    // no send limited, are all lost: the timeout sets the target max(1960, 2920) = 2920 and the window 1460. The
+    // head's ACK grows it by slow start to 2920, below twice 3920, and the two marked entries leave: 2460 in flight
+    // under a window now in congestion avoidance, with 460 left. A prepare of 1460 is offered those 460, where the
+    // segment and the peer's window would allow 1460: the window held the send back, and the round counts as limited
+    // though nothing is committed. The ACKs of the two resends then add their 2460 to the avoidance count; a round
+    // seen as unlimited would add nothing.
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(3920)), 3920U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 3U);
+    advance(200ms);
+    ASSERT_EQ(collect().size(), 1U);
+    receive(peer_.ack(sent[0]));
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Loss);
+    ASSERT_EQ(c->congestion_window(), 2920U);
+    ASSERT_EQ(c->congestion_state().ssthresh, 2920U) << "congestion avoidance";
+    ASSERT_EQ(collect().size(), 2U);
+    ASSERT_EQ(c->in_flight(), 2460U);
+    ASSERT_EQ(c->lost_bytes(), 0U);
+    const auto span = c->prepare(1460);
     ASSERT_TRUE(span.has_value());
     ASSERT_EQ(span->size(), 460U);
-    ASSERT_TRUE(c->commit(200));
-    ASSERT_EQ(c->in_flight(), 2660U);
-    const auto round = collect();
-    ASSERT_EQ(round.size(), 3U);
-    receive(peer_.ack(round[2]));
-    EXPECT_EQ(c->congestion_state().acked_bytes, 2660U);
+    ASSERT_TRUE(c->commit(0)) << "discarded: nothing is sent";
+    receive(peer_.ack(sent[1]));
+    receive(peer_.ack(sent[2]));
+    EXPECT_EQ(c->recovery_state(), RecoveryState::Open);
+    EXPECT_EQ(c->congestion_state().acked_bytes, 2460U);
     EXPECT_EQ(c->congestion_window(), 2920U) << "a window of acknowledged bytes is not reached yet";
 }
 

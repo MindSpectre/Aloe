@@ -587,8 +587,8 @@ namespace aloe::tcp::detail {
          * right edge or a loss shrank the congestion window since the prepare, refuses the commit with a hint: prepare
          * again for what `writable()` allows. No queue node free refuses it with a hint too. A segment that left in
          * recovery counts against the rate reduction (`LossRecovery::on_sent`), and every segment that left is recorded
-         * for the window's use (`WindowUse::on_send`), limited when what is in flight after it leaves nothing more to
-         * send under the window (`LossRecovery::may_send`).
+         * for the window's use (`WindowUse::on_send`), limited when the congestion window leaves less than a segment
+         * after it.
          */
         [[nodiscard]] bool commit(ControlBlock& block, const std::size_t count) noexcept {
             assert(block.prepared && "commit without a prepare");
@@ -637,8 +637,14 @@ namespace aloe::tcp::detail {
             }
             block.send.nxt = block.send.nxt + static_cast<std::uint32_t>(count);
             block.recovery.on_sent(payload);
+            // Limited when the congestion window leaves less than a segment after this send: Linux's "in flight >=
+            // cwnd" (`tcp_write_xmit`), which counts segments, stated in bytes. Not `!may_send`: in bytes a window can
+            // keep room for part of a segment, and a sender that waits for room for a whole message, with no prepare
+            // for the window to cut short, would never be recorded as limited, and its window would never grow again
+            // in congestion avoidance. Only the congestion window's room counts, not the peer's.
             const std::uint32_t in_flight = in_flight_bytes(block);
-            block.window_use.on_send(block.send.una, block.send.nxt, in_flight, !block.recovery.may_send(in_flight));
+            block.window_use.on_send(
+                block.send.una, block.send.nxt, in_flight, block.recovery.room(in_flight) < block.mss());
             ++context_.counters.data_segments_sent;
             return true;
         }
@@ -725,11 +731,11 @@ namespace aloe::tcp::detail {
         /**
          * A prepare of `count` was offered less than it asked, one segment at most. When the congestion window, and
          * not the peer's, cut it short, its room below what the peer's window and the segment would allow, the send is
-         * recorded as one the window limited (`WindowUse::on_send`), with what is in flight before it: the round used
-         * the window though the commit, of any part of the offer or of none, may leave what is in flight below it.
-         * Linux's `tcp_write_xmit` sets `is_cwnd_limited` for a send its congestion window held back
-         * (`tcp_tso_should_defer`, and a window with no room left) and records it even when nothing left. Only where
-         * data may be sent: before Established the policy has no window.
+         * recorded as one the window limited (`WindowUse::on_send`), with what is in flight before it. A commit of any
+         * part of the offer would be recorded as limited too, less than a segment being left after it; this record
+         * stands when nothing is committed. Linux's `tcp_write_xmit` sets `is_cwnd_limited` for a send its congestion
+         * window held back (`tcp_tso_should_defer`, and a window with no room left) and records it even when nothing
+         * left. Only where data may be sent: before Established the policy has no window.
          */
         void record_held_back(ControlBlock& block, const std::size_t count) noexcept {
             if (block.state != State::Established && block.state != State::CloseWait) {
