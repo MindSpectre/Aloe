@@ -4,6 +4,7 @@
 #include <aloe/tcp>
 #include <aloe/wire>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -89,6 +90,44 @@ namespace {
             });
         }
 
+        /// A packet as a resend leaves it: `payload` bytes behind the frame's headers.
+        [[nodiscard]] aloe::fabric::Packet framed(const std::uint16_t payload) {
+            aloe::fabric::Packet packet = buffers.allocate().value();
+            std::ignore                 = packet.append(frame_headers + payload).value();
+            return packet;
+        }
+
+        /// The head the shrink tests start from, 100 bytes at 1000 in a framed packet, then four entries of 100.
+        void push_framed_head() {
+            nodes[0] = queue
+                           .push(pool,
+                                 Entry{.packet  = framed(100),
+                                       .first   = TcpSequence{1000},
+                                       .length  = 100,
+                                       .payload = 100,
+                                       .framed  = true})
+                           .value();
+            queue.sent(pool.node(nodes[0]), now);
+            for (std::uint32_t position = 1; position < 5; ++position) {
+                nodes[position] = push(1000 + (position * 100), 100);
+            }
+        }
+
+        /// The head's packet stays lent, the returned loan, while its copy of `[first, 1100)` came back: as the copy
+        /// fallback leaves an entry whose original the device still holds.
+        [[nodiscard]] aloe::fabric::Packet copy_came_back(const std::uint32_t first) {
+            Entry& head               = pool.node(nodes[0]);
+            aloe::fabric::Packet loan = head.packet.lend();
+            const auto payload        = static_cast<std::uint16_t>(1100 - first);
+            head.copy                 = framed(payload);
+            head.copy_first           = TcpSequence{first};
+            head.copy_payload         = payload;
+            return loan;
+        }
+
+        static constexpr std::size_t frame_headers = 54;  ///< Ethernet, IPv4 and TCP without options.
+
+        aloe::fabric::Pool buffers{8, 2048};  ///< Before `pool`, whose entries give their packets back to it.
         Pool pool{16};
         Queue queue{};
         aloe::core::TimePoint now{};
@@ -345,6 +384,55 @@ TEST_F(TcpScoreboard, ClearAllLostIsAnUndo) {
     EXPECT_EQ(queue.first_lost(pool), no_node);
 }
 
+TEST_F(TcpScoreboard, AReportedHeadShrunkThenFreedLeavesTheTotalsAtZero) {
+    push_framed_head();
+    std::ignore = report(B(1000, 1100));
+    std::ignore = acknowledge(1030, 1000);  // inside the reported head
+    EXPECT_EQ(queue.reported_bytes(), 70U) << "what no cumulative ACK has covered";
+    EXPECT_EQ(queue.in_flight_bytes(470), 400U) << "never more than the flight still counts of the head";
+    const aloe::fabric::Packet loan = copy_came_back(1030);
+    queue.reconcile(pool, nodes[0]);
+    ASSERT_EQ(entry(nodes[0]).first, TcpSequence{1030}) << "the head shrank to its copy's range";
+    EXPECT_EQ(queue.reported_bytes(), 70U);
+    EXPECT_EQ(queue.in_flight_bytes(470), 400U);
+    std::ignore = acknowledge(1060, 1030);
+    queue.trim_to(pool, nodes[0], TcpSequence{1060});
+    ASSERT_EQ(entry(nodes[0]).first, TcpSequence{1060}) << "trimmed to what the peer lacks";
+    EXPECT_EQ(queue.reported_bytes(), 40U);
+    EXPECT_EQ(queue.in_flight_bytes(440), 400U);
+    std::ignore = acknowledge(1100, 1060);
+    EXPECT_EQ(queue.reported_bytes(), 0U);
+    EXPECT_EQ(queue.reported_segments(), 0U);
+    EXPECT_EQ(queue.in_flight_bytes(400), 400U);
+    EXPECT_EQ(queue.delivered(), 100U) << "the block delivered the head's bytes, once";
+}
+
+TEST_F(TcpScoreboard, ALostHeadShrunkThenFreedLeavesTheTotalsAtZero) {
+    push_framed_head();
+    queue.mark_lost(pool, nodes[0]);
+    std::ignore = acknowledge(1030, 1000);  // inside the lost head
+    EXPECT_EQ(queue.lost_bytes(), 70U) << "what no cumulative ACK has covered";
+    EXPECT_EQ(queue.in_flight_bytes(470), 400U);
+    const aloe::fabric::Packet loan = copy_came_back(1030);
+    queue.reconcile(pool, nodes[0]);
+    ASSERT_EQ(entry(nodes[0]).first, TcpSequence{1030});
+    EXPECT_EQ(queue.lost_bytes(), 70U);
+    EXPECT_EQ(queue.in_flight_bytes(470), 400U);
+    std::ignore = acknowledge(1060, 1030);
+    queue.trim_to(pool, nodes[0], TcpSequence{1060});
+    ASSERT_EQ(entry(nodes[0]).first, TcpSequence{1060});
+    EXPECT_EQ(queue.lost_bytes(), 40U);
+    EXPECT_EQ(queue.in_flight_bytes(440), 400U);
+    queue.clear_lost(pool, nodes[0]);  // its resend left
+    EXPECT_EQ(queue.lost_bytes(), 0U);
+    EXPECT_EQ(queue.in_flight_bytes(440), 440U);
+    queue.mark_lost(pool, nodes[0]);  // and was lost again
+    EXPECT_EQ(queue.lost_bytes(), 40U);
+    std::ignore = acknowledge(1100, 1060);
+    EXPECT_EQ(queue.lost_bytes(), 0U);
+    EXPECT_EQ(queue.in_flight_bytes(400), 400U);
+}
+
 TEST_F(TcpScoreboard, LastSentSkipsAFinThatNeverLeft) {
     push_five();
     const std::uint32_t fin =
@@ -470,4 +558,25 @@ TEST_P(TcpScoreboardBrick, ADuplicateReportIsCountedOnceBelieved) {
     EXPECT_EQ(tcp_->counters().duplicate_sacks_received, 0U) << "nothing was resent: it cannot be true";
     EXPECT_EQ(c->acknowledged(), at(100));
     EXPECT_EQ(c->reported_bytes(), 0U);
+}
+
+TEST_P(TcpScoreboardBrick, AReportedHeadAcknowledgedInPartAndResentKeepsTheTotalsRight) {
+    auto* c = open_and_send();
+    ASSERT_NE(c, nullptr);
+    receive(peer_.sack(at(0), Blocks{range(100, 200)}));
+    receive(ack_of(at(150)));  // inside the reported entry, which the ACK leaves at the head
+    ASSERT_TRUE(tcp_->sent_segment(*c, 0).reported);
+    EXPECT_EQ(c->reported_bytes(), 50U) << "what no cumulative ACK has covered";
+    EXPECT_EQ(c->in_flight(), 300U) << "350 outstanding, 50 of them reported";
+    advance(std::chrono::milliseconds{200});  // the RTO resends the head, trimmed to what the peer lacks
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 1U);
+    EXPECT_EQ(resent[0].tcp->sequence, at(150));
+    EXPECT_EQ(tcp_->sent_segment(*c, 0).first, at(150));
+    EXPECT_EQ(c->reported_bytes(), 50U);
+    EXPECT_EQ(c->in_flight(), 300U);
+    receive(ack_of(at(500)));
+    EXPECT_EQ(c->queued_segments(), 0U);
+    EXPECT_EQ(c->reported_bytes(), 0U) << "nothing left in the totals once every entry is freed";
+    EXPECT_EQ(c->in_flight(), 0U);
 }

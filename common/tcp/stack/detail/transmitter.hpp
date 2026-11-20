@@ -180,16 +180,17 @@ namespace aloe::tcp::detail {
          */
         [[nodiscard]] std::expected<void, net::SendError> resend_head(ControlBlock& block) noexcept {
             assert(!block.queue.empty() && "a resend with nothing queued");
-            SentNode& node = send_pool_.node(block.queue.head());
-            node.reconcile();
+            const std::uint32_t head = block.queue.head();
+            SentNode& node           = send_pool_.node(head);
+            block.queue.reconcile(send_pool_, head);  // the queue owns every change to an entry's length
             if (node.packet.lent() && context_.ip.queue().reclaim() > 0) {
-                node.reconcile();  // what the device let go of may be either packet
+                block.queue.reconcile(send_pool_, head);  // what the device let go of may be either packet
             }
             if (node.packet.lent()) {
                 return resend_busy(block, node);
             }
             if (block.send.una.after(node.first)) {
-                node.trim_to(block.send.una);
+                block.queue.trim_to(send_pool_, head, block.send.una);
             }
             deferred_.remove(block);  // the packet is back: whatever IP answers, this resend is not waiting any more
             const std::expected<void, net::SendError> sent = transmit_entry(block, block.queue.head());

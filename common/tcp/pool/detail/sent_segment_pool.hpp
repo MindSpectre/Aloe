@@ -19,7 +19,8 @@ namespace aloe::tcp::detail {
      * data or FIN, from its first transmission until an ACK covers it.
      *
      * The packet with the whole frame as it last left, what a resend and a rate sample read, and the scoreboard's two
-     * marks, which `RetransmissionQueue` sets and clears so that its totals stay the sums over them.
+     * marks. `RetransmissionQueue` sets and clears the marks and makes every change to the length, `reconcile` and
+     * `trim_to` included, so that its totals stay right.
      */
     template <device::IsPacket Packet>
     struct SentSegment {

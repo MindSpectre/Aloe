@@ -26,8 +26,11 @@ namespace aloe::tcp::detail {
      *
      * The scoreboard is two marks on the entries, reported received by a SACK block and lost, and the totals the rest
      * reads: the bytes and the segments reported received, the bytes lost and not resent since, and the highest
-     * sequence the peer acknowledged either way. Every mark is set and cleared here, so the totals stay the sums over
-     * the entries. An entry reported received keeps its packet and its place until a cumulative ACK frees it.
+     * sequence the peer acknowledged either way. The byte totals count what no cumulative ACK has covered of each
+     * marked entry: all of it, but for the acknowledged front of a head acknowledged in part, which SND.NXT - SND.UNA
+     * no longer counts either. Every mark is set and cleared here, and every change to an entry's length goes through
+     * here and takes off only an acknowledged front, so the totals stay those sums. An entry reported received keeps
+     * its packet and its place until a cumulative ACK frees it.
      */
     template <device::IsPacket Packet>
     class RetransmissionQueue {
@@ -113,10 +116,11 @@ namespace aloe::tcp::detail {
         /**
          * Frees every entry from the head that `ack` covers whole and returns what it freed; an entry covered in part
          * stays whole, trimmed only if it is resent. Each entry it reaches is reconciled first, so a copy that came
-         * back leaves its range. `each(entry)` runs for every entry it frees that no block reported, before the free;
-         * the totals lose what it frees. What `ack` covers past `una`, less the SYN and FIN of the entries freed and
-         * less what blocks already reported, counts as delivered, a part of an entry included. The packets of a freed
-         * entry go back now or when the device returns them. Called before SND.UNA moves.
+         * back leaves its range. `each(entry)` runs for every entry it frees that no block reported, before the free.
+         * The totals lose what `ack` covers of the marked entries: the whole of those it frees, the front of one it
+         * covers in part. What `ack` covers past `una`, less the SYN and FIN of the entries freed and less what blocks
+         * already reported, counts as delivered, a part of an entry included. The packets of a freed entry go back now
+         * or when the device returns them. Called before SND.UNA moves.
          */
         template <std::invocable<const Entry&> Each>
         [[nodiscard]] Freed
@@ -125,25 +129,32 @@ namespace aloe::tcp::detail {
             std::uint32_t control  = 0;  // the SYN and FIN sequence space of the entries freed
             std::uint32_t reported = 0;  // the payload `ack` covers of entries a block reported: delivered already
             while (!chain_.empty()) {
-                Entry& entry = pool.node(chain_.head);
-                reconcile(entry);
+                reconcile(pool, chain_.head);
+                Entry& entry                = pool.node(chain_.head);
                 const wire::TcpSequence end = entry.first + entry.length;
                 if (end.after(ack)) {
-                    if (entry.reported && ack.after(entry.first)) {
-                        reported += static_cast<std::uint32_t>(ack - later(entry.first, una));  // data, covered in part
+                    if ((entry.reported || entry.lost) && ack.after(entry.first)) {  // marked data, covered in part
+                        const auto covered = static_cast<std::uint32_t>(ack - later(entry.first, una));
+                        if (entry.reported) {
+                            reported        += covered;
+                            reported_bytes_ -= covered;
+                        }
+                        if (entry.lost) {
+                            lost_bytes_ -= covered;
+                        }
                     }
                     break;
                 }
+                const std::uint32_t remaining = outstanding(entry, una);
                 if (entry.reported) {
-                    reported +=
-                        static_cast<std::uint32_t>(end - later(entry.first, una)) - (entry.length - entry.payload);
-                    reported_bytes_ -= entry.length;
+                    reported        += remaining - (entry.length - entry.payload);
+                    reported_bytes_ -= remaining;
                     --reported_segments_;
                 } else {
                     each(std::as_const(entry));
                 }
                 if (entry.lost) {
-                    lost_bytes_ -= entry.length;
+                    lost_bytes_ -= remaining;
                 }
                 if (freed.length == 0) {
                     freed.sent = entry.sent;  // the oldest entry freed
@@ -199,15 +210,16 @@ namespace aloe::tcp::detail {
                 // Linux's `tcp_sacktag_one`: an original that fills a hole below the highest reported was reordered.
                 reported.reordering =
                     reported.reordering || (!entry.resent() && highest && entry.first.before(*highest));
+                const std::uint32_t remaining = outstanding(entry, acknowledged_);
                 if (std::exchange(entry.lost, false)) {
-                    lost_bytes_ -= entry.length;
+                    lost_bytes_ -= remaining;
                 }
                 entry.reported   = true;
                 reported_edge_   = reported_segments_ == 0 ? end : later(reported_edge_, end);
-                reported_bytes_ += entry.length;
+                reported_bytes_ += remaining;
                 ++reported_segments_;
                 delivered_     += entry.payload;
-                reported.bytes += entry.length;
+                reported.bytes += remaining;
             }
             return reported;
         }
@@ -260,14 +272,31 @@ namespace aloe::tcp::detail {
                 return;
             }
             entry.lost   = true;
-            lost_bytes_ += entry.length;
+            lost_bytes_ += outstanding(entry, acknowledged_);
         }
 
         /// A resend of it left.
         void clear_lost(Pool& pool, const std::uint32_t index) noexcept {
             if (Entry& entry = pool.node(index); std::exchange(entry.lost, false)) {
-                lost_bytes_ -= entry.length;
+                lost_bytes_ -= outstanding(entry, acknowledged_);
             }
+        }
+
+        /// `SentSegment::reconcile` on the entry at `index`. A copy that came back first shrinks the entry to the
+        /// copy's range, by a front a cumulative ACK had covered when the copy left; the totals count none of it.
+        void reconcile(Pool& pool, const std::uint32_t index) noexcept {
+            Entry& entry                                   = pool.node(index);
+            [[maybe_unused]] const wire::TcpSequence first = entry.first;
+            entry.reconcile();
+            assert((entry.first == first || (acknowledged_ && !entry.first.after(*acknowledged_))) &&
+                   "a copy starts at or below SND.UNA");
+        }
+
+        /// `SentSegment::trim_to` on the entry at `index`: the front `una` acknowledged goes, which the totals count
+        /// none of.
+        void trim_to(Pool& pool, const std::uint32_t index, const wire::TcpSequence una) noexcept {
+            assert((acknowledged_ && !una.after(*acknowledged_)) && "only what a cumulative ACK covered is trimmed");
+            pool.node(index).trim_to(una);
         }
 
         /// An undo.
@@ -330,8 +359,9 @@ namespace aloe::tcp::detail {
             return reported_segments_ > 0 ? std::optional{reported_edge_} : acknowledged_;
         }
 
-        /// What is in flight of `flight`: less what is reported received, less what is lost and not resent. Never
-        /// below zero: an entry acknowledged in part counts whole in the totals, as Linux counts a packet.
+        /// What is in flight of `flight`: less what is reported received, less what is lost and not resent. The totals
+        /// count nothing a cumulative ACK covered, so they never pass what `flight` counts of the marked entries; the
+        /// floor at zero only guards a `flight` that is not SND.NXT - SND.UNA.
         [[nodiscard]] std::uint32_t in_flight_bytes(const std::uint32_t flight) const noexcept {
             const std::uint32_t out = reported_bytes_ + lost_bytes_;
             return flight > out ? flight - out : 0;
@@ -368,16 +398,12 @@ namespace aloe::tcp::detail {
             return one.after(other) ? one : other;
         }
 
-        /// `SentSegment::reconcile`, the totals following a copy that came back first and shrank a marked entry.
-        void reconcile(Entry& entry) noexcept {
-            const std::uint32_t length = entry.length;
-            entry.reconcile();
-            if (entry.reported) {
-                reported_bytes_ -= length - entry.length;
-            }
-            if (entry.lost) {
-                lost_bytes_ -= length - entry.length;
-            }
+        /// What of `entry` no cumulative ACK has covered, with `una` the last one: all of it, but for the acknowledged
+        /// front of a head acknowledged in part.
+        [[nodiscard]] static std::uint32_t outstanding(const Entry& entry,
+                                                       const std::optional<wire::TcpSequence> una) noexcept {
+            return una && una->after(entry.first) ? static_cast<std::uint32_t>(entry.first + entry.length - *una)
+                                                  : entry.length;
         }
 
         [[nodiscard]] std::optional<std::uint32_t>
@@ -396,7 +422,7 @@ namespace aloe::tcp::detail {
         bool fin_reserved_       = false;  ///< A node of the pool is set aside for the FIN.
         std::uint64_t delivered_ = 0;
         std::optional<core::TimePoint> last_data_send_{};  ///< The last transmission with payload; nothing before one.
-        // The scoreboard's totals: the sums over the entries' marks.
+        // The scoreboard's totals: the sums over the marked entries of what no cumulative ACK covered.
         std::uint32_t reported_bytes_    = 0;
         std::uint32_t reported_segments_ = 0;
         std::uint32_t lost_bytes_        = 0;
