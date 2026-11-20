@@ -57,6 +57,24 @@ namespace aloe::frames {
             return segment(wire::TcpFlags{wire::TcpFlag::Ack}, {}, snd_nxt_, rcv_nxt_, false);
         }
 
+        /// A pure ACK at `snd_nxt` that acknowledges `acknowledgement` and carries `blocks`: `nop, nop, TS` first when
+        /// the peer sends timestamps, then `nop, nop, sack`. For the stack's own sequence numbers.
+        [[nodiscard]] std::vector<std::byte> sack(const wire::TcpSequence acknowledgement,
+                                                  const std::span<const wire::TcpSackBlock> blocks) {
+            TcpSpec spec         = spec_;
+            spec.sequence        = snd_nxt_;
+            spec.acknowledgement = acknowledgement;
+            spec.flags           = wire::TcpFlags{wire::TcpFlag::Ack};
+            spec.mss             = std::nullopt;
+            std::vector<std::vector<std::byte>> parts;
+            if (timestamps_) {
+                parts.push_back(timestamps_option(*timestamps_, ts_seen_.value_or(0)));
+            }
+            parts.push_back(sack_option(blocks));
+            spec.options = joined(parts);
+            return tcp_frame(spec, {});
+        }
+
         /// PSH+ACK carrying `bytes`; takes their sequence space.
         [[nodiscard]] std::vector<std::byte> data(const std::span<const std::byte> bytes) {
             std::vector<std::byte> frame =

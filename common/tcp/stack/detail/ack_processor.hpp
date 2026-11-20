@@ -63,7 +63,8 @@ namespace aloe::tcp::detail {
         [[nodiscard]] Outcome on_ack(ControlBlock& block,
                                      const wire::TcpHeader& header,
                                      const std::uint16_t payload_length,
-                                     const std::optional<std::uint32_t> echo) noexcept {
+                                     const std::optional<std::uint32_t> echo,
+                                     [[maybe_unused]] const std::span<const std::byte> sack) noexcept {
             const Sequence ack                = header.acknowledgement;
             const std::size_t writable_before = transmitter_.writable(block);
             const bool duplicate = payload_length == 0 && !header.flags.has(wire::TcpFlag::Syn) &&

@@ -27,8 +27,9 @@ namespace aloe::wire {
      * stops it, no-operation is one byte, every other kind is skipped by its length byte. A length
      * of 0 or 1, a length reaching past the list, a kind without a length byte, or an MSS whose
      * length is not 4, a timestamp option whose length is not 10, a window scale whose length is not 3 or a
-     * SACK-permitted whose length is not 2, is malformed and the brick drops the segment. SACK blocks (kind 5) are
-     * skipped by their length.
+     * SACK-permitted whose length is not 2, is malformed and the brick drops the segment. A SACK option (kind 5)
+     * whose length is `2 + 8n` for `n` in 1 to 4 is recorded (`sack_at`, `sack_count`); one of any other length
+     * that fits the list is skipped and the segment kept, as Linux's `tcp_parse_options` does.
      */
     struct TcpOptions {
         static constexpr std::size_t mss_size = 4;  ///< Kind 2, length 4, two bytes of value.
@@ -46,6 +47,8 @@ namespace aloe::wire {
         std::optional<std::uint32_t> timestamp_value;  ///< RFC 7323 TSval, set together with the echo.
         std::optional<std::uint32_t> timestamp_echo;   ///< RFC 7323 TSecr.
         std::optional<std::size_t> timestamp_at;  ///< Where kind 8 starts in the bytes parsed: value at +2, echo at +6.
+        std::optional<std::size_t> sack_at;       ///< Where kind 5 starts in the bytes parsed: its blocks from +2.
+        std::uint8_t sack_count = 0;              ///< The blocks it holds, 1 to 4; zero with no option or a bad length.
         std::optional<std::uint8_t>
             window_scale;             ///< Kind 3 as written, above 14 included; it means something only on a SYN.
         bool sack_permitted = false;  ///< Kind 4; it means something only on a SYN.
@@ -92,10 +95,26 @@ namespace aloe::wire {
                         return std::nullopt;
                     }
                     parsed.sack_permitted = true;
+                } else if (kind == 5) {
+                    const std::size_t payload = length - 2;
+                    if (payload % sack_block_size == 0 && payload / sack_block_size >= 1 &&
+                        payload / sack_block_size <= max_sack_blocks) {
+                        parsed.sack_at    = at;
+                        parsed.sack_count = static_cast<std::uint8_t>(payload / sack_block_size);
+                    }
                 }
                 at += length;
             }
             return parsed;
+        }
+
+        /// The `index`-th block of `blocks`, the eight-byte blocks of one SACK option.
+        [[nodiscard]] static constexpr TcpSackBlock read_sack_block(const std::span<const std::byte> blocks,
+                                                                    const std::size_t index) noexcept {
+            assert(blocks.size() >= (index + 1) * sack_block_size);
+            const std::size_t at = index * sack_block_size;
+            return {.first = TcpSequence{load_be32(blocks.subspan(at, 4))},
+                    .end   = TcpSequence{load_be32(blocks.subspan(at + 4, 4))}};
         }
 
         /// Writes the four-byte MSS option into the front of `out`.
