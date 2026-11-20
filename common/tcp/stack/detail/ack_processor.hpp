@@ -78,13 +78,20 @@ namespace aloe::tcp::detail {
          * 4. Reneging: an ACK that moved SND.UNA and left a head the peer reported received arms the RTO short
          *    (`Transmitter::arm_reneging`), and nothing more of this ACK runs until the peer's window, as Linux's
          *    `tcp_check_sack_reneging` returns from `tcp_fastretrans_alert`.
-         * 5. Detection: RACK's, on a connection that uses SACK, when its state moved (`Transmitter::detect`); without
+         * 5. The end of an episode: an ACK that covers `recover` in recovery or in the loss state ends it here, before
+         *    detection (`end_on_this_ack`), as Linux's `tcp_fastretrans_alert` settles its state's exit (its step D)
+         *    before it looks for losses (step E). Detection on that ACK then reads the reordering window of the open
+         *    state it leaves, the one the reordering timer it may arm will read when it fires. On every other ACK
+         *    detection comes first and reads the window of the state the ACK found, which the recovery state's step
+         *    then moves on.
+         * 6. Detection: RACK's, on a connection that uses SACK, when its state moved (`Transmitter::detect`); without
          *    SACK, the duplicate count's, in the recovery state's step.
-         * 6. The recovery state, by the state the ACK found (`update_recovery`), and the resend pass, which sends what
-         *    is marked lost as far as the window allows.
-         * 7. The peer's window: RFC 793 updates it only when SND.UNA <= SEG.ACK <= SND.NXT, a stale ACK carrying a
+         * 7. The recovery state (`update_recovery`): on an ACK that ended an episode, a new one when something is
+         *    marked lost; on any other, by the state the ACK found. Then the resend pass, which sends what is marked
+         *    lost as far as the window allows.
+         * 8. The peer's window: RFC 793 updates it only when SND.UNA <= SEG.ACK <= SND.NXT, a stale ACK carrying a
          * stale window; then the zero-window probes and the FIN that waited for the window.
-         * 8. The send timer (`Transmitter::set_timer`), after an ACK that ran detection or moved SND.UNA; any other ACK
+         * 9. The send timer (`Transmitter::set_timer`), after an ACK that ran detection or moved SND.UNA; any other ACK
          *    leaves the timer as it was, a reordering timer still waiting for its entries included.
          *
          * `payload_length` is the segment's, since an ACK that carries data is no duplicate.
@@ -127,10 +134,14 @@ namespace aloe::tcp::detail {
             if (reneged) {
                 transmitter_.arm_reneging(block);
             } else {
+                const bool ended = found.state != RecoveryState::Open && block.recovery.recovered(ack);
+                if (ended) {
+                    end_on_this_ack(block, found, ack, info);
+                }
                 if (detecting) {
                     detected = transmitter_.detect(block);
                 }
-                update_recovery(block, found, ack, duplicates, info, detected);
+                update_recovery(block, found, ack, duplicates, info, detected, ended);
                 std::ignore = transmitter_.resend_lost(block);
             }
             if (!ack.before(block.send.una)) {
@@ -381,45 +392,52 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * Detection without SACK, and the recovery state, after the blocks, the cumulative part and RACK's detection.
-         * `info` is set when the ACK moved SND.UNA; `duplicates` is the count with this ACK when it is a duplicate,
-         * else zero; `detected` is what RACK's detection did on this ACK, nothing without SACK or when RACK's state did
-         * not move. One of three, by the state the ACK found, as Linux's `tcp_fastretrans_alert` switches on its own:
+         * Detection without SACK, and the recovery state, after the blocks, the cumulative part, the end of an episode
+         * the ACK covered and RACK's detection. `info` is set when the ACK moved SND.UNA; `duplicates` is the count
+         * with this ACK when it is a duplicate, else zero; `detected` is what RACK's detection did on this ACK, nothing
+         * without SACK or when RACK's state did not move; `ended` says the ACK covered `recover` and ended the episode
+         * it found (`end_on_this_ack`).
+         *
+         * An ACK that ended an episode begins the next at once when an entry is marked lost, as Linux's state, open
+         * again, falls through to its open case on the same ACK: only RACK can leave one, its detection having read
+         * the open state's window, since the entries marked before are all covered. Any other ACK is one of three, by
+         * the state it found, as Linux's `tcp_fastretrans_alert` switches on its own:
          *
          * - Open. Without SACK, the third duplicate that RFC 6582 admits marks the head lost. An entry marked lost, by
          *   either detector, begins recovery (`Transmitter::begin_recovery`), with PRR's first step for this ACK:
          * Linux's `tcp_time_to_recover`. Else an ACK of new data is the policy's to hear.
-         * - Recovery. The ACK that covers `recover` ends it, and the policy's window becomes its target; an entry still
-         *   marked lost then begins the next episode at once, as Linux's state, open again, falls through to its open
-         *   case on the same ACK (only RACK can leave one: the entries marked before are all covered). Any other ACK
-         *   runs one step of PRR with what it delivered and what is in flight now; without SACK, one that moved
-         *   SND.UNA is RFC 6582's partial ACK and marks the new head first, as Linux's `tcp_newreno_mark_lost` does. An
-         *   ACK that marked something is no safe ACK for PRR. A resend RACK found lost again is resent under the same
-         *   episode and reduces nothing further.
+         * - Recovery. One step of PRR with what the ACK delivered and what is in flight now; without SACK, one that
+         *   moved SND.UNA is RFC 6582's partial ACK and marks the new head first, as Linux's `tcp_newreno_mark_lost`
+         *   does. An ACK that marked something is no safe ACK for PRR. A resend RACK found lost again is resent under
+         *   the same episode and reduces nothing further.
          * - Loss. Every ACK of new data is the policy's to hear, which grows its window by slow start; the entries the
-         *   timeout marked leave by the resend pass. The ACK that covers `recover` then ends the state: it is heard
-         * like the others, as Linux's `tcp_cong_control` grows the window on the ACK `tcp_process_loss` ended the state
-         *   on. A resend RACK found lost again moves the connection to recovery, which sets a new target, as Linux's
-         *   `tcp_fastretrans_alert` does on `FLAG_LOST_RETRANS`; so does an entry still marked lost when the state
-         * ends. The policy does not hear an ACK that begins recovery.
+         *   timeout marked leave by the resend pass. A resend RACK found lost again moves the connection to recovery,
+         *   which sets a new target, as Linux's `tcp_fastretrans_alert` does on `FLAG_LOST_RETRANS`, and the policy
+         *   does not hear that ACK. An original RACK marks leaves the loss state as it is.
          *
          * In recovery no ACK reaches the policy's `on_ack`, the one that ends it included: the window there is the
-         * rate reduction's, and its end is `on_recovery_end`. Every episode that ends, recovery or loss, counts down
-         * the recoveries RACK's grown window persists for (`Rack::recovery_ended`). What differs with SACK and
-         * without is how a loss is detected and how what an ACK delivered is counted (`delivered`).
+         * rate reduction's, and its end is `on_recovery_end`. What differs with SACK and without is how a loss is
+         * detected and how what an ACK delivered is counted (`delivered`).
          */
         void update_recovery(ControlBlock& block,
                              const Found& found,
                              const Sequence ack,
                              const std::uint8_t duplicates,
                              const std::optional<AckInfo>& info,
-                             const Rack::Detected& detected) noexcept {
+                             const Rack::Detected& detected,
+                             const bool ended) noexcept {
             const bool duplicate         = duplicates > 0;
             const bool sack              = block.sack.in_use();
             const std::uint32_t advance  = info ? info->acked : 0;
             const auto begin_on_this_ack = [this, &block, &found, advance, duplicate] {
                 transmitter_.begin_recovery(block, delivered(block, found, advance, duplicate));
             };
+            if (ended) {
+                if (block.queue.lost_bytes() > 0) {
+                    begin_on_this_ack();
+                }
+                return;
+            }
             switch (found.state) {
                 case RecoveryState::Open:
                     if (!sack && duplicates == 3 && block.recovery.admits(ack)) {
@@ -432,13 +450,6 @@ namespace aloe::tcp::detail {
                     }
                     break;
                 case RecoveryState::Recovery: {
-                    if (block.recovery.recovered(ack)) {
-                        end_episode(block, ack);
-                        if (block.queue.lost_bytes() > 0) {
-                            begin_on_this_ack();
-                        }
-                        break;
-                    }
                     const bool marked             = sack ? detected.marked > 0 : info && mark_head(block);
                     // What the ACK delivered first: it settles the duplicate count, which what is in flight reads.
                     const std::uint32_t delivery  = delivered(block, found, advance, duplicate);
@@ -447,13 +458,9 @@ namespace aloe::tcp::detail {
                     break;
                 }
                 case RecoveryState::Loss: {
-                    const bool ends   = block.recovery.recovered(ack);
-                    const bool begins = ends ? block.queue.lost_bytes() > 0 : detected.resends_lost > 0;
+                    const bool begins = detected.resends_lost > 0;
                     if (info && !begins) {
-                        block.recovery.on_ack(*info, ack);  // heard in the loss state, before the state may end
-                    }
-                    if (ends) {
-                        end_episode(block, ack);
+                        block.recovery.on_ack(*info, ack);
                     }
                     if (begins) {
                         begin_on_this_ack();
@@ -461,6 +468,24 @@ namespace aloe::tcp::detail {
                     break;
                 }
             }
+        }
+
+        /**
+         * The ACK covers `recover`: the episode it found ends before detection, as Linux settles the exits of
+         * `tcp_fastretrans_alert` (its step D) before it looks for losses (step E), so that detection reads the
+         * reordering window of the open state. From recovery the policy's window becomes its target; in the loss state
+         * the policy hears the ACK first, as it hears every ACK of new data there, as Linux's `tcp_cong_control` grows
+         * the window on the ACK `tcp_process_loss` ended the state on. Either way RACK's grown window has one recovery
+         * fewer to persist for (`end_episode`).
+         */
+        void end_on_this_ack(ControlBlock& block,
+                             const Found& found,
+                             const Sequence ack,
+                             const std::optional<AckInfo>& info) noexcept {
+            if (found.state == RecoveryState::Loss && info) {
+                block.recovery.on_ack(*info, ack);  // heard in the loss state, before the state ends
+            }
+            end_episode(block, ack);
         }
 
         /// The episode, recovery or loss, ends at `ack` (`LossRecovery::end`), and RACK's grown reordering window has
