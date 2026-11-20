@@ -234,7 +234,8 @@ namespace aloe::tcp::detail {
          * reads and says what to resend: the head as a fast retransmit on a partial ACK in fast recovery, or the new
          * head in the loss episode after a timeout, marked lost and resent by the pass. That one is counted in
          * `retransmits` alone, as it was before the pass: what the pass counted in `fast_retransmits` is taken back, an
-         * interim count that goes with the `Resend` result.
+         * interim count that goes with the `Resend` result. A new head the peer reported received is neither marked
+         * nor resent, though `retransmits` counts it all the same: the peer reneged on it, and the timer has it.
          */
         void
         acknowledge_data(ControlBlock& block, const Sequence ack, const std::optional<std::uint32_t> echo) noexcept {
@@ -271,7 +272,7 @@ namespace aloe::tcp::detail {
         }
 
         /// RFC 5681's duplicate ACK, counted; the third may start fast recovery (`LossRecovery::on_duplicate`), which
-        /// resends the head at once.
+        /// resends the head at once unless the peer reported it received (`fast_retransmit`).
         void on_duplicate_ack(ControlBlock& block, const Sequence ack) noexcept {
             ++context_.counters.duplicate_acks;
             if (block.recovery.on_duplicate(ack, block.send, block.mss()) == Resend::Fast) {
@@ -284,9 +285,11 @@ namespace aloe::tcp::detail {
          * The head again, driven by the third duplicate or a partial ACK: marked lost, and resent by the pass
          * (`Transmitter::resend_lost`), which counts it in `fast_retransmits` and, when it leaves, in place or as a
          * copy, restarts the RTO from now. A resend deferred, or refused, leaves the timer as it was. With nothing in
-         * flight the head, if any, waits for the window. Until the one recovery replaces this call, it counts once per
-         * call, as it did before the pass: where the pass counts no first attempt, with nothing in flight or the head
-         * already waiting for its packet, the call counts, and restarts the RTO when such a waiting head leaves.
+         * flight the head, if any, waits for the window. A head the peer reported received is marked nothing, resent
+         * nothing and counted nothing: the peer reneged on it, and the timer has it. Otherwise, until the one recovery
+         * replaces this call, it counts once per call, as it did before the pass: where the pass counts no first
+         * attempt, with nothing in flight or the head already waiting for its packet, the call counts, and restarts the
+         * RTO when such a waiting head leaves.
          */
         void fast_retransmit(ControlBlock& block) noexcept {
             const bool uncounted = !transmitter_.in_flight(block) || transmitter_.deferred(block);

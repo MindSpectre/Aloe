@@ -244,7 +244,8 @@ namespace aloe::tcp::detail {
             return left;
         }
 
-        /// Marks the head lost; nothing when the queue is empty or nothing is in flight.
+        /// Marks the head lost; nothing when the queue is empty or nothing is in flight, nor for a head marked
+        /// received (`RetransmissionQueue::mark_lost`), which the timer has.
         void mark_head_lost(ControlBlock& block) noexcept {
             if (in_flight(block)) {
                 block.queue.mark_lost(send_pool_, block.queue.head());
@@ -845,11 +846,13 @@ namespace aloe::tcp::detail {
          * timeout, counted from the head's first transmission on a synchronized connection, and then the cap,
          * `retries` in the handshake and `data_retries` after it, may give the connection up instead. The first expiry
          * since an ACK of new data starts the loss episode (`LossRecovery::on_timeout`); each expiry doubles the RTO up
-         * to `rto_max` and re-arms. A resend deferred or refused counts as the retry all the same: a deferred one
-         * leaves at the flush (`flush_deferred`), and the next expiry tries again. A first send, of a SYN, SYN-ACK or
-         * FIN the device refused before, that finds no next hop arms the ARP poll instead (`transmit_entry`), and the
-         * expiry leaves the timer to it: nothing left, so no backoff; the poll arms the RTO once the send leaves, or
-         * gives the connection up as `Unresolved`.
+         * to `rto_max` and re-arms. A head still marked received means the peer reneged on what it reported: every
+         * received mark is cleared first, as Linux's `tcp_timeout_mark_lost` clears them, so the expiry never resends
+         * an entry the scoreboard holds as received. A resend deferred or refused counts as the retry all the same: a
+         * deferred one, marked lost, leaves at the flush (`flush_deferred`), and the next expiry tries again. A first
+         * send, of a SYN, SYN-ACK or FIN the device refused before, that finds no next hop arms the ARP poll instead
+         * (`transmit_entry`), and the expiry leaves the timer to it: nothing left, so no backoff; the poll arms the RTO
+         * once the send leaves, or gives the connection up as `Unresolved`.
          */
         [[nodiscard]] TimerExpiry on_retransmit_timeout(ControlBlock& block) noexcept {
             assert(!block.queue.empty() && "the RTO runs while something is queued");
@@ -863,6 +866,9 @@ namespace aloe::tcp::detail {
             }
             if (++block.retransmit_count == 1) {
                 block.recovery.on_timeout(block.send, block.mss());
+            }
+            if (block.queue.head_reported(send_pool_)) {
+                block.queue.clear_all_reported(send_pool_);  // the peer reneged on what it reported
             }
             mark_head_lost(block);
             std::ignore = resend(block, block.queue.head());

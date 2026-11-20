@@ -560,6 +560,26 @@ TEST_P(TcpScoreboardBrick, ADuplicateReportIsCountedOnceBelieved) {
     EXPECT_EQ(c->reported_bytes(), 0U);
 }
 
+TEST_P(TcpScoreboardBrick, AtTheRtoAReportedHeadMeansRenegingEveryMarkIsClearedAndTheHeadResent) {
+    auto* c = open_and_send();
+    ASSERT_NE(c, nullptr);
+    receive(peer_.sack(at(0), Blocks{range(100, 200), range(300, 400)}));
+    receive(ack_of(at(100)));  // the reported entry is the head now: the peer discarded it
+    ASSERT_TRUE(tcp_->sent_segment(*c, 0).reported);
+    ASSERT_EQ(c->reported_bytes(), 200U);
+    advance(std::chrono::milliseconds{200});
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 1U) << "the head, which the scoreboard no longer holds as received";
+    EXPECT_EQ(resent[0].tcp->sequence, at(100));
+    for (std::size_t position = 0; position < 4; ++position) {
+        EXPECT_FALSE(tcp_->sent_segment(*c, position).reported) << "entry " << position;
+    }
+    EXPECT_EQ(c->reported_bytes(), 0U);
+    EXPECT_EQ(c->lost_bytes(), 0U) << "the resend that left cleared the head's mark";
+    EXPECT_EQ(c->in_flight(), 400U);
+    EXPECT_EQ(tcp_->counters().retransmits, 1U);
+}
+
 TEST_P(TcpScoreboardBrick, AReportedHeadAcknowledgedInPartAndResentKeepsTheTotalsRight) {
     auto* c = open_and_send();
     ASSERT_NE(c, nullptr);
@@ -573,8 +593,8 @@ TEST_P(TcpScoreboardBrick, AReportedHeadAcknowledgedInPartAndResentKeepsTheTotal
     ASSERT_EQ(resent.size(), 1U);
     EXPECT_EQ(resent[0].tcp->sequence, at(150));
     EXPECT_EQ(tcp_->sent_segment(*c, 0).first, at(150));
-    EXPECT_EQ(c->reported_bytes(), 50U);
-    EXPECT_EQ(c->in_flight(), 300U);
+    EXPECT_EQ(c->reported_bytes(), 0U) << "a reported head at the RTO is reneging: the received marks are cleared";
+    EXPECT_EQ(c->in_flight(), 350U);
     receive(ack_of(at(500)));
     EXPECT_EQ(c->queued_segments(), 0U);
     EXPECT_EQ(c->reported_bytes(), 0U) << "nothing left in the totals once every entry is freed";

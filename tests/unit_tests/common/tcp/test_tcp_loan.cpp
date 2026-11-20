@@ -3,6 +3,7 @@
 #include <aloe/frames>
 #include <aloe/tcp>
 #include <aloe/wire>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <tuple>
@@ -73,6 +74,36 @@ TEST_P(TcpLoan, AFastRetransmitThatFindsThePacketLentIsCountedOnceAndGoesOnceRet
     EXPECT_EQ(tcp_->counters().fast_retransmits, 1U) << "a retry of a waiting entry counts nothing";
     EXPECT_EQ(tcp_->counters().retransmits_copied, 0U);
     EXPECT_EQ(c->lost_bytes(), 0U) << "the resend that left cleared the mark";
+    return_loans();
+}
+
+TEST_P(TcpLoan, AtTheRtoAReportedHeadWhosePacketIsLentWaitsThenLeavesAtTheFlush) {
+    peer_.set_sack_permitted(true);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 2U);
+    const aloe::wire::TcpSequence first = sent[0].tcp->sequence;
+    const std::array blocks{
+        aloe::wire::TcpSackBlock{.first = first + 100U, .end = first + 200U}
+    };
+    receive(peer_.sack(first, blocks));
+    receive(peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), first + 100U));
+    ASSERT_TRUE(tcp_->sent_segment(*c, 0).reported) << "the head is the entry the peer reported, then discarded";
+    advance(200ms);
+    EXPECT_TRUE(collect().empty()) << "deferred: the head's packet is still lent";
+    EXPECT_EQ(tcp_->counters().retransmits, 1U);
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 1U);
+    EXPECT_FALSE(tcp_->sent_segment(*c, 0).reported);
+    EXPECT_EQ(c->reported_bytes(), 0U);
+    return_loans();
+    const auto resent = collect();  // the flush's pass finds the head marked lost
+    ASSERT_EQ(resent.size(), 1U);
+    EXPECT_EQ(resent[0].tcp->sequence, first + 100U);
+    EXPECT_EQ(tcp_->counters().retransmits_copied, 0U);
+    EXPECT_EQ(c->lost_bytes(), 0U);
     return_loans();
 }
 
