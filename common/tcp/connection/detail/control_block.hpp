@@ -31,7 +31,7 @@ namespace aloe::tcp::detail {
     /// What the connection's timer for its sends, `timer`, does when it fires.
     enum class TimerKind : std::uint8_t {
         None,        ///< Not armed.
-        Retransmit,  ///< The RTO: the head of the retransmission queue goes again.
+        Retransmit,  ///< The RTO: what is out is marked lost and the head of the retransmission queue goes again.
         ArpPoll,     ///< A SYN, SYN-ACK or FIN whose first send found no next hop: the send is tried again.
         Probe,       ///< The peer's window is zero and nothing is in flight: a zero-window probe goes.
     };
@@ -160,7 +160,7 @@ namespace aloe::tcp::detail {
         Link<ControlBlock> event_link{};
         Link<ControlBlock> ack_link{};
         Link<ControlBlock> retry_link{};
-        Link<ControlBlock> deferred_link{};  ///< A resend found its packet lent; the next flush tries again.
+        Link<ControlBlock> deferred_link{};  ///< A resend of one of its entries waits for its packet, for the flush.
         bool finish_pending = false;         ///< The protocol is done; Closed is raised once the last ACK is queued.
 
         // The protocol's state, one part per concern.

@@ -29,6 +29,13 @@ namespace aloe::tcp {
         LastAck,
     };
 
+    /// Where a connection's loss recovery stands (`Connection::recovery_state`).
+    enum class RecoveryState : std::uint8_t {
+        Open,      ///< Nothing is known lost.
+        Recovery,  ///< From the first entry marked lost to the ACK that covers what was sent by then.
+        Loss,      ///< After an expiry of the retransmission timer, to the ACK that covers what was sent by then.
+    };
+
     enum class ConnectError : std::uint8_t {
         TableFull,    ///< No free connection slot, or no retransmission-queue node for the SYN.
         NoPort,       ///< The ephemeral range has no free port that lands on this queue.

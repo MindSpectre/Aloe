@@ -27,12 +27,14 @@
 namespace aloe::testing {
 
     /// A congestion control that only records what the stack told it: for tests of which hook fires when, with what.
+    /// Its window and its target are unbounded, so recovery runs no rate reduction over it.
     struct RecordingCongestionControl {
         struct State {
             std::uint32_t calls = 0;
             std::string_view last_hook{};
-            std::uint32_t last_flight = 0;
-            std::uint32_t last_acked  = 0;
+            std::uint32_t last_flight    = 0;  ///< The flight `on_ack` or `on_congestion` heard.
+            std::uint32_t last_in_flight = 0;  ///< What `on_timeout` heard as in flight.
+            std::uint32_t last_acked     = 0;
             std::optional<core::Duration> last_rtt{};
             std::uint64_t last_delivered         = 0;
             std::uint64_t last_delivered_at_send = 0;
@@ -48,6 +50,10 @@ namespace aloe::testing {
             return std::numeric_limits<std::uint32_t>::max();
         }
 
+        [[nodiscard]] static constexpr std::uint32_t target(const State& /*state*/) noexcept {
+            return std::numeric_limits<std::uint32_t>::max();
+        }
+
         static constexpr void on_ack(State& state, const tcp::AckInfo& info) noexcept {
             ++state.calls;
             state.last_hook              = "on_ack";
@@ -59,41 +65,33 @@ namespace aloe::testing {
             state.last_app_limited       = info.app_limited;
         }
 
-        static constexpr void on_loss(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
+        static constexpr void
+        on_congestion(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
             ++state.calls;
-            state.last_hook   = "on_loss";
+            state.last_hook   = "on_congestion";
             state.last_flight = flight;
         }
 
-        static constexpr void on_dupack(State& state, const std::uint16_t /*mss*/) noexcept {
+        static constexpr void on_recovery_end(State& state) noexcept {
             ++state.calls;
-            state.last_hook = "on_dupack";
+            state.last_hook = "on_recovery_end";
         }
 
         static constexpr void
-        on_partial_ack(State& state, const std::uint32_t acked, const std::uint16_t /*mss*/) noexcept {
+        on_timeout(State& state, const std::uint32_t in_flight, const std::uint16_t /*mss*/) noexcept {
             ++state.calls;
-            state.last_hook  = "on_partial_ack";
-            state.last_acked = acked;
-        }
-
-        static constexpr void
-        on_recovery_end(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
-            ++state.calls;
-            state.last_hook   = "on_recovery_end";
-            state.last_flight = flight;
-        }
-
-        static constexpr void
-        on_timeout(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
-            ++state.calls;
-            state.last_hook   = "on_timeout";
-            state.last_flight = flight;
+            state.last_hook      = "on_timeout";
+            state.last_in_flight = in_flight;
         }
 
         static constexpr void on_idle(State& state, const std::uint16_t /*mss*/) noexcept {
             ++state.calls;
             state.last_hook = "on_idle";
+        }
+
+        static constexpr void on_undo(State& state, const State& /*prior*/) noexcept {
+            ++state.calls;
+            state.last_hook = "on_undo";
         }
     };
 

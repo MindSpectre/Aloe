@@ -119,8 +119,9 @@ namespace aloe::tcp {
             return block_.window.window(block_.receive.next());
         }
 
-        /// `min(mss, min(peer window, congestion window + limited transmit's allowance) - in flight)` in Established or
-        /// CloseWait with no prepare open and the queue below the send cap, else zero.
+        /// The MSS, within what the two windows allow: the peer's window less `unacknowledged()`, and the congestion
+        /// window less `in_flight()`. In Established or CloseWait with no prepare open and the queue below the send
+        /// cap, else zero.
         [[nodiscard]] std::size_t writable() const noexcept {
             return block_.stack.writable(block_);
         }
@@ -156,10 +157,11 @@ namespace aloe::tcp {
         [[nodiscard]] std::uint64_t delivered() const noexcept {
             return block_.queue.delivered();
         }
-        /// For tests and monitoring: what is in flight, `unacknowledged()` less what the peer reported received with
-        /// SACK blocks and less what is marked lost and not resent since.
+        /// For tests and monitoring: what is in flight, the number the congestion window is held against:
+        /// `unacknowledged()` less what the peer reported received with SACK blocks, or without SACK one segment per
+        /// duplicate ACK with a hole of one segment left, and less what is marked lost and not resent since.
         [[nodiscard]] std::uint32_t in_flight() const noexcept {
-            return block_.queue.in_flight_bytes(block_.send.flight());
+            return block_.stack.in_flight(block_);
         }
         /// For tests and monitoring: the sequence space the peer reported received with SACK blocks and no cumulative
         /// ACK has covered yet.
@@ -184,7 +186,8 @@ namespace aloe::tcp {
             block_.stack.release(block_);
         }
 
-        /// The congestion window the policy allows, in bytes.
+        /// The congestion window in bytes: the policy's, and in recovery the rate reduction's (RFC 9937) on its way
+        /// down to the policy's target.
         [[nodiscard]] std::uint32_t congestion_window() const noexcept {
             return block_.recovery.window();
         }
@@ -192,11 +195,18 @@ namespace aloe::tcp {
         [[nodiscard]] const CongestionControl::State& congestion_state() const noexcept {
             return block_.recovery.congestion();
         }
-        /// Fast recovery: entered on the third duplicate ACK, left on the ACK past `recover` or a timeout.
+        /// Where loss recovery stands: open, in recovery since an entry was marked lost, or in the loss state since
+        /// the retransmission timer expired.
+        [[nodiscard]] RecoveryState recovery_state() const noexcept {
+            return block_.recovery.state();
+        }
+        /// `recovery_state()` is `Recovery`: from the first entry marked lost to the ACK that covers everything sent
+        /// by then, or a timeout.
         [[nodiscard]] bool in_recovery() const noexcept {
             return block_.recovery.in_recovery();
         }
-        /// Duplicate ACKs since the last ACK of new data, saturating.
+        /// Duplicate ACKs since `acknowledged()` last moved, saturating. In recovery an ACK of new data does not clear
+        /// the count; on a connection without SACK it takes back the duplicates it accounts for.
         [[nodiscard]] std::uint8_t duplicate_acks() const noexcept {
             return block_.recovery.duplicates();
         }

@@ -15,8 +15,8 @@
 #include <tcp_fixture.hpp>
 
 // The scoreboard: the two marks on the retransmission queue's entries, reported received and lost, their totals, what
-// is in flight, the delivered count and the duplicate report's belief; then the brick reading every acceptable ACK's
-// SACK blocks into them. Nothing reads the marks yet, so writable() and recovery are as they were.
+// is in flight, the delivered count and the duplicate report's belief, and where the resend a lost mark owes stands;
+// then the brick reading every acceptable ACK's SACK blocks into them.
 namespace {
 
     using aloe::wire::TcpSequence;
@@ -376,12 +376,52 @@ TEST_F(TcpScoreboard, ClearAllLostIsAnUndo) {
     push_five();
     queue.mark_lost(pool, nodes[1]);
     queue.mark_lost(pool, nodes[3]);
+    queue.mark_waiting(pool, nodes[3]);
     queue.clear_all_lost(pool);
     for (const std::uint32_t node : nodes) {
         EXPECT_FALSE(entry(node).lost);
+        EXPECT_FALSE(entry(node).waiting);
     }
     EXPECT_EQ(queue.lost_bytes(), 0U);
     EXPECT_EQ(queue.first_lost(pool), no_node);
+    EXPECT_FALSE(queue.waiting()) << "a resend nothing owes any more does not wait";
+}
+
+TEST_F(TcpScoreboard, AWaitEndsWhenTheResendLeavesABlockReportsOrAnAckFreesTheEntry) {
+    push_five();
+    EXPECT_FALSE(queue.waiting());
+    for (std::uint32_t position = 0; position < 3; ++position) {
+        queue.mark_lost(pool, nodes[position]);
+        queue.mark_waiting(pool, nodes[position]);
+    }
+    queue.mark_waiting(pool, nodes[2]);  // again: the same wait
+    EXPECT_TRUE(queue.waiting());
+    queue.clear_lost(pool, nodes[0]);  // its resend left
+    EXPECT_FALSE(entry(nodes[0]).waiting);
+    EXPECT_TRUE(queue.waiting()) << "two others still wait";
+    std::ignore = report(B(1100, 1200));
+    EXPECT_FALSE(entry(nodes[1]).waiting) << "reported received: its resend is moot";
+    EXPECT_TRUE(queue.waiting()) << "the third still waits";
+    std::ignore = acknowledge(1300, 1000);  // frees the third with the two before it
+    EXPECT_FALSE(queue.waiting());
+    queue.mark_lost(pool, nodes[3]);
+    queue.mark_waiting(pool, nodes[3]);
+    queue.clear_waiting(pool, nodes[3]);  // the packet is back
+    EXPECT_FALSE(queue.waiting());
+    EXPECT_TRUE(entry(nodes[3]).lost) << "still owed";
+}
+
+TEST_F(TcpScoreboard, ANewLostMarkHasHadNoResendTried) {
+    push_five();
+    queue.mark_lost(pool, nodes[0]);
+    EXPECT_FALSE(entry(nodes[0]).tried);
+    queue.mark_tried(pool, nodes[0]);
+    EXPECT_TRUE(entry(nodes[0]).tried);
+    queue.mark_lost(pool, nodes[0]);  // already lost: the same mark
+    EXPECT_TRUE(entry(nodes[0]).tried);
+    queue.clear_lost(pool, nodes[0]);  // the resend left
+    queue.mark_lost(pool, nodes[0]);   // and is lost in turn: a new mark
+    EXPECT_FALSE(entry(nodes[0]).tried);
 }
 
 TEST_F(TcpScoreboard, AReportedHeadShrunkThenFreedLeavesTheTotalsAtZero) {
@@ -482,7 +522,7 @@ TEST_P(TcpScoreboardBrick, AnAckWithABlockMarksItsEntries) {
     EXPECT_EQ(tcp_->counters().duplicate_sacks_received, 0U);
     EXPECT_TRUE(collect().empty()) << "nothing is resent";
     EXPECT_EQ(tcp_->counters().fast_retransmits, 0U);
-    EXPECT_EQ(c->writable(), writable) << "nothing reads the marks yet";
+    EXPECT_EQ(c->writable(), writable) << "the MSS before and after: the report only widened the room";
 }
 
 TEST_P(TcpScoreboardBrick, ABlockACorrectPeerNeverSendsMarksNothing) {
@@ -575,8 +615,9 @@ TEST_P(TcpScoreboardBrick, AtTheRtoAReportedHeadMeansRenegingEveryMarkIsClearedA
         EXPECT_FALSE(tcp_->sent_segment(*c, position).reported) << "entry " << position;
     }
     EXPECT_EQ(c->reported_bytes(), 0U);
-    EXPECT_EQ(c->lost_bytes(), 0U) << "the resend that left cleared the head's mark";
-    EXPECT_EQ(c->in_flight(), 400U);
+    EXPECT_EQ(c->lost_bytes(), 300U) << "everything is lost; the resend that left cleared the head's mark";
+    EXPECT_EQ(c->in_flight(), 100U) << "the head alone";
+    EXPECT_EQ(c->recovery_state(), aloe::tcp::RecoveryState::Loss);
     EXPECT_EQ(tcp_->counters().retransmits, 1U);
 }
 
@@ -594,7 +635,8 @@ TEST_P(TcpScoreboardBrick, AReportedHeadAcknowledgedInPartAndResentKeepsTheTotal
     EXPECT_EQ(resent[0].tcp->sequence, at(150));
     EXPECT_EQ(tcp_->sent_segment(*c, 0).first, at(150));
     EXPECT_EQ(c->reported_bytes(), 0U) << "a reported head at the RTO is reneging: the received marks are cleared";
-    EXPECT_EQ(c->in_flight(), 350U);
+    EXPECT_EQ(c->lost_bytes(), 300U) << "and everything is lost: the three entries behind the head";
+    EXPECT_EQ(c->in_flight(), 50U) << "what is left of the head, resent";
     receive(ack_of(at(500)));
     EXPECT_EQ(c->queued_segments(), 0U);
     EXPECT_EQ(c->reported_bytes(), 0U) << "nothing left in the totals once every entry is freed";

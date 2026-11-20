@@ -11,21 +11,22 @@ namespace aloe::tcp {
         std::uint64_t pure_acks_sent        = 0;
         std::uint64_t control_segments_sent = 0;  ///< SYN, SYN-ACK, FIN, first sends and retransmits alike.
         std::uint64_t resets_sent           = 0;
-        /// Timer-driven resends of any kept segment, SYN, SYN-ACK, data and FIN: one per expiry, whether the resend
-        /// left, waited or was refused, and one per ACK of the loss episode after a timeout.
+        /// Resends at an expiry of the retransmission timer, of any kept segment, SYN, SYN-ACK, data and FIN: one per
+        /// expiry, whether the resend left, waited or was refused.
         std::uint64_t retransmits           = 0;
-        std::uint64_t fast_retransmits =
-            0;  ///< Resends driven by duplicate ACKs: the third, and partial ACKs in recovery.
-        std::uint64_t recoveries           = 0;  ///< Fast-recovery episodes entered.
+        /// Resends of entries marked lost, in recovery and in the loss state after a timeout: one per entry per mark,
+        /// at its first try, whether it left, waited or was refused. The expiry's own resend is `retransmits`'.
+        std::uint64_t fast_retransmits      = 0;
+        std::uint64_t recoveries            = 0;  ///< Episodes of recovery entered; a timeout's loss state is not one.
         /// A resend that found its packet lent and waited for the next flush: one per deferral, and one per stamp while
         /// a segment's packet and its copy both stay lent.
-        std::uint64_t retransmits_deferred = 0;
-        std::uint64_t retransmits_copied   = 0;  ///< A resend sent as a copy, after the deferral bound.
-        std::uint64_t zero_window_probes   = 0;
-        std::uint64_t duplicate_acks       = 0;
-        std::uint64_t rtt_samples          = 0;
-        std::uint64_t window_updates       = 0;  ///< Segments that extended the advertised edge.
-        std::uint64_t out_of_order_held    = 0;  ///< Segments held above a gap.
+        std::uint64_t retransmits_deferred  = 0;
+        std::uint64_t retransmits_copied    = 0;  ///< A resend sent as a copy, after the deferral bound.
+        std::uint64_t zero_window_probes    = 0;
+        std::uint64_t duplicate_acks        = 0;
+        std::uint64_t rtt_samples           = 0;
+        std::uint64_t window_updates        = 0;  ///< Segments that extended the advertised edge.
+        std::uint64_t out_of_order_held     = 0;  ///< Segments held above a gap.
         std::uint64_t out_of_order_released =
             0;  ///< Held out-of-order segments released to make room for a lower sequence.
         std::uint64_t sack_acks_sent       = 0;  ///< Pure ACKs that carried SACK blocks.

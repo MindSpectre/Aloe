@@ -31,6 +31,11 @@ namespace aloe::tcp::detail {
      * no longer counts either. Every mark is set and cleared here, and every change to an entry's length goes through
      * here and takes off only an acknowledged front, so the totals stay those sums. An entry reported received keeps
      * its packet and its place until a cumulative ACK frees it.
+     *
+     * A lost mark owes a resend, and the queue keeps where that resend stands, per entry: whether one was tried since
+     * the mark was set, and whether it waits for a packet the device still holds, with the number of entries that
+     * wait. A wait ends with the mark, when a resend leaves, a block reports the entry or a cumulative ACK frees it,
+     * and a new mark starts untried, so neither outlives what it describes.
      */
     template <device::IsPacket Packet>
     class RetransmissionQueue {
@@ -156,6 +161,9 @@ namespace aloe::tcp::detail {
                 if (entry.lost) {
                     lost_bytes_ -= remaining;
                 }
+                if (entry.waiting) {
+                    --waiting_segments_;  // its resend is moot
+                }
                 if (freed.length == 0) {
                     freed.sent = entry.sent;  // the oldest entry freed
                 }
@@ -190,7 +198,8 @@ namespace aloe::tcp::detail {
          * Marks every entry `block` covers whole as received, and calls `each(entry)` for every entry newly marked,
          * before the mark. An entry covered in part is left alone, as Linux's `tcp_match_skb_to_sack` leaves a buffer
          * of one segment; so is one that never left, which the peer cannot hold. An entry marked received stops being
-         * lost, and its payload counts as delivered, once. The caller judged the block valid (`AckProcessor`).
+         * lost, and a resend of it that waited for its packet is moot; its payload counts as delivered, once. The
+         * caller judged the block valid (`AckProcessor`).
          */
         template <std::invocable<const Entry&> Each>
         [[nodiscard]] Reported report(Pool& pool, const wire::TcpSackBlock& block, Each&& each) noexcept {
@@ -213,6 +222,9 @@ namespace aloe::tcp::detail {
                 const std::uint32_t remaining = outstanding(entry, acknowledged_);
                 if (std::exchange(entry.lost, false)) {
                     lost_bytes_ -= remaining;
+                }
+                if (std::exchange(entry.waiting, false)) {
+                    --waiting_segments_;
                 }
                 entry.reported   = true;
                 reported_edge_   = reported_segments_ == 0 ? end : later(reported_edge_, end);
@@ -265,21 +277,48 @@ namespace aloe::tcp::detail {
             return false;
         }
 
-        /// Nothing for an entry reported or already lost.
+        /// Nothing for an entry reported or already lost. A new mark has had no resend tried.
         void mark_lost(Pool& pool, const std::uint32_t index) noexcept {
             Entry& entry = pool.node(index);
             if (entry.reported || entry.lost) {
                 return;
             }
             entry.lost   = true;
+            entry.tried  = false;
             lost_bytes_ += outstanding(entry, acknowledged_);
         }
 
-        /// A resend of it left.
+        /// A resend of it left: it is lost no more, and waits no more.
         void clear_lost(Pool& pool, const std::uint32_t index) noexcept {
             if (Entry& entry = pool.node(index); std::exchange(entry.lost, false)) {
                 lost_bytes_ -= outstanding(entry, acknowledged_);
             }
+            clear_waiting(pool, index);
+        }
+
+        /// A resend of it is being tried: the first since it was marked lost is the one the resend pass counts.
+        void mark_tried(Pool& pool, const std::uint32_t index) noexcept {
+            core::force_non_static(this);
+            pool.node(index).tried = true;
+        }
+
+        /// Its resend found the packet lent and waits for the flush.
+        void mark_waiting(Pool& pool, const std::uint32_t index) noexcept {
+            if (!std::exchange(pool.node(index).waiting, true)) {
+                ++waiting_segments_;
+            }
+        }
+
+        /// Its resend waits no more: the packet is back, or a copy goes in its place.
+        void clear_waiting(Pool& pool, const std::uint32_t index) noexcept {
+            if (std::exchange(pool.node(index).waiting, false)) {
+                --waiting_segments_;
+            }
+        }
+
+        /// Some entry's resend waits for its packet.
+        [[nodiscard]] bool waiting() const noexcept {
+            return waiting_segments_ > 0;
         }
 
         /// `SentSegment::reconcile` on the entry at `index`. A copy that came back first shrinks the entry to the
@@ -299,12 +338,14 @@ namespace aloe::tcp::detail {
             pool.node(index).trim_to(una);
         }
 
-        /// An undo.
+        /// An undo: no entry is lost, and none waits to be resent.
         void clear_all_lost(Pool& pool) noexcept {
             for (std::uint32_t index = chain_.head; index != no_node; index = pool.node(index).next) {
-                pool.node(index).lost = false;
+                pool.node(index).lost    = false;
+                pool.node(index).waiting = false;
             }
-            lost_bytes_ = 0;
+            lost_bytes_       = 0;
+            waiting_segments_ = 0;
         }
 
         /// Reneging: the peer discarded what it reported. The highest sequence is the cumulative ACK's again.
@@ -389,6 +430,7 @@ namespace aloe::tcp::detail {
             reported_bytes_    = 0;
             reported_segments_ = 0;
             lost_bytes_        = 0;
+            waiting_segments_  = 0;
         }
 
     private:
@@ -426,7 +468,8 @@ namespace aloe::tcp::detail {
         std::uint32_t reported_bytes_    = 0;
         std::uint32_t reported_segments_ = 0;
         std::uint32_t lost_bytes_        = 0;
-        wire::TcpSequence reported_edge_{};  ///< The end of the highest entry reported; meaningful while one is.
+        std::uint32_t waiting_segments_  = 0;  ///< Entries whose resend waits for its packet.
+        wire::TcpSequence reported_edge_{};    ///< The end of the highest entry reported; meaningful while one is.
         std::optional<wire::TcpSequence> acknowledged_{};  ///< The last cumulative ACK; nothing before one.
         // The duplicate report's belief, Linux's `total_retrans` and `dsack_dups`.
         std::uint64_t resent_segments_    = 0;  ///< Transmissions after an entry's first, of every entry ever queued.

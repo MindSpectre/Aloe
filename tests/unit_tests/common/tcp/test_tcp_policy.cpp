@@ -65,48 +65,74 @@ TEST(NewReno, CongestionAvoidanceAddsOneSegmentPerWindowAcknowledged) {
     EXPECT_EQ(s.acked_bytes, 0U);
 }
 
-TEST(NewReno, LossHalvesTheFlightAndInflatesByThree) {
+TEST(NewReno, CongestionHalvesTheFlightAndLeavesTheWindow) {
     NewReno::State s;
-    NewReno::reset(s, mss);
-    NewReno::on_loss(s, 10000, mss);
-    EXPECT_EQ(s.ssthresh, 5000U);
-    EXPECT_EQ(NewReno::window(s), 8000U);
-    NewReno::on_dupack(s, mss);
-    EXPECT_EQ(NewReno::window(s), 9000U);
-    NewReno::on_partial_ack(s, 1000, mss);
-    EXPECT_EQ(NewReno::window(s), 9000U) << "deflated by 1000, one segment added back";
-    NewReno::on_partial_ack(s, 500, mss);
-    EXPECT_EQ(NewReno::window(s), 8500U) << "less than a segment: nothing added back";
-    NewReno::on_recovery_end(s, 3000, mss);
-    EXPECT_EQ(NewReno::window(s), 4000U) << "min(5000, max(3000, 1000) + 1000)";
+    NewReno::reset(s, 1460);
+    NewReno::on_congestion(s, 14600, 1460);
+    EXPECT_EQ(s.ssthresh, 7300U);
+    EXPECT_EQ(s.cwnd, 14600U) << "the way down to the target is the rate reduction's";
+    EXPECT_EQ(NewReno::target(s), 7300U);
 }
 
-TEST(NewReno, LossFloorsTheThresholdAtTwoSegments) {
+TEST(NewReno, CongestionFloorsTheTargetAtTwoSegments) {
     NewReno::State s;
-    NewReno::reset(s, mss);
-    NewReno::on_loss(s, 1000, mss);
-    EXPECT_EQ(s.ssthresh, 2000U);
-    EXPECT_EQ(NewReno::window(s), 5000U);
+    NewReno::reset(s, 1460);
+    NewReno::on_congestion(s, 1460, 1460);
+    EXPECT_EQ(s.ssthresh, 2920U);
+    EXPECT_EQ(NewReno::target(s), 2920U);
 }
 
-TEST(NewReno, PartialAckNeverDeflatesBelowOneSegment) {
-    NewReno::State s{.cwnd = 1200, .ssthresh = 5000, .acked_bytes = 0};
-    NewReno::on_partial_ack(s, 900, mss);
-    EXPECT_EQ(NewReno::window(s), 1000U);
+TEST(NewReno, CongestionStartsTheAvoidanceCountAgain) {
+    NewReno::State s{.cwnd = 5000, .ssthresh = 5000, .acked_bytes = 3000};
+    NewReno::on_congestion(s, 5000, mss);
+    EXPECT_EQ(s.acked_bytes, 0U);
 }
 
-TEST(NewReno, TimeoutRestartsAtOneSegment) {
+TEST(NewReno, RecoveryEndSetsTheWindowToTheTarget) {
     NewReno::State s;
-    NewReno::reset(s, mss);
-    NewReno::on_timeout(s, 4000, mss);
-    EXPECT_EQ(s.ssthresh, 2000U);
-    EXPECT_EQ(NewReno::window(s), 1000U);
+    NewReno::reset(s, 1460);
+    NewReno::on_congestion(s, 14600, 1460);
+    s.acked_bytes = 500;
+    NewReno::on_recovery_end(s);
+    EXPECT_EQ(s.cwnd, 7300U);
+    EXPECT_EQ(s.ssthresh, 7300U);
+    EXPECT_EQ(s.acked_bytes, 0U);
+}
+
+TEST(NewReno, ATimeoutRestartsAtWhatIsInFlightPlusOneSegment) {
+    NewReno::State s;
+    NewReno::reset(s, 1460);
+    NewReno::on_timeout(s, 0, 1460);
+    EXPECT_EQ(s.cwnd, 1460U) << "everything was marked lost: one segment";
+    EXPECT_EQ(s.ssthresh, max_window) << "the target is on_congestion's";
+    NewReno::on_timeout(s, 2920, 1460);
+    EXPECT_EQ(s.cwnd, 4380U);
+    EXPECT_EQ(s.ssthresh, max_window);
+    NewReno::on_timeout(s, max_window - 100, 1460);
+    EXPECT_EQ(s.cwnd, max_window) << "saturating";
+}
+
+TEST(NewReno, UndoRestoresTheLargerOfEachPair) {
+    NewReno::State s;
+    NewReno::reset(s, 1460);
+    const NewReno::State copy = s;
+    NewReno::on_congestion(s, 14600, 1460);
+    NewReno::on_recovery_end(s);
+    ASSERT_EQ(s.cwnd, 7300U);
+    NewReno::on_undo(s, copy);
+    EXPECT_EQ(s.cwnd, copy.cwnd);
+    EXPECT_EQ(s.ssthresh, copy.ssthresh);
+    NewReno::State grown{.cwnd = 20000, .ssthresh = 30000, .acked_bytes = 0};
+    NewReno::on_undo(grown, NewReno::State{.cwnd = 14600, .ssthresh = 7300, .acked_bytes = 0});
+    EXPECT_EQ(grown.cwnd, 20000U) << "a window grown past the copy's stays";
+    EXPECT_EQ(grown.ssthresh, 30000U);
 }
 
 TEST(NewReno, IdleRestartsAtTheSmallerOfTheInitialWindowAndTheWindow) {
     NewReno::State s;
     NewReno::reset(s, mss);
-    NewReno::on_timeout(s, 4000, mss);
+    NewReno::on_congestion(s, 4000, mss);
+    NewReno::on_timeout(s, 0, mss);
     NewReno::on_idle(s, mss);
     EXPECT_EQ(NewReno::window(s), 1000U) << "RFC 5681: min(IW, cwnd) never raises a window a timeout cut";
     EXPECT_EQ(s.ssthresh, 2000U) << "idle keeps the threshold";
@@ -121,12 +147,19 @@ TEST(NewReno, AdditionsSaturate) {
     EXPECT_EQ(NewReno::window(s), max_window);
 }
 
-TEST(NoCongestionControl, TheWindowIsUnboundedAndNothingChangesIt) {
+TEST(NoCongestionControl, TheWindowAndTheTargetAreUnboundedAndNothingChangesThem) {
     NoCongestionControl::State s;
     NoCongestionControl::reset(s, mss);
-    NoCongestionControl::on_loss(s, 10000, mss);
-    NoCongestionControl::on_timeout(s, 10000, mss);
+    const NoCongestionControl::State copy = s;
+    NoCongestionControl::on_ack(s, AckInfo{.acked = 1000, .flight = 10000, .mss = mss});
+    NoCongestionControl::on_congestion(s, 10000, mss);
+    EXPECT_EQ(NoCongestionControl::target(s), max_window) << "no target: the rate reduction has nothing to regulate";
+    NoCongestionControl::on_recovery_end(s);
+    NoCongestionControl::on_timeout(s, 0, mss);
+    NoCongestionControl::on_idle(s, mss);
+    NoCongestionControl::on_undo(s, copy);
     EXPECT_EQ(NoCongestionControl::window(s), max_window);
+    EXPECT_EQ(NoCongestionControl::target(s), max_window);
 }
 
 TEST_P(TcpNoCongestion, APassiveOpenReportsAnUnboundedWindow) {

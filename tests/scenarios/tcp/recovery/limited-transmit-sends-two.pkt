@@ -1,8 +1,11 @@
-// RFC 3042's limited transmit: ten segments fill NewReno's initial window, ten segments of 988 bytes (the peer's MSS of
-// 1000 less the timestamp option), so a write of 12000 sends 9880. The first and the second duplicate ACK each let one
-// more segment out beyond the window, all a write can send then; the third resends the head at once. Linux lets the
-// same two out, since each duplicate takes a segment out of its count in flight, and then runs PRR in recovery, which
-// does not show here.
+// RFC 3042's limited transmit, which comes from what is in flight: ten segments of 988 bytes (the peer's MSS of 1000
+// less the timestamp option) fill NewReno's initial window of 9880, so a write of 12000 sends 9880. Each of the first
+// two duplicate ACKs stands for a segment the peer holds, takes 988 out of what is in flight and so lets one segment
+// out, all a write can send then. The third marks the head lost: of the 11856 outstanding, 2964 are counted received
+// and 988 lost, 7904 in flight; the target is max(11856 / 2, 2 * 988) = 5928, RecoverFS 11856, and PRR allows
+// ceil(988 * 5928 / 11856) = 494 above what is in flight, so the head is resent at once. Linux lets the same two out,
+// since each duplicate takes a segment out of its count in flight, with no allowance of its own either
+// (tcp_cwnd_test), and resends the head at the third; its PRR counts whole segments and divides by the window it had.
 --congestion=newreno
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0

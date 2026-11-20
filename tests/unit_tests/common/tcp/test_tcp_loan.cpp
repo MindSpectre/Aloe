@@ -77,6 +77,34 @@ TEST_P(TcpLoan, AFastRetransmitThatFindsThePacketLentIsCountedOnceAndGoesOnceRet
     return_loans();
 }
 
+TEST_P(TcpLoan, AWaitingHeadThatLeavesAtTheFlushRestartsTheRetransmissionTimer) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->rto(), 200ms);
+    ASSERT_EQ(c->send(aloe::frames::pattern(4380)), 4380U);
+    const auto sent = collect();  // t0: the timer is armed for t0 + 200 ms
+    ASSERT_EQ(sent.size(), 3U);
+    advance(150ms);
+    const auto dup = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    EXPECT_TRUE(collect().empty()) << "the head's resend waits for its packet";
+    advance(40ms);
+    return_loans();
+    const auto resent = collect();  // t0 + 190 ms: the head leaves at the flush, a retry of the waiting entry
+    ASSERT_EQ(resent.size(), 1U);
+    EXPECT_EQ(resent[0].tcp->sequence, sent[0].tcp->sequence);
+    advance(10ms);  // t0 + 200 ms, where the first send had armed the timer
+    EXPECT_TRUE(collect().empty()) << "armed again when the head left: its ACK has had no time to return";
+    EXPECT_EQ(tcp_->counters().retransmits, 0U);
+    advance(189ms);
+    EXPECT_EQ(tcp_->counters().retransmits, 0U);
+    advance(1ms);  // t0 + 390 ms: one RTO after the resend
+    EXPECT_EQ(tcp_->counters().retransmits, 1U);
+    return_loans();
+}
+
 TEST_P(TcpLoan, AtTheRtoAReportedHeadWhosePacketIsLentWaitsThenLeavesAtTheFlush) {
     peer_.set_sack_permitted(true);
     auto* c = open_passive(peer_);
@@ -103,6 +131,119 @@ TEST_P(TcpLoan, AtTheRtoAReportedHeadWhosePacketIsLentWaitsThenLeavesAtTheFlush)
     ASSERT_EQ(resent.size(), 1U);
     EXPECT_EQ(resent[0].tcp->sequence, first + 100U);
     EXPECT_EQ(tcp_->counters().retransmits_copied, 0U);
+    EXPECT_EQ(c->lost_bytes(), 0U);
+    return_loans();
+}
+
+TEST_P(TcpLoan, AfterATimeoutTheEntriesBehindTheHeadEachWaitForTheirPacketAndAreCountedOnce) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(4380)), 4380U);  // three segments, all lent from here on
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 3U);
+    advance(200ms);  // the RTO marks all three; the head's resend finds its packet lent
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(tcp_->counters().retransmits, 1U);
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 1U);
+    advance(1ms);
+    const auto head = collect();  // the bound reached: the head goes as a copy, and fills the window of one segment
+    ASSERT_EQ(head.size(), 1U);
+    EXPECT_EQ(head[0].tcp->sequence, sent[0].tcp->sequence);
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 0U) << "the expiry's own resend";
+    receive(peer_.ack(sent[0]));  // slow start: two segments; the second entry's first attempt finds its packet lent
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 2U);
+    advance(1ms);
+    const auto second = collect();  // its copy at the flush; the third entry's first attempt waits in turn
+    ASSERT_EQ(second.size(), 1U);
+    EXPECT_EQ(second[0].tcp->sequence, sent[1].tcp->sequence);
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 2U);
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 3U);
+    return_loans();
+    const auto third = collect();  // in place, once its packet is back
+    ASSERT_EQ(third.size(), 1U);
+    EXPECT_EQ(third[0].tcp->sequence, sent[2].tcp->sequence);
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 2U) << "each marked entry once, its retry at the flush not again";
+    EXPECT_EQ(tcp_->counters().retransmits, 1U) << "one expiry";
+    EXPECT_EQ(tcp_->counters().retransmits_copied, 2U);
+    EXPECT_EQ(c->lost_bytes(), 0U);
+    return_loans();
+}
+
+TEST_P(TcpLoan, AWaitingEntryABlockThenReportsIsNotResentAndTheNextEntryIsTriedAfresh) {
+    peer_.set_sack_permitted(true);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    for (int segment = 0; segment < 3; ++segment) {
+        ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    }
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 3U);
+    const aloe::wire::TcpSequence first = sent[0].tcp->sequence;
+    advance(200ms);  // the RTO marks all three; the head's resend waits
+    EXPECT_TRUE(collect().empty());
+    advance(1ms);
+    ASSERT_EQ(collect().size(), 1U) << "the head's copy; the second entry's first attempt waits for its packet";
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 2U);
+    const std::array blocks{
+        aloe::wire::TcpSackBlock{.first = first + 100U, .end = first + 200U}
+    };
+    ASSERT_TRUE(tcp_->sent_segment(*c, 1).waiting);
+    receive(peer_.sack(first, blocks));  // the peer holds the entry that waits
+    EXPECT_TRUE(tcp_->sent_segment(*c, 1).reported);
+    EXPECT_FALSE(tcp_->sent_segment(*c, 1).lost);
+    EXPECT_FALSE(tcp_->sent_segment(*c, 1).waiting) << "its resend is moot: nothing of it waits";
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 2U)
+        << "the third entry's own first attempt, counted: the second's wait ended with the report";
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 3U);
+    EXPECT_TRUE(tcp_->sent_segment(*c, 2).waiting);
+    return_loans();
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 1U) << "the third entry; the one reported received is not resent";
+    EXPECT_EQ(resent[0].tcp->sequence, first + 200U);
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 2U);
+    EXPECT_EQ(c->lost_bytes(), 0U);
+    EXPECT_EQ(c->reported_bytes(), 100U);
+    EXPECT_FALSE(tcp_->sent_segment(*c, 2).waiting);
+    advance(1ms);
+    EXPECT_TRUE(collect().empty()) << "nothing waits any more";
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 3U);
+    EXPECT_EQ(tcp_->counters().retransmits_copied, 1U);
+    return_loans();
+}
+
+TEST_P(TcpLoan, AnAckThatFreesTheHeadLeavesALaterWaitingEntryToTheFlush) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(4380)), 4380U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 3U);
+    advance(200ms);
+    EXPECT_TRUE(collect().empty());
+    advance(1ms);
+    ASSERT_EQ(collect().size(), 1U) << "the head's copy";
+    // An ACK inside the head grows the window past what is left of it, so the second entry's turn comes while the
+    // head is still queued: its packet is lent, and it waits.
+    receive(peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), sent[0].tcp->sequence + 500U));
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 2U);
+    receive(peer_.ack(sent[0]));  // frees the head while the second entry waits
+    EXPECT_EQ(c->queued_segments(), 2U);
+    EXPECT_TRUE(tcp_->sent_segment(*c, 0).waiting) << "the entry that waited is the head now, and waits still";
+    EXPECT_TRUE(collect().empty()) << "still the flush's, once its packet is back: no copy before its time";
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U) << "not a second first attempt";
+    EXPECT_EQ(tcp_->counters().retransmits_copied, 1U);
+    return_loans();
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 2U) << "the one that waited, in place, and the third behind it";
+    EXPECT_EQ(resent[0].tcp->sequence, sent[1].tcp->sequence);
+    EXPECT_EQ(resent[1].tcp->sequence, sent[2].tcp->sequence);
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 2U);
+    EXPECT_EQ(tcp_->counters().retransmits, 1U);
+    EXPECT_EQ(tcp_->counters().retransmits_copied, 1U);
     EXPECT_EQ(c->lost_bytes(), 0U);
     return_loans();
 }

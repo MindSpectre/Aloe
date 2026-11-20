@@ -266,7 +266,10 @@ TEST_P(TcpRto, TheFirstExpiryTellsTheCongestionControl) {
     std::ignore = collect();
     EXPECT_GT(c->congestion_window(), c->mss()) << "the initial window";
     advance(200ms);
-    EXPECT_EQ(c->congestion_window(), c->mss()) << "NewReno's on_timeout: one segment";
+    EXPECT_EQ(c->recovery_state(), aloe::tcp::RecoveryState::Loss);
+    EXPECT_EQ(c->congestion_window(), 1460U) << "NewReno's on_timeout: nothing in flight after the marking, plus one "
+                                                "segment";
+    EXPECT_EQ(c->congestion_state().ssthresh, 2920U) << "and on_congestion's target: two segments at the least";
 }
 
 TEST_P(TcpRtoHeld, AResendThatFindsNoNextHopWaitsForTheNextExpiryNotTheNextFlush) {

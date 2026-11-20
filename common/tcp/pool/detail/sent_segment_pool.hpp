@@ -18,9 +18,9 @@ namespace aloe::tcp::detail {
      * @brief One entry of a connection's retransmission queue: a segment that occupies sequence space, SYN, SYN-ACK,
      * data or FIN, from its first transmission until an ACK covers it.
      *
-     * The packet with the whole frame as it last left, what a resend and a rate sample read, and the scoreboard's two
-     * marks. `RetransmissionQueue` sets and clears the marks and makes every change to the length, `reconcile` and
-     * `trim_to` included, so that its totals stay right.
+     * The packet with the whole frame as it last left, what a resend and a rate sample read, the scoreboard's two
+     * marks, and where the resend a lost mark owes stands. `RetransmissionQueue` sets and clears all four and makes
+     * every change to the length, `reconcile` and `trim_to` included, so that its totals stay right.
      */
     template <device::IsPacket Packet>
     struct SentSegment {
@@ -42,6 +42,8 @@ namespace aloe::tcp::detail {
         bool app_limited                = false;
         bool reported = false;  ///< The peer reported it received; it stays queued until a cumulative ACK frees it.
         bool lost     = false;  ///< Marked lost and not resent since: it owes a resend.
+        bool tried    = false;  ///< A resend of it was tried since it was marked lost, whatever came of it.
+        bool waiting  = false;  ///< Its resend found the packet lent and waits for the flush.
         std::uint32_t next = no_node;
 
         /// The SYN or the FIN: a control segment.
