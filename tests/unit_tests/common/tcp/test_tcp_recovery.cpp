@@ -145,6 +145,41 @@ TEST(TcpLossRecovery, TheTargetLeavesOutWhatWasSentBeyondTheWindow) {
     EXPECT_EQ(timed_out.congestion().ssthresh, 8760U) << "a timeout halves the flight it found";
 }
 
+TEST(TcpLossRecovery, TheGuardAdmitsOnlyAnAckAboveWhatWasOutstandingWhenTheLastEpisodeBegan) {
+    using Sequence = aloe::wire::TcpSequence;
+    Recovery recovery;
+    recovery.open(Sequence{1000});
+    recovery.establish(1460);
+    EXPECT_TRUE(recovery.admits(Sequence{1001}))
+        << "a fresh connection: the loss of its first segment is an ordinary one";
+    recovery.on_timeout(Sequence{1001}, Sequence{5381}, 4380, 0, 1460, true);  // 5380 is the highest sequence out
+    EXPECT_FALSE(recovery.recovered(Sequence{5380}));
+    EXPECT_TRUE(recovery.recovered(Sequence{5381})) << "the episode ends at the ACK that covers recover";
+    EXPECT_FALSE(recovery.admits(Sequence{5381})) << "RFC 6582 3.2: ack_number - 1 > recover";
+    EXPECT_TRUE(recovery.admits(Sequence{5382}));
+    recovery.end(Sequence{5381});
+    EXPECT_EQ(recovery.state(), RecoveryState::Open);
+    EXPECT_FALSE(recovery.admits(Sequence{5381})) << "an episode that ends exactly there leaves the guard in place";
+    recovery.on_ack(aloe::tcp::AckInfo{.acked = 1, .flight = 1460, .mss = 1460}, Sequence{5382});  // one byte above
+    EXPECT_TRUE(recovery.admits(Sequence{5382}));
+
+    recovery.on_timeout(Sequence{5382}, Sequence{8302}, 2920, 0, 1460, true);
+    recovery.end(Sequence{9000});  // new data sent in the episode was acknowledged with it: more than recover
+    EXPECT_TRUE(recovery.admits(Sequence{9000}));
+}
+
+TEST(TcpLossRecovery, TheGuardWrapsAcrossTheTopOfTheSequenceSpace) {
+    using Sequence = aloe::wire::TcpSequence;
+    Recovery recovery;
+    recovery.open(Sequence{0xfffff000U});
+    recovery.establish(1460);
+    recovery.on_timeout(Sequence{0xfffff001U}, Sequence{0}, 4095, 0, 1460, true);  // the last byte sent is 0xffffffff
+    EXPECT_FALSE(recovery.recovered(Sequence{0xffffffffU}));
+    EXPECT_TRUE(recovery.recovered(Sequence{0}));
+    EXPECT_FALSE(recovery.admits(Sequence{0}));
+    EXPECT_TRUE(recovery.admits(Sequence{1}));
+}
+
 TEST(TcpLossRecovery, RoomIsWhatTheWindowAllowsBeyondWhatIsInFlight) {
     Recovery recovery;
     recovery.open(aloe::wire::TcpSequence{1000});
@@ -413,7 +448,7 @@ TEST_P(TcpRecovery, TheRecoverGuardBlocksASecondFastRetransmitAfterATimeout) {
     EXPECT_EQ(tcp_->counters().fast_retransmits, 0U);
 }
 
-TEST_P(TcpRecovery, AFastRetransmitIsAdmittedOnceEverythingSentBeforeTheTimeoutIsAcknowledged) {
+TEST_P(TcpRecovery, AFastRetransmitIsAdmittedOnceAByteAboveWhatATimeoutFoundOutstandingIsAcknowledged) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
     ASSERT_EQ(c->send(aloe::frames::pattern(2920)), 2920U);
@@ -422,19 +457,87 @@ TEST_P(TcpRecovery, AFastRetransmitIsAdmittedOnceEverythingSentBeforeTheTimeoutI
     advance(200ms);
     ASSERT_EQ(collect().size(), 1U) << "the timeout's resend of the head; recover is the last byte sent before it";
     receive(peer_.ack(sent[1]));  // exactly snd_nxt as it was at the timeout: recover + 1
-    EXPECT_TRUE(collect().empty()) << "the ACK past recover ends the loss episode";
+    EXPECT_TRUE(collect().empty()) << "the ACK that covers recover ends the loss state";
     ASSERT_EQ(c->send(aloe::frames::pattern(1460)), 1460U);
     const auto third = collect();
     ASSERT_EQ(third.size(), 1U);
+    receive(peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), third[0].tcp->sequence + 1U));
     const auto dup = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
     receive(dup());
     receive(dup());
     receive(dup());
-    EXPECT_TRUE(c->in_recovery()) << "RFC 6582: the acknowledgement covers more than recover";
+    EXPECT_TRUE(c->in_recovery()) << "RFC 6582: one byte more than recover is acknowledged";
     const auto resent = collect();
     ASSERT_EQ(resent.size(), 1U);
-    EXPECT_EQ(resent[0].tcp->sequence, third[0].tcp->sequence);
+    EXPECT_EQ(resent[0].tcp->sequence, third[0].tcp->sequence + 1U) << "what is left of the head";
     EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
+}
+
+TEST_P(TcpRecovery, DuplicatesAtTheOldSndNxtAfterANeedlessTimeoutStartNoRecovery) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(5840)), 5840U);  // four segments, all of which arrive, late
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 4U);
+    advance(200ms);
+    ASSERT_EQ(collect().size(), 1U) << "a needless resend of the head, which the peer will answer with a duplicate";
+    receive(peer_.ack(sent[3]));  // everything, exactly the SND.NXT of the timeout
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Open);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1460)), 1460U);
+    const auto fresh = collect();
+    ASSERT_EQ(fresh.size(), 1U);
+    const auto dup = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    EXPECT_EQ(c->recovery_state(), RecoveryState::Open) << "RFC 6582 3.2: the ACK covers no more than recover";
+    EXPECT_TRUE(collect().empty()) << "nothing is resent for duplicates the timeout's own resends can explain";
+    EXPECT_EQ(tcp_->counters().recoveries, 0U);
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 0U);
+    EXPECT_EQ(c->duplicate_acks(), 3U) << "refused, and counted all the same";
+    EXPECT_EQ(tcp_->counters().duplicate_acks, 3U);
+    EXPECT_EQ(c->in_flight(), 1460U) << "the hole of one segment the duplicates leave";
+    receive(peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), fresh[0].tcp->sequence + 1U));
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    EXPECT_TRUE(c->in_recovery()) << "a byte above the old SND.NXT was acknowledged: an ordinary loss again";
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 1U);
+    EXPECT_EQ(resent[0].tcp->sequence, fresh[0].tcp->sequence + 1U);
+    EXPECT_EQ(tcp_->counters().recoveries, 1U);
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
+}
+
+TEST_P(TcpRecovery, TheGuardHoldsAfterARecoveryThatEndedExactlyAtRecover) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(4380)), 4380U);
+    const auto sent = collect();
+    const auto dup  = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    ASSERT_EQ(collect().size(), 1U);
+    receive(peer_.ack(sent[2]));  // the full ACK, of exactly what was outstanding when recovery began
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Open);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1460)), 1460U);
+    const auto fresh = collect();
+    ASSERT_EQ(fresh.size(), 1U);
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    EXPECT_EQ(c->recovery_state(), RecoveryState::Open) << "duplicates at the ACK that ended recovery begin no second";
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(tcp_->counters().recoveries, 1U);
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
+    receive(peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), fresh[0].tcp->sequence + 1U));
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    EXPECT_TRUE(c->in_recovery());
+    EXPECT_EQ(tcp_->counters().recoveries, 2U);
+    ASSERT_EQ(collect().size(), 1U);
 }
 
 TEST_P(TcpRecovery, FastRetransmitStillFiresWhenRecoverIsHalfTheSpaceBehind) {
@@ -520,6 +623,27 @@ TEST_P(TcpRecovery, AfterATimeoutTheMarkedEntriesAreResentUnderSlowStart) {
     EXPECT_TRUE(collect().empty());
     EXPECT_EQ(tcp_->counters().retransmits, 1U);
     EXPECT_EQ(tcp_->counters().recoveries, 0U) << "a timeout's episode is not a recovery";
+}
+
+TEST_P(TcpRecovery, AfterATimeoutNothingNewIsOfferedWhileMarkedEntriesWaitForTheWindow) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    for (int segment = 0; segment < 5; ++segment) {
+        ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    }
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 5U);
+    advance(200ms);
+    ASSERT_EQ(collect().size(), 1U) << "the expiry's one segment, 100 bytes of a window of 1460";
+    EXPECT_EQ(c->congestion_window(), 1460U);
+    EXPECT_EQ(c->in_flight(), 100U);
+    EXPECT_EQ(c->lost_bytes(), 400U);
+    EXPECT_EQ(c->writable(), 0U) << "the rest of the window is the marked entries': a resend goes before anything new";
+    EXPECT_EQ(c->send(aloe::frames::pattern(100)), 0U);
+    receive(peer_.ack(sent[0]));  // slow start: 1560, and the four marked entries leave
+    EXPECT_EQ(collect().size(), 4U);
+    EXPECT_EQ(c->lost_bytes(), 0U);
+    EXPECT_EQ(c->writable(), 1160U) << "nothing owes a resend any more: 1560 less the 400 in flight";
 }
 
 TEST_P(TcpRecovery, TheAckThatEndsTheLossStateGrowsTheWindowToo) {

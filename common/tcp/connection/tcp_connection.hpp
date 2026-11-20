@@ -120,8 +120,8 @@ namespace aloe::tcp {
         }
 
         /// The MSS, within what the two windows allow: the peer's window less `unacknowledged()`, and the congestion
-        /// window less `in_flight()`. In Established or CloseWait with no prepare open and the queue below the send
-        /// cap, else zero.
+        /// window less `in_flight()`. In Established or CloseWait with no prepare open, the queue below the send cap
+        /// and nothing marked lost that is still to be resent (`lost_bytes()`), else zero.
         [[nodiscard]] std::size_t writable() const noexcept {
             return block_.stack.writable(block_);
         }

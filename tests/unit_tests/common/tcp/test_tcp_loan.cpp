@@ -77,6 +77,53 @@ TEST_P(TcpLoan, AFastRetransmitThatFindsThePacketLentIsCountedOnceAndGoesOnceRet
     return_loans();
 }
 
+TEST_P(TcpLoan, NothingNewIsOfferedWhileTheHeadsResendWaitsAfterATimeout) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(1460)), 1460U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 1U);
+    advance(200ms);  // the RTO marks the head; its packet is still lent
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(c->congestion_window(), 1460U);
+    EXPECT_EQ(c->in_flight(), 0U);
+    EXPECT_EQ(c->lost_bytes(), 1460U);
+    EXPECT_EQ(c->writable(), 0U) << "the window's one segment is the head's";
+    EXPECT_EQ(c->send(aloe::frames::pattern(1460)), 0U) << "new data would take the window and starve the resend";
+    advance(1ms);
+    const auto head = collect();  // the flush: the bound reached, the copy goes
+    ASSERT_EQ(head.size(), 1U);
+    EXPECT_EQ(head[0].tcp->sequence, sent[0].tcp->sequence);
+    EXPECT_EQ(tcp_->counters().retransmits, 1U) << "no second expiry was needed";
+    EXPECT_EQ(c->lost_bytes(), 0U);
+    return_loans();
+}
+
+TEST_P(TcpLoan, NothingNewIsOfferedWhileTheHeadsResendWaitsInRecovery) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(14600)), 14600U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 10U);
+    const auto dup = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
+    receive(dup());
+    receive(dup());
+    receive(dup());
+    EXPECT_TRUE(c->in_recovery());
+    EXPECT_TRUE(collect().empty()) << "the head's resend waits for its packet";
+    EXPECT_EQ(c->in_flight(), 8760U);
+    EXPECT_EQ(c->congestion_window(), 9490U) << "730 above what is in flight, for the head";
+    EXPECT_EQ(c->writable(), 0U) << "an entry that owes a resend goes before anything new";
+    EXPECT_EQ(c->send(aloe::frames::pattern(730)), 0U);
+    advance(1ms);
+    const auto head = collect();  // the flush: the copy goes, on the window it was allowed
+    ASSERT_EQ(head.size(), 1U);
+    EXPECT_EQ(head[0].tcp->sequence, sent[0].tcp->sequence);
+    EXPECT_EQ(c->in_flight(), 10220U);
+    EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
+    return_loans();
+}
+
 TEST_P(TcpLoan, AWaitingHeadThatLeavesAtTheFlushRestartsTheRetransmissionTimer) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);

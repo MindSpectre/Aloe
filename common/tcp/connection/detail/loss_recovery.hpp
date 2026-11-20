@@ -20,8 +20,13 @@ namespace aloe::tcp::detail {
      * the last sequence sent by then; the policy sets its target as it begins, and RFC 9937's rate reduction regulates
      * the window down to it (`RateReduction`), unless the policy's target is unbounded, in which case its window
      * stands. Loss is the episode after an expiry of the retransmission timer, to the ACK that covers `recover`: the
-     * policy's window restarts and grows by its own rules. Outside an episode `recover` is one before SND.UNA once an
-     * ACK of new data moved it, so the serial comparison never sees it half the space behind.
+     * policy's window restarts and grows by its own rules.
+     *
+     * `recover` is RFC 6582's: the highest sequence outstanding when the last episode began. An episode ends at the
+     * ACK that covers it, and a new recovery is admitted only by an ACK that covers more (`admits`), so duplicates the
+     * resends of a timeout can explain begin none. While open, every ACK of new data slides `recover` to just below
+     * the last byte acknowledged, which that ACK then covers more than: an ordinary loss is always admitted, and the
+     * serial comparison never sees `recover` half the space behind.
      *
      * It decides nothing about which entries are lost or resent: the stack marks, tells it what happened, and reads
      * the window. It owns the state, `recover`, the duplicate count, the policy's state and the copy of it taken as an
@@ -37,9 +42,11 @@ namespace aloe::tcp::detail {
     public:
         using State = CongestionControl::State;
 
-        /// The connection numbered its SYN: RFC 6582's `recover` starts at the ISS.
+        /// The connection numbered its SYN: `recover` starts one below the ISS, nothing having been outstanding before
+        /// it, so the ACK of the SYN covers more and the loss of the first data segment is admitted. RFC 6582 starts
+        /// it at the ISS, which under its own test would refuse that loss.
         void open(const wire::TcpSequence iss) noexcept {
-            recover_ = iss;
+            recover_ = wire::TcpSequence{iss.value - 1};
         }
 
         /// Synchronized: the policy's initial window.
@@ -103,6 +110,14 @@ namespace aloe::tcp::detail {
          * duplicates had counted the segments above the hole as received, so the ACK delivered the advance less one
          * segment per duplicate counted, and at least one segment, the hole it filled; and the count gives up the
          * segments the advance covers, a part of one as one, less that one. Returns what the ACK delivered.
+         *
+         * A departure from RFC 9937 6.2, which is definite here: without SACK its DeliveredData on an advance is
+         * "the change in SND.UNA, minus 1 SMSS for each preceding duplicate ACK", with no floor, and its duplicates
+         * are counted over the whole episode. Linux's emulation is followed instead (`tcp_add_reno_sack`,
+         * `tcp_remove_reno_sacks`, `tcp_limit_reno_sacked`). The RFC's count, never reduced, subtracts again after a
+         * partial ACK what the advance already took out of the flight, so it under-reads what is in flight, and what
+         * the next advance delivered, by the segments between the holes; Linux's removal on an advance is exact for
+         * those, and its floor of one segment is the hole the ACK filled, which no duplicate had counted.
          */
         [[nodiscard]] std::uint32_t remove_duplicates(const std::uint32_t advance, const std::uint16_t mss) noexcept {
             const std::uint32_t segment  = std::max<std::uint16_t>(mss, 1);
@@ -120,11 +135,13 @@ namespace aloe::tcp::detail {
             return rate_.recover_fs() > rate_.delivered() ? rate_.recover_fs() - rate_.delivered() : 0;
         }
 
-        /// RFC 6582: the third duplicate starts recovery only when `ack` covers more than `recover`, the guard against
-        /// a second fast retransmit for data a timeout already resent. Linux reaches the same end by holding its
-        /// recovery state until something above its mark is acknowledged (`tcp_is_non_sack_preventing_reopen`).
+        /// RFC 6582 3.2: the third duplicate starts recovery only when `ack` covers more than `recover`, which it
+        /// defines as `ack_number - 1 > recover`: at least one byte above the highest sequence outstanding when the
+        /// last episode began is acknowledged. The guard against a second fast retransmit for data a timeout already
+        /// resent. Linux reaches the same end by holding its recovery state until something above its mark is
+        /// acknowledged (`tcp_is_non_sack_preventing_reopen`).
         [[nodiscard]] bool admits(const wire::TcpSequence ack) const noexcept {
-            return ack.after(recover_);
+            return wire::TcpSequence{ack.value - 1}.after(recover_);
         }
 
         /**
@@ -183,15 +200,19 @@ namespace aloe::tcp::detail {
             return ack.after(recover_);
         }
 
-        /// The episode ends: from recovery the policy's window becomes its target; the state is open, the duplicate
-        /// count is cleared, and `recover` slides to one before `ack`.
+        /// The episode ends: from recovery the policy's window becomes its target; the state is open and the duplicate
+        /// count is cleared. `recover` slides with `ack` only when `ack` covers more than it. An episode that ends at
+        /// exactly the ACK that covers `recover` leaves it in place, so duplicates at that acknowledgement begin no
+        /// recovery until an ACK of new data moves SND.UNA above it.
         void end(const wire::TcpSequence ack) noexcept {
             if (state_ == RecoveryState::Recovery) {
                 CongestionControl::on_recovery_end(congestion_);
             }
             state_   = RecoveryState::Open;
             dupacks_ = 0;
-            recover_ = wire::TcpSequence{ack.value - 1};
+            if (admits(ack)) {
+                slide(ack);
+            }
         }
 
         /**
@@ -219,17 +240,17 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * An ACK of new data, open or in the loss state: the policy hears of it; open, `recover` slides to one before
-         * `ack`. The duplicate count is cleared. The guard compares in serial arithmetic, which reads a `recover` left
-         * more than 2^31 behind as ahead, so one set at the open or by the last episode would refuse every recovery
-         * after 2 GiB; hence the slide.
+         * An ACK of new data, open or in the loss state: the policy hears of it; open, `recover` slides with `ack`.
+         * The duplicate count is cleared. The guard compares in serial arithmetic, which reads a `recover` left more
+         * than 2^31 behind as ahead, so one set at the open or by the last episode would refuse every recovery after
+         * 2 GiB; hence the slide. In the loss state `recover` stays: the episode is measured against it.
          */
         void on_ack(const AckInfo& info, const wire::TcpSequence ack) noexcept {
             assert(state_ != RecoveryState::Recovery && "the window in recovery is not the policy's to grow");
             dupacks_ = 0;
             CongestionControl::on_ack(congestion_, info);
             if (state_ == RecoveryState::Open) {
-                recover_ = wire::TcpSequence{ack.value - 1};
+                slide(ack);
             }
         }
 
@@ -243,6 +264,11 @@ namespace aloe::tcp::detail {
         }
 
     private:
+        /// `recover` to just below the last byte `ack` acknowledges, so that `ack` covers more than it (`admits`).
+        void slide(const wire::TcpSequence ack) noexcept {
+            recover_ = wire::TcpSequence{ack.value - 2};
+        }
+
         /// PRR runs, and its window is the connection's: in recovery, under a policy whose target is bounded. A policy
         /// with no target has nothing to reduce, as Linux leaves the window alone when the threshold is infinite
         /// (`tcp_end_cwnd_reduction`).
@@ -253,7 +279,7 @@ namespace aloe::tcp::detail {
 
         RecoveryState state_  = RecoveryState::Open;
         std::uint8_t dupacks_ = 0;
-        wire::TcpSequence recover_{};  ///< The last sequence sent as the episode began; else one before SND.UNA.
+        wire::TcpSequence recover_{};  ///< The highest sequence out as the episode began; open, slid below SND.UNA.
         State congestion_{};           ///< The policy's state; reset where the connection is Established.
         State prior_{};                ///< The policy's state as the episode began: what an undo restores.
         RateReduction rate_{};         ///< The window in recovery.

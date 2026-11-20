@@ -369,8 +369,9 @@ namespace aloe::tcp::detail {
             block.indexed = true;
         }
 
-        /// Numbers the connection's SYN from a fresh ISN and starts its sender from scratch: RFC 6582's `recover` at
-        /// the ISN, no round-trip sample, the initial RTO and no retry; makes the timestamps and SACK-permitted offers.
+        /// Numbers the connection's SYN from a fresh ISN and starts its sender from scratch: RFC 6582's `recover` just
+        /// below the ISN, no round-trip sample, the initial RTO and no retry; makes the timestamps and SACK-permitted
+        /// offers.
         void open(ControlBlock& block) noexcept {
             block.send.open(isn_.next());
             block.recovery.open(block.send.iss);

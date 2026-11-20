@@ -315,7 +315,7 @@ namespace aloe::tcp::detail {
                 }
                 case RecoveryState::Loss:
                     if (info) {
-                        block.recovery.on_ack(*info, ack);
+                        block.recovery.on_ack(*info, ack);  // heard in the loss state, before the state may end
                     }
                     if (block.recovery.recovered(ack)) {
                         block.recovery.end(ack);
@@ -338,9 +338,10 @@ namespace aloe::tcp::detail {
          * With SACK it is exact: the advance plus the signed change in bytes reported received, since a cumulative ACK
          * takes out of that total what it covers. Without SACK it is Linux's estimate in bytes: one segment for a
          * duplicate ACK (`tcp_add_reno_sack`); for an ACK that moves SND.UNA in recovery, the advance less one segment
-         * per duplicate counted before it, and at least one (`LossRecovery::remove_duplicates`). An estimate a peer
-         * could inflate with duplicates, so in recovery it is cut where the episode's total would pass RecoverFS (RFC
-         * 9937 6.2); the ACK that begins recovery is held to it by the first step (`Transmitter::begin_recovery`).
+         * per duplicate counted before it, and at least one (`LossRecovery::remove_duplicates`, which says where that
+         * departs from RFC 9937 6.2 and why). An estimate a peer could inflate with duplicates, so in recovery it is
+         * cut where the episode's total would pass RecoverFS (RFC 9937 6.2); the ACK that begins recovery is held to
+         * it by the first step (`Transmitter::begin_recovery`).
          */
         [[nodiscard]] static std::uint32_t
         delivered(ControlBlock& block, const Found& found, const std::uint32_t advance, const bool duplicate) noexcept {

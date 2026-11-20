@@ -218,7 +218,9 @@ namespace aloe::tcp::detail {
          * pass again. RFC 8985 9.3 holds a resend to the congestion window like new data: nothing leaves once what is
          * in flight matches the window (`LossRecovery::may_send`), and an entry marked lost is not in flight until its
          * resend leaves. The window gates the pass once the policy has one, at Established: a handshake segment a
-         * duplicate SYN or the timer asked for goes whatever it says.
+         * duplicate SYN or the timer asked for goes whatever it says. With nothing marked lost the pass returns at
+         * once, without a walk of the queue (`RetransmissionQueue::first_lost`): an ACK on a path without loss pays
+         * one comparison for it.
          *
          * Counts one `fast_retransmits` per marked entry, at the first try since it was marked, whether it left,
          * waited or was refused; a later try of the same mark counts nothing, and neither does the pass's try of an
@@ -357,10 +359,18 @@ namespace aloe::tcp::detail {
 
         /**
          * What is in flight: the flight less what is reported received, or, without SACK, less one segment per
-         * duplicate ACK capped so a hole of one segment stays, and less what is lost and not resent. RFC 9937's
-         * estimate, and Linux's `tcp_packets_in_flight` in bytes; the cap is `tcp_limit_reno_sacked`'s: what the
-         * duplicates stand for and the holes, the lost bytes or one segment at the least, never pass the flight. The
-         * flight is SND.NXT - SND.UNA, so a FIN that waits for the peer's window counts its one byte.
+         * duplicate ACK capped so a hole of one segment stays, and less what is lost and not resent. Linux's
+         * `tcp_packets_in_flight` in bytes. The flight is SND.NXT - SND.UNA, so a FIN that waits for the peer's window
+         * counts its one byte.
+         *
+         * With SACK this is RFC 9937 6.2's estimate. Without SACK it departs from it, where the RFC is definite:
+         * senders "MUST subtract out: min(RecoverFS, 1 SMSS for each preceding duplicate ACK in the fast recovery
+         * episode)". Linux's emulation is followed instead (`tcp_add_reno_sack`, `tcp_remove_reno_sacks`,
+         * `tcp_limit_reno_sacked`): the count of duplicates gives up, on an ACK that moves SND.UNA, the segments that
+         * ACK covered (`LossRecovery::remove_duplicates`), and what the duplicates stand for and the holes, the lost
+         * bytes or one segment at the least, never pass the flight. The RFC's count runs over the whole episode, so
+         * after a partial ACK it subtracts again what the advance already took out of the flight and under-reads what
+         * is in flight by the segments between the holes; Linux's removal on an advance is exact for those.
          */
         [[nodiscard]] std::uint32_t in_flight_bytes(const ControlBlock& block) const noexcept {
             const std::uint32_t flight    = block.send.flight();
@@ -513,8 +523,8 @@ namespace aloe::tcp::detail {
         }
 
         // The application.
-        /// The MSS, within what the two windows allow (`room`), in Established or CloseWait with no prepare open and
-        /// the queue below the send cap; else zero.
+        /// The MSS, within what the two windows allow (`room`), in Established or CloseWait with no prepare open, the
+        /// queue below the send cap and no entry that owes a resend; else zero.
         [[nodiscard]] std::size_t writable(const ControlBlock& block) const noexcept {
             if (block.prepared || (block.state != State::Established && block.state != State::CloseWait)) {
                 return 0;
@@ -670,8 +680,16 @@ namespace aloe::tcp::detail {
          * outstanding, and the congestion window against what is in flight (`LossRecovery::room`), each floored at
          * zero. This is where RFC 3042's limited transmit comes from: a report of data received, or a duplicate ACK,
          * lowers what is in flight and so lets new data out; Linux has no separate allowance either (`tcp_cwnd_test`).
+         *
+         * Nothing while an entry is marked lost and not resent. Such an entry is not in flight, so its share of the
+         * window would otherwise be offered to new data, which would then hold the window against the resend: at the
+         * flush, when its packet comes back, and at the next ACK. An entry that owes a resend goes before anything
+         * new, lowest sequence first, as Linux runs `tcp_xmit_retransmit_queue` before it sends new data.
          */
         [[nodiscard]] std::uint64_t room(const ControlBlock& block) const noexcept {
+            if (block.queue.lost_bytes() > 0) {
+                return 0;
+            }
             const std::uint32_t flight = block.send.flight();
             const std::uint64_t peer   = block.send.wnd > flight ? block.send.wnd - flight : 0;
             return std::min(peer, block.recovery.room(in_flight_bytes(block)));

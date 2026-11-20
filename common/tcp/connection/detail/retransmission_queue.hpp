@@ -357,13 +357,19 @@ namespace aloe::tcp::detail {
             reported_segments_ = 0;
         }
 
-        /// The lowest entry marked lost; `no_node` when none.
+        /// The lowest entry marked lost; `no_node` when none, which costs no walk: every entry occupies sequence
+        /// space, a SYN and a FIN one number each, and one covered whole by a cumulative ACK is freed, so a lost entry
+        /// always counts at least one byte in `lost_bytes()` and the total is zero exactly when none is marked.
         [[nodiscard]] std::uint32_t first_lost(const Pool& pool) const noexcept {
+            if (lost_bytes_ == 0) {
+                return no_node;
+            }
             for (std::uint32_t index = chain_.head; index != no_node; index = pool.node(index).next) {
                 if (pool.node(index).lost) {
                     return index;
                 }
             }
+            assert(false && "the lost total counts an entry that is marked lost");
             return no_node;
         }
 
