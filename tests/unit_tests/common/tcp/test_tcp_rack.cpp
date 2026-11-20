@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 #include <tcp_fixture.hpp>
+#include <tcp_sack_brick.hpp>
 
 // RACK, RFC 8985 section 6: the most recently sent segment acknowledged either way and its round trip, the minimum
 // round trip, the reordering window and its adaptation, and detection over the retransmission queue; then the brick:
@@ -76,72 +77,23 @@ namespace {
         Rack rack{};
     };
 
-    /// The sum of every drop counter.
-    [[nodiscard]] std::uint64_t drops(const aloe::tcp::TcpCounters& counters) {
-        return counters.dropped_bad_header + counters.dropped_bad_checksum + counters.dropped_no_connection +
-               counters.dropped_closed + counters.dropped_unexpected + counters.dropped_duplicate +
-               counters.dropped_out_of_order + counters.dropped_out_of_window + counters.dropped_no_slot +
-               counters.dropped_no_node + counters.dropped_table_full + counters.dropped_paws;
-    }
+    using aloe::testing::drops;
 
-    /// What every brick test shares, over either fixture: a peer that offers timestamps and SACK-permitted, a passive
-    /// open with a round trip of 10 ms, five sends of 100 bytes collected as `sent`, and `at(n)`, the stack's sequence
-    /// `n` past the first of them.
+    /// The brick tests' shared helpers (`aloe::testing::SackBrick`), and the first test's loss through its resend.
     template <typename Fixture>
-    class RackBrick : public Fixture {
+    class RackBrick : public aloe::testing::SackBrick<Fixture> {
     protected:
-        using Connection = Fixture::Connection;
+        using Connection = aloe::testing::SackBrick<Fixture>::Connection;
 
-        RackBrick() {
-            this->peer_.set_timestamps(100);
-            this->peer_.set_sack_permitted(true);
-        }
-
-        /// `count` sends of 100 bytes, collected; false, with a failure added, when they did not all leave.
-        [[nodiscard]] bool send(Connection& c, const int count, std::vector<aloe::frames::ParsedFrame>& into) {
-            for (int sent_count = 0; sent_count < count; ++sent_count) {
-                if (c.send(aloe::frames::pattern(100)) != 100U) {
-                    ADD_FAILURE() << "send " << sent_count << " was not accepted whole";
-                    return false;
-                }
-            }
-            into = this->collect();
-            if (into.size() != static_cast<std::size_t>(count)) {
-                ADD_FAILURE() << "expected " << count << " segments, got " << into.size();
-                return false;
-            }
-            return true;
-        }
-
-        /// A passive open with a round trip of 10 ms, then five sends at 10 ms; null on failure.
-        [[nodiscard]] Connection* open_and_send() {
-            Connection* c = this->open_passive(this->peer_, 10ms);
-            return c != nullptr && send(*c, 5, sent) ? c : nullptr;
-        }
-
-        [[nodiscard]] TcpSequence at(const std::uint32_t offset) const {
-            return sent[0].tcp->sequence + offset;
-        }
-
-        [[nodiscard]] Block range(const std::uint32_t first, const std::uint32_t end) const {
-            return Block{.first = at(first), .end = at(end)};
-        }
-
-        /// A pure ACK of `ack` with no SACK option.
-        [[nodiscard]] std::vector<std::byte> ack_of(const TcpSequence ack) {
-            return this->peer_.segment({aloe::wire::TcpFlag::Ack}, {}, this->peer_.snd_nxt(), ack);
-        }
-
-        /// The first test's loss, through its resend: the ACK of the first segment 10 ms after the sends, with a block
-        /// that reports the third; the second waits a quarter of the round trip, 3 ms on the wheel, then the
-        /// reordering timer marks it and resends it. Returns the resend; empty, with a failure added, when it did not
-        /// leave.
+        /// The ACK of the first segment 10 ms after the sends, with a block that reports the third; the second waits a
+        /// quarter of the round trip, 3 ms on the wheel, then the reordering timer marks it and resends it. Returns the
+        /// resend; empty, with a failure added, when it did not leave.
         [[nodiscard]] std::vector<aloe::frames::ParsedFrame> lose_the_second(Connection& c) {
             this->advance(10ms);
-            this->receive(this->peer_.sack(at(100), Blocks{range(200, 300)}));
+            this->receive(this->peer_.sack(this->at(100), Blocks{this->range(200, 300)}));
             this->advance(3ms);
             auto resent = this->collect();
-            if (resent.size() != 1 || resent[0].tcp->sequence != at(100)) {
+            if (resent.size() != 1 || resent[0].tcp->sequence != this->at(100)) {
                 ADD_FAILURE() << "expected the second segment resent by the reordering timer, got " << resent.size()
                               << " frames";
                 return {};
@@ -149,30 +101,11 @@ namespace {
             EXPECT_EQ(c.recovery_state(), RecoveryState::Recovery);
             return resent;
         }
-
-        [[nodiscard]] const aloe::tcp::TcpCounters& counters() const {
-            return this->tcp_->counters();
-        }
-
-        std::vector<aloe::frames::ParsedFrame> sent;
-    };
-
-    /// The brick under the recording policy: an unbounded window, so no rate reduction holds a resend back, and the
-    /// hooks it heard, so a test sees when a new episode tells the policy of congestion and with what flight.
-    class RecordedFixture
-        : public ::testing::TestWithParam<aloe::fabric::EmulatedOffloads>,
-          protected aloe::testing::detail::FabricPair,
-          protected aloe::testing::TcpHarness<aloe::fabric::Port, aloe::testing::RecordingCongestionControl> {
-    protected:
-        RecordedFixture()
-            : FabricPair{GetParam()},
-              TcpHarness{fabric, harness, port} {
-        }
     };
 
     using TcpRackBrick    = RackBrick<aloe::testing::TcpFixture>;
     using TcpRackHeld     = RackBrick<aloe::testing::TcpHeldFixture>;
-    using TcpRackRecorded = RackBrick<RecordedFixture>;
+    using TcpRackRecorded = RackBrick<aloe::testing::TcpRecordedFixture>;
 
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpRackBrick,
@@ -458,17 +391,23 @@ TEST_P(TcpRackBrick, TheTimeoutMarksWhatRackSaysIsOld) {
     auto* c = open_passive(peer_, 10ms);
     ASSERT_NE(c, nullptr);
     std::vector<aloe::frames::ParsedFrame> early;
-    ASSERT_TRUE(send(*c, 3, early));  // at 10 ms: the RTO, 210 ms, is armed for 220
+    ASSERT_TRUE(send(*c, 3, early));  // at 10 ms: the tail probe for 10 + 2 * 10 = 30 ms
+    advance(20ms);
+    const auto probe = collect();
+    ASSERT_EQ(probe.size(), 1U);
+    EXPECT_EQ(probe[0].tcp->sequence, early[2].tcp->sequence) << "the third, probed: the RTO is armed for 240 ms";
     advance(205ms);
     std::vector<aloe::frames::ParsedFrame> late;
-    ASSERT_TRUE(send(*c, 2, late));  // at 215 ms
+    // At 235 ms, 5 ms before the RTO: a probe is scheduled again, for min(235 + 20, 240), the RTO's moment, and none
+    // goes while the first is in flight, so the expiry at 240 ms is the RTO's.
+    ASSERT_TRUE(send(*c, 2, late));
     advance(5ms);
     const auto resent = collect();
     ASSERT_EQ(resent.size(), 1U) << "the head, one segment at the expiry";
     EXPECT_EQ(resent[0].tcp->sequence, early[0].tcp->sequence);
     EXPECT_EQ(counters().retransmits, 1U);
-    EXPECT_TRUE(tcp_->sent_segment(*c, 1).lost) << "sent 210 ms ago, RACK's round trip being 10 ms";
-    EXPECT_TRUE(tcp_->sent_segment(*c, 2).lost);
+    EXPECT_TRUE(tcp_->sent_segment(*c, 1).lost) << "sent 230 ms ago, RACK's round trip being 10 ms";
+    EXPECT_TRUE(tcp_->sent_segment(*c, 2).lost) << "probed 210 ms ago";
     EXPECT_FALSE(tcp_->sent_segment(*c, 3).lost) << "sent 5 ms ago: RACK's to judge";
     EXPECT_FALSE(tcp_->sent_segment(*c, 4).lost);
     EXPECT_EQ(c->lost_bytes(), 200U);
@@ -760,20 +699,23 @@ TEST_P(TcpRackRecorded, AResendFoundLostAgainInTheLossStateBeginsRecovery) {
     auto* c = open_passive(peer_, 10ms);
     ASSERT_NE(c, nullptr);
     std::vector<aloe::frames::ParsedFrame> early;
-    ASSERT_TRUE(send(*c, 3, early));  // at 10 ms; the RTO, 210 ms, for 220
+    ASSERT_TRUE(send(*c, 3, early));  // at 10 ms; the tail probe for 30 ms
     sent = early;
+    advance(20ms);
+    ASSERT_EQ(collect().size(), 1U) << "the third, probed: the RTO, 210 ms, for 240";
     advance(205ms);
     std::vector<aloe::frames::ParsedFrame> late;
-    ASSERT_TRUE(send(*c, 2, late));  // at 215 ms
+    ASSERT_TRUE(send(*c, 2, late));  // at 235 ms: no probe goes while the first is in flight
     advance(5ms);
-    // The RTO at 220 ms: the head resent; the second and third, 210 ms old, lost; the fourth and fifth, 5 ms old, not.
+    // The RTO at 240 ms: the head resent; the second, 230 ms old, and the probed third, 210 ms old, lost; the fourth
+    // and fifth, 5 ms old, not.
     ASSERT_EQ(collect().size(), 1U);
     ASSERT_EQ(c->recovery_state(), RecoveryState::Loss);
     const std::uint32_t calls = c->congestion_state().calls;
     ASSERT_EQ(c->congestion_state().last_hook, "on_timeout");
     advance(10ms);
-    // At 230 ms the fifth is reported: RACK's round trip 15 ms, the window zero in the loss state, and the fourth,
-    // sent at 215 ms below it, is due at 215 + 15 = 230 ms. A first loss: the loss state goes on, and the pass sends
+    // At 250 ms the fifth is reported: RACK's round trip 15 ms, the window zero in the loss state, and the fourth,
+    // sent at 235 ms below it, is due at 235 + 15 = 250 ms. A first loss: the loss state goes on, and the pass sends
     // the three entries that owe a resend under the unbounded window.
     receive(peer_.sack(at(0), Blocks{range(400, 500)}));
     EXPECT_EQ(counters().rack_marked, 1U);
@@ -782,8 +724,8 @@ TEST_P(TcpRackRecorded, AResendFoundLostAgainInTheLossStateBeginsRecovery) {
     EXPECT_EQ(counters().recoveries, 0U);
     EXPECT_EQ(collect().size(), 3U);
     advance(10ms);
-    // At 240 ms the fourth's resend, sent at 230 ms, is reported: the head's resend of 220 ms and the second's and
-    // third's of 230 ms below it are due at 230 + 10 = 240 ms at the latest. Resends found lost again: recovery
+    // At 260 ms the fourth's resend, sent at 250 ms, is reported: the head's resend of 240 ms and the second's and
+    // third's of 250 ms below it are due at 250 + 10 = 260 ms at the latest. Resends found lost again: recovery
     // begins, and the policy is told of the congestion with the flight, 500.
     receive(peer_.sack(at(0), Blocks{range(300, 500)}));
     EXPECT_EQ(counters().lost_retransmits, 3U);
@@ -808,8 +750,11 @@ TEST_P(TcpRackRecorded, AReorderingExpiryThatMarksInTheLossStateBeginsRecovery) 
     receive(peer_.sack(at(0), Blocks{range(100, 200)}));
     receive(ack_of(at(200)));
     ASSERT_EQ(counters().reordering_seen, 1U);
+    // That ACK moved SND.UNA with three left in flight and nothing reported: the tail probe for 20 + 2 * 10 = 40 ms.
+    advance(20ms);
+    ASSERT_EQ(collect().size(), 1U) << "the fifth, probed: the RTO, 210 ms, for 250";
     advance(210ms);
-    // The RTO at 230 ms marks the three left and resends the head; the next ACK, a duplicate at 231 ms, lets the
+    // The RTO at 250 ms marks the three left and resends the head; the next ACK, a duplicate at 251 ms, lets the
     // other two go under the unbounded window, and two new segments follow.
     ASSERT_EQ(collect().size(), 1U);
     ASSERT_EQ(c->recovery_state(), RecoveryState::Loss);
@@ -819,8 +764,8 @@ TEST_P(TcpRackRecorded, AReorderingExpiryThatMarksInTheLossStateBeginsRecovery) 
     std::vector<aloe::frames::ParsedFrame> fresh;
     ASSERT_TRUE(send(*c, 2, fresh));
     advance(10ms);
-    // At 241 ms the second new segment is reported: RACK's round trip 10 ms, and everything sent at 230 and 231 ms
-    // below it waits, the longest 231 + 10 + 2.5 - 241 = 2.5 ms, until 243.5 ms, 244 on the wheel.
+    // At 261 ms the second new segment is reported: RACK's round trip 10 ms, and everything sent at 250 and 251 ms
+    // below it waits, the longest 251 + 10 + 2.5 - 261 = 2.5 ms, until 263.5 ms, 264 on the wheel.
     receive(peer_.sack(at(200), Blocks{range(600, 700)}));
     EXPECT_TRUE(collect().empty());
     EXPECT_EQ(c->recovery_state(), RecoveryState::Loss);

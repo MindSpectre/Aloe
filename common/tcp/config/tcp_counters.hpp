@@ -42,6 +42,13 @@ namespace aloe::tcp {
         /// Expiries of the retransmission timer that found the head reported received: the peer reneged, and every
         /// received mark was cleared.
         std::uint64_t sack_reneging            = 0;
+        std::uint64_t tail_probes              = 0;  ///< Tail probes sent (RFC 8985 7.3), a deferred one included.
+        /// Probes a duplicate report or a plain duplicate ACK found needless: both copies arrived.
+        std::uint64_t tail_probes_needless     = 0;
+        std::uint64_t tail_probe_recoveries    = 0;  ///< Losses a probe repaired: the window cut once, no episode.
+        /// Verdicts a second probe closed as a loss before an ACK said which (`tail_probe_recoveries` counts them too):
+        /// how often Aloe's departure from RFC 8985 7.3 and 7.4.2 was used.
+        std::uint64_t tail_probes_early        = 0;
 
         std::uint64_t connections_opened         = 0;  ///< Active opens that reached ESTABLISHED.
         std::uint64_t connections_accepted       = 0;

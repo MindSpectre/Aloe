@@ -1,0 +1,38 @@
+// A probe the peer reports as a duplicate was needless: the original arrived too, nothing was lost, and the window is
+// left as it was (RFC 8985 7.4.2's first case: "an ACK that covers TLP.end_seq with a DSACK option"). The handshake's
+// ACK 10 ms after the SYN-ACK gives an srtt of 10 ms; the write at 10 ms is probed at 10 + 2 * 10 + 40 = 70 ms. The
+// original's ACK was lost; at 80 ms the peer acknowledges 101 and reports the probe's copy as a duplicate, 1:101, one
+// segment ending at the probe's end, believed since the connection resent one segment, and echoes the original's
+// timestamp. The verdict is closed as needless there, so the ACK of the next order at 90 ms, past the probe's end,
+// repairs nothing: NewReno's initial window, 10 * 1448 = 14480, stands, and a write takes all of it. Had the verdict
+// stayed open, that ACK would have cut the window to max(0 / 2, 2 * 1448) = 2896. Linux closes it the same way
+// (tcp_process_tlp_ack on FLAG_DSACK_TLP).
+--congestion=newreno
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.060 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 70 ecr 110>
++0.010 < . 1:1(0) ack 101 win 512 <nop,nop,TS val 180 ecr 10,nop,nop,sack 1:101>
++0 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 80 ecr 180>
++0.010 < . 1:1(0) ack 201 win 512 <nop,nop,TS val 190 ecr 80>
++0 write(4, ..., 20000) = 14480
++0 > P. 201:1649(1448) ack 1 win 46336 <nop,nop,TS val 90 ecr 190>
++0 > P. 1649:3097(1448) ack 1 win 46336 <nop,nop,TS val 90 ecr 190>
++0 > P. 3097:4545(1448) ack 1 win 46336 <nop,nop,TS val 90 ecr 190>
++0 > P. 4545:5993(1448) ack 1 win 46336 <nop,nop,TS val 90 ecr 190>
++0 > P. 5993:7441(1448) ack 1 win 46336 <nop,nop,TS val 90 ecr 190>
++0 > P. 7441:8889(1448) ack 1 win 46336 <nop,nop,TS val 90 ecr 190>
++0 > P. 8889:10337(1448) ack 1 win 46336 <nop,nop,TS val 90 ecr 190>
++0 > P. 10337:11785(1448) ack 1 win 46336 <nop,nop,TS val 90 ecr 190>
++0 > P. 11785:13233(1448) ack 1 win 46336 <nop,nop,TS val 90 ecr 190>
++0 > P. 13233:14681(1448) ack 1 win 46336 <nop,nop,TS val 90 ecr 190>
++0.010 < . 1:1(0) ack 14681 win 512 <nop,nop,TS val 200 ecr 90>

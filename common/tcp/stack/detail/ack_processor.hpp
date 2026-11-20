@@ -15,6 +15,7 @@
 #include <detail/loss_recovery.hpp>
 #include <detail/rack.hpp>
 #include <detail/stack_context.hpp>
+#include <detail/tail_probe.hpp>
 #include <detail/transmitter.hpp>
 #include <tcp_config.hpp>
 
@@ -23,13 +24,13 @@ namespace aloe::tcp::detail {
     /**
      * @brief What an acknowledgement does to the send side, in the order of Linux's `tcp_ack` and
      * `tcp_fastretrans_alert`: the peer's blocks into the scoreboard; the entries the cumulative part frees, the
-     * round-trip sample and the retransmission timer; RACK's state, from the entries both newly report; detection, by
-     * RACK on a connection that uses SACK and by the duplicate count on one that does not; the recovery state, which
-     * begins, goes on or ends, with the window in recovery; the resends, as far as that window allows; the peer's
-     * window, the zero-window probes and the FIN that waited for the window; and the send timer. It owns no state; it
-     * drives the block's send side through the Transmitter, in place, and tells the Receiver what moved. It names
-     * neither the Receiver nor the Lifecycle: an ACK ends a connection only through what the Receiver does with the
-     * outcome.
+     * round-trip sample and the retransmission timer; RACK's state, from the entries both newly report; what the ACK
+     * says of a tail probe that is out; detection, by RACK on a connection that uses SACK and by the duplicate count on
+     * one that does not; the recovery state, which begins, goes on or ends, with the window in recovery; the resends,
+     * as far as that window allows; the peer's window, the zero-window probes and the FIN that waited for the window;
+     * and the send timer. It owns no state; it drives the block's send side through the Transmitter, in place, and
+     * tells the Receiver what moved. It names neither the Receiver nor the Lifecycle: an ACK ends a connection only
+     * through what the Receiver does with the outcome.
      */
     template <typename Ip, typename CongestionControl>
     class AckProcessor {
@@ -73,26 +74,30 @@ namespace aloe::tcp::detail {
          *    window as it stands, before this segment updates it, the field scaled by the peer's shift, and counted.
          * 3. RACK's state: the reordering window's round with the duplicate report (`Rack::on_ack`), then reordering,
          *    when the blocks or the cumulative part showed it. A duplicate report grows the window only when reordering
-         *    was seen before this ACK, as Linux's `tcp_dsack_seen` reads `reord_seen` before its walk records any.
-         *    The tail probe's ACK and the undo's checks have their place after this step, before detection.
-         * 4. Reneging: an ACK that moved SND.UNA and left a head the peer reported received arms the RTO short
+         *    was seen before this ACK, as Linux's `tcp_dsack_seen` reads `reord_seen` before its walk records any, and
+         *    never when it is the tail probe's own (`reports_probe`), which is no sign of reordering.
+         * 4. The tail probe's ACK, while its verdict is open (`on_probe_ack`): needless, a loss it repaired, or nothing
+         *    yet, as Linux's `tcp_process_tlp_ack` runs before `tcp_fastretrans_alert`. The undo's checks have their
+         *    place after this step, before detection.
+         * 5. Reneging: an ACK that moved SND.UNA and left a head the peer reported received arms the RTO short
          *    (`Transmitter::arm_reneging`), and nothing more of this ACK runs until the peer's window, as Linux's
          *    `tcp_check_sack_reneging` returns from `tcp_fastretrans_alert`.
-         * 5. The end of an episode: an ACK that covers `recover` in recovery or in the loss state ends it here, before
+         * 6. The end of an episode: an ACK that covers `recover` in recovery or in the loss state ends it here, before
          *    detection (`end_on_this_ack`), as Linux's `tcp_fastretrans_alert` settles its state's exit (its step D)
          *    before it looks for losses (step E). Detection on that ACK then reads the reordering window of the open
          *    state it leaves, the one the reordering timer it may arm will read when it fires. On every other ACK
          *    detection comes first and reads the window of the state the ACK found, which the recovery state's step
          *    then moves on.
-         * 6. Detection: RACK's, on a connection that uses SACK, when its state moved (`Transmitter::detect`); without
+         * 7. Detection: RACK's, on a connection that uses SACK, when its state moved (`Transmitter::detect`); without
          *    SACK, the duplicate count's, in the recovery state's step.
-         * 7. The recovery state (`update_recovery`): on an ACK that ended an episode, a new one when something is
+         * 8. The recovery state (`update_recovery`): on an ACK that ended an episode, a new one when something is
          *    marked lost; on any other, by the state the ACK found. Then the resend pass, which sends what is marked
          *    lost as far as the window allows.
-         * 8. The peer's window: RFC 793 updates it only when SND.UNA <= SEG.ACK <= SND.NXT, a stale ACK carrying a
-         * stale window; then the zero-window probes and the FIN that waited for the window.
-         * 9. The send timer (`Transmitter::set_timer`), after an ACK that ran detection or moved SND.UNA; any other ACK
-         *    leaves the timer as it was, a reordering timer still waiting for its entries included.
+         * 9. The peer's window: RFC 793 updates it only when SND.UNA <= SEG.ACK <= SND.NXT, a stale ACK carrying a
+         *    stale window; then the zero-window probes and the FIN that waited for the window.
+         * 10. The send timer (`Transmitter::set_timer`), after an ACK that ran detection or moved SND.UNA: the
+         *    reordering timer, the tail probe or the RTO. Any other ACK leaves the timer as it was, a reordering timer
+         *    still waiting for its entries or a probe's included.
          *
          * `payload_length` is the segment's, since an ACK that carries data is no duplicate.
          */
@@ -106,10 +111,14 @@ namespace aloe::tcp::detail {
             const Found found{.state    = block.recovery.state(),
                               .reported = block.queue.reported_bytes(),
                               .highest  = block.queue.highest_reported()};
-            const Blocks blocks  = read_blocks(block, ack, sack);
-            const bool duplicate = payload_length == 0 && !header.flags.has(wire::TcpFlag::Syn) &&
-                                   !header.flags.has(wire::TcpFlag::Fin) && ack == block.send.una &&
-                                   block.send.scaled(header.window) == block.send.wnd && transmitter_.in_flight(block);
+            const Blocks blocks     = read_blocks(block, ack, sack);
+            // RFC 5681's duplicate ACK but for the data in flight it requires: no data, no SYN or FIN, no advance, the
+            // window as it stands.
+            const bool repeated     = payload_length == 0 && !header.flags.has(wire::TcpFlag::Syn) &&
+                                      !header.flags.has(wire::TcpFlag::Fin) && ack == block.send.una &&
+                                      block.send.scaled(header.window) == block.send.wnd;
+            const bool duplicate    = repeated && transmitter_.in_flight(block);
+            const bool probe_report = reports_probe(block, blocks);
             Outcome outcome{};
             std::optional<AckInfo> info{};
             std::uint8_t duplicates = 0;  // the count with this ACK, when it is a duplicate
@@ -123,10 +132,13 @@ namespace aloe::tcp::detail {
                 ++context_.counters.duplicate_acks;
                 duplicates = block.recovery.count_duplicate();
             }
-            block.rack.on_ack(block.send.una, block.send.nxt, blocks.duplicate.has_value());
+            block.rack.on_ack(block.send.una, block.send.nxt, blocks.duplicate.has_value() && !probe_report);
             if (reordering) {
                 block.rack.see_reordering();
                 ++context_.counters.reordering_seen;
+            }
+            if (block.probe_state.verdict_open()) {
+                on_probe_ack(block, ack, probe_report, repeated && sack.empty());
             }
             const bool reneged = outcome.advanced && transmitter_.head_reported(block);
             Rack::Detected detected{};
@@ -262,6 +274,50 @@ namespace aloe::tcp::detail {
         }
 
         /**
+         * The ACK's believed duplicate report is the tail probe's: of at most one segment, ending at the end of a probe
+         * whose verdict is open, so the original and the probe both arrived. RFC 8985 7.4's "DSACK option matching
+         * TLP.end_seq", Linux's `FLAG_DSACK_TLP` (`tcp_dsack_seen`), which Linux sets before it judges whether the
+         * report is believed, where here only a believed report counts: one the peer could not have sent, more
+         * duplicates than the connection ever resent, settles nothing.
+         */
+        [[nodiscard]] static bool reports_probe(const ControlBlock& block, const Blocks& blocks) noexcept {
+            const std::optional<Sequence> end = block.probe_state.end();
+            return end && blocks.duplicate && blocks.duplicate->end == *end &&
+                   static_cast<std::uint32_t>(blocks.duplicate->end - blocks.duplicate->first) <= block.mss();
+        }
+
+        /**
+         * The tail probe's ACK, RFC 8985 7.4's `TLP_process_ack` and Linux's `tcp_process_tlp_ack`
+         * (`TailProbe::on_ack`), with `plain_duplicate` an ACK that repeats SND.UNA and the window, carries nothing and
+         * has no SACK option. A probe both copies of which arrived is counted as needless. One that repaired a loss, an
+         * ACK past its end with no duplicate report of it, tells the policy of that loss once, with the flight as a
+         * recovery's beginning reads it, and its window becomes the target at once (`LossRecovery::on_repaired`): no
+         * state entered, nothing resent, no undo kept. An ACK on the probe's end that says neither leaves the verdict
+         * open, for a later ACK or a second probe (`Transmitter::on_tail_probe_timeout`).
+         *
+         * RFC 8985 7.4.2 reads a plain duplicate as "a DupAck without any SACK option", as here, where Linux's test is
+         * that no block newly reported data (`FLAG_DATA_SACKED`): a duplicate that repeats old blocks closes the
+         * verdict there and leaves it open here. Neither needs data in flight, which RFC 5681's duplicate ACK does: the
+         * probe of a lone segment leaves nothing in flight once its end is acknowledged.
+         */
+        void on_probe_ack(ControlBlock& block,
+                          const Sequence ack,
+                          const bool probe_report,
+                          const bool plain_duplicate) noexcept {
+            switch (block.probe_state.on_ack(ack, probe_report, plain_duplicate)) {
+                case TailProbe::Verdict::Open:
+                    break;
+                case TailProbe::Verdict::Needless:
+                    ++context_.counters.tail_probes_needless;
+                    break;
+                case TailProbe::Verdict::Repaired:
+                    block.recovery.on_repaired(block.send.flight(), block.mss());
+                    ++context_.counters.tail_probe_recoveries;
+                    break;
+            }
+        }
+
+        /**
          * Linux's `tcp_is_sackblock_valid` for a block that touches the entries, with `edge` the later of the ACK and
          * SND.UNA, where SND.UNA is about to be: it starts before it ends and before SND.NXT, it ends at or before
          * SND.NXT, and it starts after `edge`. A duplicate report at or below `edge` touches no entry.
@@ -337,7 +393,8 @@ namespace aloe::tcp::detail {
          * and `tcp_ack_update_rtt`: from the oldest entry the ACK freed, measured from its transmission, when no entry
          * it freed left more than once (Karn's rule); else, on a connection with timestamps, from the ACK's echo, which
          * names the transmission it answers, so the echo on the ACK of a resend ends the backoff too
-         * (`Timestamps::sample`). The sample feeds RACK's minimum round trip too, as Linux's `tcp_update_rtt_min`. The
+         * (`Timestamps::sample`). The sample feeds RACK's minimum round trip too, as Linux's `tcp_update_rtt_min`, and
+         * lets the next tail probe go (RFC 8985 7.3: a sample since the last probe; `TailProbe::sampled`). The
          * timer restarts from now while anything is in flight and stops when nothing is, RFC 6298's rule, which covers
          * RFC 6582's re-arm on a partial ACK; a head that never left, the FIN a close holds for the window, is
          * `send_unsent`'s or the probes'. A partial ACK frees nothing, samples only from its echo, and restarts the
@@ -354,6 +411,7 @@ namespace aloe::tcp::detail {
             if (sample) {
                 block.rtt.sample(*sample, context_.config.rto_min, context_.config.rto_max);
                 block.rack.sample(*sample, context_.now);
+                block.probe_state.sampled();
                 ++context_.counters.rtt_samples;
             }
             if (transmitter_.in_flight(block)) {

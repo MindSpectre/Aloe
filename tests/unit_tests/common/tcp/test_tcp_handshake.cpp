@@ -619,6 +619,14 @@ TEST_P(TcpHandshake, ConfigValidation) {
     EXPECT_EQ(wheel_.pending(), 0U) << "construction arms nothing";
 }
 
+TEST_P(TcpHandshake, ANegativeOrOverlongProbeAllowanceIsRefused) {
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.tail_probe_ack_delay = -1ms}}), std::invalid_argument);
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.tail_probe_ack_delay = 501ms}}), std::invalid_argument);
+    EXPECT_NO_THROW((std::ignore = Tcp{ip_, wheel_, {.tail_probe_ack_delay = 0ms}}));
+    EXPECT_NO_THROW((std::ignore = Tcp{ip_, wheel_, {.tail_probe_ack_delay = 500ms}}));
+    EXPECT_EQ(aloe::tcp::TcpConfig{}.tail_probe_ack_delay, 40ms) << "Linux's shortest delayed ACK";
+}
+
 TEST_P(TcpHandshakeOptions, TheOptionsAreInUseOnlyWhenBothEndsSendThem) {
     expect_negotiation(true, true);
 }

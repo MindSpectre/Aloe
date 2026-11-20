@@ -280,7 +280,7 @@ TEST_P(TcpTwoStacks, EchoAcrossMssAndClose) {
 }
 
 // The receive slots between two Aloe peers: within them a loss-free fabric means no loss; a segment beyond them is
-// dropped by the receiver, and the sender's retransmission timer resends it once the slots are free again.
+// dropped by the receiver, and the sender resends it once the slots are free again, by its tail probe and RACK.
 
 TEST_P(TcpTwoStacksFourSlots, SmallSegmentsWithinTheSlotsLoseNothing) {
     Tcp::ConnectionType* c = nullptr;
@@ -321,7 +321,7 @@ TEST_P(TcpTwoStacksFourSlots, SmallSegmentsWithinTheSlotsLoseNothing) {
     s->release();
 }
 
-TEST_P(TcpTwoStacksFourSlots, SmallSegmentsBeyondTheSlotsRecoverAfterOneRto) {
+TEST_P(TcpTwoStacksFourSlots, SmallSegmentsBeyondTheSlotsRecoverByTheTailProbe) {
     Tcp::ConnectionType* c = nullptr;
     Tcp::ConnectionType* s = establish(c);
     ASSERT_NE(s, nullptr);
@@ -336,11 +336,17 @@ TEST_P(TcpTwoStacksFourSlots, SmallSegmentsBeyondTheSlotsRecoverAfterOneRto) {
         << "six bytes sit far inside the 2896-byte window: short segments meet the cap first";
     EXPECT_EQ(s->out_of_order_segments(), 0U) << "with every slot taken in order, nothing is held above the hole";
     s->consume(4);
-    for (int tick = 0; tick < 300 && s->unread().size() < 2; ++tick) {  // one RTO of 200 ms, then the resend
+    // The ACK of the four left the fifth and sixth in flight with nothing reported: the tail probe resends the sixth
+    // two round trips later, the receiver, its slots free again, holds it above the hole and reports it, and RACK
+    // resends the fifth. The RTO, 200 ms on, is never needed.
+    for (int tick = 0; tick < 300 && s->unread().size() < 2; ++tick) {
         exchange();
     }
     EXPECT_EQ(s->unread().size(), 2U) << "the dropped bytes arrived by retransmission";
-    EXPECT_GE(client_.tcp.counters().retransmits, 1U);
+    EXPECT_EQ(client_.tcp.counters().tail_probes, 1U);
+    EXPECT_EQ(client_.tcp.counters().rack_marked, 1U);
+    EXPECT_EQ(client_.tcp.counters().fast_retransmits, 1U);
+    EXPECT_EQ(client_.tcp.counters().retransmits, 0U);
     c->release();
     s->release();
 }

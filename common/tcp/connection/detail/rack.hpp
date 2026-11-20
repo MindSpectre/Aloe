@@ -39,7 +39,7 @@ namespace aloe::tcp::detail {
         /// What one detection did.
         struct Detected {
             std::uint32_t marked       = 0;  ///< Entries newly marked lost.
-            std::uint32_t resends_lost = 0;  ///< Of them, resends marked again.
+            std::uint32_t resends_lost = 0;  ///< Of them, resends a lost mark owed, marked again.
             core::Duration wait{};           ///< The longest wait left among entries not yet due; zero when none waits.
         };
 
@@ -165,9 +165,11 @@ namespace aloe::tcp::detail {
          * whose time has passed: `sent + round trip + window <= now`. Walks from the head and stops at the first entry
          * that never was resent and was not sent before RACK's segment, and at the first that never left: entries
          * leave in order, and every entry behind such a one was last sent after it. An entry already resent is judged
-         * by its resend's stamp, and one marked again is counted among `resends_lost`. RFC 8985's `RACK_detect_loss`,
-         * Linux's `tcp_rack_detect_loss`, which walks its list in transmit order where this walks the queue in sequence
-         * order. Clears `advanced()`.
+         * by its resend's stamp. One whose resend a lost mark owed is marked again and counted among `resends_lost`, as
+         * Linux's `tcp_mark_skb_lost` counts a `TCPCB_SACKED_RETRANS` segment; a segment a tail probe sent again was
+         * never marked, and its loss is a first one, as Linux's probe sets only `TCPCB_EVER_RETRANS`
+         * (`SentSegment::resend_out`). RFC 8985's `RACK_detect_loss`, Linux's `tcp_rack_detect_loss`, which walks its
+         * list in transmit order where this walks the queue in sequence order. Clears `advanced()`.
          */
         template <device::IsPacket Packet>
         [[nodiscard]] Detected detect(RetransmissionQueue<Packet>& queue,
@@ -196,7 +198,7 @@ namespace aloe::tcp::detail {
                     detected.wait = std::max(detected.wait, remaining);
                     continue;
                 }
-                if (entry.resent()) {
+                if (entry.resend_out) {
                     ++detected.resends_lost;
                 }
                 queue.mark_lost(pool, index);

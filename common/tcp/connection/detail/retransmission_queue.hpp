@@ -277,21 +277,26 @@ namespace aloe::tcp::detail {
             return false;
         }
 
-        /// Nothing for an entry reported or already lost. A new mark has had no resend tried.
+        /// Nothing for an entry reported or already lost. A new mark has had no resend tried, and a resend the last
+        /// one owed is out no more.
         void mark_lost(Pool& pool, const std::uint32_t index) noexcept {
             Entry& entry = pool.node(index);
             if (entry.reported || entry.lost) {
                 return;
             }
-            entry.lost   = true;
-            entry.tried  = false;
-            lost_bytes_ += outstanding(entry, acknowledged_);
+            entry.lost        = true;
+            entry.tried       = false;
+            entry.resend_out  = false;
+            lost_bytes_      += outstanding(entry, acknowledged_);
         }
 
-        /// A resend of it left: it is lost no more, and waits no more.
+        /// A resend of it left: it is lost no more, and waits no more. When it was marked lost, the resend that left is
+        /// the one the mark owed, and it is out (`SentSegment::resend_out`); a tail probe's, of an entry not marked,
+        /// is not.
         void clear_lost(Pool& pool, const std::uint32_t index) noexcept {
             if (Entry& entry = pool.node(index); std::exchange(entry.lost, false)) {
-                lost_bytes_ -= outstanding(entry, acknowledged_);
+                lost_bytes_      -= outstanding(entry, acknowledged_);
+                entry.resend_out  = true;
             }
             clear_waiting(pool, index);
         }
@@ -370,6 +375,20 @@ namespace aloe::tcp::detail {
                 }
             }
             assert(false && "the lost total counts an entry that is marked lost");
+            return no_node;
+        }
+
+        /// The first entry whose resend waits for its packet with no lost mark that owes it: a tail probe's, since
+        /// every other resend is of an entry marked lost. `no_node` when none, with no walk while no entry waits.
+        [[nodiscard]] std::uint32_t first_waiting_unmarked(const Pool& pool) const noexcept {
+            if (waiting_segments_ == 0) {
+                return no_node;
+            }
+            for (std::uint32_t index = chain_.head; index != no_node; index = pool.node(index).next) {
+                if (const Entry& entry = pool.node(index); entry.waiting && !entry.lost) {
+                    return index;
+                }
+            }
             return no_node;
         }
 

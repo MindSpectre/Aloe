@@ -3,10 +3,12 @@
 // tcp_is_sackblock_valid and touch no entry; the last is valid, but a block marks only the entries it covers whole, as
 // tcp_match_skb_to_sack leaves a buffer of one segment. So RACK's state does not move and nothing waits: had any block
 // marked a segment, RACK's window of 10 / 4 = 2.5 ms would have sent the segments before it again at 23 ms, before the
-// ACK at 30 ms the last line injects. The first block is no duplicate report: it starts above the ACK and the second
-// does not contain it. Without timestamps four blocks fit, a segment carries 1460 bytes, the round trip comes from the
-// handshake's ACK alone, and the budget is 512 * 1460 / 2 = 373760, stated as 373760 / 8 = 46720. Linux ignores the
-// same blocks.
+// ACK at 30 ms the last line injects. Nothing is reported either, so the tail probe the sends scheduled for two round
+// trips after them, 10 + 2 * 10 = 30 ms, goes: the last segment again, just before that ACK (RFC 8985 7.2); a report
+// would have left the hole to RACK and cancelled it. The first block is no duplicate report: it starts above the ACK
+// and the second does not contain it. Without timestamps four blocks fit, a segment carries 1460 bytes, the round trip
+// comes from the handshake's ACK alone, and the budget is 512 * 1460 / 2 = 373760, stated as 373760 / 8 = 46720.
+// Linux ignores the same blocks, and its probe goes 2 ms later, at 32 ms (tcp_schedule_loss_probe's floor).
 --tcp_timestamps=0
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0
@@ -26,4 +28,5 @@
 +0 write(4, ..., 100) = 100
 +0 > P. 301:401(100) ack 1 win 46720
 +0.010 < . 1:1(0) ack 1 win 512 <nop,nop,sack 301:501 251:201 1:101 201:251>
-+0.010 < . 1:1(0) ack 401 win 512
++0.010 > P. 301:401(100) ack 1 win 46720
++0 < . 1:1(0) ack 401 win 512

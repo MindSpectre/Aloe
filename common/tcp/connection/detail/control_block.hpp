@@ -22,6 +22,7 @@
 #include <detail/rtt_estimator.hpp>
 #include <detail/sack_blocks.hpp>
 #include <detail/send_sequence.hpp>
+#include <detail/tail_probe.hpp>
 #include <detail/tcp_timestamps.hpp>
 #include <detail/window_use.hpp>
 #include <detail/zero_window_probe.hpp>
@@ -38,6 +39,7 @@ namespace aloe::tcp::detail {
         ArpPoll,     ///< A SYN, SYN-ACK or FIN whose first send found no next hop: the send is tried again.
         Probe,       ///< The peer's window is zero and nothing is in flight: a zero-window probe goes.
         Reorder,     ///< RACK left entries waiting: detection runs again, and what it marks is resent (RFC 8985).
+        TailProbe,   ///< The tail of what is out may be lost: the last segment sent goes again (RFC 8985 7.3).
     };
 
     /**
@@ -144,6 +146,7 @@ namespace aloe::tcp::detail {
             recovery         = {};
             rtt              = {};
             rack             = {};
+            probe_state      = {};
             probe            = {};
             timestamps       = {};
             window_use       = {};
@@ -186,6 +189,8 @@ namespace aloe::tcp::detail {
         LossRecovery<CongestionControl> recovery{};
         RttEstimator rtt{};
         Rack rack{};  ///< RACK's state: every ACK that reports or acknowledges something writes it (SACK in use).
+        TailProbe probe_state{};  ///< The tail probe's flight and its open verdict (SACK in use); `probe` is the
+                                  ///< zero-window probe's.
         ZeroWindowProbe probe{};
         Timestamps timestamps{};
         // Behind the parts an in-order ACK touches.
@@ -193,7 +198,8 @@ namespace aloe::tcp::detail {
         // Behind the parts an in-order segment touches.
         SackBlocks sack{};
 
-        // The connection's wheel timer: the RTO, the reordering timer, the ARP poll or the probe.
+        // The connection's wheel timer: the RTO, the reordering timer, the tail probe, the ARP poll or the zero-window
+        // probe.
         TimerNode timer;
         TimerKind timer_kind = TimerKind::None;  ///< What `timer` does when it fires.
         core::TimePoint rto_at{};                ///< The moment the RTO would fire, set wherever it is armed.

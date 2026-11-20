@@ -76,8 +76,11 @@ namespace aloe::tcp {
         bool timestamps     = true;  ///< Offer and use RFC 7323 timestamps.
         bool sack           = true;  ///< Offer and use SACK-permitted: report what is held, and what arrived twice.
         bool window_scaling = true;  ///< Offer and use RFC 7323 window scaling.
-        core::Duration delayed_ack      = core::Duration::zero();  ///< How long an ACK for in-order data may wait; zero
-                                                                   ///< sends it at the flush of the same tick.
+        core::Duration delayed_ack = core::Duration::zero();  ///< How long an ACK for in-order data may wait; zero
+                                                              ///< sends it at the flush of the same tick.
+        core::Duration tail_probe_ack_delay =
+            std::chrono::milliseconds{40};    ///< What a tail probe waits beyond two round trips when one segment is in
+                                              ///< flight: the peer's delayed ACK. Linux uses its minimum RTO.
         std::uint8_t retransmit_defers  = 1;  ///< Deferred resends of one segment before the copy fallback.
         core::Duration unresolved_retry = std::chrono::milliseconds{10};  ///< A SYN waiting for ARP; not a try.
         std::uint16_t unresolved_polls  = 300;  ///< Polls before Unresolved: 3 s by default, Linux's ARP bound.
@@ -100,6 +103,10 @@ namespace aloe::tcp {
                 (delayed_ack > core::Duration::zero() && delayed_ack < resolution)) {
                 throw std::invalid_argument{"TcpConfig: delayed_ack must be zero, or between the timer wheel's "
                                             "resolution and 500 ms"};
+            }
+            if (tail_probe_ack_delay < core::Duration::zero() ||
+                tail_probe_ack_delay > std::chrono::milliseconds{500}) {
+                throw std::invalid_argument{"TcpConfig: tail_probe_ack_delay must be between zero and 500 ms"};
             }
             if (send_segments == 0 || send_pool == 0) {
                 throw std::invalid_argument{"TcpConfig: send_segments and send_pool must be positive"};

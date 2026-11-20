@@ -13,6 +13,7 @@
 
 #include <gtest/gtest.h>
 #include <tcp_fixture.hpp>
+#include <tcp_sack_brick.hpp>
 
 // The scoreboard: the two marks on the retransmission queue's entries, reported received and lost, their totals, what
 // is in flight, the delivered count and the duplicate report's belief, and where the resend a lost mark owes stands;
@@ -136,63 +137,15 @@ namespace {
         bool called_after_mark = false;
     };
 
-    /// The sum of every drop counter.
-    [[nodiscard]] std::uint64_t drops(const aloe::tcp::TcpCounters& counters) {
-        return counters.dropped_bad_header + counters.dropped_bad_checksum + counters.dropped_no_connection +
-               counters.dropped_closed + counters.dropped_unexpected + counters.dropped_duplicate +
-               counters.dropped_out_of_order + counters.dropped_out_of_window + counters.dropped_no_slot +
-               counters.dropped_no_node + counters.dropped_table_full + counters.dropped_paws;
-    }
+    using aloe::testing::drops;
 
-    /// The brick with a peer that offers timestamps and SACK-permitted unless the test says not, five sends of 100
-    /// bytes collected as `sent`, and `at(n)`, the stack's sequence `n` past the first of them. The passive open takes
-    /// a round trip of 10 ms, so RACK's reordering window is 2.5 ms and a block at the instant of the sends marks
-    /// nothing lost: RACK's round trip of zero for the entry it reports leaves the entries before it 2.5 ms to arrive.
-    /// At a round trip of zero the window would be zero too, and RACK would mark them at once.
-    class TcpScoreboardBrick : public aloe::testing::TcpFixture {
-    protected:
-        TcpScoreboardBrick() {
-            peer_.set_timestamps(100);
-            peer_.set_sack_permitted(true);
-        }
-
-        /// Five sends of 100 bytes, collected as `sent`; false, with a failure added, when they did not leave.
-        [[nodiscard]] bool send_five(Connection& c) {
-            for (int count = 0; count < 5; ++count) {
-                if (c.send(aloe::frames::pattern(100)) != 100U) {
-                    ADD_FAILURE() << "send " << count << " was not accepted whole";
-                    return false;
-                }
-            }
-            sent = collect();
-            if (sent.size() != 5) {
-                ADD_FAILURE() << "expected five segments, got " << sent.size();
-                return false;
-            }
-            return true;
-        }
-
-        /// A passive open with a round trip of 10 ms and the five sends; null on failure.
-        [[nodiscard]] Connection* open_and_send() {
-            Connection* c = open_passive(peer_, std::chrono::milliseconds{10});
-            return c != nullptr && send_five(*c) ? c : nullptr;
-        }
-
-        [[nodiscard]] TcpSequence at(const std::uint32_t offset) const {
-            return sent[0].tcp->sequence + offset;
-        }
-
-        [[nodiscard]] Block range(const std::uint32_t first, const std::uint32_t end) const {
-            return Block{.first = at(first), .end = at(end)};
-        }
-
-        /// A pure ACK of `ack` with no SACK option.
-        [[nodiscard]] std::vector<std::byte> ack_of(const TcpSequence ack) {
-            return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), ack);
-        }
-
-        std::vector<aloe::frames::ParsedFrame> sent;
-    };
+    /// The brick with the shared helpers (`aloe::testing::SackBrick`): a peer that offers timestamps and SACK-permitted
+    /// unless the test says not, five sends of 100 bytes collected as `sent`, and `at(n)`, the stack's sequence `n`
+    /// past the first of them. The passive open takes a round trip of 10 ms, so RACK's reordering window is 2.5 ms and
+    /// a block at the instant of the sends marks nothing lost: RACK's round trip of zero for the entry it reports
+    /// leaves the entries before it 2.5 ms to arrive. At a round trip of zero the window would be zero too, and RACK
+    /// would mark them at once.
+    using TcpScoreboardBrick = aloe::testing::SackBrick<aloe::testing::TcpFixture>;
 
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpScoreboardBrick,
@@ -580,7 +533,7 @@ TEST_P(TcpScoreboardBrick, AReportedEntryKeepsItsPacketUntilTheCumulativeAck) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
     const std::size_t nodes = tcp_->send_nodes_available();
-    ASSERT_TRUE(send_five(*c));
+    ASSERT_TRUE(send(*c, 5, sent));
     receive(peer_.sack(at(0), Blocks{range(200, 300)}));
     ASSERT_TRUE(tcp_->sent_segment(*c, 2).reported);
     EXPECT_FALSE(tcp_->sent_segment(*c, 2).packet.empty());

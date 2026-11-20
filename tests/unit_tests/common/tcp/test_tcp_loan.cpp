@@ -302,12 +302,21 @@ TEST_P(TcpLoan, AWaitingEntryABlockThenReportsIsNotResentAndTheNextEntryIsTriedA
     const auto sent = collect();
     ASSERT_EQ(sent.size(), 3U);
     const aloe::wire::TcpSequence first = sent[0].tcp->sequence;
-    advance(200ms);  // the RTO marks all three; the head's resend waits
+    // With SACK the tail probe of the third goes first, two round trips of zero after the sends, the handshake's: at
+    // the next tick. Its packet is lent, so it waits, and the next flush sends its copy. The RTO runs from the probe.
+    advance(1ms);
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 1U);
+    advance(1ms);
+    ASSERT_EQ(collect().size(), 1U) << "the probe's copy";
+    EXPECT_EQ(tcp_->counters().tail_probes, 1U);
+    EXPECT_EQ(tcp_->counters().retransmits_copied, 1U);
+    advance(199ms);  // the RTO at 201 ms marks all three; the head's resend waits
     EXPECT_TRUE(collect().empty());
     advance(1ms);
     ASSERT_EQ(collect().size(), 1U) << "the head's copy; the second entry's first attempt waits for its packet";
     EXPECT_EQ(tcp_->counters().fast_retransmits, 1U);
-    EXPECT_EQ(tcp_->counters().retransmits_deferred, 2U);
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 3U) << "the probe's, the head's and the second's";
     const std::array blocks{
         aloe::wire::TcpSackBlock{.first = first + 100U, .end = first + 200U}
     };
@@ -318,7 +327,7 @@ TEST_P(TcpLoan, AWaitingEntryABlockThenReportsIsNotResentAndTheNextEntryIsTriedA
     EXPECT_FALSE(tcp_->sent_segment(*c, 1).waiting) << "its resend is moot: nothing of it waits";
     EXPECT_EQ(tcp_->counters().fast_retransmits, 2U)
         << "the third entry's own first attempt, counted: the second's wait ended with the report";
-    EXPECT_EQ(tcp_->counters().retransmits_deferred, 3U);
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 4U) << "its original and its copy are both lent";
     EXPECT_TRUE(tcp_->sent_segment(*c, 2).waiting);
     return_loans();
     const auto resent = collect();
@@ -330,8 +339,8 @@ TEST_P(TcpLoan, AWaitingEntryABlockThenReportsIsNotResentAndTheNextEntryIsTriedA
     EXPECT_FALSE(tcp_->sent_segment(*c, 2).waiting);
     advance(1ms);
     EXPECT_TRUE(collect().empty()) << "nothing waits any more";
-    EXPECT_EQ(tcp_->counters().retransmits_deferred, 3U);
-    EXPECT_EQ(tcp_->counters().retransmits_copied, 1U);
+    EXPECT_EQ(tcp_->counters().retransmits_deferred, 4U);
+    EXPECT_EQ(tcp_->counters().retransmits_copied, 2U) << "the probe's and the head's";
     return_loans();
 }
 

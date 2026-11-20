@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 #include <tcp_fixture.hpp>
+#include <tcp_sack_brick.hpp>
 
 // Loss recovery, the one machine of three states: RFC 5681's duplicate ACK; what is in flight, which a duplicate lowers
 // by a segment and so lets new data out (RFC 3042's limited transmit); the third duplicate, which marks the head lost
@@ -26,18 +27,8 @@ namespace {
     using TcpRecovery         = aloe::testing::TcpFixture;
     using TcpRecoveryRefusing = aloe::testing::TcpRefusingFixture;
     using Recovery            = aloe::tcp::detail::LossRecovery<aloe::tcp::NewReno>;
+    using TcpRecorded         = aloe::testing::TcpRecordedFixture;
     constexpr auto unbounded  = std::numeric_limits<std::uint32_t>::max();
-
-    class TcpRecorded
-        : public ::testing::TestWithParam<aloe::fabric::EmulatedOffloads>,
-          protected aloe::testing::detail::FabricPair,
-          protected aloe::testing::TcpHarness<aloe::fabric::Port, aloe::testing::RecordingCongestionControl> {
-    protected:
-        TcpRecorded()
-            : FabricPair{GetParam()},
-              TcpHarness{fabric, harness, port} {
-        }
-    };
 
     /// The brick with no congestion control: the policy has no target, so recovery has no window of its own.
     class TcpUnbounded : public ::testing::TestWithParam<aloe::fabric::EmulatedOffloads>,

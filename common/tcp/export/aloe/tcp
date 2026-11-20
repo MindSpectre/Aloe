@@ -32,6 +32,7 @@
 #include <detail/send_sequence.hpp>
 #include <detail/sent_segment_pool.hpp>
 #include <detail/stack_context.hpp>
+#include <detail/tail_probe.hpp>
 #include <detail/tcp_timestamps.hpp>
 #include <detail/transmitter.hpp>
 #include <detail/window_use.hpp>

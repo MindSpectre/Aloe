@@ -221,6 +221,16 @@ namespace aloe::tcp {
         [[nodiscard]] core::Duration reordering_window() const noexcept {
             return block_.reordering_window();
         }
+        /// For tests and monitoring: a tail probe is out, from its send until a cumulative ACK reaches its end (RFC
+        /// 8985 7.3), on a connection that uses SACK. While one is, no other probe goes.
+        [[nodiscard]] bool tail_probe_in_flight() const noexcept {
+            return block_.probe_state.in_flight();
+        }
+        /// For tests and monitoring: whether the last tail probe was needless or repaired a loss is not known yet (RFC
+        /// 8985 7.4); an ACK that lands on the probe's end leaves it open, so it usually outlives the flight.
+        [[nodiscard]] bool tail_probe_verdict_open() const noexcept {
+            return block_.probe_state.verdict_open();
+        }
         /// The retransmission timeout now, the backoff included.
         [[nodiscard]] core::Duration rto() const noexcept {
             return block_.rtt.rto();

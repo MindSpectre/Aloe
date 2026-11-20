@@ -170,6 +170,21 @@ namespace aloe::tcp::detail {
             }
         }
 
+        /**
+         * A tail probe repaired a loss (RFC 8985 7.4.2): the third way the policy hears of congestion. It is told once,
+         * with `flight` capped by its window as `begin_recovery` tells it, sets its target, and its window becomes that
+         * target at once: `on_congestion` then `on_recovery_end`, the cut a fast recovery makes, with nothing resent,
+         * no state entered and no undo opened. Linux's `tcp_process_tlp_ack` makes the same cut through
+         * `tcp_init_cwnd_reduction` and `tcp_end_cwnd_reduction`. Only while open: a recovery or a timeout forgets the
+         * probe whose verdict this settles.
+         */
+        void on_repaired(const std::uint32_t flight, const std::uint16_t mss) noexcept {
+            assert(state_ == RecoveryState::Open && "a probe's verdict is forgotten when an episode begins");
+            CongestionControl::on_congestion(
+                congestion_, std::min(flight, CongestionControl::window(congestion_)), mss);
+            CongestionControl::on_recovery_end(congestion_);
+        }
+
         /// One ACK in recovery that does not end it.
         void on_recovery_ack(const std::uint32_t delivered,
                              const std::uint32_t in_flight,

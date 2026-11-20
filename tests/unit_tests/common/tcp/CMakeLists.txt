@@ -29,6 +29,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Tcp
         test_tcp_rate_reduction.cpp
         test_tcp_window_use.cpp
         test_tcp_rack.cpp
+        test_tcp_tail_probe.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Tcp
         PRIVATE
