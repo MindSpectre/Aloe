@@ -1,0 +1,30 @@
+// A peer that takes back what it reported: it reports the second segment, then acknowledges the first and stops there,
+// so the head left is the entry it reported and has discarded since (RFC 2018 lets a receiver do so; Aloe's own does
+// when it needs room). Linux's tcp_check_sack_reneging: the ACK arms the RTO at max(srtt / 2, 10 ms), here
+// max(10 / 2, 10) = 10 ms from 20 ms, and does nothing else; the reordering timer the report had armed for the first
+// segment, due at 10 + 10 + 2.5 = 22.5 ms, is gone with it. At 30 ms the head is still reported: every received mark
+// is cleared, everything is lost (tcp_timeout_mark_lost), and the expiry resends the head and enters the loss state,
+// whose window is what is in flight after the marking, nothing, plus one segment. The resend's ACK at 40 ms, a round
+// trip later, lets the third segment, marked by the expiry, go again; the ACK of everything ends the loss state. Linux
+// does the same, its timer rounded to jiffies.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 120 ecr 10,nop,nop,sack 101:201>
++0 < . 1:1(0) ack 101 win 512 <nop,nop,TS val 120 ecr 10>
++0.010 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 30 ecr 120>
++0.010 < . 1:1(0) ack 201 win 512 <nop,nop,TS val 130 ecr 30>
++0 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 40 ecr 130>
++0 < . 1:1(0) ack 301 win 512 <nop,nop,TS val 140 ecr 40>

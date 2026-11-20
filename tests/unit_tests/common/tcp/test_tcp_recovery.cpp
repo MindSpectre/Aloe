@@ -446,11 +446,14 @@ TEST_P(TcpRecovery, TwoLossesInOneWindowAreRepairedWithoutATimeout) {
 
 TEST_P(TcpRecovery, WithSackWhatTheBlocksReportIsWhatIsDelivered) {
     peer_.set_sack_permitted(true);
-    auto* c = open_passive(peer_);
+    // With SACK, RACK detects. A round trip of 10 ms and the reports 10 ms after the sends: RACK's round trip is 10 ms
+    // and its window a quarter of the minimum, 2.5 ms, until three segments are reported, when it is zero.
+    auto* c = open_passive(peer_, 10ms);
     ASSERT_NE(c, nullptr);
     ASSERT_EQ(c->send(aloe::frames::pattern(14600)), 14600U);
     const auto sent = collect();
     ASSERT_EQ(sent.size(), 10U);
+    advance(10ms);
     const aloe::wire::TcpSequence first = sent[0].tcp->sequence;
     // A duplicate ACK whose one block reports everything from the second segment to `end` bytes past the first.
     const auto report                   = [&](const std::uint32_t end) {
@@ -463,10 +466,11 @@ TEST_P(TcpRecovery, WithSackWhatTheBlocksReportIsWhatIsDelivered) {
     EXPECT_EQ(c->in_flight(), 13140U);
     EXPECT_EQ(c->writable(), 1460U) << "a report takes what it covers out of what is in flight: limited transmit";
     receive(report(4380));
+    EXPECT_EQ(c->lost_bytes(), 0U) << "two reported: the head waits 10 + 10 + 2.5 - 20 = 2.5 ms more";
     receive(report(5840));
-    // The third duplicate marks the head: of 14600, 4380 are reported and 1460 lost, 8760 in flight. The target is
-    // 7300. RecoverFS is the flight less what is reported, plus the 1460 this ACK newly reported: 11680. PRR allows
-    // ceil(1460 * 7300 / 11680) = 913.
+    // The third report makes RACK's window zero, and the head, sent 10 ms ago against RACK's round trip of 10 ms, is
+    // lost: of 14600, 4380 are reported and 1460 lost, 8760 in flight. The target is 7300. RecoverFS is the flight less
+    // what is reported, plus the 1460 this ACK newly reported: 11680. PRR allows ceil(1460 * 7300 / 11680) = 913.
     EXPECT_EQ(c->recovery_state(), RecoveryState::Recovery);
     EXPECT_EQ(c->congestion_window(), 9673U);
     ASSERT_EQ(collect().size(), 1U);
@@ -482,23 +486,24 @@ TEST_P(TcpRecovery, WithSackWhatTheBlocksReportIsWhatIsDelivered) {
     EXPECT_EQ(tcp_->counters().recoveries, 1U);
 }
 
-TEST_P(TcpRecovery, WithSackAThirdDuplicateThatReportsNothingStillLetsTheHeadOut) {
+TEST_P(TcpRecovery, WithSackDuplicatesThatReportNothingMarkNothing) {
     peer_.set_sack_permitted(true);
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
     ASSERT_EQ(c->send(aloe::frames::pattern(14600)), 14600U);
-    const auto sent = collect();
-    const auto dup  = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
+    std::ignore    = collect();
+    const auto dup = [&] { return peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), c->acknowledged()); };
     receive(dup());
     EXPECT_EQ(c->in_flight(), 14600U) << "with SACK only a block takes anything out of what is in flight";
     EXPECT_EQ(c->writable(), 0U);
     receive(dup());
     receive(dup());
-    EXPECT_EQ(c->recovery_state(), RecoveryState::Recovery);
-    const auto resent = collect();
-    ASSERT_EQ(resent.size(), 1U);
-    EXPECT_EQ(resent[0].tcp->sequence, sent[0].tcp->sequence);
-    EXPECT_EQ(c->congestion_window(), 14600U) << "nothing delivered, so no step: the 13140 in flight and one segment";
+    // A connection that uses SACK detects by RACK alone: three duplicates with no block move nothing RACK reads.
+    EXPECT_EQ(tcp_->counters().duplicate_acks, 3U);
+    EXPECT_EQ(c->recovery_state(), RecoveryState::Open);
+    EXPECT_EQ(c->lost_bytes(), 0U);
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(tcp_->counters().recoveries, 0U);
 }
 
 TEST_P(TcpRecovery, ATimeoutInRecoveryKeepsTheTarget) {

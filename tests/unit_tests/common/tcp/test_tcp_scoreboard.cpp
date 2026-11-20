@@ -145,7 +145,10 @@ namespace {
     }
 
     /// The brick with a peer that offers timestamps and SACK-permitted unless the test says not, five sends of 100
-    /// bytes collected as `sent`, and `at(n)`, the stack's sequence `n` past the first of them.
+    /// bytes collected as `sent`, and `at(n)`, the stack's sequence `n` past the first of them. The passive open takes
+    /// a round trip of 10 ms, so RACK's reordering window is 2.5 ms and a block at the instant of the sends marks
+    /// nothing lost: RACK's round trip of zero for the entry it reports leaves the entries before it 2.5 ms to arrive.
+    /// At a round trip of zero the window would be zero too, and RACK would mark them at once.
     class TcpScoreboardBrick : public aloe::testing::TcpFixture {
     protected:
         TcpScoreboardBrick() {
@@ -169,9 +172,9 @@ namespace {
             return true;
         }
 
-        /// A passive open and the five sends; null on failure.
+        /// A passive open with a round trip of 10 ms and the five sends; null on failure.
         [[nodiscard]] Connection* open_and_send() {
-            Connection* c = open_passive(peer_);
+            Connection* c = open_passive(peer_, std::chrono::milliseconds{10});
             return c != nullptr && send_five(*c) ? c : nullptr;
         }
 
@@ -557,7 +560,7 @@ TEST_P(TcpScoreboardBrick, BlocksOnAnAckBelowSndUnaAreRead) {
     EXPECT_EQ(entry.first, at(300));
     EXPECT_TRUE(entry.reported);
     EXPECT_EQ(c->reported_bytes(), 100U);
-    EXPECT_EQ(c->acknowledged(), at(100)) << "nothing else of the late ACK runs";
+    EXPECT_EQ(c->acknowledged(), at(100)) << "the late ACK moves no SND.UNA";
     EXPECT_EQ(tcp_->counters().sack_acks_received, 1U);
 }
 
@@ -607,7 +610,7 @@ TEST_P(TcpScoreboardBrick, AtTheRtoAReportedHeadMeansRenegingEveryMarkIsClearedA
     receive(ack_of(at(100)));  // the reported entry is the head now: the peer discarded it
     ASSERT_TRUE(tcp_->sent_segment(*c, 0).reported);
     ASSERT_EQ(c->reported_bytes(), 200U);
-    advance(std::chrono::milliseconds{200});
+    advance(std::chrono::milliseconds{200});  // reneging armed the RTO short, at max(srtt / 2, 10 ms): 10 ms on
     const auto resent = collect();
     ASSERT_EQ(resent.size(), 1U) << "the head, which the scoreboard no longer holds as received";
     EXPECT_EQ(resent[0].tcp->sequence, at(100));
@@ -619,6 +622,7 @@ TEST_P(TcpScoreboardBrick, AtTheRtoAReportedHeadMeansRenegingEveryMarkIsClearedA
     EXPECT_EQ(c->in_flight(), 100U) << "the head alone";
     EXPECT_EQ(c->recovery_state(), aloe::tcp::RecoveryState::Loss);
     EXPECT_EQ(tcp_->counters().retransmits, 1U);
+    EXPECT_EQ(tcp_->counters().sack_reneging, 1U);
 }
 
 TEST_P(TcpScoreboardBrick, AReportedHeadAcknowledgedInPartAndResentKeepsTheTotalsRight) {
@@ -629,7 +633,7 @@ TEST_P(TcpScoreboardBrick, AReportedHeadAcknowledgedInPartAndResentKeepsTheTotal
     ASSERT_TRUE(tcp_->sent_segment(*c, 0).reported);
     EXPECT_EQ(c->reported_bytes(), 50U) << "what no cumulative ACK has covered";
     EXPECT_EQ(c->in_flight(), 300U) << "350 outstanding, 50 of them reported";
-    advance(std::chrono::milliseconds{200});  // the RTO resends the head, trimmed to what the peer lacks
+    advance(std::chrono::milliseconds{200});  // the short RTO of reneging resends the head, trimmed to what it lacks
     const auto resent = collect();
     ASSERT_EQ(resent.size(), 1U);
     EXPECT_EQ(resent[0].tcp->sequence, at(150));

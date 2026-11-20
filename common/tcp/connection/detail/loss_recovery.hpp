@@ -145,8 +145,9 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * The first entry was marked lost while open: `recover` is one before `nxt`, the policy's state is copied for
-         * the undo, the policy is told of the congestion, and PRR begins with `recover_fs`.
+         * An entry was marked lost while open, or a resend was found lost again in the loss state: `recover` is one
+         * before `nxt`, the policy's state is copied for the undo, the policy is told of the congestion, which from
+         * the loss state too sets a new target, as Linux's `tcp_enter_recovery` does, and PRR begins with `recover_fs`.
          *
          * The policy hears `flight`, SND.NXT - SND.UNA, less what was sent beyond its window. RFC 5681 3.2 step 2: data
          * sent by limited transmit "MUST NOT be included" in the flight the target is computed from. Limited transmit

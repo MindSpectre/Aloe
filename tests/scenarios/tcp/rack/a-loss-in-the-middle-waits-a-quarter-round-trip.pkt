@@ -1,0 +1,27 @@
+// One later segment reported: the hole waits a quarter of the 10 ms round trip, 3 ms on the 1 ms wheel, and is
+// then resent with no duplicate ACKs counted and no retransmission timeout. Linux arms the same timer 2 ms later.
+// The handshake's ACK 10 ms after the SYN-ACK gives an srtt and a minimum round trip of 10 ms, and an RTO of 210 ms.
+// The three segments share the stamp 10 ms. The ACK at 20 ms frees the first and reports the third, so RACK's
+// segment is the third and its round trip 10 ms; one segment reported and no reordering seen, the reordering window is
+// 10 / 4 = 2.5 ms (RFC 8985 6.2), and the second, sent at the same stamp below it, waits 10 + 10 + 2.5 - 20 = 2.5 ms,
+// 3 ms on the wheel. The reordering timer marks it, recovery begins with one segment allowed above what is in flight,
+// and it goes again: its TS val is its stamp, 23 ms. The ACK of everything ends recovery. Linux's tcp_rack_mark_lost
+// adds 2 ms (TCP_TIMEOUT_MIN_US) to the same wait and resends at 25 ms.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.010 < . 1:1(0) ack 101 win 512 <nop,nop,TS val 120 ecr 10,nop,nop,sack 201:301>
++0.003 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 23 ecr 120>
++0 < . 1:1(0) ack 301 win 512 <nop,nop,TS val 130 ecr 23>

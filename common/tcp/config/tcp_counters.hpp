@@ -35,6 +35,13 @@ namespace aloe::tcp {
         std::uint64_t sack_acks_received   = 0;  ///< ACKs received whose SACK option was read.
         /// Of them, those whose first block was a believed duplicate report.
         std::uint64_t duplicate_sacks_received = 0;
+        std::uint64_t rack_marked              = 0;  ///< Segments RACK marked lost.
+        std::uint64_t lost_retransmits         = 0;  ///< Of them, resends marked lost again.
+        std::uint64_t reorder_timeouts         = 0;  ///< Expiries of the reordering timer.
+        std::uint64_t reordering_seen          = 0;  ///< ACKs that showed reordering.
+        /// Expiries of the retransmission timer that found the head reported received: the peer reneged, and every
+        /// received mark was cleared.
+        std::uint64_t sack_reneging            = 0;
 
         std::uint64_t connections_opened         = 0;  ///< Active opens that reached ESTABLISHED.
         std::uint64_t connections_accepted       = 0;

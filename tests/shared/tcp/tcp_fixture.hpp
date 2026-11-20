@@ -270,6 +270,13 @@ namespace aloe::testing {
 
         /// A scripted passive open: SYN in, SYN-ACK out, ACK in, `Accepted` drained. Null on failure.
         [[nodiscard]] Connection* open_passive(frames::TcpPeer& peer) {
+            return open_passive(peer, core::Duration::zero());
+        }
+
+        /// As `open_passive(peer)`, with the clock advanced by `round_trip` between the SYN-ACK and the peer's ACK, so
+        /// the handshake's sample is `round_trip`: 10 ms gives an srtt of 10 ms, an RTO of 210 ms and RACK a minimum
+        /// round trip of 10 ms. A round trip of zero advances nothing.
+        [[nodiscard]] Connection* open_passive(frames::TcpPeer& peer, const core::Duration round_trip) {
             if (!tcp_->listening(tcp_listen_port)) {
                 std::ignore = tcp_->listen(tcp_listen_port);
             }
@@ -280,6 +287,9 @@ namespace aloe::testing {
                 return nullptr;
             }
             peer.see(frames[0]);
+            if (round_trip > core::Duration::zero()) {
+                advance(round_trip);
+            }
             receive(peer.ack());
             const auto event = poll();
             if (!event || !event->events.accepted()) {

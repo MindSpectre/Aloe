@@ -225,7 +225,9 @@ TEST_P(TcpLoan, AWaitingHeadThatLeavesAtTheFlushRestartsTheRetransmissionTimer) 
 
 TEST_P(TcpLoan, AtTheRtoAReportedHeadWhosePacketIsLentWaitsThenLeavesAtTheFlush) {
     peer_.set_sack_permitted(true);
-    auto* c = open_passive(peer_);
+    // A round trip of 10 ms, so RACK's reordering window is 2.5 ms and the block marks nothing at once; at a round trip
+    // of zero the window is zero, and RACK would mark and resend the first entry before the ACK frees it.
+    auto* c = open_passive(peer_, 10ms);
     ASSERT_NE(c, nullptr);
     ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
     ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
@@ -238,8 +240,9 @@ TEST_P(TcpLoan, AtTheRtoAReportedHeadWhosePacketIsLentWaitsThenLeavesAtTheFlush)
     receive(peer_.sack(first, blocks));
     receive(peer_.segment({aloe::wire::TcpFlag::Ack}, {}, peer_.snd_nxt(), first + 100U));
     ASSERT_TRUE(tcp_->sent_segment(*c, 0).reported) << "the head is the entry the peer reported, then discarded";
-    advance(200ms);
+    advance(200ms);  // reneging armed the RTO at max(srtt / 2, 10 ms): it fires 10 ms on
     EXPECT_TRUE(collect().empty()) << "deferred: the head's packet is still lent";
+    EXPECT_EQ(tcp_->counters().sack_reneging, 1U);
     EXPECT_EQ(tcp_->counters().retransmits, 1U);
     EXPECT_EQ(tcp_->counters().retransmits_deferred, 1U);
     EXPECT_FALSE(tcp_->sent_segment(*c, 0).reported);

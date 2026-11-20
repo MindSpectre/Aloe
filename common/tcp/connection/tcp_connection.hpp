@@ -214,6 +214,13 @@ namespace aloe::tcp {
         [[nodiscard]] std::optional<core::Duration> srtt() const noexcept {
             return block_.rtt.srtt();
         }
+        /// For tests and monitoring: RACK's reordering window as the connection stands now (RFC 8985), on a connection
+        /// that uses SACK. Zero while reordering was never seen and the connection is in recovery or the loss state,
+        /// or has three or more segments reported received; else a quarter of the minimum round trip times the
+        /// multiplier duplicate reports grew, never more than `srtt()`.
+        [[nodiscard]] core::Duration reordering_window() const noexcept {
+            return block_.reordering_window();
+        }
         /// The retransmission timeout now, the backoff included.
         [[nodiscard]] core::Duration rto() const noexcept {
             return block_.rtt.rto();

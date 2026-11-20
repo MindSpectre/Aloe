@@ -1,0 +1,27 @@
+// Reordering shallower than three segments and shorter than a quarter of the minimum round trip causes no resend: the
+// late segment's ACK arrives before the reordering timer and cancels it. The handshake's ACK 10 ms after the SYN-ACK
+// gives a round trip of 10 ms; the three segments share the stamp 10 ms. The ACK at 20 ms reports the third, and the
+// second waits 10 + 10 + 2.5 - 20 = 2.5 ms, until 23 ms on the 1 ms wheel. At 21 ms the second arrives: the ACK of
+// everything frees it, an original below the highest sequence reported, which is reordering, and the timer gives way
+// to the RTO, which nothing outstanding needs. The write at 31 ms proves the silence between: a resend at 23 ms would
+// stand where its segment is expected. Linux behaves the same; its timer would have waited 2 ms longer.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.010 < . 1:1(0) ack 101 win 512 <nop,nop,TS val 120 ecr 10,nop,nop,sack 201:301>
++0.001 < . 1:1(0) ack 301 win 512 <nop,nop,TS val 121 ecr 10>
++0.010 write(4, ..., 100) = 100
++0 > P. 301:401(100) ack 1 win 46336 <nop,nop,TS val 31 ecr 121>
++0 < . 1:1(0) ack 401 win 512 <nop,nop,TS val 131 ecr 31>

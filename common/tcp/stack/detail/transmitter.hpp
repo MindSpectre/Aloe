@@ -7,6 +7,7 @@
 #include <aloe/wire>
 #include <array>
 #include <cassert>
+#include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -19,6 +20,7 @@
 #include <detail/connection_list.hpp>
 #include <detail/control_block.hpp>
 #include <detail/node_pool.hpp>
+#include <detail/rack.hpp>
 #include <detail/receive_window.hpp>
 #include <detail/retransmission_queue.hpp>
 #include <detail/sack_blocks.hpp>
@@ -230,7 +232,8 @@ namespace aloe::tcp::detail {
          * waited or was refused; a later try of the same mark counts nothing, and neither does the pass's try of an
          * entry the timer's expiry tried first. When the entry that left is the head, the RTO is armed from now, as
          * Linux re-arms it on resending the head, so the timer an earlier send armed does not expire before the
-         * resend's ACK can return. Returns the sequence space that left.
+         * resend's ACK can return; unless the reordering timer is pending, which stays, and only the RTO's moment
+         * moves (`restart_rto`). Returns the sequence space that left.
          */
         [[nodiscard]] std::uint32_t resend_lost(ControlBlock& block) noexcept {
             std::uint32_t left  = 0;
@@ -248,7 +251,7 @@ namespace aloe::tcp::detail {
                 }
                 left += unacknowledged(block, node);
                 if (index == block.queue.head()) {
-                    arm_retransmit(block);
+                    restart_rto(block);
                 }
                 index = block.queue.first_lost(send_pool_);  // the resend that left cleared this one's mark
             }
@@ -264,27 +267,43 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * The timeout's marks, Linux's `tcp_timeout_mark_lost`: the head, and every other entry not reported received.
-         * A head still marked received means the peer reneged on what it reported: every received mark is cleared
-         * first, so everything is lost and the expiry never resends an entry the scoreboard holds as received. An
-         * entry that never left, a FIN held for the peer's window, is not in flight and is not marked; entries leave
-         * in order, so none behind it left either.
+         * The timeout's marks, Linux's `tcp_timeout_mark_lost` and RFC 8985 6.3's `RACK_mark_losses_on_RTO`: the head,
+         * and on a connection that uses SACK every other entry not reported received and last sent at least RACK's
+         * round trip ago; later ones are left to RACK. Without SACK every entry is lost; the duplicate count is
+         * cleared with the loss state (`LossRecovery::on_timeout`).
+         *
+         * A head still marked received means the peer reneged on what it reported, counted in `sack_reneging`: every
+         * received mark is cleared first and everything is lost, so the expiry never resends an entry the scoreboard
+         * holds as received. A byte a block had reported, and so counted as delivered, is counted again when a
+         * cumulative ACK covers it (`RetransmissionQueue::delivered`), as Linux's `tp->delivered` counts it again once
+         * `tcp_timeout_mark_lost` cleared its mark: the peer did discard it, and delivers it again. An entry that never
+         * left, a FIN held for the peer's window, is not in flight and is not marked; entries leave in order, so none
+         * behind it left either.
          */
         void mark_timeout(ControlBlock& block) noexcept {
-            if (block.queue.head_reported(send_pool_)) {
+            const bool reneged = block.queue.head_reported(send_pool_);
+            if (reneged) {
                 block.queue.clear_all_reported(send_pool_);
+                ++context_.counters.sack_reneging;
             }
+            const bool by_age = block.sack.in_use() && !reneged;
             for (std::uint32_t index = block.queue.head(); index != no_node; index = send_pool_.node(index).next) {
-                if (send_pool_.node(index).transmits == 0) {
+                const SentNode& node = send_pool_.node(index);
+                if (node.transmits == 0) {
                     break;
+                }
+                if (by_age && index != block.queue.head() && context_.now - node.sent < block.rack.round_trip()) {
+                    continue;  // sent less than a round trip ago: RACK's to judge
                 }
                 block.queue.mark_lost(send_pool_, index);
             }
         }
 
         /**
-         * The first entry was marked lost on a connection that is open: recovery begins. `delivered` is what the ACK
-         * that showed it delivered; zero at a timer.
+         * An entry was marked lost on a connection that is open, or a resend was found lost again in the loss state:
+         * recovery begins, counted. From the loss state too the policy is told of the congestion and sets a new
+         * target, as Linux's `tcp_enter_recovery` does there. `delivered` is what the ACK that showed it delivered;
+         * zero at a timer.
          *
          * The policy hears of the congestion and sets its target from the flight, SND.NXT - SND.UNA, less what was
          * sent beyond its window: RFC 5681 3.2 step 2 leaves the data limited transmit sent out of that calculation
@@ -301,6 +320,7 @@ namespace aloe::tcp::detail {
             const std::uint32_t recover_fs =
                 block.sack.in_use() ? flight - block.queue.reported_bytes() + delivered : flight;
             block.recovery.begin_recovery(block.send.nxt, flight, recover_fs, mss);
+            ++context_.counters.recoveries;
             if (delivered == 0) {
                 block.recovery.on_recovery_timer(in_flight_bytes(block), mss);
             } else {
@@ -359,6 +379,25 @@ namespace aloe::tcp::detail {
         /// Whether a segment the peer can acknowledge is out (`RetransmissionQueue::in_flight`).
         [[nodiscard]] bool in_flight(const ControlBlock& block) const noexcept {
             return block.queue.in_flight(send_pool_);
+        }
+
+        /// The head is marked received (`RetransmissionQueue::head_reported`): after an ACK that moved SND.UNA, the
+        /// peer reneged on what it reported.
+        [[nodiscard]] bool head_reported(const ControlBlock& block) const noexcept {
+            return block.queue.head_reported(send_pool_);
+        }
+
+        /// RACK's detection over the queue (`Rack::detect`) with the connection's reordering window; nothing without
+        /// SACK. Counts `rack_marked` and `lost_retransmits`.
+        [[nodiscard]] Rack::Detected detect(ControlBlock& block) noexcept {
+            if (!block.sack.in_use()) {
+                return {};
+            }
+            const Rack::Detected detected =
+                block.rack.detect(block.queue, send_pool_, block.reordering_window(), context_.now);
+            context_.counters.rack_marked      += detected.marked;
+            context_.counters.lost_retransmits += detected.resends_lost;
+            return detected;
         }
 
         /**
@@ -457,15 +496,42 @@ namespace aloe::tcp::detail {
         }
 
         // The timers.
-        /// The RTO from now; under a user timeout on a synchronized connection, never later than the head's first
-        /// transmission plus the timeout, Linux's `tcp_clamp_rto_to_user_timeout`, and never earlier than now.
+        /// The RTO from now, its moment kept in `rto_at` (`rto_deadline`).
         void arm_retransmit(ControlBlock& block) noexcept {
-            core::TimePoint deadline = context_.now + block.rtt.rto();
-            if (const SentNode* head = user_timed_head(block); head != nullptr) {
-                deadline = std::min(deadline, std::max(context_.now, head->first_sent + context_.config.user_timeout));
+            arm_rto_at(block, rto_deadline(block, block.rtt.rto()));
+        }
+
+        /**
+         * The send timer after an ACK or an expiry, the last step of an acknowledgement: the reordering timer for
+         * `wait` when it is not zero, never past `rto_at`; else the RTO while something is in flight; else nothing.
+         * The tail probe's place is between the two, so that one place chooses the kind.
+         *
+         * The RTO is where the ACK, the resend pass or a send left it: restarted from now only by what restarts it, an
+         * ACK that moved SND.UNA, a resend of the head, a send into an empty queue. A reordering timer no longer
+         * wanted, or no timer at all after an expiry, gives way to the RTO at the moment it had, `rto_at`, not to a
+         * fresh one. With nothing in flight the timer stays as it is: stopped by the ACK that emptied the queue, or
+         * the zero-window probes' or the ARP poll's.
+         *
+         * No floor under the reordering timer beyond the wheel's tick, which rounds its deadline up: Linux's
+         * `tcp_rack_mark_lost` adds 2 ms (`TCP_TIMEOUT_MIN_US`) to the wait, where RFC 8985 leaves the choice.
+         */
+        void set_timer(ControlBlock& block, const core::Duration wait) noexcept {
+            if (wait > core::Duration::zero()) {
+                block.timer_kind = TimerKind::Reorder;
+                wheel_.arm(block.timer, std::min(context_.now + wait, block.rto_at));
+                return;
             }
-            block.timer_kind = TimerKind::Retransmit;
-            wheel_.arm(block.timer, deadline);
+            if (in_flight(block) && block.timer_kind != TimerKind::Retransmit) {
+                arm_rto_at(block, block.rto_at);
+            }
+        }
+
+        /// Reneging: the RTO kind at `max(srtt / 2, 10 ms)` from now, under the user timeout as the RTO is; Linux's
+        /// `tcp_check_sack_reneging`. When it fires with the head still reported, the timeout clears every received
+        /// mark (`mark_timeout`).
+        void arm_reneging(ControlBlock& block) noexcept {
+            const core::Duration half = block.rtt.srtt().value_or(core::Duration::zero()) / 2;
+            arm_rto_at(block, rto_deadline(block, std::max<core::Duration>(half, reneging_floor)));
         }
 
         /// The peer's window is zero with nothing in flight: the first probe one RTO away.
@@ -506,9 +572,10 @@ namespace aloe::tcp::detail {
 
         /**
          * The connection's timer fired, unarmed by the wheel; its kind says what for. The RTO marks what it holds lost
-         * and resends the head, the ARP poll tries again the send that never left, the probe timer probes, and each
-         * arms what guards the connection next. Says what is left for the caller: nothing, or the end of a connection
-         * that the retries, the user timeout or a silent next hop gave up on, which is the Lifecycle's to carry out.
+         * and resends the head, the reordering timer runs RACK's detection again and resends what it marks, the ARP
+         * poll tries again the send that never left, the probe timer probes, and each arms what guards the connection
+         * next. Says what is left for the caller: nothing, or the end of a connection that the retries, the user
+         * timeout or a silent next hop gave up on, which is the Lifecycle's to carry out.
          */
         [[nodiscard]] TimerExpiry on_timer(ControlBlock& block) noexcept {
             const TimerKind kind = std::exchange(block.timer_kind, TimerKind::None);
@@ -516,6 +583,9 @@ namespace aloe::tcp::detail {
             switch (kind) {
                 case TimerKind::Retransmit:
                     return on_retransmit_timeout(block);
+                case TimerKind::Reorder:
+                    on_reorder_timeout(block);
+                    return TimerExpiry::Handled;
                 case TimerKind::ArpPoll:
                     return on_arp_poll(block);
                 case TimerKind::Probe:
@@ -680,6 +750,9 @@ namespace aloe::tcp::detail {
         using AckList      = ConnectionList<ControlBlock, &ControlBlock::ack_link>;
         using RetryList    = ConnectionList<ControlBlock, &ControlBlock::retry_link>;
         using DeferredList = ConnectionList<ControlBlock, &ControlBlock::deferred_link>;
+
+        /// The shortest wait before a reneging peer's head is resent: Linux's 10 ms (`tcp_check_sack_reneging`).
+        static constexpr core::Duration reneging_floor = std::chrono::milliseconds{10};
 
         /// The deferred list holds exactly the connections one of whose entries waits for its packet
         /// (`RetransmissionQueue::waiting`): settled after anything that may start or end a wait, a resend, a block's
@@ -1007,6 +1080,36 @@ namespace aloe::tcp::detail {
             return head.transmits > 0 ? &head : nullptr;
         }
 
+        /// `after` from now; under a user timeout on a synchronized connection, never later than the head's first
+        /// transmission plus the timeout, Linux's `tcp_clamp_rto_to_user_timeout`, and never earlier than now.
+        [[nodiscard]] core::TimePoint rto_deadline(const ControlBlock& block,
+                                                   const core::Duration after) const noexcept {
+            const core::TimePoint deadline = context_.now + after;
+            if (const SentNode* head = user_timed_head(block); head != nullptr) {
+                return std::min(deadline, std::max(context_.now, head->first_sent + context_.config.user_timeout));
+            }
+            return deadline;
+        }
+
+        /// The RTO kind at `deadline`, which becomes the RTO's moment, `rto_at`.
+        void arm_rto_at(ControlBlock& block, const core::TimePoint deadline) noexcept {
+            block.rto_at     = deadline;
+            block.timer_kind = TimerKind::Retransmit;
+            wheel_.arm(block.timer, deadline);
+        }
+
+        /// The RTO from now, after a resend of the head; while the reordering timer is pending it stays, and only the
+        /// RTO's moment moves, which the reordering timer never passes and gives way to: Linux's
+        /// `tcp_xmit_retransmit_queue` leaves a pending `ICSK_TIME_REO_TIMEOUT` alone, and its RTO, rearmed later by
+        /// `tcp_rearm_rto`, counts from the head's last transmission.
+        void restart_rto(ControlBlock& block) noexcept {
+            if (block.timer_kind == TimerKind::Reorder) {
+                block.rto_at = rto_deadline(block, block.rtt.rto());
+                return;
+            }
+            arm_retransmit(block);
+        }
+
         /// A SYN, SYN-ACK or FIN whose first send found no next hop: tried again every `unresolved_retry`, as no retry.
         void arm_poll(ControlBlock& block) noexcept {
             block.timer_kind = TimerKind::ArpPoll;
@@ -1065,6 +1168,37 @@ namespace aloe::tcp::detail {
             block.rtt.back_off(context_.config.rto_max);
             arm_retransmit(block);
             return TimerExpiry::Handled;
+        }
+
+        /**
+         * The reordering timer ran out, Linux's `tcp_rack_reo_timeout`: detection runs again (`detect`), counted in
+         * `reorder_timeouts`. When it marked something on a connection not in recovery, recovery begins there, from
+         * the loss state too, which sets a new target, with no ACK to step PRR: one segment may leave
+         * (`begin_recovery` with nothing delivered). In recovery the episode that is open goes on, and one segment may
+         * leave (`LossRecovery::on_recovery_timer`). Then the resend pass, and the RTO at the moment it had
+         * (`set_timer`): entries still waiting are left to the next ACK. An expiry is no retry: it moves neither the
+         * retry count nor the backoff, and the user timeout bounds it through the RTO's moment, which it never passes.
+         * A resend that clears the last lost mark may leave room for new data: the connection gets its Writable hint
+         * (`hint_if_writable_rose`).
+         *
+         * Where this differs from `tcp_rack_reo_timeout`: entering recovery, Linux steps its rate reduction as if one
+         * segment were delivered, which allows the same one segment; in recovery it steps nothing and its window
+         * stands, where here one segment may leave all the same, so an expiry that marks the episode's next loss lets
+         * its resend out without waiting for an ACK.
+         */
+        void on_reorder_timeout(ControlBlock& block) noexcept {
+            ++context_.counters.reorder_timeouts;
+            const std::size_t writable_before = writable(block);
+            if (const Rack::Detected detected = detect(block); detected.marked > 0) {
+                if (!block.recovery.in_recovery()) {
+                    begin_recovery(block, 0);
+                } else {
+                    block.recovery.on_recovery_timer(in_flight_bytes(block), block.mss());
+                }
+            }
+            std::ignore = resend_lost(block);
+            hint_if_writable_rose(block, writable_before);
+            set_timer(block, core::Duration::zero());
         }
 
         /// The ARP poll: the SYN, SYN-ACK or FIN that never left is tried again, as no retry. Once it leaves, or the

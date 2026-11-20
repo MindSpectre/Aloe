@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <aloe/core>
 #include <aloe/loop>
 #include <aloe/stream>
 #include <aloe/wire>
@@ -13,6 +14,7 @@
 #include <detail/connection_list.hpp>
 #include <detail/frame_template.hpp>
 #include <detail/loss_recovery.hpp>
+#include <detail/rack.hpp>
 #include <detail/reassembly_queue.hpp>
 #include <detail/receive_queue.hpp>
 #include <detail/receive_window.hpp>
@@ -35,6 +37,7 @@ namespace aloe::tcp::detail {
         Retransmit,  ///< The RTO: what is out is marked lost and the head of the retransmission queue goes again.
         ArpPoll,     ///< A SYN, SYN-ACK or FIN whose first send found no next hop: the send is tried again.
         Probe,       ///< The peer's window is zero and nothing is in flight: a zero-window probe goes.
+        Reorder,     ///< RACK left entries waiting: detection runs again, and what it marks is resent (RFC 8985).
     };
 
     /**
@@ -108,6 +111,11 @@ namespace aloe::tcp::detail {
         [[nodiscard]] bool probing() const noexcept {
             return timer_kind == TimerKind::Probe;
         }
+        /// RACK's reordering window as the connection stands (`Rack::window`): in recovery or the loss state or not,
+        /// the segments reported received, and the smoothed round trip.
+        [[nodiscard]] core::Duration reordering_window() const noexcept {
+            return rack.window(recovery.state() != RecoveryState::Open, queue.reported_segments(), rtt.srtt());
+        }
 
         /// Back to the state of a fresh slot; the stack, the index, the MSS and the timers' trampolines stay. The stack
         /// cancels both timers, unlinks the block from its lists, returns the held packets and drops the queue first.
@@ -135,11 +143,13 @@ namespace aloe::tcp::detail {
             queue            = {};
             recovery         = {};
             rtt              = {};
+            rack             = {};
             probe            = {};
             timestamps       = {};
             window_use       = {};
             sack             = {};
             timer_kind       = TimerKind::None;
+            rto_at           = {};
             retransmit_count = 0;
             unresolved_polls = 0;
         }
@@ -175,6 +185,7 @@ namespace aloe::tcp::detail {
         RetransmissionQueue<Packet> queue{};
         LossRecovery<CongestionControl> recovery{};
         RttEstimator rtt{};
+        Rack rack{};  ///< RACK's state: every ACK that reports or acknowledges something writes it (SACK in use).
         ZeroWindowProbe probe{};
         Timestamps timestamps{};
         // Behind the parts an in-order ACK touches.
@@ -182,11 +193,12 @@ namespace aloe::tcp::detail {
         // Behind the parts an in-order segment touches.
         SackBlocks sack{};
 
-        // The connection's wheel timer: the RTO, the ARP poll or the probe.
+        // The connection's wheel timer: the RTO, the reordering timer, the ARP poll or the probe.
         TimerNode timer;
-        TimerKind timer_kind           = TimerKind::None;  ///< What `timer` does when it fires.
-        std::uint8_t retransmit_count  = 0;  ///< Expiries since the last ACK of new data, deferred and refused too.
-        std::uint16_t unresolved_polls = 0;  ///< Polls since the last send that left; the config bounds them.
+        TimerKind timer_kind = TimerKind::None;  ///< What `timer` does when it fires.
+        core::TimePoint rto_at{};                ///< The moment the RTO would fire, set wherever it is armed.
+        std::uint8_t retransmit_count  = 0;      ///< Expiries since the last ACK of new data, deferred and refused too.
+        std::uint16_t unresolved_polls = 0;      ///< Polls since the last send that left; the config bounds them.
         /// The delayed ACK's wheel timer: armed only while an ACK of in-order data waits for `delayed_ack`.
         TimerNode ack_timer;
     };

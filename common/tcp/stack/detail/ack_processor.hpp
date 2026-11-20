@@ -13,6 +13,7 @@
 #include <congestion_control.hpp>
 #include <detail/control_block.hpp>
 #include <detail/loss_recovery.hpp>
+#include <detail/rack.hpp>
 #include <detail/stack_context.hpp>
 #include <detail/transmitter.hpp>
 #include <tcp_config.hpp>
@@ -22,11 +23,13 @@ namespace aloe::tcp::detail {
     /**
      * @brief What an acknowledgement does to the send side, in the order of Linux's `tcp_ack` and
      * `tcp_fastretrans_alert`: the peer's blocks into the scoreboard; the entries the cumulative part frees, the
-     * round-trip sample and the retransmission timer; detection, by the duplicate count; the recovery state, which
-     * begins, goes on or ends, with the window in recovery; the resends, as far as that window allows; then the
-     * peer's window, the zero-window probes and the FIN that waited for the window. It owns no state; it drives the
-     * block's send side through the Transmitter, in place, and tells the Receiver what moved. It names neither the
-     * Receiver nor the Lifecycle: an ACK ends a connection only through what the Receiver does with the outcome.
+     * round-trip sample and the retransmission timer; RACK's state, from the entries both newly report; detection, by
+     * RACK on a connection that uses SACK and by the duplicate count on one that does not; the recovery state, which
+     * begins, goes on or ends, with the window in recovery; the resends, as far as that window allows; the peer's
+     * window, the zero-window probes and the FIN that waited for the window; and the send timer. It owns no state; it
+     * drives the block's send side through the Transmitter, in place, and tells the Receiver what moved. It names
+     * neither the Receiver nor the Lifecycle: an ACK ends a connection only through what the Receiver does with the
+     * outcome.
      */
     template <typename Ip, typename CongestionControl>
     class AckProcessor {
@@ -51,24 +54,40 @@ namespace aloe::tcp::detail {
         }
 
         /// The ACK that completes a handshake, of our SYN or SYN-ACK: its entry freed, SND.UNA at `ack`, a sample
-        /// taken and the timer stopped with the queue empty (`on_acknowledged`).
+        /// taken and the timer stopped with the queue empty (`on_acknowledged`). On a connection that uses SACK the
+        /// freed entry gives RACK its first round trip, as Linux's `tcp_clean_rtx_queue` does for the SYN.
         void handshake_acknowledged(ControlBlock& block,
                                     const Sequence ack,
                                     const std::optional<std::uint32_t> echo) noexcept {
-            const Freed freed = transmitter_.acknowledge(block, ack, [](const SentNode&) noexcept {});
-            block.send.una    = ack;
-            on_acknowledged(block, freed, echo);
+            std::ignore = acknowledge(block, ack, echo, block.queue.highest_reported());
         }
 
         /**
-         * An ACK on a synchronized connection, of nothing past SND.NXT. First its SACK option's blocks, `sack`, eight
-         * bytes each and empty without one, are read into the scoreboard (`read_blocks`), on an ACK below SND.UNA too.
-         * An ACK of new data frees what it covers and samples the round trip (`acknowledge_data`). A duplicate ACK, of
-         * something in flight, is judged against the window as it stands, before this segment updates it, the field
-         * scaled by the peer's shift, and counted. Then loss recovery, by the state the ACK found (`update_recovery`),
-         * and the resend pass, which sends what is marked lost as far as the window allows. RFC 793 updates the window
-         * only when SND.UNA <= SEG.ACK <= SND.NXT: a stale ACK carries a stale window. `payload_length` is the
-         * segment's, since an ACK that carries data is no duplicate.
+         * An ACK on a synchronized connection, of nothing past SND.NXT, in the order of Linux's `tcp_ack` and
+         * `tcp_fastretrans_alert`:
+         *
+         * 1. The SACK option's blocks, `sack`, eight bytes each and empty without one, read into the scoreboard
+         *    (`read_blocks`), on an ACK below SND.UNA too; each entry they newly report advances RACK.
+         * 2. An ACK of new data frees what it covers, advancing RACK by each entry no block had reported, and samples
+         *    the round trip (`acknowledge_data`). A duplicate ACK, of something in flight, is judged against the
+         *    window as it stands, before this segment updates it, the field scaled by the peer's shift, and counted.
+         * 3. RACK's state: the reordering window's round with the duplicate report (`Rack::on_ack`), then reordering,
+         *    when the blocks or the cumulative part showed it. A duplicate report grows the window only when reordering
+         *    was seen before this ACK, as Linux's `tcp_dsack_seen` reads `reord_seen` before its walk records any.
+         *    The tail probe's ACK and the undo's checks have their place after this step, before detection.
+         * 4. Reneging: an ACK that moved SND.UNA and left a head the peer reported received arms the RTO short
+         *    (`Transmitter::arm_reneging`), and nothing more of this ACK runs until the peer's window, as Linux's
+         *    `tcp_check_sack_reneging` returns from `tcp_fastretrans_alert`.
+         * 5. Detection: RACK's, on a connection that uses SACK, when its state moved (`Transmitter::detect`); without
+         *    SACK, the duplicate count's, in the recovery state's step.
+         * 6. The recovery state, by the state the ACK found (`update_recovery`), and the resend pass, which sends what
+         *    is marked lost as far as the window allows.
+         * 7. The peer's window: RFC 793 updates it only when SND.UNA <= SEG.ACK <= SND.NXT, a stale ACK carrying a
+         * stale window; then the zero-window probes and the FIN that waited for the window.
+         * 8. The send timer (`Transmitter::set_timer`), after an ACK that ran detection or moved SND.UNA; any other ACK
+         *    leaves the timer as it was, a reordering timer still waiting for its entries included.
+         *
+         * `payload_length` is the segment's, since an ACK that carries data is no duplicate.
          */
         [[nodiscard]] Outcome on_ack(ControlBlock& block,
                                      const wire::TcpHeader& header,
@@ -77,28 +96,50 @@ namespace aloe::tcp::detail {
                                      const std::span<const std::byte> sack) noexcept {
             const Sequence ack                = header.acknowledgement;
             const std::size_t writable_before = transmitter_.writable(block);
-            const Found found{.state = block.recovery.state(), .reported = block.queue.reported_bytes()};
-            // The marks it sets are the scoreboard's; no step below reads what it returns yet.
-            std::ignore          = read_blocks(block, ack, sack);
+            const Found found{.state    = block.recovery.state(),
+                              .reported = block.queue.reported_bytes(),
+                              .highest  = block.queue.highest_reported()};
+            const Blocks blocks  = read_blocks(block, ack, sack);
             const bool duplicate = payload_length == 0 && !header.flags.has(wire::TcpFlag::Syn) &&
                                    !header.flags.has(wire::TcpFlag::Fin) && ack == block.send.una &&
                                    block.send.scaled(header.window) == block.send.wnd && transmitter_.in_flight(block);
             Outcome outcome{};
             std::optional<AckInfo> info{};
             std::uint8_t duplicates = 0;  // the count with this ACK, when it is a duplicate
+            bool reordering         = blocks.reordering;
             if (ack.after(block.send.una)) {
-                info             = acknowledge_data(block, ack, echo);
-                outcome.advanced = true;
+                const Acknowledged acknowledged = acknowledge_data(block, ack, echo, found.highest);
+                info                            = acknowledged.info;
+                reordering                      = reordering || acknowledged.reordering;
+                outcome.advanced                = true;
             } else if (duplicate) {
                 ++context_.counters.duplicate_acks;
                 duplicates = block.recovery.count_duplicate();
             }
-            update_recovery(block, found, ack, duplicates, info);
-            std::ignore = transmitter_.resend_lost(block);
+            block.rack.on_ack(block.send.una, block.send.nxt, blocks.duplicate.has_value());
+            if (reordering) {
+                block.rack.see_reordering();
+                ++context_.counters.reordering_seen;
+            }
+            const bool reneged = outcome.advanced && transmitter_.head_reported(block);
+            Rack::Detected detected{};
+            const bool detecting = block.sack.in_use() && block.rack.advanced() && !reneged;
+            if (reneged) {
+                transmitter_.arm_reneging(block);
+            } else {
+                if (detecting) {
+                    detected = transmitter_.detect(block);
+                }
+                update_recovery(block, found, ack, duplicates, info, detected);
+                std::ignore = transmitter_.resend_lost(block);
+            }
             if (!ack.before(block.send.una)) {
                 block.send.update_window(header);
                 update_probing(block);  // a window that opened ends probing, and the comparison below sees it
                 send_unsent(block);     // and sends the FIN a close left waiting for it
+            }
+            if (!reneged && (detecting || outcome.advanced)) {
+                transmitter_.set_timer(block, detected.wait);
             }
             outcome.writable = transmitter_.writable(block) > writable_before;
             return outcome;
@@ -129,6 +170,24 @@ namespace aloe::tcp::detail {
         struct Found {
             RecoveryState state    = RecoveryState::Open;
             std::uint32_t reported = 0;  ///< Sequence space reported received.
+            /// The highest sequence the peer had acknowledged either way, Linux's `prior_fack`: a hole below it that
+            /// the cumulative part fills with an entry sent once was reordered.
+            std::optional<Sequence> highest{};
+        };
+
+        /// What the cumulative part of an ACK did: the entries it freed, whether one of them, never resent and
+        /// reported by no block, lay below the highest sequence reported before, which is reordering, and the
+        /// round-trip sample taken.
+        struct Cumulative {
+            Freed freed{};
+            bool reordering = false;
+            std::optional<core::Duration> rtt{};
+        };
+
+        /// What an ACK of new data did: what the policy reads of it, and whether it showed reordering.
+        struct Acknowledged {
+            AckInfo info{};
+            bool reordering = false;
         };
 
         /// What an ACK's SACK option said.
@@ -179,9 +238,14 @@ namespace aloe::tcp::detail {
                 return one.first.before(other.first);  // valid blocks lie within the window: serial order is total
             });
             for (const wire::TcpSackBlock& sack_block : valid) {
-                const Reported reported  = transmitter_.report(block, sack_block, [](const SentNode&) noexcept {});
-                blocks.reported         += reported.bytes;
-                blocks.reordering        = blocks.reordering || reported.reordering;
+                // Each entry newly reported advances RACK (Linux's `tcp_sacktag_one`); a block is no cumulative ACK,
+                // so no echo judges a resend here, only the minimum round trip.
+                const Reported reported =
+                    transmitter_.report(block, sack_block, [this, &block](const SentNode& entry) noexcept {
+                        block.rack.advance(entry.sent, entry.first + entry.length, entry.resent(), false, context_.now);
+                    });
+                blocks.reported   += reported.bytes;
+                blocks.reordering  = blocks.reordering || reported.reordering;
             }
             return blocks;
         }
@@ -215,14 +279,58 @@ namespace aloe::tcp::detail {
         }
 
         /**
+         * SND.UNA moves to `ack`: the queue frees what it covers (`Transmitter::acknowledge`; a partial entry stays
+         * whole), then the sample and the timer (`on_acknowledged`). On a connection that uses SACK each entry it
+         * frees that no block reported advances RACK, as Linux's `tcp_clean_rtx_queue` calls `tcp_rack_advance`
+         * unless `tcp_skb_spurious_retrans`: a resend is skipped when the ACK's echo is older than the resend
+         * (`echo_before`). One such entry never resent that lies below `highest`, the highest sequence reported
+         * before this ACK, filled a hole: reordering, as Linux's `tcp_check_sack_reordering` sees it there.
+         */
+        [[nodiscard]] Cumulative acknowledge(ControlBlock& block,
+                                             const Sequence ack,
+                                             const std::optional<std::uint32_t> echo,
+                                             const std::optional<Sequence> highest) noexcept {
+            Cumulative cumulative{};
+            const bool sack  = block.sack.in_use();
+            cumulative.freed = transmitter_.acknowledge(
+                block, ack, [this, &block, &cumulative, sack, echo, highest](const SentNode& entry) noexcept {
+                    if (!sack) {
+                        return;
+                    }
+                    const bool resent = entry.resent();
+                    block.rack.advance(entry.sent,
+                                       entry.first + entry.length,
+                                       resent,
+                                       resent && echo_before(block, echo, entry.sent),
+                                       context_.now);
+                    cumulative.reordering =
+                        cumulative.reordering || (!resent && highest && entry.first.before(*highest));
+                });
+            block.send.una = ack;
+            cumulative.rtt = on_acknowledged(block, cumulative.freed, echo);
+            return cumulative;
+        }
+
+        /// The ACK's echo names a transmission older than the one at `sent`: the ACK cannot be for that transmission.
+        /// Nothing without timestamps, without an echo, or with an echo of zero, as Linux's `tcp_skb_spurious_retrans`
+        /// reads `rcv_tsecr`.
+        [[nodiscard]] static bool echo_before(const ControlBlock& block,
+                                              const std::optional<std::uint32_t> echo,
+                                              const core::TimePoint sent) noexcept {
+            return block.timestamps.enabled() && echo && *echo != 0 &&
+                   static_cast<std::int32_t>(*echo - block.timestamps.value(sent)) < 0;
+        }
+
+        /**
          * SND.UNA moved forward. The retry count clears. The round-trip sample follows Linux's `tcp_clean_rtx_queue`
          * and `tcp_ack_update_rtt`: from the oldest entry the ACK freed, measured from its transmission, when no entry
          * it freed left more than once (Karn's rule); else, on a connection with timestamps, from the ACK's echo, which
          * names the transmission it answers, so the echo on the ACK of a resend ends the backoff too
-         * (`Timestamps::sample`). The timer restarts from now while anything is in flight and stops when nothing is,
-         * RFC 6298's rule, which covers RFC 6582's re-arm on a partial ACK; a head that never left, the FIN a close
-         * holds for the window, is `send_unsent`'s or the probes'. A partial ACK frees nothing, samples only from its
-         * echo, and restarts the timer. Returns the sample taken, if any.
+         * (`Timestamps::sample`). The sample feeds RACK's minimum round trip too, as Linux's `tcp_update_rtt_min`. The
+         * timer restarts from now while anything is in flight and stops when nothing is, RFC 6298's rule, which covers
+         * RFC 6582's re-arm on a partial ACK; a head that never left, the FIN a close holds for the window, is
+         * `send_unsent`'s or the probes'. A partial ACK frees nothing, samples only from its echo, and restarts the
+         * timer. Returns the sample taken, if any.
          */
         std::optional<core::Duration> on_acknowledged(ControlBlock& block,
                                                       const Transmitter::Freed& freed,
@@ -234,6 +342,7 @@ namespace aloe::tcp::detail {
                     : block.timestamps.sample(echo, context_.now);
             if (sample) {
                 block.rtt.sample(*sample, context_.config.rto_min, context_.config.rto_max);
+                block.rack.sample(*sample, context_.now);
                 ++context_.counters.rtt_samples;
             }
             if (transmitter_.in_flight(block)) {
@@ -245,86 +354,120 @@ namespace aloe::tcp::detail {
         }
 
         /// An ACK of new data on a synchronized connection: the entries it frees, SND.UNA, the sample and the timer
-        /// (`on_acknowledged`). Returns what the policy reads of it, should it hear of this ACK (`update_recovery`),
-        /// with the window's use as the sends recorded it (`WindowUse`), before anything this ACK lets out.
-        [[nodiscard]] AckInfo
-        acknowledge_data(ControlBlock& block, const Sequence ack, const std::optional<std::uint32_t> echo) noexcept {
+        /// (`acknowledge`). Returns what the policy reads of it, should it hear of this ACK (`update_recovery`), with
+        /// the window's use as the sends recorded it (`WindowUse`), before anything this ACK lets out; and whether it
+        /// showed reordering.
+        [[nodiscard]] Acknowledged acknowledge_data(ControlBlock& block,
+                                                    const Sequence ack,
+                                                    const std::optional<std::uint32_t> echo,
+                                                    const std::optional<Sequence> highest) noexcept {
             const std::uint32_t flight_before = block.send.flight();
             const auto acked                  = static_cast<std::uint32_t>(ack - block.send.una);
-            const typename Transmitter::Freed freed =
-                transmitter_.acknowledge(block, ack, [](const SentNode&) noexcept {});  // a partial entry stays whole
-            block.send.una                          = ack;
-            const std::optional<core::Duration> rtt = on_acknowledged(block, freed, echo);
-            return AckInfo{.acked             = acked,
-                           .flight            = flight_before,
-                           .mss               = block.mss(),
-                           .rtt               = rtt,
-                           .now               = context_.now,
-                           .sent              = freed.newest_sent,
-                           .delivered         = block.queue.delivered(),
-                           .delivered_at_send = freed.delivered_at_send,
-                           .app_limited       = freed.app_limited,
-                           .window_limited    = block.window_use.limited(),
-                           .largest_flight    = block.window_use.largest_flight()};
+            const Cumulative cumulative       = acknowledge(block, ack, echo, highest);
+            return Acknowledged{
+                .info       = AckInfo{.acked             = acked,
+                                      .flight            = flight_before,
+                                      .mss               = block.mss(),
+                                      .rtt               = cumulative.rtt,
+                                      .now               = context_.now,
+                                      .sent              = cumulative.freed.newest_sent,
+                                      .delivered         = block.queue.delivered(),
+                                      .delivered_at_send = cumulative.freed.delivered_at_send,
+                                      .app_limited       = cumulative.freed.app_limited,
+                                      .window_limited    = block.window_use.limited(),
+                                      .largest_flight    = block.window_use.largest_flight()},
+                .reordering = cumulative.reordering
+            };
         }
 
         /**
-         * Detection and the recovery state, after the blocks and the cumulative part. `info` is set when the ACK moved
-         * SND.UNA; `duplicates` is the count with this ACK when it is a duplicate, else zero. One of three, by the
-         * state the ACK found, as Linux's `tcp_fastretrans_alert` switches on its own:
+         * Detection without SACK, and the recovery state, after the blocks, the cumulative part and RACK's detection.
+         * `info` is set when the ACK moved SND.UNA; `duplicates` is the count with this ACK when it is a duplicate,
+         * else zero; `detected` is what RACK's detection did on this ACK, nothing without SACK or when RACK's state did
+         * not move. One of three, by the state the ACK found, as Linux's `tcp_fastretrans_alert` switches on its own:
          *
-         * - Open. The third duplicate that RFC 6582 admits marks the head lost, and the first entry marked begins
-         *   recovery (`Transmitter::begin_recovery`), counted, with PRR's first step for this ACK. Else an ACK of new
-         *   data is the policy's to hear.
-         * - Recovery. The ACK that covers `recover` ends it, and the policy's window becomes its target. Any other
-         *   runs one step of PRR with what it delivered and what is in flight now; one that moved SND.UNA is RFC
-         *   6582's partial ACK and marks the new head first, as Linux's `tcp_newreno_mark_lost` does, which makes it
-         *   no safe ACK for PRR.
+         * - Open. Without SACK, the third duplicate that RFC 6582 admits marks the head lost. An entry marked lost, by
+         *   either detector, begins recovery (`Transmitter::begin_recovery`), with PRR's first step for this ACK:
+         * Linux's `tcp_time_to_recover`. Else an ACK of new data is the policy's to hear.
+         * - Recovery. The ACK that covers `recover` ends it, and the policy's window becomes its target; an entry still
+         *   marked lost then begins the next episode at once, as Linux's state, open again, falls through to its open
+         *   case on the same ACK (only RACK can leave one: the entries marked before are all covered). Any other ACK
+         *   runs one step of PRR with what it delivered and what is in flight now; without SACK, one that moved
+         *   SND.UNA is RFC 6582's partial ACK and marks the new head first, as Linux's `tcp_newreno_mark_lost` does. An
+         *   ACK that marked something is no safe ACK for PRR. A resend RACK found lost again is resent under the same
+         *   episode and reduces nothing further.
          * - Loss. Every ACK of new data is the policy's to hear, which grows its window by slow start; the entries the
-         *   timeout marked are left as they are. The ACK that covers `recover` then ends the state: it is heard like
-         *   the others, as Linux's `tcp_cong_control` grows the window on the ACK `tcp_process_loss` ended the state
-         *   on.
+         *   timeout marked leave by the resend pass. The ACK that covers `recover` then ends the state: it is heard
+         * like the others, as Linux's `tcp_cong_control` grows the window on the ACK `tcp_process_loss` ended the state
+         *   on. A resend RACK found lost again moves the connection to recovery, which sets a new target, as Linux's
+         *   `tcp_fastretrans_alert` does on `FLAG_LOST_RETRANS`; so does an entry still marked lost when the state
+         * ends. The policy does not hear an ACK that begins recovery.
          *
          * In recovery no ACK reaches the policy's `on_ack`, the one that ends it included: the window there is the
-         * rate reduction's, and its end is `on_recovery_end`. The duplicate count detects for every connection, with
-         * SACK and without; what differs is how what an ACK delivered is counted (`delivered`).
+         * rate reduction's, and its end is `on_recovery_end`. Every episode that ends, recovery or loss, counts down
+         * the recoveries RACK's grown window persists for (`Rack::recovery_ended`). What differs with SACK and
+         * without is how a loss is detected and how what an ACK delivered is counted (`delivered`).
          */
         void update_recovery(ControlBlock& block,
                              const Found& found,
                              const Sequence ack,
                              const std::uint8_t duplicates,
-                             const std::optional<AckInfo>& info) noexcept {
-            const bool duplicate = duplicates > 0;
+                             const std::optional<AckInfo>& info,
+                             const Rack::Detected& detected) noexcept {
+            const bool duplicate         = duplicates > 0;
+            const bool sack              = block.sack.in_use();
+            const std::uint32_t advance  = info ? info->acked : 0;
+            const auto begin_on_this_ack = [this, &block, &found, advance, duplicate] {
+                transmitter_.begin_recovery(block, delivered(block, found, advance, duplicate));
+            };
             switch (found.state) {
                 case RecoveryState::Open:
-                    if (duplicates == 3 && block.recovery.admits(ack) && mark_head(block)) {
-                        transmitter_.begin_recovery(block, delivered(block, found, 0, duplicate));
-                        ++context_.counters.recoveries;
+                    if (!sack && duplicates == 3 && block.recovery.admits(ack)) {
+                        std::ignore = mark_head(block);
+                    }
+                    if (block.queue.lost_bytes() > 0) {
+                        begin_on_this_ack();
                     } else if (info) {
                         block.recovery.on_ack(*info, ack);
                     }
                     break;
                 case RecoveryState::Recovery: {
                     if (block.recovery.recovered(ack)) {
-                        block.recovery.end(ack);
+                        end_episode(block, ack);
+                        if (block.queue.lost_bytes() > 0) {
+                            begin_on_this_ack();
+                        }
                         break;
                     }
-                    const bool marked             = info && mark_head(block);
+                    const bool marked             = sack ? detected.marked > 0 : info && mark_head(block);
                     // What the ACK delivered first: it settles the duplicate count, which what is in flight reads.
-                    const std::uint32_t delivery  = delivered(block, found, info ? info->acked : 0, duplicate);
+                    const std::uint32_t delivery  = delivered(block, found, advance, duplicate);
                     const std::uint32_t in_flight = transmitter_.in_flight_bytes(block);
                     block.recovery.on_recovery_ack(delivery, in_flight, info && !marked, block.mss());
                     break;
                 }
-                case RecoveryState::Loss:
-                    if (info) {
+                case RecoveryState::Loss: {
+                    const bool ends   = block.recovery.recovered(ack);
+                    const bool begins = ends ? block.queue.lost_bytes() > 0 : detected.resends_lost > 0;
+                    if (info && !begins) {
                         block.recovery.on_ack(*info, ack);  // heard in the loss state, before the state may end
                     }
-                    if (block.recovery.recovered(ack)) {
-                        block.recovery.end(ack);
+                    if (ends) {
+                        end_episode(block, ack);
+                    }
+                    if (begins) {
+                        begin_on_this_ack();
                     }
                     break;
+                }
             }
+        }
+
+        /// The episode, recovery or loss, ends at `ack` (`LossRecovery::end`), and RACK's grown reordering window has
+        /// one recovery fewer to persist for; no undo spares it yet.
+        static void end_episode(ControlBlock& block, const Sequence ack) noexcept {
+            block.recovery.end(ack);
+            block.rack.recovery_ended();
         }
 
         /// Marks the head lost (`Transmitter::mark_head_lost`); whether that marked anything: not a head already

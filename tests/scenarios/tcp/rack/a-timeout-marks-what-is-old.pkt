@@ -1,0 +1,34 @@
+// The retransmission timeout marks the head and, of the rest, only what was last sent at least RACK's round trip ago
+// (RFC 8985 6.3; Linux's tcp_timeout_mark_lost); later segments are left to RACK. The handshake's ACK 10 ms after the
+// SYN-ACK gives RACK its first round trip, 10 ms, and an RTO of 210 ms. Three segments leave at 10 ms, which arms the
+// RTO for 220 ms, and two more at 215 ms. At 220 ms the head is resent alone, the second and third, 210 ms old, are
+// marked lost, and the fourth and fifth, 5 ms old, are not. The resend's ACK at 225 ms comes sooner than the minimum
+// round trip after the resend, so it may be the original's and moves none of RACK's state; in the loss state the
+// window is what was in flight after the marking, 200, plus one segment, 1648, which no ACK grew since nothing filled
+// it, and the pass sends the two entries the timeout marked and nothing else. The ACK of everything ends the loss
+// state. Linux marks the same entries at the expiry, but with SACK it never gets there: its tail loss probe goes two
+// round trips after the first three left (tcp_schedule_loss_probe).
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.205 write(4, ..., 100) = 100
++0 > P. 301:401(100) ack 1 win 46336 <nop,nop,TS val 215 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 401:501(100) ack 1 win 46336 <nop,nop,TS val 215 ecr 110>
++0.005 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 220 ecr 110>
++0.005 < . 1:1(0) ack 101 win 512 <nop,nop,TS val 130 ecr 220>
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 225 ecr 130>
++0 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 225 ecr 130>
++0.010 < . 1:1(0) ack 501 win 512 <nop,nop,TS val 140 ecr 225>
