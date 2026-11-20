@@ -104,12 +104,16 @@ namespace aloe::tcp::detail {
         }
 
         /// The resends that found their packet lent: the first loop of `Stack::flush`, the pass again for each
-        /// connection one of whose entries waits (`resend_lost`).
+        /// connection one of whose entries waits (`resend_lost`). A pass that sends the last entry that owed a resend
+        /// may leave room for new data, with no ACK to say so: the connection gets its Writable hint
+        /// (`hint_if_writable_rose`).
         void flush_deferred() noexcept {
             for (ControlBlock* block = deferred_.front(); block != nullptr;) {
-                ControlBlock* next = DeferredList::next_of(*block);  // a resend that leaves may unlink block
-                std::ignore        = resend_lost(*block);
-                block              = next;
+                ControlBlock* next       = DeferredList::next_of(*block);  // a resend that leaves may unlink block
+                const std::size_t before = writable(*block);
+                std::ignore              = resend_lost(*block);
+                hint_if_writable_rose(*block, before);
+                block = next;
             }
         }
 
@@ -648,6 +652,17 @@ namespace aloe::tcp::detail {
             }
         }
 
+        /// `writable()` rose outside an ACK, above `before`, its value before a resend at the flush or at the timer:
+        /// that resend sent the last entry that owed one, and new data is offered again (`room`). The stream
+        /// contract owes a Writable for every rise; an ACK's is raised as it is processed, this one as the hint a
+        /// refused commit leaves, at the next process. Nothing when it did not rise, which is always so on a
+        /// connection that cannot write.
+        void hint_if_writable_rose(ControlBlock& block, const std::size_t before) noexcept {
+            if (writable(block) > before) {
+                mark_retry(block);
+            }
+        }
+
         using AckList      = ConnectionList<ControlBlock, &ControlBlock::ack_link>;
         using RetryList    = ConnectionList<ControlBlock, &ControlBlock::retry_link>;
         using DeferredList = ConnectionList<ControlBlock, &ControlBlock::deferred_link>;
@@ -979,7 +994,9 @@ namespace aloe::tcp::detail {
          * a deferred one, marked lost, leaves at the flush (`flush_deferred`), and the next expiry tries again. A
          * first send, of a SYN, SYN-ACK or FIN the device refused before, that finds no next hop arms the ARP poll
          * instead (`transmit_entry`), and the expiry leaves the timer to it: nothing left, so no backoff; the poll arms
-         * the RTO once the send leaves, or gives the connection up as `Unresolved`.
+         * the RTO once the send leaves, or gives the connection up as `Unresolved`. An expiry whose resend sends the
+         * last entry that owed one, a head that had waited or been refused since the expiry before, may leave room
+         * for new data: the connection gets its Writable hint (`hint_if_writable_rose`).
          */
         [[nodiscard]] TimerExpiry on_retransmit_timeout(ControlBlock& block) noexcept {
             assert(!block.queue.empty() && "the RTO runs while something is queued");
@@ -992,6 +1009,7 @@ namespace aloe::tcp::detail {
                 return TimerExpiry::TimedOut;
             }
             ++block.retransmit_count;
+            const std::size_t writable_before = writable(block);
             mark_timeout(block);
             if (!handshake) {
                 block.recovery.on_timeout(block.send.una,
@@ -1003,6 +1021,7 @@ namespace aloe::tcp::detail {
             }
             std::ignore = resend(block, block.queue.head());
             ++context_.counters.retransmits;
+            hint_if_writable_rose(block, writable_before);
             if (block.timer_kind == TimerKind::ArpPoll) {
                 return TimerExpiry::Handled;  // a first send that found no next hop: the poll retries it
             }

@@ -124,6 +124,77 @@ TEST_P(TcpLoan, NothingNewIsOfferedWhileTheHeadsResendWaitsInRecovery) {
     return_loans();
 }
 
+TEST_P(TcpLoan, WritableIsRaisedWhenTheFlushSendsTheLastEntryThatOwedAResend) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(2920)), 2920U);
+    const auto sent = collect();
+    ASSERT_EQ(sent.size(), 2U);
+    // Drains the pending events and says how many of them carried Writable.
+    const auto writables = [&] {
+        int count = 0;
+        for (auto event = poll(); event; event = poll()) {
+            count += event->events.writable() ? 1 : 0;
+        }
+        return count;
+    };
+    advance(200ms);  // the RTO marks both; the head's resend waits for its packet
+    EXPECT_EQ(c->writable(), 0U);
+    EXPECT_EQ(c->send(aloe::frames::pattern(1460)), 0U) << "a writer is refused here, and waits for Writable";
+    advance(1ms);
+    ASSERT_EQ(collect().size(), 1U) << "the head's copy; the second entry still owes its resend";
+    receive(peer_.ack(sent[0]));  // slow start to two segments; the second entry's first try waits for its packet
+    EXPECT_EQ(c->writable(), 0U);
+    EXPECT_EQ(writables(), 0) << "nothing rose: an entry still owes a resend";
+    advance(1ms);
+    ASSERT_EQ(collect().size(), 1U) << "its copy, at the flush: nothing owes a resend any more";
+    EXPECT_EQ(c->writable(), 1460U) << "one segment in flight in a window of two";
+    process_pending();  // a rise outside an ACK is published at the next process, as a retry hint is
+    EXPECT_EQ(writables(), 1) << "writable() rose at the flush";
+    process_pending();
+    EXPECT_EQ(writables(), 0) << "once";
+    EXPECT_EQ(c->send(aloe::frames::pattern(1460)), 1460U) << "the writer that was refused can write";
+    return_loans();
+}
+
+TEST_P(TcpLoan, AFlushThatLeavesMarkedEntriesBehindRaisesNoWritable) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(4380)), 4380U);
+    ASSERT_EQ(collect().size(), 3U);
+    advance(200ms);  // the RTO marks all three; the head waits
+    advance(1ms);
+    ASSERT_EQ(collect().size(), 1U) << "the head's copy";
+    EXPECT_EQ(c->lost_bytes(), 2920U) << "two entries still owe a resend";
+    EXPECT_EQ(c->writable(), 0U);
+    process_pending();
+    EXPECT_FALSE(poll().has_value()) << "writable() did not rise: no event";
+    return_loans();
+}
+
+TEST_P(TcpLoan, WritableIsRaisedWhenAnExpirysResendClearsTheLastLostMark) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    ASSERT_EQ(collect().size(), 1U);
+    advance(200ms);  // the first expiry marks the segment; its resend waits, and no flush follows
+    EXPECT_EQ(c->lost_bytes(), 100U);
+    EXPECT_EQ(c->writable(), 0U);
+    EXPECT_EQ(c->send(aloe::frames::pattern(100)), 0U);
+    EXPECT_FALSE(poll().has_value());
+    advance(400ms);  // the second expiry: the bound is reached and the copy goes from the timer itself
+    EXPECT_EQ(tcp_->counters().retransmits, 2U);
+    EXPECT_EQ(c->lost_bytes(), 0U);
+    EXPECT_EQ(c->writable(), 1360U) << "a window of one segment, 100 bytes of it in flight";
+    process_pending();
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value()) << "writable() rose at the expiry";
+    EXPECT_TRUE(event->events.writable());
+    EXPECT_FALSE(poll().has_value());
+    ASSERT_EQ(collect().size(), 1U);
+    return_loans();
+}
+
 TEST_P(TcpLoan, AWaitingHeadThatLeavesAtTheFlushRestartsTheRetransmissionTimer) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
