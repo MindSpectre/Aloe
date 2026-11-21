@@ -433,6 +433,41 @@ TEST_P(TcpRackBrick, ADuplicateReportOfAResentReportedEntryIsReordering) {
         << "not zero in recovery any more, and not grown: the report that showed the reordering came before it";
 }
 
+// A round-trip sample from a timestamp echo counts at least one tick of the timestamp clock, one millisecond, as
+// Linux's `tcp_rtt_tsopt_us` counts it. On a path under a millisecond the echo of a resend acknowledged within its
+// millisecond would otherwise give zero, which would make the minimum round trip zero for five minutes, and the
+// reordering window with it: every report above a hole would mark it at once, and learning reordering would change
+// nothing.
+TEST_P(TcpRackBrick, AnEchoWithinItsMillisecondLeavesTheReorderingWindow) {
+    auto* c = open_passive(peer_, 500us);  // the SYN-ACK's own stamp: srtt and the minimum round trip 0.5 ms
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->reordering_window(), 125us) << "a quarter of 0.5 ms";
+    ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    std::ignore = collect();  // lost
+    advance(50ms);            // the tail probe, 2 * 0.5 + 40 ms after the send, sends it again
+    const auto probe = collect();
+    ASSERT_EQ(probe.size(), 1U);
+    ASSERT_EQ(counters().tail_probes, 1U);
+    // The ACK, in the probe's millisecond, frees an entry sent twice: Karn takes the echo's sample, one tick.
+    peer_.see(probe[0]);
+    receive(peer_.ack());
+    EXPECT_EQ(counters().rtt_samples, 2U);
+    EXPECT_EQ(c->srtt(), 562500ns) << "7/8 * 0.5 + 1/8 * 1 ms";
+    EXPECT_EQ(c->reordering_window(), 125us) << "the minimum round trip is still 0.5 ms";
+    // One report above a hole: the hole waits for the window, then the reordering timer marks it.
+    ASSERT_TRUE(send(*c, 2, sent));
+    receive(peer_.sack(at(0), Blocks{range(100, 200)}));
+    EXPECT_EQ(c->lost_bytes(), 0U);
+    EXPECT_EQ(counters().rack_marked, 0U);
+    EXPECT_TRUE(collect().empty());
+    advance(1ms);
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 1U);
+    EXPECT_EQ(resent[0].tcp->sequence, at(0));
+    EXPECT_EQ(counters().rack_marked, 1U);
+    EXPECT_EQ(counters().reorder_timeouts, 1U);
+}
+
 TEST_P(TcpRackBrick, AReorderingExpiryTakesNoRetry) {
     configure_tcp({.data_retries = 1});
     auto* c = open_and_send();

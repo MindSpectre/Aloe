@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <aloe/core>
 #include <aloe/wire>
 #include <chrono>
@@ -97,7 +98,10 @@ namespace aloe::tcp::detail {
         }
 
         /// A round-trip sample from an ACK's echo, which names the transmission it answers; nothing with the option
-        /// off, no echo, an echo of zero, or one from the future.
+        /// off, no echo, an echo of zero, or one from the future. An echo of the tick the ACK arrives in counts one
+        /// tick, a millisecond, as Linux's `tcp_rtt_tsopt_us` counts it (`if (!delta) delta = min_delta`): the clock
+        /// cannot tell a round trip under a millisecond from none, and a sample of zero would make RACK's minimum round
+        /// trip zero for as long as it is kept, and the reordering window with it.
         [[nodiscard]] std::optional<core::Duration> sample(const std::optional<std::uint32_t> echo,
                                                            const core::TimePoint now) const noexcept {
             if (!enabled_ || !echo || *echo == 0) {
@@ -107,7 +111,7 @@ namespace aloe::tcp::detail {
             if (static_cast<std::int32_t>(elapsed) < 0) {
                 return std::nullopt;
             }
-            return std::chrono::milliseconds{elapsed};
+            return std::chrono::milliseconds{std::max<std::uint32_t>(elapsed, 1U)};
         }
 
     private:
