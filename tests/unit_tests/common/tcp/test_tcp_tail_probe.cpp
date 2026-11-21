@@ -536,6 +536,38 @@ TEST_P(TcpTailProbeHeld, AProbeWhosePacketIsLentWaitsThenCopies) {
     return_loans();
 }
 
+// A probe whose packet is still lent waits for the flush; when the original's ACK frees its entry first, the probe
+// never left. It was not sent, so nothing of it is in flight and it has no verdict: the next ACK past its end repairs
+// nothing and cuts no window. Linux sends no probe while the segment is in a host queue (`skb_still_in_host_queue`).
+TEST_P(TcpTailProbeHeld, AProbeThatNeverLeftOpensNoVerdict) {
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    Frames one;
+    ASSERT_TRUE(send(*c, 1, one));  // at 10 ms: the probe for 70
+    advance(60ms);
+    EXPECT_TRUE(collect().empty()) << "the probe's packet is still lent: it waits for the flush";
+    ASSERT_EQ(counters().retransmits_deferred, 1U);
+    ASSERT_TRUE(c->tail_probe_in_flight());
+    advance(1ms);
+    // At 71 ms, before the flush could send the copy, the original's ACK frees the entry the probe waits on.
+    receive(peer_.ack(one[0]));
+    EXPECT_FALSE(c->tail_probe_in_flight());
+    EXPECT_FALSE(c->tail_probe_verdict_open()) << "a probe that never left has no verdict";
+    EXPECT_EQ(counters().tail_probes, 0U) << "nor is it counted as sent";
+    return_loans();
+    EXPECT_TRUE(collect().empty()) << "nothing goes for the first segment once the loans return";
+    Frames second;
+    ASSERT_TRUE(send(*c, 1, second));
+    advance(10ms);
+    receive(peer_.ack(second[0]));  // past the first segment's end
+    EXPECT_EQ(counters().tail_probe_recoveries, 0U);
+    EXPECT_EQ(counters().tail_probes_needless, 0U);
+    EXPECT_FALSE(c->tail_probe_verdict_open());
+    EXPECT_EQ(c->congestion_window(), 14480U) << "the initial window, untouched";
+    EXPECT_EQ(counters().retransmits_copied, 0U);
+    return_loans();
+}
+
 TEST_P(TcpTailProbeRefusing, AProbeIpRefusesIsNoProbeAndTheRtoKeepsItsMoment) {
     auto* c = open_passive(peer_, 10ms);
     ASSERT_NE(c, nullptr);

@@ -354,12 +354,25 @@ namespace aloe::tcp::detail {
             }
         }
 
-        /// The queue frees what `ack` covers (`RetransmissionQueue::acknowledge`), `each` running for every entry it
-        /// frees that no block reported; a resend that waited is moot once its entry is freed, and the connection
-        /// leaves the deferred list unless another of its entries still waits. Called before SND.UNA moves.
+        /**
+         * The queue frees what `ack` covers (`RetransmissionQueue::acknowledge`), `each` running for every entry it
+         * frees that no block reported; a resend that waited is moot once its entry is freed, and the connection
+         * leaves the deferred list unless another of its entries still waits. Called before SND.UNA moves.
+         *
+         * A tail probe whose entry this frees while its resend waits for its packet never left: it was no probe, and
+         * it is forgotten, its flight and its verdict, and taken back out of `tail_probes`, which counted it when
+         * `resend` accepted it (`on_tail_probe_timeout`). Else this ACK, at or past the probe's end, would leave the
+         * verdict open, and the next ACK past the end would read the probe as a loss it repaired and cut the window.
+         * Linux sends no probe while the segment is still in a host queue (`skb_still_in_host_queue`).
+         */
         template <std::invocable<const SentNode&> Each>
         [[nodiscard]] Freed acknowledge(ControlBlock& block, const Sequence ack, Each&& each) noexcept {
+            const bool probe_waited = probe_waiting(block);
             const Freed freed = block.queue.acknowledge(send_pool_, ack, block.send.una, std::forward<Each>(each));
+            if (probe_waited && !probe_waiting(block)) {
+                block.probe_state.forget();
+                --context_.counters.tail_probes;
+            }
             settle_deferred(block);
             return freed;
         }
@@ -1258,6 +1271,13 @@ namespace aloe::tcp::detail {
             std::ignore = resend(block, index);
         }
 
+        /// A tail probe is in flight whose resend still waits for its packet: accepted by `resend` and not yet left.
+        /// Its wait is found by its entry, the one waiting with no lost mark; no walk while no entry waits, and none
+        /// while no probe is in flight.
+        [[nodiscard]] bool probe_waiting(const ControlBlock& block) const noexcept {
+            return block.probe_state.in_flight() && block.queue.first_waiting_unmarked(send_pool_) != no_node;
+        }
+
         /// A SYN, SYN-ACK or FIN whose first send found no next hop: tried again every `unresolved_retry`, as no retry.
         void arm_poll(ControlBlock& block) noexcept {
             block.timer_kind = TimerKind::ArpPoll;
@@ -1371,8 +1391,9 @@ namespace aloe::tcp::detail {
          * connection may still schedule one (`probe_schedulable`): the highest-sequence entry transmitted, sent again
          * whole through `resend`, so the busy rule and the copy fallback apply to it and a probe whose packet is lent
          * leaves at the flush (`retry_probe`). It is the probe from the moment `resend` accepts it, sent or waiting:
-         * its end recorded, the end of that entry, counted in `tail_probes`, and the RTO armed from now. It is nothing
-         * else: no retry and no backoff, no episode, no mark cleared, no rate reduction.
+         * its end recorded, the end of that entry, counted in `tail_probes`, and the RTO armed from now. One that waits
+         * and whose entry an ACK frees before it leaves was never sent: `acknowledge` forgets it and takes the count
+         * back. It is nothing else: no retry and no backoff, no episode, no mark cleared, no rate reduction.
          *
          * The user timeout bounds the probe through the RTO's moment, which the probe's deadline never passes: an
          * expiry at the user timeout's moment times the connection out there and sends no probe. That check departs
