@@ -31,6 +31,7 @@ namespace {
     using Blocks             = std::vector<aloe::wire::TcpSackBlock>;
     using Frames             = std::vector<aloe::frames::ParsedFrame>;
     using Recovery           = aloe::tcp::detail::LossRecovery<aloe::tcp::NewReno>;
+    using Earlier            = aloe::tcp::detail::EarlierResends;
     using TimePoint          = aloe::core::TimePoint;
     constexpr auto unbounded = std::numeric_limits<std::uint32_t>::max();
 
@@ -225,6 +226,50 @@ TEST(TcpUndo, ALaterExpiryInTheLossStateKeepsTheRecord) {
     EXPECT_TRUE(recovery.every_resend_reported());
     recovery.undo(true);
     EXPECT_EQ(recovery.window(), 10000U) << "the state copied at the first expiry";
+}
+
+// Linux's tcp_init_undo starts `undo_retrans` at the resends still out (`retrans_out`): an episode that begins with two
+// of them waits for their reports as for its own resend.
+TEST(TcpUndo, AnEpisodeCountsTheResendsStillOut) {
+    Recovery recovery;
+    recovery.open(TcpSequence{1000});
+    recovery.establish(1000);
+    recovery.on_timeout(TcpSequence{1001}, TcpSequence{11001}, 10000, 0, 1000, true);
+    recovery.on_resend(ms(200));
+    recovery.on_resend(ms(210));
+    recovery.begin_recovery(TcpSequence{11001}, 10000, 10000, 1000, Earlier{.out = 2, .unacknowledged = true});
+    EXPECT_FALSE(recovery.every_resend_reported());
+    recovery.on_resend(ms(300));
+    recovery.on_duplicate_report(TcpSequence{2001});
+    recovery.on_duplicate_report(TcpSequence{3001});
+    EXPECT_FALSE(recovery.every_resend_reported()) << "the episode's own resend is still to be reported";
+    recovery.on_duplicate_report(TcpSequence{4001});
+    EXPECT_TRUE(recovery.every_resend_reported());
+}
+
+// Linux's tcp_retrans_stamp_cleanup keeps `retrans_stamp` while a retransmission is done: the first resend's stamp
+// stays while an earlier resend is unacknowledged, out or marked lost again, so its ACK is no sign.
+TEST(TcpUndo, TheFirstResendStaysWhileAnEarlierOneIsUnacknowledged) {
+    Recovery recovery;
+    recovery.open(TcpSequence{1000});
+    recovery.establish(1000);
+    recovery.on_timeout(TcpSequence{1001}, TcpSequence{11001}, 10000, 0, 1000, true);
+    recovery.on_resend(ms(200));
+    // Recovery from the loss state: that resend was found lost again, so none is out, but it is unacknowledged.
+    recovery.begin_recovery(TcpSequence{11001}, 10000, 10000, 1000, Earlier{.out = 0, .unacknowledged = true});
+    EXPECT_EQ(recovery.first_resend(), ms(200));
+    EXPECT_FALSE(recovery.answers_original(200U, 200U)) << "the ACK of the earlier resend, while the new one waits";
+    EXPECT_TRUE(recovery.answers_original(150U, 200U)) << "an original sent before it";
+    EXPECT_FALSE(recovery.every_resend_reported()) << "nothing out: the count starts at none";
+
+    Recovery clean;
+    clean.open(TcpSequence{1000});
+    clean.establish(1000);
+    clean.on_timeout(TcpSequence{1001}, TcpSequence{11001}, 10000, 0, 1000, true);
+    clean.on_resend(ms(200));
+    clean.end(TcpSequence{11001});
+    clean.on_timeout(TcpSequence{11001}, TcpSequence{14001}, 3000, 0, 1000, true, Earlier{});
+    EXPECT_FALSE(clean.first_resend().has_value()) << "no earlier resend unacknowledged: a fresh stamp";
 }
 
 // Linux's tcp_end_cwnd_reduction sets the window to the target only for an episode that was not undone: here the
@@ -605,4 +650,163 @@ TEST_P(TcpUndoHeld, AnAckBeforeAnyResendLeftAnswersAnOriginal) {
     EXPECT_EQ(counters().retransmits_copied, 0U);
     EXPECT_EQ(counters().fast_retransmits, 1U);
     return_loans();
+}
+
+// An episode that begins while resends of an earlier one are still out counts them among the resends that may yet be
+// reported, as Linux's tcp_init_undo starts `undo_retrans` at `retrans_out`: the duplicate report of one of them is no
+// sign that the new episode's own resend was needless.
+TEST_P(TcpUndoBrick, AnEpisodeFromTheLossStateWaitsForTheResendsStillOut) {
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(send(*c, 1, sent));  // A at 10 ms: the probe for 10 + 2 * 10 + 40 = 70 ms
+    advance(60ms);
+    ASSERT_EQ(collect().size(), 1U) << "A probed: the RTO from it, for 280 ms";
+    advance(205ms);
+    Frames two;
+    ASSERT_TRUE(send(*c, 2, two));  // B and C at 275 ms
+    advance(1ms);
+    Frames third;
+    ASSERT_TRUE(send(*c, 1, third));  // E at 276 ms
+    advance(4ms);
+    // At 280 ms the RTO, the probe still in flight: A is lost and resent; B, C and E, younger than RACK's round trip of
+    // 10 ms, are left to RACK. The window restarts at their 300 in flight plus a segment, 1748.
+    ASSERT_EQ(collect().size(), 1U);
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Loss);
+    advance(2ms);
+    Frames fourth;
+    ASSERT_TRUE(send(*c, 1, fourth));  // D at 282 ms, within the 1748 - 400 the window leaves
+    advance(3ms);
+    // At 285 ms E is reported: RACK's segment, sent at 276 ms, with a round trip of 9 ms. B and C, sent before it at
+    // 275, are due at 284 ms: first losses, which leave the loss state as it is, and the pass resends both.
+    receive(peer_.sack(at(0), Blocks{range(300, 400)}));
+    ASSERT_EQ(collect().size(), 2U);
+    advance(7ms);
+    // At 292 ms D is reported: RACK's round trip 10 ms. A's resend of 280 ms, sent before D, is lost again, so recovery
+    // begins from the loss state, with the resends of B and C still out, and A goes a third time.
+    receive(peer_.sack(at(0), Blocks{range(300, 500)}));
+    ASSERT_EQ(counters().lost_retransmits, 1U);
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Recovery);
+    ASSERT_EQ(collect().size(), 1U);
+    advance(3ms);
+    // B's original was only late: the peer reports it as a duplicate of B's resend, above the hole at A, inside the
+    // block that now reports B. One of three: B's resend, C's and A's third. PRR: of 500 outstanding, 300 reported, so
+    // 200 in flight; 200 delivered against 100 sent, below the target, max(200 - 100, 100), no safe ACK: the window is
+    // 300.
+    receive(peer_.sack(at(0), Blocks{range(100, 200), range(100, 200), range(300, 500)}));
+    EXPECT_EQ(counters().duplicate_sacks_received, 1U);
+    EXPECT_EQ(counters().undos_duplicate_sack, 0U);
+    EXPECT_EQ(c->recovery_state(), RecoveryState::Recovery);
+    EXPECT_EQ(c->congestion_state().ssthresh, 2896U);
+    EXPECT_EQ(c->congestion_window(), 300U);
+}
+
+// The same cause, the other sign: an earlier resend still unacknowledged keeps the stamp of the first resend, as
+// Linux's tcp_retrans_stamp_cleanup keeps `retrans_stamp` while a retransmission is done, so an ACK of that resend
+// cannot read as "nothing of the episode resent yet" while the new episode's first resend waits for its packet.
+TEST_P(TcpUndoHeld, AnAckOfAnEarlierResendIsNoSignWhileTheEpisodesFirstWaits) {
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(send(*c, 1, sent));  // A at 10 ms: the probe for 70 ms
+    return_loans();                  // its packet back, so the probe leaves in place
+    advance(60ms);
+    ASSERT_EQ(collect().size(), 1U) << "the probe: the RTO from it, for 280 ms";
+    return_loans();  // and the RTO's resend leaves in place
+    advance(210ms);
+    const auto resend = collect();
+    ASSERT_EQ(resend.size(), 1U) << "A again at 280 ms, its packet lent from now on";
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Loss);
+    advance(2ms);
+    Frames next;
+    ASSERT_TRUE(send(*c, 1, next));  // D at 282 ms
+    advance(10ms);
+    // At 292 ms D is reported: A's resend of 280 ms, sent before D, is lost again, and recovery begins from the loss
+    // state. Its first resend of A finds the packet lent and waits for the flush.
+    receive(peer_.sack(at(0), Blocks{range(100, 200)}));
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Recovery);
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(counters().retransmits_deferred, 1U);
+    // A's resend of 280 ms was only late: the ACK of A and D echoes it, which answers that resend, not an original, and
+    // covers `recover`. Recovery ends at its target, max(min(200, 1448) / 2, 2 * 1448) = 2896, where an undo would have
+    // left the loss state's window of 1448.
+    peer_.see(resend[0]);
+    receive(ack_of(at(200)));
+    EXPECT_EQ(counters().undos_original_ack, 0U);
+    EXPECT_EQ(c->recovery_state(), RecoveryState::Open);
+    EXPECT_EQ(c->congestion_window(), 2896U);
+    return_loans();
+}
+
+// The spec counts the duplicate reports "for resent data", and Linux's tcp_sacktag_one counts down only a queued buffer
+// it resent: a report of an original the network duplicated, above the hole, says nothing of the resends.
+TEST_P(TcpUndoBrick, ADuplicateReportOfDataNeverResentCountsNothing) {
+    Frames resend;
+    auto* c = mark_the_head(10ms, resend);  // the head resent at 20 ms: one resend to wait for
+    ASSERT_NE(c, nullptr);
+    // The third segment, never resent, arrived twice: reported as a duplicate inside the block of the second to fourth.
+    receive(peer_.sack(at(0), Blocks{range(200, 300), range(100, 400)}));
+    EXPECT_EQ(counters().duplicate_sacks_received, 1U) << "believed: one segment was resent";
+    EXPECT_EQ(counters().undos_duplicate_sack, 0U);
+    EXPECT_EQ(c->recovery_state(), RecoveryState::Recovery);
+    EXPECT_EQ(c->congestion_state().ssthresh, 2896U);
+}
+
+TEST_P(TcpUndoBrick, ADuplicateReportAboveTheAckOfAResendCounts) {
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(send(*c, 6, sent));  // at 10 ms
+    advance(10ms);
+    // At 20 ms the third to the fifth reported: the first two are lost; of 600 outstanding 300 are reported and 200
+    // lost, so 100 is in flight, and PRR allows the 300 delivered: both are resent, two resends to wait for.
+    receive(peer_.sack(at(0), Blocks{range(200, 500)}));
+    const auto resent = collect();
+    ASSERT_EQ(resent.size(), 2U);
+    // Both copies of the second arrive while the first is missing: it is reported, then reported again as a duplicate,
+    // above the ACK, naming a segment that was resent. One of two.
+    receive(peer_.sack(at(0), Blocks{range(100, 500)}));
+    receive(peer_.sack(at(0), Blocks{range(100, 200), range(100, 500)}));
+    EXPECT_EQ(counters().duplicate_sacks_received, 1U);
+    EXPECT_EQ(counters().undos_duplicate_sack, 0U);
+    advance(10ms);
+    // The first's resend and the sixth arrive: the ACK of everything echoes the resend, and recovery ends at its
+    // target.
+    peer_.see(resent[0]);
+    receive(ack_of(at(600)));
+    ASSERT_EQ(c->congestion_window(), 2896U);
+    // The first's original was only late: its duplicate, below the ACK, is the second report of two.
+    receive(peer_.sack(c->committed(), Blocks{range(0, 100)}));
+    EXPECT_EQ(counters().undos_duplicate_sack, 1U);
+    EXPECT_EQ(c->congestion_window(), 14480U);
+}
+
+// An undo that clears the marks ends the wait of a resend held back by the busy rule behind the head, which the ACK
+// does not free: the flush sends nothing for it, and the connection is off the deferred list.
+TEST_P(TcpUndoHeld, AnUndoClearsAResendWaitingBehindTheHead) {
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(send(*c, 1, sent));  // the first at 10 ms
+    return_loans();                  // its packet back: its resend will leave in place
+    Frames more;
+    ASSERT_TRUE(send(*c, 4, more));  // the second to the fifth at 10 ms, their packets lent
+    advance(10ms);
+    // At 20 ms the third to the fifth reported: the first two are lost. Nothing is in flight and PRR allows 300: the
+    // first's resend leaves, the second's finds its packet lent and waits for the flush.
+    receive(peer_.sack(at(0), Blocks{range(200, 500)}));
+    ASSERT_EQ(collect().size(), 1U);
+    ASSERT_EQ(counters().retransmits_deferred, 1U);
+    ASSERT_TRUE(tcp_->sent_segment(*c, 1).waiting);
+    // The first's original was only late: its ACK echoes it, older than the resend, frees the first and leaves the
+    // second at the head. No resend is out, so the undo clears every mark, and the second's wait with it.
+    peer_.see(sent[0]);
+    receive(ack_of(at(100)));
+    ASSERT_EQ(counters().undos_original_ack, 1U);
+    EXPECT_FALSE(tcp_->sent_segment(*c, 0).lost);
+    EXPECT_FALSE(tcp_->sent_segment(*c, 0).waiting);
+    EXPECT_EQ(c->lost_bytes(), 0U);
+    advance(1ms);
+    EXPECT_TRUE(collect().empty()) << "the next flush has nothing to resend: no deferral, no copy";
+    EXPECT_EQ(counters().retransmits_deferred, 1U);
+    EXPECT_EQ(counters().retransmits_copied, 0U);
+    return_loans();
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(counters().fast_retransmits, 2U);
 }

@@ -268,6 +268,23 @@ namespace aloe::tcp::detail {
             return duplicate_segments_ <= resent_segments_ ? DuplicateReport::Believed : DuplicateReport::Disbelieved;
         }
 
+        /// `block` names, whole, a queued entry that was resent, whatever its marks: a duplicate report of it is one of
+        /// a resend, as Linux's `tcp_sacktag_one` counts a buffer with `TCPCB_RETRANS`.
+        [[nodiscard]] bool names_resend(const Pool& pool, const wire::TcpSackBlock& block) const noexcept {
+            for (std::uint32_t index = chain_.head; index != no_node;) {
+                const Entry& entry = pool.node(index);
+                index              = entry.next;
+                if (!entry.first.before(block.end)) {
+                    return false;
+                }
+                if (entry.resent() && !entry.first.before(block.first) &&
+                    !(entry.first + entry.length).after(block.end)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /// `block` names, whole, a queued entry that was resent and is marked received.
         [[nodiscard]] bool names_reported_resend(const Pool& pool, const wire::TcpSackBlock& block) const noexcept {
             for (std::uint32_t index = chain_.head; index != no_node;) {
@@ -385,11 +402,25 @@ namespace aloe::tcp::detail {
             return no_node;
         }
 
-        /// A resend a lost mark owed is out and its entry is neither reported nor acknowledged: Linux's `retrans_out`
-        /// is not zero. Walks the queue; the undo asks it only on a partial ACK that answered an original.
-        [[nodiscard]] bool resend_unacknowledged(const Pool& pool) const noexcept {
+        /// The resends a lost mark owed that are out, their entries neither reported nor acknowledged: Linux's
+        /// `retrans_out`. Walks the queue; the undo asks it as an episode begins and on a partial ACK that answered an
+        /// original.
+        [[nodiscard]] std::uint32_t resends_out(const Pool& pool) const noexcept {
+            std::uint32_t out = 0;
             for (std::uint32_t index = chain_.head; index != no_node; index = pool.node(index).next) {
                 if (const Entry& entry = pool.node(index); entry.resend_out && !entry.reported) {
+                    ++out;
+                }
+            }
+            return out;
+        }
+
+        /// Some entry neither reported nor acknowledged was resent, whatever its marks since: Linux's
+        /// `tcp_any_retrans_done`, which reads `retrans_out` and the head's `TCPCB_EVER_RETRANS`. Walks the queue; the
+        /// undo asks it as an episode begins.
+        [[nodiscard]] bool resent_unacknowledged(const Pool& pool) const noexcept {
+            for (std::uint32_t index = chain_.head; index != no_node; index = pool.node(index).next) {
+                if (const Entry& entry = pool.node(index); entry.resent() && !entry.reported) {
                     return true;
                 }
             }

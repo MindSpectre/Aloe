@@ -331,14 +331,16 @@ namespace aloe::tcp::detail {
          * out is forgotten, its flight and its verdict (RFC 8985 7.1; Linux's `tcp_init_cwnd_reduction` clears
          * `tlp_high_seq`): the episode's resends answer for what is lost from here on. One still in flight is first
          * counted in the undo's record the episode opened (`LossRecovery::count_probe`): the peer may yet report its
-         * copy as a duplicate.
+         * copy as a duplicate. The record also starts from what earlier resends leave after the marking
+         * (`earlier_resends`), as Linux's `tcp_init_undo` reads `retrans_out` after `tcp_mark_skb_lost` took a resend
+         * found lost again out of it.
          */
         void begin_recovery(ControlBlock& block, const std::uint32_t delivered) noexcept {
             const std::uint32_t flight = block.send.flight();
             const std::uint16_t mss    = block.mss();
             const std::uint32_t recover_fs =
                 block.sack.in_use() ? flight - block.queue.reported_bytes() + delivered : flight;
-            block.recovery.begin_recovery(block.send.nxt, flight, recover_fs, mss);
+            block.recovery.begin_recovery(block.send.nxt, flight, recover_fs, mss, earlier_resends(block));
             if (block.probe_state.in_flight()) {
                 block.recovery.count_probe();
             }
@@ -411,10 +413,16 @@ namespace aloe::tcp::detail {
             return block.queue.head_reported(send_pool_);
         }
 
-        /// A resend a lost mark owed is still out, neither reported nor acknowledged
-        /// (`RetransmissionQueue::resend_unacknowledged`).
-        [[nodiscard]] bool resend_unacknowledged(const ControlBlock& block) const noexcept {
-            return block.queue.resend_unacknowledged(send_pool_);
+        /// The resends a lost mark owed still out, neither reported nor acknowledged
+        /// (`RetransmissionQueue::resends_out`).
+        [[nodiscard]] std::uint32_t resends_out(const ControlBlock& block) const noexcept {
+            return block.queue.resends_out(send_pool_);
+        }
+
+        /// `sack_block` names a queued entry that was resent (`RetransmissionQueue::names_resend`).
+        [[nodiscard]] bool names_resend(const ControlBlock& block,
+                                        const wire::TcpSackBlock& sack_block) const noexcept {
+            return block.queue.names_resend(send_pool_, sack_block);
         }
 
         /// An undo that takes the marks back (`RetransmissionQueue::clear_all_lost`): no entry owes a resend any more
@@ -829,6 +837,13 @@ namespace aloe::tcp::detail {
         [[nodiscard]] static std::uint32_t unacknowledged(const ControlBlock& block, const SentNode& node) noexcept {
             const Sequence from = block.send.una.after(node.first) ? block.send.una : node.first;
             return static_cast<std::uint32_t>(node.first + node.length - from);
+        }
+
+        /// What earlier resends leave in the queue as an episode begins, for the undo's record: the resends out, and
+        /// whether any entry still queued unreported was resent (`EarlierResends`).
+        [[nodiscard]] EarlierResends earlier_resends(const ControlBlock& block) const noexcept {
+            return EarlierResends{.out            = block.queue.resends_out(send_pool_),
+                                  .unacknowledged = block.queue.resent_unacknowledged(send_pool_)};
         }
 
         /**
@@ -1266,7 +1281,9 @@ namespace aloe::tcp::detail {
          * for new data: the connection gets its Writable hint (`hint_if_writable_rose`). A tail probe that was out is
          * forgotten, its flight and its verdict; one still in flight is first counted in the undo's record the expiry
          * opened, as in `begin_recovery` (Linux's `tcp_enter_loss` counts it in `tcp_init_undo`). A probe is in flight
-         * only while the connection is open, and an expiry from the open state always opens a record.
+         * only while the connection is open, and an expiry from the open state always opens a record. A record the
+         * expiry opens starts from what earlier resends leave after its marks (`earlier_resends`), as `tcp_enter_loss`
+         * calls `tcp_init_undo` after `tcp_timeout_mark_lost`.
          */
         [[nodiscard]] TimerExpiry on_retransmit_timeout(ControlBlock& block) noexcept {
             assert(!block.queue.empty() && "the RTO runs while something is queued");
@@ -1286,7 +1303,8 @@ namespace aloe::tcp::detail {
                                           block.send.flight(),
                                           in_flight_bytes(block),
                                           block.mss(),
-                                          block.retransmit_count == 1);
+                                          block.retransmit_count == 1,
+                                          earlier_resends(block));
             }
             if (block.probe_state.in_flight()) {
                 block.recovery.count_probe();

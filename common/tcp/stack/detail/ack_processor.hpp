@@ -70,8 +70,8 @@ namespace aloe::tcp::detail {
          *
          * 1. The SACK option's blocks, `sack`, eight bytes each and empty without one, read into the scoreboard
          *    (`read_blocks`), on an ACK below SND.UNA too; each entry they newly report advances RACK. A believed
-         *    duplicate report that is not the tail probe's is one resend fewer for the undo to wait for
-         *    (`LossRecovery::on_duplicate_report`), whatever else this ACK does.
+         *    duplicate report that is not the tail probe's and reports resent data (`reports_resend`) is one resend
+         *    fewer for the undo to wait for (`LossRecovery::on_duplicate_report`), whatever else this ACK does.
          * 2. An ACK of new data frees what it covers, advancing RACK by each entry no block had reported, and samples
          *    the round trip (`acknowledge_data`). A duplicate ACK, of something in flight, is judged against the
          *    window as it stands, before this segment updates it, the field scaled by the peer's shift, and counted.
@@ -127,7 +127,7 @@ namespace aloe::tcp::detail {
                                       block.send.scaled(header.window) == block.send.wnd;
             const bool duplicate    = repeated && transmitter_.in_flight(block);
             const bool probe_report = reports_probe(block, blocks);
-            if (blocks.duplicate && !probe_report) {
+            if (blocks.duplicate && !probe_report && reports_resend(block, *blocks.duplicate)) {
                 block.recovery.on_duplicate_report(blocks.duplicate->end);
             }
             Outcome outcome{};
@@ -306,6 +306,18 @@ namespace aloe::tcp::detail {
         }
 
         /**
+         * A duplicate report is of resent data, the spec's condition for the undo's count, read before the cumulative
+         * part moves SND.UNA. Above SND.UNA the data is still queued: the report must name an entry that was resent
+         * (`RetransmissionQueue::names_resend`), as Linux's `tcp_sacktag_one` counts down only a buffer with
+         * `TCPCB_RETRANS`, so a report of an original the network duplicated counts nothing. At or below it the queue
+         * no longer holds the data, and the report counts as it is, as `tcp_check_dsack` counts data it has forgotten;
+         * the belief in the report, no more duplicates reported than segments ever resent, is all that guards it there.
+         */
+        [[nodiscard]] bool reports_resend(const ControlBlock& block, const wire::TcpSackBlock& report) const noexcept {
+            return !report.end.after(block.send.una) || transmitter_.names_resend(block, report);
+        }
+
+        /**
          * The ACK's duplicate report is the tail probe's: of at most one segment, ending at the end of a probe whose
          * verdict is open, so the original and the probe both arrived. RFC 8985 7.4's "DSACK option matching
          * TLP.end_seq", Linux's `FLAG_DSACK_TLP`, in `tcp_dsack_seen`'s order: after its first test, a report longer
@@ -425,7 +437,7 @@ namespace aloe::tcp::detail {
                 if (!reordering) {
                     ++context_.counters.reordering_seen;
                 }
-                if (transmitter_.resend_unacknowledged(block)) {
+                if (transmitter_.resends_out(block) > 0) {
                     return {.held = true};
                 }
                 transmitter_.clear_all_lost(block);
