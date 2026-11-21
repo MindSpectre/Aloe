@@ -1,8 +1,8 @@
 // Congestion avoidance: a timeout with one segment in flight sets ssthresh = max(988 / 2, 2 * 988) = 1976 and the
-// window to one segment. The ACK of the resend, whose echo gives a sample of 0 and which passes recover, ends the loss
-// episode and grows the window to the threshold in slow start, so a write sends two segments. From there each ACK adds
-// its bytes to a count, and a full window of them, 1976 after the second, adds one segment: the next write sends three.
-// Linux's reno counts the same way in packets.
+// window to one segment. The ACK of the resend, whose echo gives a sample of 1 ms and which passes recover, ends the
+// loss episode and grows the window to the threshold in slow start, so a write sends two segments. From there each
+// ACK adds its bytes to a count, and a full window of them, 1976 after the second, adds one segment: the next write
+// sends three. Linux's reno counts the same way in packets.
 --congestion=newreno
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0

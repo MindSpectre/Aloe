@@ -3,11 +3,12 @@
 The tcp module (`common/tcp/`) is the TCP brick: one `tcp::Stack` per shard, over that shard's
 [`net`](net.md) IPv4 brick and its [loop](loop.md)'s timer wheel. It opens connections in both directions,
 carries data both ways without copying it, holds what arrives above a gap as the packets it arrived in and
-reports it with SACK blocks, scales its window, closes with FIN and RST, and keeps every segment it sends, as
-the packet it left in, until the peer acknowledges it: phase 1 of the [roadmap](../roadmap.md), and steps 3 and
-4 of phase 2, reliable send and the receive side. The brick has four verbs: `process` the segments IP sorted
-out, `poll_event` to drain notifications, the connections' own non-blocking operations, and `flush` for the
-resends and ACKs that waited. Every connection is a [stream](stream.md): the contract TLS and WebSocket
+reports it with SACK blocks, scales its window, closes with FIN and RST, keeps every segment it sends, as the
+packet it left in, until the peer acknowledges it, and recovers from a loss by what the peer's SACK blocks report
+and by time, RACK-TLP: phase 1 of the [roadmap](../roadmap.md), and steps 3 to 5 of phase 2, reliable send, the
+receive side and loss recovery with SACK. The brick has four verbs: `process` the segments IP sorted out,
+`poll_event` to drain notifications, the connections' own non-blocking operations, and `flush` for the resends and
+ACKs that waited. Every connection is a [stream](stream.md): the contract TLS and WebSocket
 reuse later. Everything is reached through the umbrella `#include <aloe/tcp>` (`export/aloe/tcp`), and targets
 link `Aloe::Common::Tcp`. It depends on [`net`](net.md), [`stream`](stream.md), [`loop`](loop.md),
 [`device`](device.md), [`wire`](wire.md) and [`core`](core.md), and not on [`execution`](execution.md),
@@ -20,12 +21,13 @@ link `Aloe::Common::Tcp`. It depends on [`net`](net.md), [`stream`](stream.md), 
   `loop::TimerWheel&` and a `TcpConfig`, which it validates (throwing `std::invalid_argument`); every slot, node and
   list is allocated there and never again. `process(segments, now)` takes `ip.received(Ipv4Protocol::Tcp)` and leaves
   every packet moved out or released; `poll_event()` removes one pending notification; `flush(now)` retries the resends
-  that waited for their packet and sends the ordinary ACKs that waited. `listen(port)` and `unlisten(port)` manage
-  listeners; `connect(peer, now)` returns a `SynSent` connection the caller owns, or a `ConnectError`; the slot is the
-  caller's even while its SYN waits for ARP. `counters()`, `pending_events()`, `table_size()`, `nodes_available()`,
-  `send_nodes_available()`, `byte_budget()`, the largest receive budget the configuration allows, counted in the stack's
-  own MSS without timestamps (373760 bytes with the defaults, where a timestamped connection's is 370688), and
-  `sent_segment(connection, position)`, one entry of a connection's retransmission queue, are for tests and monitoring;
+  that waited for their packet, a tail probe's among them, and sends the ordinary ACKs that waited. `listen(port)` and
+  `unlisten(port)` manage listeners; `connect(peer, now)` returns a `SynSent` connection the caller owns, or a
+  `ConnectError`; the slot is the caller's even while its SYN waits for ARP. `counters()`, `pending_events()`,
+  `table_size()`, `nodes_available()`, `send_nodes_available()`, `byte_budget()`, the largest receive budget the
+  configuration allows, counted in the stack's own MSS without timestamps (373760 bytes with the defaults, where a
+  timestamped connection's is 370688), and `sent_segment(connection, position)`, one entry of a connection's
+  retransmission queue with its scoreboard marks, `reported` and `lost`, are for tests and monitoring;
   `force_next_isn(isn)` and `force_recover(connection, recover)` are for tests. The stack keeps the stamp of the last
   `process`, `flush` or `connect` and uses it for everything a connection does in between. It names its types
   `ConnectionType` (`Connection<Ip, CongestionControl>`), `EventType` (`ConnectionEvent<Ip, CongestionControl>`) and
@@ -38,10 +40,16 @@ link `Aloe::Common::Tcp`. It depends on [`net`](net.md), [`stream`](stream.md), 
   `receive_budget()` (the budget the handshake settled), `receive_window()` (the bytes on offer from RCV.NXT to the edge
   already offered), `window_shift()` and `peer_window_shift()` (both scales, zero without scaling), and
   `out_of_order_segments()` and `out_of_order_bytes()` (what is held above a gap, outside `unread()`); and the send
-  side: `queued_segments()` (the retransmission queue's length), `delivered()` (payload bytes the peer acknowledged),
-  `srtt()` and `rto()` (the estimator, the backoff included), `retransmit_count()` (expiries of the retransmission timer
-  since the last ACK of new data, a deferred or refused resend included), `congestion_window()` and `congestion_state()`
-  (the policy's), `in_recovery()` and `duplicate_acks()` (fast recovery), and `probing()` (zero-window probes running).
+  side: `queued_segments()` (the retransmission queue's length), `delivered()` (payload bytes the peer acknowledged,
+  each once, when a SACK block first reported it or the cumulative ACK first covered it), `in_flight()` (what the
+  congestion window is held against: `unacknowledged()` less what the peer reported received and less what is marked
+  lost and not resent since), `reported_bytes()` and `lost_bytes()` (those two totals of the scoreboard), `srtt()` and
+  `rto()` (the estimator, the backoff included), `retransmit_count()` (expiries of the retransmission timer since the
+  last ACK of new data, a deferred or refused resend included), `congestion_window()` (the policy's window, and in
+  recovery the rate reduction's on its way down to the policy's target) and `congestion_state()` (the policy's state),
+  `recovery_state()` and `in_recovery()`, `duplicate_acks()` (since `acknowledged()` last moved), `reordering_window()`
+  (RACK's, as the connection stands), `tail_probe_in_flight()` and `tail_probe_verdict_open()` (the tail loss probe's
+  two facts), and `probing()` (zero-window probes running).
 - **`aloe::tcp::ConnectionEvent<Ip, CongestionControl>`** -- what `poll_event` returns: the connection and the
   `stream::Events` taken from it. The flags are edges; `poll_event` and `release` are the only things that
   clear them.
@@ -53,15 +61,21 @@ link `Aloe::Common::Tcp`. It depends on [`net`](net.md), [`stream`](stream.md), 
   window `receive_window` when one is set, the shard's shared `receive_pool` of held-packet nodes, the send cap
   `send_segments` and the shard's `send_pool` of retransmission-queue nodes, the ephemeral port range, the
   retransmission timer's `rto_initial`, `rto_min` and `rto_max`, the caps `retries` and `data_retries`, the
-  `user_timeout`, the options `timestamps`, `sack` and `window_scaling`, the `delayed_ack`, `retransmit_defers`,
-  and the ARP wait's `unresolved_retry` and `unresolved_polls`.
+  `user_timeout`, the options `timestamps`, `sack` and `window_scaling`, the `delayed_ack`, the tail loss probe's
+  `tail_probe_ack_delay`, `retransmit_defers`, and the ARP wait's `unresolved_retry` and `unresolved_polls`.
 - **`aloe::tcp::TcpCounters`** -- monotonic, one per drop reason and one per send failure: what was sent by
-  kind and resent by cause, fast recoveries, duplicate ACKs and round-trip samples, segments held above a gap
-  and released for room, ACKs that carried SACK blocks or a duplicate SACK, ACKs the delay timer sent,
+  kind and resent by cause, recoveries, duplicate ACKs and round-trip samples, segments held above a gap and
+  released for room, ACKs that carried SACK blocks or a duplicate SACK, sent and received, ACKs the delay timer
+  sent, what RACK marked, reordering seen, reneging, tail probes and their verdicts, undos by their sign,
   connections opened, accepted, closed, reset and timed out, every reason a segment was dropped, and
   `send_refused`, `send_unresolved`, `commits_refused` and `allocation_failures`.
+- **`aloe::tcp::RecoveryState`** -- where a connection's loss recovery stands: `Open`, nothing known lost;
+  `Recovery`, from the first entry marked lost to the ACK that covers what was sent by then; `Loss`, from an expiry
+  of the retransmission timer to the same.
 - **`aloe::tcp::IsCongestionControl`**, **`AckInfo`**, **`NewReno`**, **`NoCongestionControl`** -- the policy
-  concept, what an ACK of new data tells it, and its two models; see [below](#congestion-control).
+  concept, with the hooks `on_congestion`, `target` and `on_undo` for a recovery whose window the connection
+  regulates, what an ACK of new data tells it, whether the window was in use among it, and its two models; see
+  [below](#congestion-control).
 - **`aloe::tcp::IsIp`** -- what the brick asks of the IP layer: `allocate`, `send`, `address`, `max_l4_size`,
   `next_hop` and `queue`, and for the frame template `prebuild`, `send_frame` and `generation` (see the
   [net page](net.md)). `net::Ipv4<Device>` models it.
@@ -218,42 +232,57 @@ constrained by `IsCongestionControl`. A model is a stateless struct: a per-conne
 embeds, default-constructible and trivially copyable, and static hooks the stack calls, so there is no virtual
 call and no allocation, and a model whose hooks are empty leaves no code behind. The policy answers one
 question, how much may be in flight, and is told what happened; the stack keeps every mechanic that is the
-same under any policy, from the retransmission queue to the duplicate-ACK count, limited transmit, the
-`recover` guard, the retries and the user timeout.
+same under any policy, from the retransmission queue and its scoreboard to RACK, the tail loss probe, the
+recovery states, the window in recovery, the undo, the `recover` guard, the retries and the user timeout (see the
+notes from "Loss recovery" on, under [design notes](#design-notes)).
 
-| Hook                                  | Called                                                                     |
-|---------------------------------------|----------------------------------------------------------------------------|
-| `reset(state, mss)`                   | When the connection reaches `Established`: the initial window.             |
-| `window(state)`                       | By `writable()`: the congestion window in bytes.                           |
-| `on_ack(state, info)`                 | On an ACK of new data outside fast recovery.                               |
-| `on_loss(state, flight, mss)`         | On the third duplicate ACK, as fast recovery starts.                       |
-| `on_dupack(state, mss)`               | On each further duplicate ACK in fast recovery.                            |
-| `on_partial_ack(state, acked, mss)`   | On an ACK in fast recovery short of `recover`.                             |
-| `on_recovery_end(state, flight, mss)` | On the ACK past `recover` that ends fast recovery.                         |
-| `on_timeout(state, flight, mss)`      | On the first expiry of the retransmission timer since an ACK of new data.  |
-| `on_idle(state, mss)`                 | On a commit into an empty queue more than an RTO after the last data left. |
+| Hook                                | Called                                                                                                                                         |
+|-------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------|
+| `reset(state, mss)`                 | When the connection reaches `Established`: the initial window.                                                                                 |
+| `window(state)`                     | By `writable()` and the resend pass: the congestion window in bytes; in recovery the rate reduction's is used, unless the target is unbounded. |
+| `on_ack(state, info)`               | On an ACK of new data, open or in the loss state; never in recovery. `info` says whether the window was in use.                                |
+| `on_congestion(state, flight, mss)` | A loss was found, or a timeout is due a new reduction: the policy sets its target.                                                             |
+| `target(state)`                     | By the rate reduction: the target, RFC 5681's `ssthresh`; the largest value when unbounded.                                                    |
+| `on_recovery_end(state)`            | Recovery ended without an undo, or a tail probe repaired a loss: the window becomes the target.                                                |
+| `on_timeout(state, in_flight, mss)` | At every expiry of the retransmission timer after the handshake: the window restarts at `in_flight` plus one segment.                          |
+| `on_idle(state, mss)`               | On a commit into an empty queue more than an RTO after the last data left.                                                                     |
+| `on_undo(state, prior)`             | A reduction was needless: `prior` is the state copied as the episode began.                                                                    |
 
-`AckInfo` carries the bytes the ACK covers, the flight before it, the MSS, the round-trip sample when one was
-taken and the stamp, and the fields a delivery-rate estimator reads: the last transmission of the newest entry
-the ACK freed, the connection's delivered bytes after the ACK and when that entry was sent, and whether that
-send left window unused. No model reads the rate fields yet; they are there so a later model, BBR's, reads
-them without a change to the concept or the queue.
+The policy sets a target when a loss is found; the way from its window down to that target, while the loss is
+repaired, is the connection's: Proportional Rate Reduction (RFC 9937), which hands the window back at the target with
+`on_recovery_end`. A policy whose target is the largest 32-bit value has nothing to reduce: the rate reduction does not
+run for it and its window stands through recovery, as Linux leaves the window alone when the threshold is infinite
+(`tcp_end_cwnd_reduction`). That is `NoCongestionControl`, and it is the door a policy that owns its window in recovery,
+BBR, will use. The connection copies the policy's `State` as an episode begins, which is why it must be trivially
+copyable, and hands the copy back through `on_undo` when the episode's reduction turns out to have been needless.
 
-- **`NewReno`**, the default: RFC 5681's slow start and congestion avoidance, RFC 6582's recovery and RFC 6928's
-  initial window, `min(10 mss, max(2 mss, 14600))`, Linux's `TCP_INIT_CWND`, with an unbounded initial threshold.
-  Below the threshold an ACK grows the window by the bytes it covers, at most a segment; at or above it the
-  acknowledged bytes are counted and each window of them adds a segment. On loss
-  `ssthresh = max(flight / 2, 2 mss)` and `cwnd = ssthresh + 3 mss`; a further duplicate adds a segment; a
-  partial ACK deflates the window by the bytes it covers, adds a segment back when it covers at least one, and
-  never leaves less than a segment; the full ACK sets `cwnd = min(ssthresh, max(flight, mss) + mss)`, RFC 6582's
-  first option; a timeout sets `ssthresh = max(flight / 2, 2 mss)` and `cwnd = mss`; a send after an idle RTO
-  restarts at `min(IW, cwnd)`, RFC 5681's restart window, and keeps `ssthresh`, where Linux's `tcp_cwnd_restart`
-  first raises it to at least three quarters of the window. Linux's reno runs PRR in recovery instead of the
-  inflation and deflation, so its windows differ there; the recovery scripts pin RFC 6582 as written.
-- **`NoCongestionControl`**: the window is the largest 32-bit value and every hook is empty, so the peer's
-  window is the only limit. Recovery still happens, fast retransmit, the RTO, the retries and the user timeout;
-  what goes is the reaction to loss as a congestion signal. It is for private cross-connects, and it is as
-  tested as `NewReno`: every scenario script that names no policy runs under both.
+`AckInfo` carries the bytes the ACK covers, the flight before it, the MSS, the round-trip sample when one was taken and
+the stamp; whether the window was in use, `window_limited` and `largest_flight`, the connection's record of the round's
+sends (see "The window grows only while it is used" under [design notes](#design-notes)); and the fields a delivery-rate
+estimator reads: the last transmission of the newest entry the ACK freed, the connection's delivered bytes after the
+ACK, which count the bytes a SACK block reported as well as those the cumulative ACK covered, and when that entry was
+sent, and whether that send left window unused. No model reads the rate fields yet; they are there so a later model,
+BBR's, reads them without a change to the concept or the queue.
+
+- **`NewReno`**, the default: RFC 5681's slow start and congestion avoidance, while the window is in use, and RFC 6928's
+  initial window, `min(10 mss, max(2 mss, 14600))`, Linux's `TCP_INIT_CWND`, with an unbounded initial target. Below the
+  target an ACK grows the window by the bytes it covers, at most a segment; at or above it the acknowledged bytes are
+  counted and each window of them adds a segment; neither happens on an ACK that finds the window was not in use. On
+  congestion the target is `max(flight / 2, 2 mss)`, RFC 5681's, where Linux's reno halves the window, and the window is
+  left to the rate reduction; the end of recovery sets the window to the target; a timeout restarts the window at what
+  is in flight after the timeout's marking plus one segment, one segment when everything was marked; a send after an
+  idle RTO restarts at `min(IW, cwnd)`, RFC 5681's restart window, and keeps the target, where Linux's
+  `tcp_cwnd_restart` first raises it to at least three quarters of the window; an undo restores the larger of each pair,
+  the window it has and the one it had, the target it has and the one it had, as Linux's `tcp_undo_cwnd_reduction` and
+  `tcp_reno_undo_cwnd` do. Linux's reno runs the same rate reduction, counted in packets, dividing by the window it had
+  where RFC 9937 divides by the flight recorded, and toward its own target, half the window, so its windows in recovery
+  differ from Aloe's.
+- **`NoCongestionControl`**: the window and the target are the largest 32-bit value and every hook is empty, so the
+  peer's window is the only limit. Recovery still happens, RACK, the tail probe, the duplicate count, the RTO, the
+  retries and the user timeout; what goes is the reaction to loss as a congestion signal: no rate reduction, an undo
+  that restores nothing, and what is marked lost goes again as soon as it is marked. After a timeout the next ACK, of
+  any kind, sends every entry the timeout marked at once. It is for private cross-connects, and it is as tested as
+  `NewReno`: every scenario script that names no policy runs under both.
 
 A program picks one by naming it; the default is `NewReno`:
 
@@ -267,55 +296,77 @@ using Stack    = aloe::runtime::TcpStack<aloe::ethdev::Port, aloe::tcp::NoConges
 
 `TcpCounters`, one per stack, monotonic, read on the owning thread or after it has stopped. Every drop and every send
 failure increments exactly one counter. Until step 6 adds an event for it, the counters are the signal that a connection
-left the fast path: one that never does moves none of `retransmits`, `fast_retransmits`, `retransmits_deferred`,
-`retransmits_copied`, `zero_window_probes` and `dropped_paws`, and one whose incoming segments each arrive once and in
-order moves none of `out_of_order_held`, `out_of_order_released`, `sack_acks_sent` and `duplicate_sacks_sent`.
+left the fast path: one that never does moves none of `retransmits`, `fast_retransmits`, `recoveries`,
+`retransmits_deferred`, `retransmits_copied`, `tail_probes`, `reorder_timeouts`, `zero_window_probes` and
+`dropped_paws`; one whose incoming segments each arrive once and in order moves none of `out_of_order_held`,
+`out_of_order_released`, `sack_acks_sent` and `duplicate_sacks_sent`; and one whose own segments each arrive once and in
+order moves none of `sack_acks_received`, `duplicate_sacks_received`, `rack_marked`, `reordering_seen` and the undos. A
+tail probe can go with nothing lost, when the peer's ACK takes longer than the probe's wait, two round trips and, for a
+lone segment, the allowance: `tail_probes_needless` counts those it learns of.
 
-| Group       | Counter                      | Counts                                                                                                                                                                             |
-|-------------|------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Segments    | `segments_received`          | Segments handed to `process`.                                                                                                                                                      |
-|             | `data_segments_sent`         | Committed data segments queued.                                                                                                                                                    |
-|             | `pure_acks_sent`             | ACKs without data, from `flush`, the immediate-ACK exceptions and the delay timer; probes are counted apart.                                                                       |
-|             | `control_segments_sent`      | SYN, SYN-ACK and FIN transmissions: first sends, resends and copies alike.                                                                                                         |
-|             | `resets_sent`                | RSTs, from `abort`, `release` and the replies to segments with no connection.                                                                                                      |
-|             | `window_updates`             | Segments that extended the advertised right edge; a restating ACK too, when rounding its field up moved it.                                                                        |
-|             | `out_of_order_held`          | Segments held above a gap.                                                                                                                                                         |
-|             | `out_of_order_released`      | Held out-of-order segments released to make room for a lower sequence.                                                                                                             |
-|             | `sack_acks_sent`             | Pure ACKs that carried SACK blocks.                                                                                                                                                |
-|             | `duplicate_sacks_sent`       | Of them, those whose first block reported data that arrived twice.                                                                                                                 |
-|             | `delayed_acks_sent`          | Of `pure_acks_sent`, the ACKs the delay timer sent.                                                                                                                                |
-| Resends     | `retransmits`                | Resends the retransmission timer drives, of any kept segment: one per expiry, whether the resend left, waited or was refused, and one per ACK of the loss episode after a timeout. |
-|             | `fast_retransmits`           | Resends duplicate ACKs drive: the third duplicate's, and each partial ACK's in fast recovery.                                                                                      |
-|             | `recoveries`                 | Fast-recovery episodes entered.                                                                                                                                                    |
-|             | `retransmits_deferred`       | Resends that found their packet still lent after a reclaim and waited for the next flush: one per deferral, and one per tick while a segment's packet and its copy are both lent.  |
-|             | `retransmits_copied`         | Resends sent as a copy, after `retransmit_defers` deferrals.                                                                                                                       |
-|             | `zero_window_probes`         | Probes sent.                                                                                                                                                                       |
-|             | `duplicate_acks`             | Duplicate ACKs received, by RFC 5681's definition.                                                                                                                                 |
-|             | `rtt_samples`                | Round-trip samples taken, the handshake's included.                                                                                                                                |
-| Connections | `connections_opened`         | Active opens that reached `Established`.                                                                                                                                           |
-|             | `connections_accepted`       | Passive opens handed to the application by `Accepted`.                                                                                                                             |
-|             | `connections_closed`         | Normal closes, both FINs acknowledged.                                                                                                                                             |
-|             | `connections_reset`          | RSTs received on a connection the application owns.                                                                                                                                |
-|             | `connections_timed_out`      | Owned connections whose retries or probes ran out, or whose user timeout passed.                                                                                                   |
-|             | `connections_user_timed_out` | Of `connections_timed_out`, those the user timeout ended.                                                                                                                          |
-|             | `connections_unresolved`     | Owned connections whose next hop never answered ARP within `unresolved_polls` polls.                                                                                               |
-|             | `handshakes_failed`          | Passive opens nobody owned yet that were reset, timed out or never resolved, freed silently.                                                                                       |
-| Drops       | `dropped_bad_header`         | Unparseable headers and malformed option lists.                                                                                                                                    |
-|             | `dropped_bad_checksum`       | A `Bad` verdict, or an `Unknown` one that failed the software check.                                                                                                               |
-|             | `dropped_no_connection`      | No connection and no listener; answered with RST unless it was one.                                                                                                                |
-|             | `dropped_closed`             | Segments for a `Closed` connection not yet released; answered with RST.                                                                                                            |
-|             | `dropped_unexpected`         | Valid segments the state does not admit: a stray answer in `SynSent`, an ACK of unsent data, data after the peer's FIN or past one remembered above a gap.                         |
-|             | `dropped_duplicate`          | Data entirely before `rcv_nxt`, or above a gap where held data covers every byte.                                                                                                  |
-|             | `dropped_out_of_order`       | Data above a gap with no room for it: at the cap or with the pool empty, and above every segment held out of order.                                                                |
-|             | `dropped_out_of_window`      | Data reaching past the advertised edge.                                                                                                                                            |
-|             | `dropped_no_slot`            | Data for a connection already holding `receive_segments` packets.                                                                                                                  |
-|             | `dropped_no_node`            | Data when the shard's `receive_pool` is empty, and SYNs to a listener when `send_pool` has no node for the SYN-ACK.                                                                |
-|             | `dropped_table_full`         | SYNs to a listener with no free connection slot.                                                                                                                                   |
-|             | `dropped_paws`               | Segments whose timestamp is older than `TS.Recent`; acknowledged at once, never kept.                                                                                              |
-| Send        | `send_refused`               | Segments IP, the queue or a pool refused, a FIN that found no queue node included; the numbers stay as they were.                                                                  |
-|             | `send_unresolved`            | Segments that waited for ARP, a rebuild of the frame template that found no next hop included.                                                                                     |
-|             | `commits_refused`            | Commits after the connection left `Established` and `CloseWait`, or whose count the windows no longer cover; the prepared packet is dropped.                                       |
-|             | `allocation_failures`        | `prepare` calls the packet pool could not serve and commits that found no queue node, both with a retry hint, and copies the packet pool could not serve.                          |
+The counters changed meaning with loss recovery by SACK: `retransmits` now counts only the resends at an expiry of the
+retransmission timer, one per expiry, where it also counted one per ACK of the loss episode after it; the resends of
+entries marked lost, by RACK, by duplicate ACKs or by the timeout's marking, are all `fast_retransmits`, in recovery
+and in the loss state; and `recoveries` counts the episodes entered by either detector.
+
+| Group       | Counter                      | Counts                                                                                                                                                                                                      |
+|-------------|------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Segments    | `segments_received`          | Segments handed to `process`.                                                                                                                                                                               |
+|             | `data_segments_sent`         | Committed data segments queued.                                                                                                                                                                             |
+|             | `pure_acks_sent`             | ACKs without data, from `flush`, the immediate-ACK exceptions and the delay timer; probes are counted apart.                                                                                                |
+|             | `control_segments_sent`      | SYN, SYN-ACK and FIN transmissions: first sends, resends and copies alike.                                                                                                                                  |
+|             | `resets_sent`                | RSTs, from `abort`, `release` and the replies to segments with no connection.                                                                                                                               |
+|             | `window_updates`             | Segments that extended the advertised right edge; a restating ACK too, when rounding its field up moved it.                                                                                                 |
+|             | `out_of_order_held`          | Segments held above a gap.                                                                                                                                                                                  |
+|             | `out_of_order_released`      | Held out-of-order segments released to make room for a lower sequence.                                                                                                                                      |
+|             | `sack_acks_sent`             | Pure ACKs that carried SACK blocks.                                                                                                                                                                         |
+|             | `duplicate_sacks_sent`       | Of them, those whose first block reported data that arrived twice.                                                                                                                                          |
+|             | `delayed_acks_sent`          | Of `pure_acks_sent`, the ACKs the delay timer sent.                                                                                                                                                         |
+| Resends     | `retransmits`                | Resends at an expiry of the retransmission timer, of any kept segment, SYN, SYN-ACK, data or FIN: one per expiry, whether the resend left, waited or was refused.                                           |
+|             | `fast_retransmits`           | Resends of entries marked lost, in recovery and in the loss state: one per entry per mark, at its first try, whether it left, waited or was refused. The expiry's own resend of the head is `retransmits`'. |
+|             | `recoveries`                 | Episodes of recovery entered, by RACK on an ACK or at the reordering timer, or by duplicate ACKs, from the loss state too; a timeout's loss state is not one.                                               |
+|             | `retransmits_deferred`       | Resends that found their packet still lent after a reclaim and waited for the next flush: one per deferral, and one per tick while a segment's packet and its copy are both lent.                           |
+|             | `retransmits_copied`         | Resends sent as a copy, after `retransmit_defers` deferrals.                                                                                                                                                |
+|             | `tail_probes`                | Tail loss probes sent (RFC 8985 7.3), one that waited for its packet included.                                                                                                                              |
+|             | `tail_probes_needless`       | Probes found needless: both copies arrived, as a duplicate report of the probe or a plain duplicate ACK showed.                                                                                             |
+|             | `tail_probe_recoveries`      | Losses a probe repaired: the window cut to the target once, nothing resent, no episode. Counts `tail_probes_early` too.                                                                                     |
+|             | `tail_probes_early`          | Of them, verdicts a second probe closed as a loss before an ACK said which: how often the departure from RFC 8985 7.3 and 7.4.2 was used.                                                                   |
+|             | `zero_window_probes`         | Probes sent.                                                                                                                                                                                                |
+|             | `duplicate_acks`             | Duplicate ACKs received, by RFC 5681's definition.                                                                                                                                                          |
+| Loss        | `sack_acks_received`         | ACKs received whose SACK option was read: on a connection that uses SACK, from an ACK no older than the largest window the peer offered.                                                                    |
+|             | `duplicate_sacks_received`   | Of them, those whose first block was a believed duplicate report.                                                                                                                                           |
+|             | `rack_marked`                | Segments RACK marked lost.                                                                                                                                                                                  |
+|             | `lost_retransmits`           | Of them, resends marked lost again.                                                                                                                                                                         |
+|             | `reorder_timeouts`           | Expiries of the reordering timer.                                                                                                                                                                           |
+|             | `reordering_seen`            | ACKs that showed reordering.                                                                                                                                                                                |
+|             | `sack_reneging`              | Expiries of the retransmission timer that found the head reported received: the peer reneged, and every received mark was cleared.                                                                          |
+|             | `undos_duplicate_sack`       | Reductions taken back because every resend of the episode was reported as a duplicate.                                                                                                                      |
+|             | `undos_original_ack`         | Reductions taken back because an ACK that moved `acknowledged()` answered an original: its echo is older than the episode's first resend, or nothing of the episode had been resent.                        |
+|             | `rtt_samples`                | Round-trip samples taken, the handshake's included.                                                                                                                                                         |
+| Connections | `connections_opened`         | Active opens that reached `Established`.                                                                                                                                                                    |
+|             | `connections_accepted`       | Passive opens handed to the application by `Accepted`.                                                                                                                                                      |
+|             | `connections_closed`         | Normal closes, both FINs acknowledged.                                                                                                                                                                      |
+|             | `connections_reset`          | RSTs received on a connection the application owns.                                                                                                                                                         |
+|             | `connections_timed_out`      | Owned connections whose retries or probes ran out, or whose user timeout passed.                                                                                                                            |
+|             | `connections_user_timed_out` | Of `connections_timed_out`, those the user timeout ended.                                                                                                                                                   |
+|             | `connections_unresolved`     | Owned connections whose next hop never answered ARP within `unresolved_polls` polls.                                                                                                                        |
+|             | `handshakes_failed`          | Passive opens nobody owned yet that were reset, timed out or never resolved, freed silently.                                                                                                                |
+| Drops       | `dropped_bad_header`         | Unparseable headers and malformed option lists.                                                                                                                                                             |
+|             | `dropped_bad_checksum`       | A `Bad` verdict, or an `Unknown` one that failed the software check.                                                                                                                                        |
+|             | `dropped_no_connection`      | No connection and no listener; answered with RST unless it was one.                                                                                                                                         |
+|             | `dropped_closed`             | Segments for a `Closed` connection not yet released; answered with RST.                                                                                                                                     |
+|             | `dropped_unexpected`         | Valid segments the state does not admit: a stray answer in `SynSent`, an ACK of unsent data, data after the peer's FIN or past one remembered above a gap.                                                  |
+|             | `dropped_duplicate`          | Data entirely before `rcv_nxt`, or above a gap where held data covers every byte.                                                                                                                           |
+|             | `dropped_out_of_order`       | Data above a gap with no room for it: at the cap or with the pool empty, and above every segment held out of order.                                                                                         |
+|             | `dropped_out_of_window`      | Data reaching past the advertised edge.                                                                                                                                                                     |
+|             | `dropped_no_slot`            | Data for a connection already holding `receive_segments` packets.                                                                                                                                           |
+|             | `dropped_no_node`            | Data when the shard's `receive_pool` is empty, and SYNs to a listener when `send_pool` has no node for the SYN-ACK.                                                                                         |
+|             | `dropped_table_full`         | SYNs to a listener with no free connection slot.                                                                                                                                                            |
+|             | `dropped_paws`               | Segments whose timestamp is older than `TS.Recent`; acknowledged at once, never kept.                                                                                                                       |
+| Send        | `send_refused`               | Segments IP, the queue or a pool refused, a FIN that found no queue node included; the numbers stay as they were.                                                                                           |
+|             | `send_unresolved`            | Segments that waited for ARP, a rebuild of the frame template that found no next hop included.                                                                                                              |
+|             | `commits_refused`            | Commits after the connection left `Established` and `CloseWait`, or whose count the windows no longer cover; the prepared packet is dropped.                                                                |
+|             | `allocation_failures`        | `prepare` calls the packet pool could not serve and commits that found no queue node, both with a retry hint, and copies the packet pool could not serve.                                                   |
 
 The runtime's `TcpStack` adds two counters of its own, `forwards_dropped()` and `forwards_rejected()`, for
 ARP forwards between shards (see the [runtime page](runtime.md)).
@@ -342,9 +393,10 @@ cannot run. Every shard gets the same config.
 | `data_retries`                      | 15           | Timer-driven resends of data and the FIN, and unanswered zero-window probes, before `TimedOut`; Linux's `tcp_retries2`.                                              | zero, or 63 and more                                                                                                  |
 | `user_timeout`                      | 0 (off)      | RFC 5482's bound: a synchronized connection whose oldest unacknowledged segment was first sent, or whose first unanswered probe went, this long ago ends `TimedOut`. | negative, or above a quarter of `core::Duration`'s range                                                              |
 | `timestamps`                        | true         | Offer and use RFC 7323 timestamps.                                                                                                                                   | never                                                                                                                 |
-| `sack`                              | true         | Offer and use SACK-permitted: report what is held, and what arrived twice.                                                                                           | never                                                                                                                 |
+| `sack`                              | true         | Offer and use SACK-permitted: report what is held and what arrived twice, read the peer's blocks for RACK and the tail probe; off, duplicate ACKs and the timer.     | never                                                                                                                 |
 | `window_scaling`                    | true         | Offer and use RFC 7323 window scaling.                                                                                                                               | never                                                                                                                 |
 | `delayed_ack`                       | 0 (off)      | How long an ACK for in-order data may wait, at most 500 ms; zero sends it at the flush of the same tick.                                                             | negative, above 500 ms, or set below the wheel's resolution                                                           |
+| `tail_probe_ack_delay`              | 40 ms        | What a tail probe waits beyond two round trips when exactly one segment is in flight, for the peer's delayed ACK; Linux's 200 ms, below.                             | negative, or above 500 ms                                                                                             |
 | `retransmit_defers`                 | 1            | Deferred resends of one segment before the copy; zero copies at once.                                                                                                | never                                                                                                                 |
 | `unresolved_retry`                  | 10 ms        | The poll interval while a SYN, SYN-ACK or FIN waits for ARP; not a try.                                                                                              | not positive                                                                                                          |
 | `unresolved_polls`                  | 300          | Polls before `Unresolved`: 3 s by default, the bound Linux's three ARP probes give.                                                                                  | zero                                                                                                                  |
@@ -360,6 +412,18 @@ does not scale). `receive_pool` at 2048 is what four connections stalled at the 
 cap is per connection, so one stalled connection cannot take another's nodes. A window the configuration derives beyond
 what the largest shift, 14, can state is capped there.
 
+`tail_probe_ack_delay` departs from Linux by default. RFC 8985 lets a sender wait longer before it probes a lone
+segment, for the peer's delayed ACK, and leaves the amount open; Linux, Onload and VPP add their minimum RTO, 200 ms, so
+a lone segment's probe fires at the moment the RTO would have, which saves the backoff and the window but not the time.
+An order is usually a lone segment, so Aloe adds 40 ms, Linux's shortest delayed ACK, as FreeBSD's RACK stack does: a
+lost lone order goes again two round trips and 40 ms after it left. The smoothed round trip is measured from the peer's
+own ACKs, so a peer that always delays is already allowed for. A peer that delays its ACK longer draws a needless probe,
+one duplicate segment, which its TCP drops by sequence number and reports, and which `tail_probes_needless` counts; its
+application never sees the order twice. A deployment whose peer answers every segment at once sets zero. One whose peer
+acknowledges only with its next message, as the tick-to-trade benchmark's venue does, sets up to 500 ms: that does not
+turn the probe off, it puts a lone segment's probe at the RTO's moment, as Linux's 200 ms does, where it still saves the
+backoff.
+
 ## Design notes
 
 **One class per concern.** `tcp::Stack` is the brick's façade and owner: the four verbs, the accessors, and the mapping
@@ -369,37 +433,49 @@ struct with one part per concern, and one `detail::StackContext` per shard, what
 config, the held-segment pool, the counters and the stamp. The `Receiver` is what a datagram does to a connection: the
 checksum and lookup, the handshake, RFC 9293's order on a synchronized connection, the hold of a segment above a gap and
 the join when the gap fills, what gives way at the packet cap, and `consume`; it owns nothing. The `AckProcessor` is
-what an acknowledgement does to the send side: the entries it frees, the round-trip sample, loss recovery and the
-resends it asks for, the peer's window and the zero-window probes; it owns nothing either, and tells the `Receiver` what
-moved. The `Lifecycle` owns the connection table, the ISN generator and the event list: slots in and out, every change
-of a connection's state from the open to `Closed`, `close`, `abort` and `release`. It is the only part that writes the
-state: the `Receiver` tells it what arrived (the handshake answered, the peer's FIN or RST, our FIN acknowledged), the
-`Transmitter` tells it a timer gave up, and it moves the connection on. The `Transmitter` owns the segment writer, the
-send pool and the ACK, retry and deferred lists: every segment that leaves, the retransmission queue's entries, the
-resends with the busy rule and the copy, the pure ACKs with the SACK option, probes and resets, the scaled window every
-segment states and the edge it records, `writable`, `prepare`, `commit`, and both timers, their arming and what an
-expiry sends; an expiry that gives the connection up is returned as a verdict for the `Lifecycle` to carry out. The
-dependency runs one way, read off the includes: the `Receiver` calls the other three, the `Lifecycle` and the
-`AckProcessor` call the `Transmitter` and not each other, and the `Transmitter` calls none, as Linux's `tcp_input.c` and
-`tcp_timer.c` call into `tcp_output.c` and not back; the triggers from the receive side (an immediate ACK, a fast
-retransmit, the SYN-ACK) are direct calls, and state defers work only where it must wait anyway: the ordinary ACK until
-`flush` or its delay, the retry hint until the next `process`, a resend whose packet is lent until the next `flush`. The
-block is plain single-thread memory: a connection's receive and transmit run on one shard thread, and nothing in it is
-shared. Beneath the four: per shard `ConnectionTable`, `SegmentWriter`, `IsnGenerator` and one `NodePool` each for held
-packets and retransmission-queue entries; per connection `ReceiveQueue`, `ReceiveWindow`, `ReassemblyQueue`,
-`AckPolicy`, `SendSequence`, `RetransmissionQueue`, `LossRecovery` (over the policy's state), `RttEstimator`,
-`ZeroWindowProbe`, `Timestamps` and `SackBlocks`, and two wheel timers, one for the sends and one for the delayed ACK.
-On the receive side, `ReceiveQueue` keeps RCV.NXT, the in-order chain, the unread count and whether the peer's FIN is
-in; `ReassemblyQueue` the chain above a gap and the number of a FIN that arrived above it; `SackBlocks` whether SACK is
-in use, the four blocks in the order they are reported and the pending duplicate; `ReceiveWindow` the budget, our scale
-and the edge already offered; and `AckPolicy` when the ACK of data goes, in order and above a gap: at once, at the
-`flush` or after the delay, with the count of answers above a gap. `SendSequence` keeps the peer's scale beside its
-window. The parts an in-order segment touches sit together at the front of the block, the blocks and the delayed ACK's
-timer behind them. The folders: `connection/` the handle and its read view, with the control block and the connection's
-parts in `connection/detail/`; `stack/` the façade and the forward header, with the four procedure classes, the context,
-the connection table, the ISN generator and the segment writer in `stack/detail/`; `pool/detail/` the node pools;
-`config/` the configuration and counters; `congestion/` the policies; `table/` the flow table. A header whose names are
-all in `tcp::detail` sits in the `detail/` folder of the folder it belongs to and is included as `<detail/name.hpp>`.
+what an acknowledgement does to the send side, in the order of Linux's `tcp_ack` and `tcp_fastretrans_alert`: the peer's
+SACK blocks into the scoreboard, the entries the cumulative part frees, the round-trip sample, RACK's state, the tail
+probe's verdict, the undo, detection, the recovery state and the resends it allows, the peer's window and the
+zero-window probes, and the send timer; it owns nothing either, and tells the `Receiver` what moved. The `Lifecycle`
+owns the connection table, the ISN generator and the event list: slots in and out, every change of a connection's state
+from the open to `Closed`, `close`, `abort` and `release`. It is the only part that writes the state: the `Receiver`
+tells it what arrived (the handshake answered, the peer's FIN or RST, our FIN acknowledged), the `Transmitter` tells it
+a timer gave up, and it moves the connection on. The `Transmitter` owns the segment writer, the send pool and the ACK,
+retry and deferred lists: every segment that leaves, the retransmission queue's entries, the resend of any entry with
+the busy rule and the copy and the resend pass over those marked lost, what is in flight and the window it is held to,
+the pure ACKs with the SACK option, probes and resets, the scaled window every segment states and the edge it records,
+`writable`, `prepare`, `commit`, and both timers, the choice and arming of the send timer's kind and what each expiry
+marks and sends, the tail probe among them; an expiry that gives the connection up is returned as a verdict for the
+`Lifecycle` to carry out. The dependency runs one way, read off the includes: the `Receiver` calls the other three, the
+`Lifecycle` and the `AckProcessor` call the `Transmitter` and not each other, and the `Transmitter` calls none, as
+Linux's `tcp_input.c` and `tcp_timer.c` call into `tcp_output.c` and not back; the triggers from the receive side (an
+immediate ACK, a resend, the SYN-ACK) are direct calls, and state defers work only where it must wait anyway: the
+ordinary ACK until `flush` or its delay, the retry hint until the next `process`, a resend whose packet is lent until
+the next `flush`. The block is plain single-thread memory: a connection's receive and transmit run on one shard thread,
+and nothing in it is shared. Beneath the four: per shard `ConnectionTable`, `SegmentWriter`, `IsnGenerator` and one
+`NodePool` each for held packets and retransmission-queue entries; per connection `ReceiveQueue`, `ReceiveWindow`,
+`ReassemblyQueue`, `AckPolicy`, `SendSequence`, `RetransmissionQueue`, `LossRecovery` (over the policy's state, holding
+`RateReduction`), `RttEstimator`, `Rack`, `TailProbe`, `ZeroWindowProbe`, `Timestamps`, `WindowUse` and `SackBlocks`,
+and two wheel timers, one for the sends and one for the delayed ACK. On the receive side, `ReceiveQueue` keeps RCV.NXT,
+the in-order chain, the unread count and whether the peer's FIN is in; `ReassemblyQueue` the chain above a gap and the
+number of a FIN that arrived above it; `SackBlocks` whether SACK is in use, the four blocks in the order they are
+reported and the pending duplicate; `ReceiveWindow` the budget, our scale and the edge already offered; and `AckPolicy`
+when the ACK of data goes, in order and above a gap: at once, at the `flush` or after the delay, with the count of
+answers above a gap. On the send side, `SendSequence` keeps SND.UNA, SND.NXT and the peer's window with its scale;
+`RetransmissionQueue` the entries and the scoreboard on them, the two marks, reported and lost, with their totals and
+what the ACKs delivered; `LossRecovery` the recovery state, open, recovery or loss, `recover`, the duplicate count for a
+peer without SACK, the policy's state and the undo's record; `RateReduction` the rate reduction's counts, what the ACKs
+of an episode delivered and what it sent, the flight on entry and the window in recovery; `Rack` RACK's segment and
+round trip, the minimum round trip, whether reordering was seen and the reordering window's multiplier and its
+persistence; `TailProbe` whether a probe is in flight and where it ends, whether its verdict is open and whether a
+round-trip sample was taken since; and `WindowUse` whether the window limited a send of the round and the most in flight
+in it. The parts an in-order segment and an in-order ACK touch sit together at the front of the block, the window's use,
+the blocks and the delayed ACK's timer behind them. The folders: `connection/` the handle and its read view, with the
+control block and the connection's parts in `connection/detail/`; `stack/` the façade and the forward header, with the
+four procedure classes, the context, the connection table, the ISN generator and the segment writer in `stack/detail/`;
+`pool/detail/` the node pools; `config/` the configuration and counters; `congestion/` the policies; `table/` the flow
+table. A header whose names are all in `tcp::detail` sits in the `detail/` folder of the folder it belongs to and is
+included as `<detail/name.hpp>`.
 
 **Zero-copy both ways.** A received segment's packet is held as it arrived and `unread()` points into it; `consume`
 advances through it and returns each packet to the pool once it is empty. A segment above a gap is held the same way, on
@@ -412,25 +488,33 @@ itself; the one copy the brick makes is the busy rule's fallback, below, and it 
 **Every segment that occupies sequence space is kept.** SYN, SYN-ACK, data and FIN each take an entry in the
 connection's retransmission queue, a FIFO on nodes of the shard's `send_pool`: the packet with the whole frame
 as it last left, the first sequence number and the length, the flags, the stamps of the first and the last
-transmission, the transmission count, and the delivered count and the application-limited mark a rate
-estimator reads later. The life of a data segment:
+transmission, the transmission count, the scoreboard's two marks, reported received and lost, with where the resend
+a lost mark owes stands, and the delivered count and the application-limited mark a rate estimator reads later. The
+life of a data segment:
 
 ```
 prepare(n)          a fresh packet; the application writes the payload into it
 commit(n)           the headers go in front of the payload; the packet joins the queue; IP lends it to the
-                    device; the retransmission timer is armed if it was not
+                    device; the send timer is armed: the tail probe from now when one may be scheduled
+                    (SACK in use, recovery open, nothing reported), else the RTO if the queue was empty
 device done         lent() turns false at the device's pace; the stack never waits for it
+a block covers it   marked reported; the entry keeps its packet and its place in the queue
 ACK covers it       the entry is freed; the packet goes back to the pool, now or when the device returns it
 ACK covers a front  acknowledged() moves; the entry stays whole, trimmed only if it is resent
-RTO, or 3 dupacks   the head entry is resent from its packet once the device has let go (below)
+marked lost         by RACK, by the third duplicate ACK or a partial ACK without SACK, or by the RTO's expiry;
+                    resent from its packet once the device has let go (below), lowest sequence first
+the tail is silent  the last segment sent goes again as the tail probe, ahead of the RTO
 retries run out     TimedOut; or earlier, at the user timeout's deadline
 release / abort     every entry is dropped; a lent packet is freed when the device returns it
 ```
 
 A cumulative ACK frees every entry it covers from the head and stops at the first it does not, as Linux's
 `tcp_clean_rtx_queue` does; an entry covered in part is trimmed when it is resent, as `__tcp_retransmit_skb`
-trims, so the common case, a partial ACK followed by the full one, never touches the packet. `delivered()` counts
-the payload bytes each ACK covers. The MSS is fixed at the handshake, so no kept segment is ever larger than what
+trims, so the common case, a partial ACK followed by the full one, never touches the packet. An entry a SACK block
+reported stays, with its packet, until a cumulative ACK frees it: a receiver may discard what it reported (RFC 2018),
+and Aloe's own does when it needs room for a lower sequence, so the packet may be needed again; and nothing is ever
+unlinked from the middle of the queue. `delivered()` counts each payload byte once, when a block first reports it or
+when a cumulative ACK first covers it. The MSS is fixed at the handshake, so no kept segment is ever larger than what
 may be sent; path MTU discovery, and the split a resend would then need, are step 6's. Pure ACKs, window updates
 and zero-window probes occupy no sequence space: they leave in fresh packets through the same path and are
 forgotten. A commit the queue or the device refuses takes no entry: the bytes are not accepted and a retry hint
@@ -454,19 +538,36 @@ each per send. The rebuild runs the lookup `Ipv4::send` runs, so a refresh reque
 rebuild that finds the next hop unresolved fails the send, counted as `send_unresolved`. Only RSTs leave through
 the plain `Ipv4::send`: the reply to a segment with no connection has no template, and `abort`'s RST is not kept.
 
-**A resend waits for its packet, then copies.** A lent packet is read, never written. A resend of the head takes
-the first step that applies. Back from the device: the acknowledged front is trimmed, by moving the headers
-forward over it, and the entry goes out as above. Still lent: the device is asked to reclaim
-(`ShardQueue::reclaim()`), and when that frees nothing the busy rule applies, as Linux skips a resend whose
-previous copy is still in a host queue (`skb_still_in_host_queue`): nothing goes now, the connection waits on a
-deferred list, `retransmits_deferred` counts one, and the next `flush` tries again. After `retransmit_defers`
-deferrals, one by default, the stack copies the unacknowledged part of the segment, read from the lent packet,
-into a fresh packet, sends the copy as a second lent packet and counts `retransmits_copied`. The entry then holds
-two packets until one is back, keeps whichever is back first and drops the other. With the default a driver
-without reclaim costs a resend one tick; a deployment that would rather copy at once sets the bound to zero. The
-timer backs off as if a deferred resend had left. None of the drivers CI runs on holds a transmitted mbuf once
-its frame has gone (see the [device layer](device.md)), so on CI the deferral and the copy are reached only on a
-fabric port with `Held` loans, in unit tests.
+**A resend waits for its packet, then copies.** A lent packet is read, never written. A resend of any entry, the
+head at the RTO's expiry, an entry marked lost, or the segment a tail probe sends again, takes the first step that
+applies. Back from the device: when `acknowledged()` passed the entry's first byte, which only the head can need, the
+acknowledged front is trimmed, by moving the headers forward over it, and the entry goes out as above. Still lent: the
+device is asked to reclaim (`ShardQueue::reclaim()`), and when that frees nothing the busy rule applies, as Linux skips
+a resend whose previous copy is still in a host queue (`skb_still_in_host_queue`): nothing goes now, the connection
+waits on a deferred list while any of its entries waits, `retransmits_deferred` counts one, and the next `flush` tries
+again. After `retransmit_defers` deferrals, one by default, the stack copies the unacknowledged part of the segment,
+read from the lent packet, into a fresh packet, sends the copy as a second lent packet and counts
+`retransmits_copied`. The entry then holds two packets until one is back, keeps whichever is back first and drops the
+other. With the default a driver without reclaim costs a resend one tick; a deployment that would rather copy at once
+sets the bound to zero. The timer backs off as if a deferred resend had left. None of the drivers CI runs on holds a
+transmitted mbuf once its frame has gone (see the [device layer](device.md)), so on CI the deferral and the copy are
+reached only on a fabric port with `Held` loans, in unit tests.
+
+The resend pass, Linux's `tcp_xmit_retransmit_queue`, sends the entries marked lost, lowest sequence first, each through
+that resend, and stops when the congestion window allows no more (RFC 8985 9.3 holds a resend to the window as it holds
+new data), or at the first that cannot leave; with nothing marked it returns without a walk. It runs on every ACK, at
+the `flush` for a connection whose resend waits, and at the reordering timer. A resend that leaves clears the entry's
+lost mark, so the entry counts as in flight again, counts against the rate reduction in recovery, and counts among the
+episode's resends for the undo; a tail probe's resend clears and counts none of these. When the entry that left is the
+head, the RTO is armed from now, as Linux re-arms it on resending the head, so that the timer an earlier send armed does
+not fire before the resend's ACK can return; a pending reordering timer stays, and only the RTO's moment moves.
+
+**Resends go before new data.** While any entry is marked lost and not yet resent, `writable()` is zero. Such an entry
+is not in flight, so its share of the window would otherwise be offered to new data, which would then hold the window
+against the resend, at the flush when its packet comes back or at the next ACK; Linux too runs its resends before it
+sends new data. A sender that writes right after a loss is found therefore sees nothing accepted until the marked
+entries have left. When the last of them leaves outside an ACK, at the flush or at a timer, `Writable` is raised at the
+next `process`, as for a refused commit's hint; when it leaves on an ACK, that ACK raises it.
 
 **The retransmission timer.** RFC 6298's estimator with Linux's floor. Before the first sample the RTO is
 `rto_initial`, one second. The first sample sets `srtt = R` and `rttvar = R / 2`, each later one
@@ -476,30 +577,52 @@ deviation Linux also keeps, so after a sample Aloe's RTO can differ slightly fro
 from the handshake. Karn's rule is applied as Linux's `tcp_clean_rtx_queue` applies it: an ACK gives a sample
 from the oldest entry it freed, measured from that entry's last transmission, only when no entry it freed was
 sent more than once; otherwise, on a connection with timestamps, the sample comes from the echo the ACK carries,
-which names the transmission it answers (`tcp_ack_update_rtt`). A valid sample ends any backoff. The connection
-has one wheel timer for its sends, beside the delayed ACK's. It is armed at `now + RTO` when a segment goes into an
-empty queue, re-armed from now by every ACK that advances `acknowledged()` while the queue holds more, and cancelled
-when the queue empties. Each
-expiry resends the head, counts one retry, doubles the RTO up to `rto_max` and re-arms; the retry count resets on
-every ACK that advances. The SYN and SYN-ACK are on the same timer and keep phase 1's schedule, which was an
-initial RTO of one second doubling: with the defaults they go again 1, 3, 7, 15 and 31 seconds after the first
-send and the connection times out at 63. Data and the FIN back off from the measured RTO, from 200 ms after a
-handshake on a short path. Two of the RFCs' rules for a lost SYN or SYN-ACK are departed from, where Linux keeps
-both in its own form. The connection starts with the full initial window, where RFC 5681 §3.1 asks for one segment
-after a lost SYN or SYN-ACK; Linux cuts it to one after more than one handshake retransmission
-(`tcp_init_transfer`). And when the handshake gave no round-trip sample, which after a resend only a connection
-without timestamps lacks, the RTO stays where the handshake's backoff left it, where RFC 6298 §5.7 asks for 3
-seconds, as Linux's `TCP_TIMEOUT_FALLBACK` in `tcp_init_metrics` gives.
+which names the transmission it answers (`tcp_ack_update_rtt`); an echo of the tick the ACK arrives in counts one
+tick, 1 ms, as Linux's `tcp_rtt_tsopt_us` counts it. A valid sample ends any backoff.
+
+The connection has one wheel timer for its sends, beside the delayed ACK's, and a kind that says what it does when it
+fires. RFC 8985 (8) expects exactly that: the reordering timer, the tail probe, the RTO and the zero-window probe are
+never needed at once, "one timer with an additional state variable", and Linux keeps one pending kind for the same
+four. So the five kinds are never armed together:
+
+| Kind              | Armed when                                                                                                                                                                            | Deadline                                                                                                                                                     | When it fires                                                                                                                  |
+|-------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------|
+| Tail probe        | Data was sent, or an ACK moved `acknowledged()` and left data out, on a connection that uses SACK, open, with nothing reported received; not while a reordering timer waits           | Two smoothed round trips from now, `rto_initial` before a sample, plus `tail_probe_ack_delay` for exactly one segment in flight; never past the RTO's moment | The last segment sent goes again, when no probe is in flight and a sample was taken since the last; then the RTO from now      |
+| Reordering        | RACK left entries waiting whose time has not passed, in any state                                                                                                                     | The longest wait left, never past the RTO's moment                                                                                                           | Detection again; what it marks begins recovery or goes on under the open one, and is resent; then the RTO at the moment it had |
+| RTO               | Something is in flight and neither kind above applies: in the handshake, without SACK, after a probe, in recovery or the loss state while RACK has nothing waiting; short on reneging | RFC 6298 with Linux's floor, doubled per expiry, under the user timeout                                                                                      | The head is resent and what is out marked lost, the loss state entered, the RTO doubled and armed again                        |
+| Zero-window probe | The peer's window is zero with nothing in flight                                                                                                                                      | One RTO, then doubling up to `rto_max`                                                                                                                       | A probe at `acknowledged() - 1`                                                                                                |
+| ARP poll          | A SYN, SYN-ACK or FIN found no next hop on its first send                                                                                                                             | `unresolved_retry`                                                                                                                                           | The send again; `Unresolved` after `unresolved_polls`                                                                          |
+
+The connection keeps the moment its RTO would fire, set wherever the RTO is armed from now: a send into an empty queue,
+an ACK that moves `acknowledged()` while anything is still in flight, a resend of the head, a tail probe. The tail probe
+and the reordering timer never pass that moment, and when either gives way, to an ACK or after its expiry, the RTO takes
+the moment it had, not a fresh one; a probe due exactly then is still a probe. A data segment sent while others are
+unacknowledged schedules the probe again from now, so a second order sent while the first is out costs an arm of the
+wheel of its own; a lone order arms once and its ACK cancels once. An expiry of the RTO counts one retry, marks and
+resends as the loss-recovery notes below say, doubles the RTO up to `rto_max` and re-arms; the retry count resets on
+every ACK that advances. An expiry of the tail probe or of the reordering timer is no retry: neither moves the retry
+count or the backoff, and neither counts against `data_retries`. The SYN and SYN-ACK are on the same timer and keep
+phase 1's schedule, which was an initial RTO of one second doubling: with the defaults they go again 1, 3, 7, 15 and 31
+seconds after the first send and the connection times out at 63. Data and the FIN back off from the measured RTO, from
+200 ms after a handshake on a short path. Two of the RFCs' rules for a lost SYN or SYN-ACK are departed from, where
+Linux keeps both in its own form. The connection starts with the full initial window, where RFC 5681 §3.1 asks for one
+segment after a lost SYN or SYN-ACK; Linux cuts it to one after more than one handshake retransmission
+(`tcp_init_transfer`). And when the handshake gave no round-trip sample, which after a resend only a connection without
+timestamps lacks, the RTO stays where the handshake's backoff left it, where RFC 6298 §5.7 asks for 3 seconds, as
+Linux's `TCP_TIMEOUT_FALLBACK` in `tcp_init_metrics` gives.
 
 **Recovery is bounded.** `retries` caps the timer-driven resends of the SYN and SYN-ACK, `data_retries` those of
 data and the FIN, 15 by default as Linux's `tcp_retries2`. Running out ends an owned connection with `TimedOut`
 and frees a passive open nobody owns, silently. With the defaults a peer that falls silent after the handshake is
-given up after about fifteen minutes, the backoff from 200 ms reaching `rto_max`. The user timeout (RFC 5482,
+given up after about fifteen minutes, the backoff from 200 ms reaching `rto_max`; a tail probe before the first
+expiry takes no retry and backs nothing off, so it adds only its own wait to that. The user timeout (RFC 5482,
 Linux's `TCP_USER_TIMEOUT`), off by default, is the bound an application sets instead: when the timer fires and
 the oldest unacknowledged segment was first sent at least `user_timeout` ago, the connection ends with `TimedOut`
 whatever the retry count, and the timer is never armed later than that first transmission plus the timeout, so
 the connection ends at the configured instant rather than at the next backoff (`tcp_clamp_rto_to_user_timeout`).
-Such an end counts `connections_timed_out` and `connections_user_timed_out`. The user timeout bounds the
+Such an end counts `connections_timed_out` and `connections_user_timed_out`. The tail probe and the reordering timer
+never pass the RTO's moment, so the user timeout bounds them through it: an expiry of either at the user timeout's
+moment ends the connection there and sends nothing. The user timeout bounds the
 synchronized states and zero-window probing, not the handshake, which `retries` bounds; the runtime's
 `connect(peer, deadline)` gives a caller a shorter bound there. Linux's `TCP_USER_TIMEOUT` differs in three ways
 (`tcp_write_timeout`): it counts from the first retransmission (`retrans_stamp`), not the first transmission, so it
@@ -556,29 +679,356 @@ probes go on, in `FinWait1` or `LastAck` too, and the ACK that opens the window,
 sends the FIN at once and starts its RTO. The congestion window does not gate a FIN, as it does not in Linux. The
 peer's ACKs meanwhile are no duplicates, since nothing is in flight to be a duplicate of.
 
-**Loss recovery.** RFC 5681 and RFC 6582 as written, with RFC 3042's limited transmit, all three of which Linux
-runs. A duplicate ACK is an ACK with no payload, no SYN and no FIN, whose acknowledgement equals `acknowledged()`
-and whose window equals the current one, arriving while the queue is not empty. The first and the second each let
-one more segment out beyond the congestion window, within the peer's window. The third starts fast recovery when
-its acknowledgement "covers more than recover", in RFC 6582's words, with `recover` starting at the initial
-sequence number: the guard against a second fast retransmit for data a timeout already resent. Outside recovery
-and the loss episode below, every ACK of new data slides `recover` to one before the new `acknowledged()`: the
-guard compares in serial arithmetic, which would read a `recover` left more than 2^31 behind as ahead and refuse
-every fast retransmit after 2 GiB without loss. Fast recovery records `recover`, the last sequence number sent,
-tells the policy of the loss with the flight less what limited transmit sent beyond the windows, resends the head
-at once and counts `fast_retransmits` and `recoveries`. Further duplicates are reported to the policy, which NewReno
-answers by inflating its window. An ACK past `recover` is the full ACK and ends recovery; one short of it is a partial
-ACK: the new head goes again at once, counted in `fast_retransmits`, and the policy hears how much was acknowledged.
-Every ACK that advances re-arms
-the timer, RFC 6582's Slow-but-Steady variant, as Linux re-arms it; and a fast retransmit or a partial-ACK resend
-that leaves re-arms it too, as Linux's `tcp_xmit_retransmit_queue` does on resending the head, so the timer the
-first send armed does not fire before the resend's ACK can return. The first timeout since an ACK of new data
-leaves fast recovery, records `recover`, tells the policy, and starts a loss episode: every entry sent before the
-timeout is treated as lost, and each ACK of new data short of `recover` resends the next head at once, counted in
-`retransmits`. That is close to Linux's loss state without RACK, which step 5 brings, but slower: the loss episode
-resends one head per ACK of new data, where Linux's loss state resends as many marked segments as `cwnd` allows.
-A send into a queue that has been empty for longer than an RTO tells the policy of the idle period first, RFC 5681's
-restart after idle, which Linux enables by default. A fast retransmit resends the head only, as Linux's does.
+**Loss recovery.** The sender learns of a loss from what the peer reports and from time, as Linux does by default. On a
+connection that uses SACK it reads the peer's blocks into a scoreboard on the retransmission queue and marks a segment
+lost once a segment sent after it was delivered and a short reordering window has passed (RACK, RFC 8985), and it
+probes a silent tail by sending the last segment again after about two round trips, ahead of the timer (the tail loss
+probe, the same RFC). On a connection that does not use SACK it counts duplicate ACKs (RFC 5681, RFC 6582). On both,
+the retransmission timer is the last resort. What follows a loss is one machine for every connection: three states,
+the window in recovery by Proportional Rate Reduction (RFC 9937), resends from the kept packets, lowest sequence
+first, and an undo when a resend turns out to have been needless. The policy is told that congestion happened and
+sets its target; the rest is the stack's, the same under every policy. An acceptable ACK on a synchronized connection
+runs these steps in order, the order of Linux's `tcp_ack` and `tcp_fastretrans_alert`:
+
+1. its SACK blocks into the scoreboard, a duplicate report recognised first; an ACK below `acknowledged()` is read too,
+   unless it is older than that by more than the largest window the peer offered;
+2. the cumulative part: the entries it covers freed from the head, `acknowledged()` moved, the round-trip sample;
+3. RACK's state, from the entries the blocks and the cumulative part newly report, and whether reordering showed;
+4. what the ACK says of a tail probe whose verdict is open;
+5. reneging: an ACK that leaves at the head an entry the peer had reported received arms the RTO short, at
+   `max(srtt / 2, 10 ms)` (Linux's `tcp_check_sack_reneging`), and does nothing more until step 10;
+6. the undo's checks, which may end the episode the ACK found, before anything more is marked;
+7. the end of an episode the ACK covers;
+8. detection: RACK's on a connection that uses SACK, the duplicate count's on one that does not;
+9. the recovery state, which begins, goes on or ends, with the window in recovery; then the resend pass, as far as
+   that window allows;
+10. the peer's window, the zero-window probes and the FIN that waited for the window;
+11. the send timer: the reordering timer, the tail probe or the RTO.
+
+**The scoreboard is two marks on the retransmission queue.** Each entry can be marked reported received, by a SACK
+block, and lost, which owes a resend; the queue keeps the totals, the bytes and the segments reported, the bytes lost
+and not resent since, and the highest sequence the peer acknowledged either way, so nothing walks the entries to count
+them. A block marks an entry only when it covers the entry whole: one that covers part of an entry marks nothing, as
+Linux leaves a buffer of one segment (`tcp_match_skb_to_sack`) and Onload leaves its packets. Part covers are rare,
+since the entries are the segments as they left, and their cost is bounded: the entry may be resent needlessly, and
+the peer's duplicate report undoes the reduction. A block touches the entries only when it is valid by Linux's
+`tcp_is_sackblock_valid`: it starts before it ends, ends at or before SND.NXT and starts above the ACK, where
+`acknowledged()` is about to be, or above `acknowledged()` for an older ACK; a block that fails is ignored and the
+others are applied, lowest first. A duplicate report (RFC 2883) is recognised first, from the option alone, as Linux's
+`tcp_check_dsack` and `tcp_dsack_seen` recognise it: the first block, when it starts below the ACK or the second block
+contains it, and is no longer than the largest window the peer offered. It is believed unless the peer has by then
+reported more duplicate segments than the connection ever resent; a believed one marks nothing received, and what it
+does is the probe's, the undo's and RACK's, below. A SACK option whose length is
+not two plus eight bytes per block, one to four of them, is ignored and the segment kept, as Linux's
+`tcp_parse_options` does, where a bad length of any other option drops the segment.
+
+What is in flight, the number the congestion window is held against, is SND.NXT - SND.UNA less the bytes reported
+received and less the bytes marked lost and not resent since: RFC 9937's estimate for a sender that detects by RACK,
+Linux's `tcp_packets_in_flight` in bytes, and `in_flight()`. A resend clears its entry's lost mark, so the entry counts
+as in flight again. Without SACK nothing is reported, and one segment per duplicate ACK since `acknowledged()` last
+moved stands in for it, capped so that the holes, at least one segment, stay counted, as Linux emulates the blocks
+(`tcp_add_reno_sack`, `tcp_limit_reno_sacked`); after a timeout a duplicate stands for nothing. `writable()` holds the
+congestion window against what is in flight and the peer's window against the sequence space outstanding. That is
+where RFC 3042's limited transmit comes from: a report, or a duplicate ACK, lowers what is in flight and lets new data
+out, with no separate allowance and no cap of two segments, as in Linux (`tcp_cwnd_test`); the recovery that begins at
+the third report or duplicate is what bounds it.
+
+An entry reported received keeps its packet and its place until the cumulative ACK frees it. When an ACK moves
+`acknowledged()` and leaves such an entry at the head, the peer discarded what it reported: the ACK arms the RTO short
+and does nothing else, and if the head is still reported when it fires, every received mark is cleared and everything
+is lost (Linux's `tcp_timeout_mark_lost`), counted in `sack_reneging`. A byte a block had reported is then counted
+again in `delivered()` when the cumulative ACK covers it, as Linux counts it again: the peer delivers it twice.
+
+**RACK marks by time.** On a connection that uses SACK, each entry an ACK newly reports, by a block or by the
+cumulative part, updates RACK: its round trip is taken, and it becomes RACK's segment, the most recently sent one the
+peer acknowledged either way, when it was sent later, by stamp and then by sequence, since the segments of one tick
+share a stamp. An entry that was resent is skipped when the ACK cannot be for the resend: its round trip is below the
+minimum round trip, or, for a cumulative ACK, the echo is older than the resend. An entry neither reported nor already
+lost is then lost once it was sent before RACK's segment and `sent + RACK's round trip + the reordering window` has
+passed; an entry whose time has not passed yet sets the reordering timer, for the longest wait left, so one expiry
+settles them all (`rack_marked`, `reorder_timeouts`). An entry already resent is judged by its resend's stamp, so a
+resend that is lost again is found by the next report and resent under the same episode, counted in
+`lost_retransmits`, where it used to wait for the timer. The walk over the queue ends at the first entry that was never
+resent and was not sent before RACK's segment, so an in-order ACK with nothing reported or resent pays one comparison
+at the head.
+
+The reordering window, `reordering_window()`, is zero while reordering was never seen and the connection is in recovery
+or the loss state or has three segments or more reported received: with no evidence of reordering, RACK is as quick as
+three duplicates were. Otherwise it is a quarter of the minimum round trip, kept over two windows of five minutes, times
+a multiplier, and never more than the smoothed round trip; zero before any round trip is known. Reordering is seen
+(`reordering_seen`) when a block newly reports a never-resent entry below the highest sequence already reported, when
+the cumulative ACK fills such a hole with a never-resent entry, when a partial ACK in recovery answers an original by
+its echo, and when a duplicate report names a resent entry a block had reported. The multiplier starts at one and grows
+by one in a round trip that brought a believed duplicate report once reordering was seen, but not for a tail probe's; it
+persists for 16 recoveries, its count dropping at the end of each episode, recovery or loss state, that was not undone
+and rising at each undo by duplicate report, and at zero it is one again. These are Linux's `tcp_rack_reo_wnd` and
+`tcp_rack_update_reo_wnd`, with RFC 8985's constants.
+
+What reordering costs. Reordering shallower than three segments and shorter than a quarter of the minimum round trip
+costs nothing: the late segment's ACK arrives before the reordering timer and cancels it. Deeper reordering on a
+connection that has seen none causes one needless resend, since three segments reported make the window zero, and the
+echo of the late original's ACK undoes the reduction it caused. When more data was outstanding above the late segment,
+that ACK is a partial ACK and records reordering, so from then on RACK waits a quarter of the minimum round trip before
+it marks. When the late segment ended an isolated flight, with nothing sent after it, the ACK that answers it ends
+recovery and records nothing, as Linux's `tcp_try_undo_recovery` records nothing there: each such reordering costs one
+needless resend, undone, and RACK's window stays zero for the next.
+
+**The tail loss probe resends a silent tail.** On a connection that uses SACK, open and with nothing reported
+received, a data segment sent and an ACK that moves `acknowledged()` and leaves data out each schedule the probe:
+two smoothed round trips from that moment, `rto_initial` before any sample, plus `tail_probe_ack_delay`, 40 ms by
+default, when exactly one segment is in flight, for the peer's delayed ACK; never later than the RTO's moment, and a
+probe due then is still a probe. The wheel rounds the deadline up to its tick, the only floor. When the timer fires,
+the probe goes if none is in flight and a round-trip sample was taken since the last one (RFC 8985 7.3): the last
+segment sent goes again whole, through the resend of an entry, so the busy rule and the copy apply to it. It is a
+tail probe (`tail_probes`) and nothing else: it takes no retry, backs nothing off, clears no mark, starts no episode
+and is not one of an episode's resends. The RTO runs from the probe; when none went, the RTO keeps its moment.
+
+RFC 8985 keeps one variable, `TLP.end_seq`, for two facts that the connection keeps apart (`tail_probe_in_flight()`,
+`tail_probe_verdict_open()`): the probe is in flight until a cumulative ACK reaches its end, and its verdict is open
+until it is known whether it was needless or repaired a loss. An ACK that lands exactly on the probe's end may answer
+the original or the probe, so the verdict usually outlives the flight. An ACK at or past the probe's end settles it
+(RFC 8985 7.4, Linux's `tcp_process_tlp_ack`): a duplicate report of at most one segment that ends at the probe's end,
+believed or not, as Linux reads it, says both copies arrived, and so does a plain duplicate ACK with no SACK option,
+so the probe was needless (`tail_probes_needless`); an ACK past the probe's end with no such report says it repaired a
+loss: the policy is told of one loss and its window becomes its target at once, the cut a fast recovery would make,
+with nothing resent, no state entered and no undo kept (`tail_probe_recoveries`). When the probe's ACK reports the
+tail received while earlier segments are still missing, RACK marks them, since the probe was sent after them: the
+probe has turned a silent flight into an ordinary recovery. A recovery or a timeout that begins forgets the probe.
+
+Two lone orders lost one after the other are both probed. A probe that rescued a lost lone order is acknowledged
+exactly at its end, so its verdict stays open until a later segment is acknowledged, and under RFC 8985's procedure and
+Linux no probe goes while it is open: if the next order is lost too, it waits for the RTO. Aloe sends the second probe
+once the first's end is acknowledged, and closes the first verdict as a loss repaired, with its cut, counted in
+`tail_probes_early`; that is its one departure from an RFC's procedure, described with what it keeps in the note on
+departures below. It needs a round-trip sample since the first probe, which the rescued order's ACK gives through its
+echo on a connection with timestamps, the default. Without timestamps Karn's rule takes no sample from a segment sent
+twice, the second probe is skipped, and the second order waits for the RTO as under the RFC.
+
+**One recovery, three states.** The connection is open, in recovery or in the loss state (`recovery_state()`).
+
+- *Entering recovery.* The first entry marked lost while open begins it: by RACK, on an ACK or at the reordering
+  timer; without SACK, by the third duplicate ACK whose acknowledgement covers more than `recover`, RFC 6582's guard
+  against a second fast retransmit for what a timeout already resent. On entry the connection records `recover`, the
+  last sequence sent, opens the undo with a copy of the policy's state, tells the policy of the congestion, which sets
+  its target from the flight less what was sent beyond its window (RFC 5681 3.2 leaves out what limited transmit
+  sent), and starts the rate reduction; `recoveries` counts it.
+- *In recovery.* Each ACK runs the undo's checks, then detection, then a step of the rate reduction, then the resend
+  pass. Without SACK, a partial ACK, one that moves `acknowledged()` short of `recover`, marks the new head lost, as
+  RFC 6582 has it and Linux's `tcp_newreno_mark_lost` does. A resend found lost again is resent under the same episode
+  and reduces nothing further. New data leaves as far as the window in recovery exceeds what is in flight, after the
+  resends. No ACK reaches the policy's `on_ack` in recovery, the one that ends it included.
+- *Leaving recovery.* At the ACK that covers `recover`: the window becomes the policy's target, the rate reduction's
+  last step, unless the episode was undone. An entry marked lost that this ACK does not cover begins the next episode
+  on the same ACK.
+- *The timeout.* The RTO's expiry gives the connection up or resends the head as before: the user timeout, the retry
+  cap, the backoff, one segment at the expiry itself (`retransmits`). What it marks: the head; on a connection that uses
+  SACK every other entry not reported received and last sent at least RACK's round trip ago, later ones left to RACK;
+  on reneging everything; without SACK everything. The connection enters the loss state, records `recover` and forgets
+  a probe that was out. The policy's target is set again only when this window was not reduced already: the
+  connection was open, or the last episode's `recover` is covered, or this is the loss state's first expiry since an
+  ACK of new data. Its window restarts at what is in flight after the marking plus one segment, which is one segment
+  when everything was marked.
+- *The loss state.* Each ACK of new data reaches the policy, which grows its window by slow start while the window is
+  in use; the entries the timeout marked leave by the resend pass, lowest first, as that window allows; RACK keeps
+  marking, and a resend it finds lost again moves the connection to recovery with a new target, as Linux does. No tail
+  probe is scheduled. The state ends at the ACK that covers `recover`, or by an undo. A reordering timer that marks
+  something outside recovery begins recovery there, from the loss state too.
+
+Every ACK that moves `acknowledged()` while anything is in flight re-arms the RTO from now, RFC 6582's Slow-but-Steady
+variant, as Linux re-arms it. While open, every ACK of new data slides `recover` to just below `acknowledged()`: the
+guard compares in serial arithmetic, which would read a `recover` left more than 2^31 behind as ahead and refuse every
+recovery after 2 GiB without loss. An episode that ends at exactly the ACK that covers `recover` leaves it in place, so
+on a connection without SACK duplicates at that acknowledgement begin no recovery until an ACK of new data moves
+`acknowledged()` above it (RFC 6582): a loss right there is repaired by the timer.
+
+**The window in recovery is RFC 9937's rate reduction, in bytes.** With SACK, what an ACK delivered is its advance of
+`acknowledged()` plus the change in bytes reported received. Without SACK it is one segment for a duplicate ACK, and
+for an ACK that moves `acknowledged()` in recovery the advance less one segment per duplicate counted before it, and at
+least the segment that filled the hole, never more than the episode may still see delivered (RecoverFS, the flight
+recorded on entry). While what is in flight is above the target, sending follows the proportional part, the target's
+share of what was delivered, divided by RecoverFS and rounded up; at or below it, the conservative bound, what was
+delivered and not yet sent, plus a segment on an ACK that moved `acknowledged()` and marked nothing new lost (the RFC's
+SafeACK), never past the target. The first step of an episode always allows a segment, so the first resend leaves at
+once. The window, `congestion_window()`, is what is in flight plus what the step allows, and resends and new data
+both count against it and into what the episode sent. Because it counts bytes, the rate reduction lets out part of a
+segment where a stack that counts packets lets out one segment every second ACK: `writable()` in recovery can offer
+less than `mss()`, and a sender that writes only whole messages waits for room for one. A policy whose target is
+unbounded, `NoCongestionControl`, has no rate reduction: what is marked lost goes again as soon as it is marked.
+
+**The undo gives a needless reduction back.** An episode that set a target, a recovery or a timeout, keeps a record from
+its start, as Linux's `tcp_init_undo` does: `acknowledged()` then, the policy's state then, the stamp of its first
+resend, and how many resends may still be reported as duplicates, starting from earlier resends still out and a tail
+probe still in flight. Two signs say the reduction was needless (Linux's `tcp_may_undo`). Every resend of the episode
+was reported as a duplicate (`tcp_try_undo_dsack`); that sign holds after the episode ended too, until the next one
+begins, since the reports trail the resends. Or an ACK that moves `acknowledged()` answers an original: it echoes a
+timestamp older than the episode's first resend, or nothing of the episode has been resent yet, which the busy rule
+makes possible (`tcp_packet_delayed`); that sign is read on a partial ACK in recovery, on the ACK that ends recovery,
+and on an ACK in the loss state, where it recognises a needless timeout. An undo hands the policy its state from the
+start (`on_undo`; NewReno takes the larger of each pair), at most once per episode, and is counted by its sign
+(`undos_duplicate_sack`, `undos_original_ack`). On a partial ACK it records reordering for RACK at once, and waits while
+a resend of the episode is still out, that ACK marking and resending nothing more; then every lost mark is cleared and
+the connection is open. On the ACK that ends recovery the connection is open with its window restored in place of the
+target. In the loss state every lost mark and the retry count are cleared and the connection is open, and the policy
+then hears the ACK from the window restored, as Linux's `tcp_cong_control` grows after the undo. By duplicate
+report in recovery the episode ends there and the marks stay. After an undo RACK looks at the queue again, so a real
+loss behind a reordering starts a new episode. The timestamp clock ticks in milliseconds, so an original and its resend
+sent in the same millisecond cannot be told apart and no undo follows: that errs on the side of the reduction. Without
+timestamps only the duplicate reports, and an ACK before any resend of the episode left, undo.
+
+**The window grows only while it is used.** NewReno grows its window on an ACK of new data only when the window limited
+what was sent (Linux's `tcp_is_cwnd_limited`, which `tcp_reno_cong_avoid` asks first): when a send of the round left
+less than a segment of the window or was held back by it, or, in slow start, when the window is less than twice the
+most in flight in the round. `WindowUse` keeps that record at each send of new data, Linux's `tcp_cwnd_validate` in
+bytes, and `AckInfo` passes it to the policy; a resend leaves it as it is. As before, a send into a queue that has been
+empty for longer than an RTO tells the policy of the idle period first, RFC 5681's restart after idle, which Linux
+enables by default. A venue client that sends an order at a time keeps its initial window, ten segments, for good, and
+at the default `send_segments` of 32 a burst of small orders fits it many times over.
+
+What such a client must know is what a loss leaves. A recovery, at its end, and a tail probe that repaired a loss set
+the window to the target, RFC 5681's half of the flight and at least two segments: with an order or two in flight, two
+segments. A timeout restarts the window at one segment, and slow start grows it only while a send leaves less than a
+segment of it unused, so with one small order at a time it settles at one segment and one order: 1548 bytes for orders
+of 100. From there the window grows only when a burst leaves less than a segment of it unused, which small orders sent
+one at a time never do. Linux, which halves the window, would leave five of the ten after a recovery. So a client that
+sends an order at a time keeps ten segments until its first loss and two, or after a timeout little more than one,
+after it, and a burst larger than that then takes more than one round trip. A deployment that cannot accept that runs
+`NoCongestionControl` on a private path it owns, or writes a policy of its own.
+
+**What an in-order ACK and a send cost.** For a connection that uses SACK, with nothing lost or reordered, an ACK of an
+order frees its entry, writes RACK's fields for it and feeds its round-trip sample to RACK's minimum and to the probe;
+the probe's verdict, reneging and the undo's record are a branch each; detection runs and its walk stops at the head;
+the policy's growth returns at once when the window was not in use; the resend pass returns without a walk; and the
+timer is cancelled when nothing is left in flight, else set to the probe. The send of an order makes two subtractions
+more in `writable()`, records the window's use, computes the probe's deadline and arms the wheel for it in place of the
+RTO, with the RTO's moment kept beside it. No entry is walked, no block read, no state entered, nothing copied. It is
+not free: on the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md), against `main` at this step's base, the
+64-byte tick at level 0, cross-core, is 40 ns slower at p50, 460 to 500 ns, and 70 ns at p99, 670 to 740 ns, 30 of the
+40 in the `tcp` leg that acknowledges the previous order, above the bar of 10 to 20 ns set for the step. The benchmark
+page records the runs, what the diagnostics measured of the cause and what they did not isolate, and the changes that
+could win it back.
+
+**Where the brick departs from the RFCs and from Linux.** The RFCs are the specification, and where they leave a choice
+Aloe does what Linux does. Loss recovery departs from that in the places below; the other parts' departures are in their
+own notes (the handshake's window and RTO in the note on the retransmission timer, the user timeout's count, PAWS,
+zero-window probing, the answers above a gap).
+
+From an RFC, by the author's decision:
+
+- **A second tail probe before the first's verdict is known** (RFC 8985 7.3, `TLP_send_probe`, and 7.4.2). RFC 8985's
+  procedure sends no probe while `TLP.end_seq` is set, and Linux's `tcp_send_loss_probe` returns while `tlp_high_seq`
+  is. A probe that rescued a lost lone order is acknowledged exactly at its end, which leaves its verdict open until a
+  later segment is acknowledged; if that later segment is a second order and is lost too, the RFC and Linux give it no
+  probe and it waits for the RTO, 200 ms and more. Aloe, when the probe's timer fires with the earlier probe's end
+  acknowledged and its verdict open, closes that verdict as a loss repaired, with the cut the next ACK past its end
+  would have brought, and sends the new probe, whose end and verdict replace the old. It keeps the limit 7.3 states, "no
+  other previous loss probe still in flight", so that the sender has at most one segment in flight beyond the
+  congestion window: a probe whose end is acknowledged is not in flight. It keeps 7.3's other condition too, a
+  round-trip sample since the last probe, so it needs timestamps: the rescued order's ACK gives that sample only
+  through its echo, and without timestamps the second order waits for the RTO as under the RFC. What changes is the
+  moment of one congestion response, at the second probe instead of the ACK after it, and one more probe on the wire; a
+  first probe that was in fact needless, whose duplicate report was lost or is late, is cut for as a loss, as the RFC's
+  procedure would also cut it at the next ACK past its end. `tail_probes_early` counts each use, and
+  `tail_probe_recoveries` counts it among the repaired losses.
+- **Without SACK, what is in flight and what an ACK delivered follow Linux's emulation** (RFC 9937 6.2; Linux's
+  `tcp_add_reno_sack`, `tcp_remove_reno_sacks`, `tcp_limit_reno_sacked`). The RFC says a sender without SACK MUST
+  subtract one segment per duplicate ACK of the whole episode from what is in flight, at most RecoverFS, and count an
+  advance as delivering the change in SND.UNA less one segment per preceding duplicate. After a partial ACK that count
+  subtracts again what the advance already took out of the flight, so it under-reads what is in flight, and what the
+  next advance delivered, by the segments between the holes. Aloe takes the duplicates an advance covers out of the
+  count, and counts the advance as delivering at least the segment that filled the hole, as Linux does, in bytes.
+
+Where an RFC leaves the choice and Aloe does not do what Linux does:
+
+- **The lone segment's allowance is a setting**, `tail_probe_ack_delay`, 40 ms by default (RFC 8985 7.2, "MAY inflate
+  the PTO"); Linux adds its minimum RTO, 200 ms (`tcp_schedule_loss_probe`), which puts a lone segment's probe at the
+  RTO's moment. Before the first round-trip sample the allowance is added too, where the RFC's `TLP_calc_PTO` and Linux
+  take the initial wait alone; no probe goes before a sample, so that wait only says when the timer gives way to the
+  RTO.
+- **No floor under the probe's wait or the reordering timer** beyond the wheel's tick; Linux adds 2 ms
+  (`TCP_TIMEOUT_MIN_US`) to the probe for a flight of several and to `tcp_rack_mark_lost`'s wait.
+- **A probe never carries new data** (RFC 8985 7.3: the sender "SHOULD transmit a previously unsent data segment, if
+  one exists"): none exists, since the brick has no send buffer. A probe whose packet the device still holds is
+  deferred and then copied, as every resend is; Linux skips it (`skb_still_in_host_queue`).
+- **A send does not replace a pending reordering timer**: the entries RACK left waiting keep their wait, which a send
+  cannot settle; Linux's `tcp_schedule_loss_probe` replaces whatever timer is pending.
+- **After an expiry of the probe's timer that sent no probe, the RTO keeps the moment it was last armed for**; Linux
+  arms what is left of it counted from the head's last transmission (`tcp_rearm_rto`, `tcp_rto_delta_us`).
+- **An expiry of the tail probe or of the reordering timer that falls on the user timeout's moment ends the
+  connection**, and sends nothing; Linux reads the user timeout only at the RTO (`tcp_retransmit_timer`,
+  `tcp_write_timeout`), so it sends the probe or the resend and times out at the RTO's expiry after it.
+- **A reordering expiry in recovery lets one segment out**: the window in recovery becomes what is in flight plus a
+  segment, so an expiry that marks the episode's next loss lets its resend go without waiting for an ACK; Linux's
+  `tcp_rack_reo_timeout` steps nothing in recovery.
+- **The ACK that shows reneging takes no step of the policy or of the rate reduction**; Linux returns from
+  `tcp_fastretrans_alert` the same way and then still runs `tcp_cong_control`.
+- **The policy hears no ACK in recovery, neither the one that ends it nor one whose undo ends it**; Linux's
+  `tcp_cong_control` grows on either, its state being open by then. And **it hears the ACK that ends the loss state
+  even when a new recovery begins on it**, and grows before the new episode sets its target, where Linux, finding the
+  state in recovery, grows nothing.
+- **An undo in the loss state opens a connection without SACK at once**, with `recover`, which the undo leaves where the
+  episode set it, as the guard against duplicates its needless resends draw; Linux's `tcp_try_undo_loss` holds it in the
+  loss state until the episode's data is acknowledged (`tcp_is_non_sack_preventing_reopen`).
+- **In the loss state a duplicate ACK stands for nothing on a connection without SACK**; Linux counts it once new data
+  was sent after the timeout, which its F-RTO sends (`tcp_process_loss`).
+- **A duplicate report of the highest reported entry, when it was resent, counts as reordering**; Linux's
+  `tcp_check_sack_reordering` counts one only below the highest sequence reported.
+- **A duplicate report that rides an ACK older than `acknowledged()` by more than the largest window the peer offered
+  is ignored with that ACK's other blocks**; Linux's `tcp_sacktag_write_queue` reads it (`tcp_check_dsack`) before it
+  returns for such an ACK.
+- **The undo's count of resends**: a resend counts once it has left, where Linux's `tcp_retransmit_skb` counts the
+  attempt, one the busy rule defers included; a duplicate report counts one resend, where Linux counts the segments it
+  covers; a tail probe counts while it is in flight, where `tcp_init_undo` counts it while its verdict is open; and the
+  probe's own duplicate report, which settles its verdict, takes nothing off an episode's count, where Linux's takes it.
+- **The rule on growth records the most in flight in the round**, `in_flight()`; Linux's `tcp_cwnd_validate` records
+  everything outstanding, reported segments included (`packets_out`).
+- **A round-trip sample is taken from the echo of a partial ACK that frees no whole entry**; Linux takes none there,
+  since `tcp_clean_rtx_queue` sets no `FLAG_DATA_ACKED` for it, so an RTO after such an ACK can fall a tick away from
+  Linux's.
+- **RACK's minimum round trip is kept over two windows of 300 s**, coarser than Linux's filter over three estimates
+  (`minmax_running_min`), and takes every sample as it is, where Linux's `tcp_update_rtt_min` passes over one a delayed
+  ACK may have stretched; RFC 8985 leaves the filter open.
+- **Under `NoCongestionControl` nothing holds back what a timeout marked**: the window is unbounded, so the next ACK of
+  any kind after the expiry sends every marked entry at once. Linux has no such policy: its window after a timeout is
+  one segment whatever the congestion control.
+
+Where an RFC is definite and Linux differs, Aloe follows the RFC:
+
+- **The rate reduction's proportional part divides by the flight recorded on entry** (RFC 9937 6.2, RecoverFS); Linux's
+  `tcp_cwnd_reduction` divides by the window it had.
+- **The target on congestion is half of the flight** (RFC 5681 3.1, equation 4), at least two segments; Linux's reno
+  halves the window (`tcp_reno_ssthresh`). This is what leaves an application-limited flow two segments after a
+  recovery or a repaired probe.
+- **The flight that target is computed from at the start of a recovery leaves out what was sent beyond the policy's
+  window** (RFC 5681 3.2: data sent by limited transmit "MUST NOT be included"); Linux halves its window instead.
+- **A connection without SACK guards the entry to recovery by `recover`** (RFC 6582 3.2): the third duplicate begins
+  recovery only when `ack - 1 > recover`, to the byte; Linux holds its recovery state until something above its mark is
+  acknowledged, to the same end. `recover` starts one below the initial sequence number, where RFC 6582 starts it at
+  the initial sequence number itself: under the RFC's own test, the loss of a connection's first data segment would
+  never be admitted.
+- **A plain duplicate ACK closes a probe's verdict as needless only when it carries no SACK option** (RFC 8985 7.4.2,
+  "a DupAck without any SACK option"); Linux's test is that no block newly reported data, so a duplicate that repeats
+  old blocks closes the verdict there and leaves it open here. Neither needs data in flight, as RFC 5681's duplicate
+  ACK does: a lone segment's probe leaves nothing in flight once its end is acknowledged.
+
+Where Aloe follows Linux against the letter of RFC 8985:
+
+- **The timeout marks with a reordering window of zero**: the head, and every other entry sent at least RACK's round
+  trip ago (`tcp_timeout_mark_lost`); RFC 8985 6.3's `RACK_mark_losses_on_RTO` adds the reordering window.
+- **RACK's round trip is that of the last entry in the ACK's walk**, which goes in sequence order, as Linux calls
+  `tcp_rack_advance`; the RFC takes the entries in the order they were sent, so its round trip is the most recently
+  sent one's.
+- **The reordering window grows on a duplicate report only once reordering was seen** (Linux's `tcp_dsack_seen`); the
+  RFC's pseudocode grows it on any.
+- **Reordering is recorded at an undo by the echo only on a partial ACK** (`tcp_try_undo_partial`), not at the ACK that
+  ends recovery (`tcp_try_undo_recovery`); the note on RACK above says what that costs an isolated flight.
+
+And where the RFCs say nothing, one rule of Linux's: **a round-trip sample from a timestamp echo of zero ticks counts
+as one tick, 1 ms** (`tcp_rtt_tsopt_us`). The clock cannot tell a round trip under a millisecond from none, and a zero
+through RACK's minimum would hold the reordering window at zero for five minutes on the fastest paths.
+
+Not built, where Linux has them: F-RTO (RFC 5682), shrinking a window the application left unused (RFC 2861), and
+recording the old target for the undo as at least three quarters of the old window (`tcp_current_ssthresh`); the note
+on what is left out says why.
 
 **A silent peer holds what the caps allow.** A peer that never acknowledges keeps a connection's entries, and
 their packets, until `data_retries` or the user timeout ends the connection. `send_segments` bounds what one
@@ -601,7 +1051,8 @@ never answered, or an active open that ends before the answer, negotiated nothin
 timestamps; then `nop, wscale`. That is 20 bytes with every option and 12 without timestamps. The peer's window scale
 and SACK-permitted are read from a SYN or SYN-ACK only, as its MSS is, and a wrong length makes the option list
 malformed, as a wrong MSS length does; a peer's shift above 14 is used as 14, as RFC 7323 requires. The SACK blocks the
-peer sends are skipped by their length, as every option the brick does not read is; step 5 reads them.
+peer sends are read on every ACK of a connection that uses SACK (see the scoreboard above); a SACK option whose length
+is wrong is skipped and the segment kept, as Linux's `tcp_parse_options` skips it.
 
 **A budget per connection, counted in `mss()`.** The receive window is a byte window over a budget fixed once the
 handshake has settled the peer's MSS and the options: half of what `receive_segments` segments of the
@@ -740,20 +1191,21 @@ handshake is answered with no block, and a RST reports nothing; Linux's `tcp_sen
 in its range. One duplicate is pending at a time: a second range extends it when the two touch and is dropped otherwise,
 as `tcp_dsack_extend` does. It is forgotten once an ACK carried it, or when the next segment with payload arrives, as
 Linux clears it on entry to `tcp_data_queue`. A Linux sender uses the report to undo a retransmission that reordering
-made spurious, which keeps a venue's stream fast on a path that reorders.
+made spurious, as Aloe's own sender does (see the undo above), which keeps a venue's stream fast on a path that
+reorders.
 
-**The peer's window comes from current acknowledgements.** `writable()` is
-`min(mss, min(snd_wnd, cwnd + allowance) - in flight)`, where `cwnd` is the policy's window and the allowance is
-limited transmit's, and zero at the send cap. The peer's window is updated by RFC 793's rule, a newer sequence or
-the same one with a newer acknowledgement, and only from a segment whose acknowledgement is at or past `snd_una`,
-so a stale or forged acknowledgement cannot rewrite it. `commit` checks the credit again, because the peer may
-have retracted its right edge, or a loss shrunk the congestion window, since the prepare; RFC 1122 asks the
-sender to cope with a retracted edge by not sending into it. The window field of every segment on a synchronized
-connection is shifted left by the peer's scale before anything reads it, the window update, the duplicate-ACK
-test, zero-window probing and `writable()`; the field of a SYN or SYN-ACK is taken as it is, and so is that of a
-SYN-ACK that carries data, since the peer's shift is stored only once the SYN-ACK has been processed. A peer that
-did not offer scaling has a shift of zero. `snd_wnd` was already 32 bits wide, so a window past 65535 lets
-`writable()` and the congestion window decide.
+**The peer's window comes from current acknowledgements.** `writable()` is the MSS, within what the two windows allow
+beyond what is out: the peer's window less `unacknowledged()`, and the congestion window less `in_flight()`; it is zero
+at the send cap and while an entry is marked lost and not yet resent. The peer's window is updated by RFC 793's rule, a
+newer sequence or the same one with a newer acknowledgement, and only from a segment whose acknowledgement is at or past
+`snd_una`, so a stale or forged acknowledgement cannot rewrite it. `commit` checks the credit again, because the peer
+may have retracted its right edge, or a loss shrunk the congestion window, since the prepare; RFC 1122 asks the sender
+to cope with a retracted edge by not sending into it. The window field of every segment on a synchronized connection is
+shifted left by the peer's scale before anything reads it, the window update, the duplicate-ACK test, zero-window
+probing and `writable()`; the field of a SYN or SYN-ACK is taken as it is, and so is that of a SYN-ACK that carries
+data, since the peer's shift is stored only once the SYN-ACK has been processed. A peer that did not offer scaling has a
+shift of zero. `snd_wnd` was already 32 bits wide, so a window past 65535 lets `writable()` and the congestion window
+decide.
 
 **ACKs wait, with exceptions.** With `delayed_ack` zero, the default, an ordinary acknowledgement of in-order data
 is queued and sent by `flush`, unless a segment carrying an ACK leaves first, so a request answered in the same
@@ -788,11 +1240,11 @@ costs four ACKs, not thirty, and the peer still learns everything within the tic
 the rest on a timer of at most a millisecond (`__tcp_ack_snd_check`); the `flush` is the boundary a polling stack
 already has. An answer that also acknowledges in-order data not yet acknowledged goes at once and is not one of
 the three: it moves the peer's `snd_una`, so the peer does not count it as a duplicate, and three true duplicates
-follow it. Linux counts it; Aloe departs because a sender that counts duplicates, Aloe's own until step 5, needs
-three true ones. On a connection without SACK every segment above a gap is answered at once, as Linux answers
+follow it. Linux counts it; Aloe departs because a sender that counts duplicates even with SACK, as Onload's does,
+needs three true ones. On a connection without SACK every segment above a gap is answered at once, as Linux answers
 them (`__tcp_ack_snd_check` sends at once when SACK is off): such a sender reads the duplicates themselves, the
-third starting fast retransmit and each one after it growing its window by a segment (RFC 5681 3.2), which is what
-lets it send new data while it recovers.
+third starting fast retransmit and each one, whether it inflates the window by a segment (RFC 5681 3.2) or, as Aloe's
+and Linux's do, takes a segment out of what it counts in flight, letting it send new data while it recovers.
 
 A duplicate ACK stays a duplicate. The ACK sent at once for a segment above a gap, a duplicate or any refused segment
 restates the edge already offered, whatever `consume` has freed since: RFC 5681 counts an ACK as a duplicate only when
@@ -804,12 +1256,6 @@ identical ACK it would count. Like any segment that carries an ACK, a restating 
 An ACK at once that the device refuses is retried by the `flush` as an ordinary ACK, which may move the edge, and the
 count of three is taken when the answer is decided, not when it leaves: under device back-pressure a sender that counts
 duplicates can see fewer than three.
-
-**Two Aloe stacks recover on duplicates until step 5.** Two Aloe stacks negotiate SACK, so the receiver batches
-its answers above a gap after the third, while Aloe's own sender does not read blocks yet and counts duplicates.
-Behind a loss it sees three duplicates and then one ACK per tick: it starts fast retransmit on time, with no
-retransmission timeout, as the two-stack tests check, but with few duplicates after the third it has little to
-send new data on until the retransmission is acknowledged. Step 5's sender reads the blocks.
 
 **Ownership is logical state.** A passive open belongs to the stack until the handshake completes and `Accepted` hands
 it to the application; one that fails before then is freed silently. A connection from `connect` is the caller's at
@@ -849,11 +1295,17 @@ loop. Aloe keeps the received packets as the read buffer, lets the application w
 keeps that packet itself, lent, as the retransmission queue's entry, and leaves the loop to the program or to the
 runtime written over the same bricks.
 
-**What is still left out, and why.** The peer's SACK blocks are skipped and loss recovery reads duplicate ACKs only:
-RACK-TLP and a scoreboard over the retransmission queue come with step 5 of phase 2. So does congestion-window growth on
-a flow the application limits: NewReno still grows its window on every ACK, and at the default `send_segments` a
-connection's flight stays below 65535 bytes, so the peer's scaled window does not become the limit the congestion window
-was hiding behind; a deployment that raises the send cap for bulk sends meets it. Not built and not planned:
+**What is still left out, and why.** Three parts of loss recovery that Linux has are not built, and wait for the
+phase's comparison against Linux under netem, the first place a bulk sender's recovery is measured, to ask for them.
+F-RTO (RFC 5682): a needless timeout is recognised by the echoed timestamp instead, on a connection that uses
+timestamps, the default, as FreeBSD and VPP recognise it, and nobody but Linux ships F-RTO. Splitting an entry that a
+SACK block covers in part: such a block marks nothing, the entries being the segments as they left, so part covers are
+rare; a lent packet cannot be split in place, so a split would need a copy; and the cost of not splitting is bounded,
+a needless resend that the peer reports and the undo gives back. Shrinking a window the application left unused
+(RFC 2861, Linux's `tcp_cwnd_application_limited`): the restart after an idle RTO covers the idle case, and the rest is
+throughput tuning for a bulk sender; the window no longer grows while unused in the first place. Nor is Linux's habit
+of recording the old target for the undo as at least three quarters of the old window copied. Not built and not
+planned:
 receive-window auto-tuning, since the window is what the configuration says from the handshake on; and Linux's timer for
 compressing the ACKs of out-of-order arrivals and its adaptive delayed ACK, since the `flush` of the tick does the first
 job and the delay is one fixed duration. Not built yet: copying small held segments into fewer packets, as Linux's
@@ -865,8 +1317,10 @@ window, 370688 bytes where it was 46720, gives a blind RST nearly eight times th
 brings RFC 5961's challenge ACK. The same wider target holds for a FIN forged into the window: it is remembered, and
 in-order data that crosses it is refused each time it is resent, so the stream stalls until the peer gives up, where
 Linux usually drops the stale FIN once real data passes it; step 6's challenge ACK covers both. The brick makes no
-deployment or latency claim yet: the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a recorded baseline,
-and its reruns with reliable send and with the receive side are owed, as its page says.
+deployment or latency claim yet: the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a recorded baseline;
+its rerun for loss recovery with SACK found the 64-byte tick 40 ns slower at p50 than before it, as the note on what an
+in-order ACK and a send cost says, and winning that back is work of its own; its reruns with reliable send and with the
+receive side alone are owed, as its page says.
 
 **Hardening is deferred too.** The brick is not yet meant for hostile peers. It has no SYN cookies, so a SYN
 flood fills the fixed table until the half-open connections time out; its initial sequence numbers come from a
