@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <aloe/wire>
 #include <cstdint>
 
@@ -22,6 +23,7 @@ namespace aloe::tcp::detail {
         /// The peer's window scale, zero unless both ends offered the option; at most 14.
         std::uint8_t peer_shift = 0;
         bool fin_sent           = false;  ///< The FIN took its number, `nxt - 1`; its entry carries it.
+        std::uint32_t max_wnd   = 0;      ///< The largest window the peer ever offered.
 
         /// Numbers the SYN: `iss` is unacknowledged and the SYN takes it.
         void open(const wire::TcpSequence isn) noexcept {
@@ -36,20 +38,23 @@ namespace aloe::tcp::detail {
         }
 
         /// The handshake's window: SND.WND from the peer's SYN or SYN-ACK, whose field is never scaled (RFC 7323),
-        /// which also sets WL1 and WL2.
+        /// which also sets WL1 and WL2 and raises the largest window.
         void synchronize(const wire::TcpHeader& header) noexcept {
-            wnd = header.window;
-            wl1 = header.sequence;
-            wl2 = header.acknowledgement;
+            wnd     = header.window;
+            max_wnd = std::max(max_wnd, wnd);
+            wl1     = header.sequence;
+            wl2     = header.acknowledgement;
         }
 
         /// RFC 793's window update rule: a newer segment, or the same one with a newer acknowledgement. The field is
-        /// scaled by the peer's shift.
+        /// scaled by the peer's shift; a window that grew past the largest raises it, as Linux's
+        /// `tcp_ack_update_window` raises `max_window`.
         void update_window(const wire::TcpHeader& header) noexcept {
             if (wl1.before(header.sequence) || (wl1 == header.sequence && !wl2.after(header.acknowledgement))) {
-                wnd = scaled(header.window);
-                wl1 = header.sequence;
-                wl2 = header.acknowledgement;
+                wnd     = scaled(header.window);
+                max_wnd = std::max(max_wnd, wnd);
+                wl1     = header.sequence;
+                wl2     = header.acknowledgement;
             }
         }
 

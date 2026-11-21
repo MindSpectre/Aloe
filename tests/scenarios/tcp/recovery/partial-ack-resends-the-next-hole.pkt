@@ -1,8 +1,13 @@
-// RFC 6582's partial ACK: five segments, the first two lost. Three duplicates resend the head; the ACK of the head
-// alone does not reach recover, the last byte sent when recovery began, so the next head goes again at once rather than
-// after three more duplicates or the timer; the ACK of all five, past recover, ends recovery. The mechanics are the
-// stack's, so the script runs under both policies. Linux resends the same segment on a partial ACK, with PRR deciding
-// what new data goes with it.
+// A partial ACK in recovery: five segments of 988, the first two lost. Three duplicates mark the head lost, recovery
+// begins and the head is resent. The ACK of the head alone does not cover recover, the last byte sent when recovery
+// began, so it is RFC 6582's partial ACK: it marks the new head lost, and that goes again at once rather than after
+// three more duplicates or the timer. The ACK of all five ends recovery. The lines are the same under both policies.
+// Under NewReno the window is PRR's: at the third duplicate 2964 of the 4940 outstanding are counted received and 988
+// lost, 988 in flight, below the target max(4940 / 2, 2 * 988) = 2470, so the conservative bound allows the 988 the
+// ACK delivered and the head leaves on a window of 1976. The partial ACK delivers one segment more, the hole it
+// filled; of the 3952 outstanding, 2964 are counted received and 988 lost, nothing in flight, and the bound allows
+// 988: the next hole. Without congestion control nothing bounds a resend. Linux marks and resends the same segment on
+// a partial ACK (tcp_newreno_mark_lost), under PRR in whole segments.
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0
 +0 listen(3, 1) = 0

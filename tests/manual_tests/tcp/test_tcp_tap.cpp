@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <print>
@@ -56,9 +57,10 @@
 //     tc qdisc replace dev aloe-tcp root netem loss 5%
 //
 // on the tap, so the kernel loses 5% of what it sends the stack, and removes the qdisc afterwards; it skips when `tc`
-// or `sch_netem` is missing. The stack's own transmits go through a `LossyDevice`, which frees every tenth packet and
-// reports it sent. Each case needs at least one retransmission on the stack's side and the clean close; the brick
-// cases need timestamps negotiated, which the kernel offers by default. Waits are 30 s there. Each case also prints
+// or `sch_netem` is missing. The stack's own transmits go through a `LossyDevice`, whose default policy frees every
+// tenth packet and reports it sent. Each case needs at least one resend on the stack's side, at the RTO, of a segment
+// marked lost or as a tail probe, and the clean close; the brick cases need timestamps negotiated, which the kernel
+// offers by default. Waits are 30 s there. Each case also prints
 // how far the kernel's `RetransSegs` (the `Tcp:` rows of `/proc/net/snmp`) rose while it ran: the kernel's own
 // resends, for information only, since the counter is system-wide and other traffic moves it too.
 //
@@ -86,6 +88,17 @@
 // the 1024-packet pool in its mempool cache:
 //
 //     sudo ./build/debug/tests/manual_tests/tcp/Aloe.Tests.Manual.Tcp.Tap --gtest_filter='TcpTapReceive.*'
+//
+// The cases of `TcpTapRecovery` make the stack the sender: it listens, the kernel connects, and the stack's frames go
+// through a `LossyDevice` whose policy each case sets, while nothing shapes the kernel's. They check that a tail loss
+// is repaired by a tail probe and never by the RTO, that one data segment in fifty lost over 2 MB costs few expiries of
+// the RTO against the resends and probes that repair the rest, and that a data segment swapped with the next frame of
+// its burst is waited for, not resent, so the kernel sends few duplicate SACKs. The last reads `TCPDSACKOldSent` from
+// the `TcpExt:` rows of `/proc/net/netstat`, a system-wide count, so it wants an otherwise idle machine, and skips when
+// the field is missing. They step the stack on the test's thread as `TcpTapReceive` does, have not yet been run against
+// a kernel either, and are run alone for the same reason:
+//
+//     sudo ./build/debug/tests/manual_tests/tcp/Aloe.Tests.Manual.Tcp.Tap --gtest_filter='TcpTapRecovery.*'
 //
 // The kernel's SYN carries SACK-permitted, timestamps and window scale, which the option parser skips; the tap
 // offers no offloads, so every checksum is software on our side and verified by the kernel.
@@ -228,70 +241,177 @@ namespace {
         return true;
     }
 
-    /// The port seen through a device that loses every tenth packet it is handed, as a wire that drops a frame
-    /// would: the packet is freed and counted as accepted, so the stack sees a transmit that succeeded.
+    /// What `LossyDevice` does with one frame the stack hands it.
+    enum class LossyAction : std::uint8_t {
+        Deliver,         ///< Hands it to the port.
+        Drop,            ///< Frees it and reports it sent, as a wire that loses the frame would.
+        HoldBehindNext,  ///< Swaps it with the next frame of the same `transmit` call, which goes first; with no next
+                         ///< frame in the call, hands it to the port in order.
+    };
+
+    /// Decides what `LossyDevice` does with a frame, from its bytes, a whole Ethernet frame, and its index among the
+    /// frames the device was given, from zero. It is asked once per frame, in the order the stack gave them.
+    using LossyPolicy = std::function<LossyAction(std::span<const std::byte> frame, std::uint64_t index)>;
+
+    /// `LossyDevice`'s default policy: every tenth frame dropped, the rest delivered.
+    [[nodiscard]] constexpr LossyAction drop_every_tenth([[maybe_unused]] const std::span<const std::byte> frame,
+                                                         const std::uint64_t index) noexcept {
+        return (index + 1) % drop_every == 0 ? LossyAction::Drop : LossyAction::Deliver;
+    }
+
+    /**
+     * @brief The port seen through a device that does with each frame the stack hands it what a `LossyPolicy` says, as
+     * a wire that loses frames or swaps neighbours would.
+     *
+     * A dropped packet is freed, which returns its loan, and counted as accepted, so the stack sees a transmit that
+     * succeeded. A held frame swaps places with the next frame of the same call, whose fate the policy then decides:
+     * that frame is dropped or handed to the port first, then the held one, so the two leave swapped within the call
+     * and nothing outlives it. A hold is not made, and the frame goes in order, when the frame is the last of its call
+     * or is itself the next frame of a hold.
+     *
+     * A frame the port refuses stays with the caller, as does every frame after it. When the port refuses the next
+     * frame of a hold, the two are swapped back, so the caller has them as it gave them; when it refuses the held frame
+     * after the next one left, the held frame is the first the caller has left. Frames a refusal leaves with the caller
+     * were decided already: they are delivered in order, without asking the policy again, when the caller hands them
+     * over again, first, as `ShardQueue` does. So no frame is sent twice or lost.
+     */
     template <aloe::device::IsDevice Device>
     class LossyDevice {
     public:
         using Packet = typename Device::Packet;
 
-        explicit LossyDevice(Device& owner) noexcept
-            : device_{&owner} {
+        explicit LossyDevice(Device& owner, LossyPolicy policy = drop_every_tenth)
+            : device_{owner},
+              policy_{std::move(policy)},
+              decided_(owner.queue_count(), 0) {
         }
 
         [[nodiscard]] std::uint64_t dropped() const noexcept {
             return dropped_;
         }
+        /// Frames that left right behind the next frame of their call, swapped with it.
+        [[nodiscard]] std::uint64_t held() const noexcept {
+            return holds_;
+        }
+        /// Holds the policy asked for that were not made: the frame was the last of its call or the next frame of a
+        /// hold, or the port refused the pair. With `held()`, every hold asked for.
+        [[nodiscard]] std::uint64_t holds_not_made() const noexcept {
+            return holds_not_made_;
+        }
         [[nodiscard]] std::uint16_t queue_count() const noexcept {
-            return device_->queue_count();
+            return device_.queue_count();
         }
         [[nodiscard]] aloe::wire::MacAddress mac() const noexcept {
-            return device_->mac();
+            return device_.mac();
         }
         [[nodiscard]] std::uint16_t mtu() const noexcept {
-            return device_->mtu();
+            return device_.mtu();
         }
         [[nodiscard]] bool link_up() const noexcept {
-            return device_->link_up();
+            return device_.link_up();
         }
         [[nodiscard]] const aloe::device::Capabilities& capabilities() const noexcept {
-            return device_->capabilities();
+            return device_.capabilities();
         }
         [[nodiscard]] const aloe::device::RssDescription& steering() const noexcept {
-            return device_->steering();
+            return device_.steering();
         }
         [[nodiscard]] std::optional<Packet> allocate(const std::uint16_t queue) noexcept {
-            return device_->allocate(queue);
+            aloe::core::force_non_const(this);  // the stack's mutable view of the port, though only the port is written
+            return device_.allocate(queue);
         }
         [[nodiscard]] std::size_t receive(const std::uint16_t queue, std::span<Packet> out) noexcept {
-            return device_->receive(queue, out);
+            aloe::core::force_non_const(this);  // the stack's mutable view of the port, though only the port is written
+            return device_.receive(queue, out);
         }
 
-        /// Hands the packets over one at a time; every tenth is freed instead. Returns the accepted prefix.
+        /// Hands the packets over one at a time, each as the policy says, a held one right after the next. Returns the
+        /// accepted prefix.
         [[nodiscard]] std::size_t transmit(const std::uint16_t queue, std::span<Packet> in) noexcept {
-            for (std::size_t index = 0; index < in.size(); ++index) {
-                if ((seen_ + 1) % drop_every == 0) {
-                    in[index] = Packet{};
-                    ++dropped_;
-                } else if (device_->transmit(queue, in.subspan(index, 1)) == 0) {
-                    return index;
+            std::uint8_t& decided = decided_[queue];
+            std::size_t slot      = 0;
+            while (slot < in.size()) {
+                LossyAction action = LossyAction::Deliver;
+                if (decided > 0) {
+                    --decided;  // a frame a refusal left with the caller: in order
+                } else {
+                    action = decide(in[slot]);
                 }
-                ++seen_;
+                if (action == LossyAction::HoldBehindNext && slot + 1 < in.size()) {
+                    const std::size_t taken = swap_ahead(queue, in.subspan(slot, 2));
+                    if (taken < 2) {
+                        decided = static_cast<std::uint8_t>(decided + 2 - taken);
+                        return slot + taken;
+                    }
+                    slot += 2;
+                    continue;
+                }
+                if (action == LossyAction::HoldBehindNext) {
+                    ++holds_not_made_;  // the last frame of its call: in order
+                }
+                if (action == LossyAction::Drop) {
+                    in[slot] = Packet{};
+                    ++dropped_;
+                } else if (device_.transmit(queue, in.subspan(slot, 1)) == 0) {
+                    ++decided;
+                    return slot;
+                }
+                ++slot;
             }
             return in.size();
         }
 
         [[nodiscard]] std::size_t reclaim(const std::uint16_t queue) noexcept {
-            return device_->reclaim(queue);
+            aloe::core::force_non_const(this);  // the stack's mutable view of the port, though only the port is written
+            return device_.reclaim(queue);
         }
         [[nodiscard]] aloe::device::QueueCounters counters(const std::uint16_t queue) const noexcept {
-            return device_->counters(queue);
+            return device_.counters(queue);
         }
 
     private:
-        Device* device_;
-        std::uint64_t seen_    = 0;
-        std::uint64_t dropped_ = 0;
+        /// The policy's action for the next frame the stack gave, asked once.
+        [[nodiscard]] LossyAction decide(Packet& packet) noexcept {
+            const LossyAction action = policy_(packet.data(), asked_);
+            ++asked_;
+            return action;
+        }
+
+        /// `pair[0]`, held, swaps places with `pair[1]`, the next frame of its call, which the policy decides now and
+        /// which is dropped or handed over first; then the held frame goes. Returns how many of the two slots were
+        /// accepted: none when the port refused the next frame, and the two are swapped back; one when it refused the
+        /// held frame, which the caller keeps in the second slot.
+        [[nodiscard]] std::size_t swap_ahead(const std::uint16_t queue, std::span<Packet> pair) noexcept {
+            std::swap(pair[0], pair[1]);
+            const LossyAction action = decide(pair[0]);
+            if (action == LossyAction::HoldBehindNext) {
+                ++holds_not_made_;  // the next frame of a hold goes as it is
+            }
+            if (action == LossyAction::Drop) {
+                pair[0] = Packet{};
+                ++dropped_;
+            } else if (device_.transmit(queue, pair.first(1)) == 0) {
+                std::swap(pair[0], pair[1]);
+                ++holds_not_made_;
+                return 0;
+            }
+            if (device_.transmit(queue, pair.last(1)) == 0) {
+                ++holds_not_made_;
+                return 1;
+            }
+            ++holds_;
+            return 2;
+        }
+
+        Device& device_;
+        LossyPolicy policy_;
+        /// Per queue, the frames at the front of the caller's next call that the policy decided before a refusal left
+        /// them with the caller.
+        std::vector<std::uint8_t> decided_;
+        std::uint64_t asked_          = 0;  ///< Frames the policy decided: the next one's index.
+        std::uint64_t dropped_        = 0;
+        std::uint64_t holds_          = 0;
+        std::uint64_t holds_not_made_ = 0;
     };
 
     static_assert(aloe::device::IsDevice<LossyDevice<Port>>);
@@ -555,14 +675,16 @@ namespace {
         close(fd);
     }
 
-    /// The kernel's `RetransSegs`, from the `Tcp:` rows of `/proc/net/snmp`, a row of names and a row of values;
-    /// nothing when the file or the field is missing. System-wide: every TCP socket of the host moves it.
-    [[nodiscard]] std::optional<std::uint64_t> kernel_retrans_segs() {
-        std::ifstream snmp{"/proc/net/snmp"};
+    /// A counter of one of the kernel's MIB files, `/proc/net/snmp` or `/proc/net/netstat`: its rows come in pairs, a
+    /// row of names and a row of values, both opening with `prefix`. Nothing when the file, the rows or the field is
+    /// missing. System-wide: every TCP socket of the host moves it.
+    [[nodiscard]] std::optional<std::uint64_t>
+    kernel_counter(const std::string_view path, const std::string_view prefix, const std::string_view field) {
+        std::ifstream mib{std::string{path}};
         std::string names;
         std::string values;
-        for (std::string line; std::getline(snmp, line);) {
-            if (!line.starts_with("Tcp:")) {
+        for (std::string line; std::getline(mib, line);) {
+            if (!line.starts_with(prefix)) {
                 continue;
             }
             if (names.empty()) {
@@ -577,13 +699,24 @@ namespace {
         std::string name;
         std::string value;
         while (name_stream >> name && value_stream >> value) {
-            if (name == "RetransSegs") {
+            if (name == field) {
                 std::uint64_t count     = 0;
                 const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), count);
                 return error == std::errc{} ? std::optional{count} : std::nullopt;
             }
         }
         return std::nullopt;
+    }
+
+    /// The kernel's `RetransSegs`, from the `Tcp:` rows of `/proc/net/snmp`: the TCP segments it sent again.
+    [[nodiscard]] std::optional<std::uint64_t> kernel_retrans_segs() {
+        return kernel_counter("/proc/net/snmp", "Tcp:", "RetransSegs");
+    }
+
+    /// The kernel's `TCPDSACKOldSent`, `nstat`'s `TcpExtTCPDSACKOldSent`, from the `TcpExt:` rows of
+    /// `/proc/net/netstat`: the duplicate SACKs it sent for data that arrived again below RCV.NXT.
+    [[nodiscard]] std::optional<std::uint64_t> kernel_dsack_old_sent() {
+        return kernel_counter("/proc/net/netstat", "TcpExt:", "TCPDSACKOldSent");
     }
 
     /// A kernel server: accepts one connection, echoes until EOF, then closes.
@@ -713,6 +846,14 @@ namespace {
         std::optional<std::uint64_t> retrans_before_{};
     };
 
+    /// The stack's resends of every kind: at an expiry of the RTO (`retransmits`), of a segment marked lost
+    /// (`fast_retransmits`), and tail probes (`tail_probes`). A loss at the tail of what the stack sent, with nothing
+    /// after it that RACK or duplicate ACKs could find it by, is repaired by a probe, which neither of the others
+    /// counts.
+    [[nodiscard]] std::uint64_t resends(const aloe::tcp::TcpCounters& counters) noexcept {
+        return counters.retransmits + counters.fast_retransmits + counters.tail_probes;
+    }
+
     template <typename Device>
     void brick_server(Device& device, const std::size_t size, const bool lossy) {
         const auto payload = message(size);
@@ -729,7 +870,7 @@ namespace {
         EXPECT_TRUE(loop.clean_close());
         EXPECT_TRUE(loop.timestamps_negotiated()) << "the kernel offers timestamps by default";
         if (lossy) {
-            EXPECT_GE(loop.counters().retransmits + loop.counters().fast_retransmits, 1U);
+            EXPECT_GE(resends(loop.counters()), 1U);
         }
     }
 
@@ -750,7 +891,7 @@ namespace {
         EXPECT_TRUE(loop.timestamps_negotiated()) << "the kernel offers timestamps by default";
         if (lossy) {
             EXPECT_TRUE(loop.clean_close());
-            EXPECT_GE(loop.counters().retransmits + loop.counters().fast_retransmits, 1U);
+            EXPECT_GE(resends(loop.counters()), 1U);
         }
     }
 
@@ -783,7 +924,7 @@ namespace {
         EXPECT_EQ(counters.dropped_bad_header, 0U);
         if (lossy) {
             EXPECT_EQ(closed.load(), 1);
-            EXPECT_GE(counters.retransmits + counters.fast_retransmits, 1U);
+            EXPECT_GE(resends(counters), 1U);
         }
     }
 
@@ -813,7 +954,7 @@ namespace {
         const auto& counters = runtime.shard(0).stack().tcp().counters();
         EXPECT_EQ(counters.connections_closed, 1U);
         if (lossy) {
-            EXPECT_GE(counters.retransmits + counters.fast_retransmits, 1U);
+            EXPECT_GE(resends(counters), 1U);
         }
     }
 
@@ -829,14 +970,19 @@ namespace {
         return out;
     }
 
-    /// Fails with the first offset at which `read` and `sent` differ, and with both sizes when they differ; byte-exact.
-    void expect_same_bytes(const std::span<const std::byte> read, const std::span<const std::byte> sent) {
-        EXPECT_EQ(read.size(), sent.size()) << "the bytes the stack read against the bytes the kernel sent";
+    /// Fails with the first offset at which `read`, what `reader` read, and `sent`, what `sender` sent, differ, and
+    /// with both sizes when they differ; byte-exact.
+    void expect_same_bytes(const std::span<const std::byte> read,
+                           const std::span<const std::byte> sent,
+                           const std::string_view reader = "the stack",
+                           const std::string_view sender = "the kernel") {
+        EXPECT_EQ(read.size(), sent.size())
+            << "the bytes " << reader << " read against the bytes " << sender << " sent";
         const auto [mine, theirs] = std::ranges::mismatch(read, sent);
         if (mine != read.end() && theirs != sent.end()) {
-            ADD_FAILURE() << "the stack read 0x" << std::hex << std::to_integer<unsigned>(*mine)
-                          << " where the kernel sent 0x" << std::to_integer<unsigned>(*theirs) << std::dec
-                          << ", first at offset " << (mine - read.begin()) << " of " << sent.size();
+            ADD_FAILURE() << reader << " read 0x" << std::hex << std::to_integer<unsigned>(*mine) << " where " << sender
+                          << " sent 0x" << std::to_integer<unsigned>(*theirs) << std::dec << ", first at offset "
+                          << (mine - read.begin()) << " of " << sent.size();
         }
     }
 
@@ -1031,10 +1177,10 @@ namespace {
         bool ended_              = false;
     };
 
-    /// Steps `side` until `done()` holds or `patience` runs out; true when it held. `done` runs once per turn, so it
-    /// is also where a case drives the kernel's socket.
-    template <typename Done>
-    [[nodiscard]] bool step_until(ReceiveSide& side, Done done) {
+    /// Steps `side`, a `ReceiveSide` or a `SendSide`, until `done()` holds or `patience` runs out; true when it held.
+    /// `done` runs once per turn, so it is also where a case drives the kernel's socket.
+    template <typename Side, typename Done>
+    [[nodiscard]] bool step_until(Side& side, Done done) {
         const auto deadline = std::chrono::steady_clock::now() + patience();
         while (!done()) {
             if (std::chrono::steady_clock::now() >= deadline) {
@@ -1094,7 +1240,8 @@ namespace {
     /// A non-blocking kernel socket connected to the stack's `echo_port`, the stack stepped while the handshake runs;
     /// -1 with the failure reported when it does not connect within `patience`. A `send_buffer` above zero is set as
     /// `SO_SNDBUF` before connecting, which also stops the kernel growing the buffer on its own.
-    [[nodiscard]] int kernel_connect(ReceiveSide& side, const int send_buffer = 0) {
+    template <typename Side>
+    [[nodiscard]] int kernel_connect(Side& side, const int send_buffer = 0) {
         const int fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
         if (fd < 0) {
             ADD_FAILURE() << "socket: " << std::strerror(errno);
@@ -1324,6 +1471,313 @@ namespace {
         ::testing::Test::RecordProperty("kernel_total_rto", std::to_string(info.info.tcpi_total_rto));
     }
 
+    // The cases of `TcpTapRecovery`: the flights of the tail-loss case, the size of the other two transfers, and the
+    // rates of their drops and holds, all the brief's.
+    constexpr std::size_t tail_flights    = 200;
+    constexpr std::size_t lone_size       = 100;  ///< The tail-loss case's flight of one small segment.
+    constexpr std::size_t recovery_size   = std::size_t{2} << 20;
+    constexpr std::uint64_t drop_one_in   = 50;
+    constexpr std::uint64_t hold_one_in   = 40;
+    /// The brief's "a handful" of duplicate SACKs the kernel may send in the reordering case, read as five.
+    constexpr std::uint64_t dsack_handful = 5;
+
+    /// The sequence space the payload of a TCP segment covers.
+    struct TcpPayload {
+        aloe::wire::TcpSequence first{};
+        std::size_t length = 0;
+
+        /// The payload carries the byte at `sequence`.
+        [[nodiscard]] constexpr bool carries(const aloe::wire::TcpSequence sequence) const noexcept {
+            const std::int32_t offset = sequence - first;
+            return offset >= 0 && static_cast<std::size_t>(offset) < length;
+        }
+    };
+
+    /// The payload of the TCP segment `frame` carries, as the stack writes one: IPv4 in Ethernet. Nothing for any other
+    /// frame, an ARP one for instance, and for a segment without payload, a pure ACK, a SYN or a FIN alone.
+    [[nodiscard]] std::optional<TcpPayload> tcp_payload_of(const std::span<const std::byte> frame) {
+        const std::optional<aloe::wire::EthernetHeader> ethernet = aloe::wire::EthernetHeader::parse(frame);
+        if (!ethernet || ethernet->ethertype != std::to_underlying(aloe::wire::EtherType::Ipv4)) {
+            return std::nullopt;
+        }
+        const std::span<const std::byte> datagram          = frame.subspan(aloe::wire::EthernetHeader::size);
+        const std::optional<aloe::wire::Ipv4Header> header = aloe::wire::Ipv4Header::parse(datagram);
+        if (!header || header->protocol != aloe::wire::Ipv4Protocol::Tcp || header->is_fragment()) {
+            return std::nullopt;
+        }
+        const std::span<const std::byte> segment = datagram.subspan(
+            header->header_length, static_cast<std::size_t>(header->total_length) - header->header_length);
+        const std::optional<aloe::wire::TcpHeader> tcp = aloe::wire::TcpHeader::parse(segment);
+        if (!tcp || segment.size() == tcp->data_offset) {
+            return std::nullopt;
+        }
+        return TcpPayload{.first = tcp->sequence, .length = segment.size() - tcp->data_offset};
+    }
+
+    /// The send side over the bricks, its frames through a `LossyDevice`, stepped on the test's own thread between the
+    /// kernel socket's calls, which never block, for `ReceiveSide`'s reason. The stack listens on `echo_port` and, on
+    /// the connection the kernel opens, sends what `offer` gave it as far as the windows and the send cap allow each
+    /// turn, the rest at a later one; it reads whatever the kernel sends into `received()`, and closes once `close()`
+    /// was asked and everything offered is committed.
+    class SendSide {
+    public:
+        using Device     = LossyDevice<Port>;
+        using Tcp        = TcpT<Device>;
+        using Connection = Tcp::ConnectionType;
+
+        explicit SendSide(Device& device)
+            : queue_{
+                  device, 0, 64, shard_counters_
+        },
+              ip_{queue_, {.address = stack_ip, .prefix = 24}}, wheel_{1ms, aloe::core::Clock::now()},
+              tcp_{ip_, wheel_, {}}, burst_(Port::max_burst) {
+            EXPECT_TRUE(tcp_.listen(echo_port).has_value()) << "the stack's listen on " << echo_port;
+        }
+
+        SendSide(const SendSide&)            = delete;
+        SendSide& operator=(const SendSide&) = delete;
+        SendSide(SendSide&&)                 = delete;
+        SendSide& operator=(SendSide&&)      = delete;
+        ~SendSide() {
+            queue_.discard();
+        }
+
+        /// One turn of the loop: receive, process, fire timers, take events, read, send what is offered, flush.
+        void step() {
+            const auto now             = aloe::core::Clock::now();
+            const std::size_t received = queue_.receive(burst_);
+            ip_.process(std::span<Port::Packet>{burst_}.first(received), now);
+            tcp_.process(ip_.received(aloe::wire::Ipv4Protocol::Tcp), now);
+            std::ignore = wheel_.advance(now);
+            while (const auto event = tcp_.poll_event()) {
+                auto& c = *event->connection;
+                if (event->events.accepted()) {
+                    connection_ = &c;
+                }
+                if (event->events.closed() || event->events.reset() || event->events.timed_out()) {
+                    clean_close_ =
+                        event->events.closed() && !event->events.reset() && c.state() == aloe::tcp::State::Closed;
+                    ended_ = true;
+                    if (connection_ == &c) {
+                        connection_ = nullptr;
+                    }
+                    c.release();
+                }
+            }
+            if (connection_ != nullptr) {
+                Connection& c = *connection_;
+                for (const std::span<const std::byte> chunk : c.unread()) {
+                    received_.insert(received_.end(), chunk.begin(), chunk.end());
+                }
+                c.consume(c.unread().size());
+                while (committed_ < offered_.size()) {
+                    const std::size_t accepted = c.send(std::span<const std::byte>{offered_}.subspan(committed_));
+                    if (accepted == 0) {
+                        break;  // the windows or the send cap: the rest at a later turn
+                    }
+                    committed_ += accepted;
+                }
+                if (closing_ && !fin_queued_ && committed_ == offered_.size()) {
+                    c.close();
+                    fin_queued_ = true;
+                }
+            }
+            tcp_.flush(now);
+            std::ignore = queue_.flush();
+            if (received == 0) {
+                std::this_thread::yield();
+            }
+        }
+
+        /// Appends `bytes` to what the stack sends.
+        void offer(const std::span<const std::byte> bytes) {
+            offered_.insert(offered_.end(), bytes.begin(), bytes.end());
+        }
+        /// The stack closes once everything offered is committed.
+        void close() noexcept {
+            closing_ = true;
+        }
+        /// The open connection, from its `Accepted` event until its end; null otherwise.
+        [[nodiscard]] const Connection* connection() const noexcept {
+            return connection_;
+        }
+        [[nodiscard]] const std::vector<std::byte>& received() const noexcept {
+            return received_;
+        }
+        [[nodiscard]] const aloe::tcp::TcpCounters& counters() const noexcept {
+            return tcp_.counters();
+        }
+        /// The connection ended by `Closed`, both FINs acknowledged, with no reset.
+        [[nodiscard]] bool clean_close() const noexcept {
+            return clean_close_;
+        }
+        /// The connection raised `Closed`, `Reset` or `TimedOut`.
+        [[nodiscard]] bool ended() const noexcept {
+            return ended_;
+        }
+
+    private:
+        aloe::loop::ShardQueueCounters shard_counters_;
+        aloe::loop::ShardQueue<Device> queue_;
+        Ipv4T<Device> ip_;
+        aloe::loop::TimerWheel wheel_;
+        Tcp tcp_;
+        std::vector<Port::Packet> burst_;
+        Connection* connection_ = nullptr;
+        std::vector<std::byte> offered_;
+        std::size_t committed_ = 0;  ///< The bytes of `offered_` the stack accepted.
+        std::vector<std::byte> received_;
+        bool closing_     = false;
+        bool fin_queued_  = false;
+        bool clean_close_ = false;
+        bool ended_       = false;
+    };
+
+    /// The kernel end against the stack as the sender, pumped once per turn of the stack and never blocking: it reads
+    /// what arrived into `read()` and, when it echoes, writes that back as far as the socket's buffer takes, the rest
+    /// at a later turn.
+    class KernelReader {
+    public:
+        KernelReader(const int fd, const bool echo)
+            : fd_{fd},
+              echo_{echo},
+              buffer_(std::size_t{1} << 16) {
+        }
+
+        /// Reads what arrived, then echoes what is due. False once a call failed with anything but an empty or a full
+        /// buffer, which `error()` then names.
+        [[nodiscard]] bool pump() {
+            while (error_ == 0 && !eof_) {
+                const ssize_t got = ::recv(fd_, buffer_.data(), buffer_.size(), MSG_DONTWAIT);
+                if (got > 0) {
+                    const std::span<const std::byte> chunk =
+                        std::span<const std::byte>{buffer_}.first(static_cast<std::size_t>(got));
+                    read_.insert(read_.end(), chunk.begin(), chunk.end());
+                } else if (got == 0) {
+                    eof_ = true;
+                } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    break;
+                } else if (errno != EINTR) {
+                    error_ = errno;
+                }
+            }
+            while (echo_ && error_ == 0 && echoed_ < read_.size()) {
+                const ssize_t sent =
+                    ::send(fd_, read_.data() + echoed_, read_.size() - echoed_, MSG_NOSIGNAL | MSG_DONTWAIT);
+                if (sent >= 0) {
+                    echoed_ += static_cast<std::size_t>(sent);
+                } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    break;
+                } else if (errno != EINTR) {
+                    error_ = errno;
+                }
+            }
+            return error_ == 0;
+        }
+
+        [[nodiscard]] int fd() const noexcept {
+            return fd_;
+        }
+        [[nodiscard]] const std::vector<std::byte>& read() const noexcept {
+            return read_;
+        }
+        /// A read returned zero: the stack's FIN arrived after everything it sent.
+        [[nodiscard]] bool eof() const noexcept {
+            return eof_;
+        }
+        /// Everything read was written back, or this end does not echo.
+        [[nodiscard]] bool echoed_all() const noexcept {
+            return !echo_ || echoed_ == read_.size();
+        }
+        [[nodiscard]] int error() const noexcept {
+            return error_;
+        }
+
+    private:
+        int fd_    = -1;
+        bool echo_ = false;
+        std::vector<std::byte> buffer_;
+        std::vector<std::byte> read_;
+        std::size_t echoed_ = 0;
+        bool eof_           = false;
+        int error_          = 0;
+    };
+
+    /// Steps `side` until the kernel has read `size` bytes; false, with the failure reported, when its socket fails,
+    /// the stack's connection ends, or `patience` runs out first.
+    [[nodiscard]] bool kernel_reads(SendSide& side, KernelReader& kernel, const std::size_t size) {
+        const bool done = step_until(
+            side, [&side, &kernel, size] { return !kernel.pump() || side.ended() || kernel.read().size() >= size; });
+        if (kernel.error() != 0) {
+            ADD_FAILURE() << "the kernel's socket failed after " << kernel.read().size()
+                          << " bytes: " << std::strerror(kernel.error());
+            return false;
+        }
+        if (!done || kernel.read().size() < size) {
+            ADD_FAILURE() << "the kernel read " << kernel.read().size() << " of " << size << " bytes within "
+                          << patience().count() << " ms; the stack's connection ended " << side.ended();
+            return false;
+        }
+        return true;
+    }
+
+    /// The stack closes once everything offered is committed; the kernel reads to EOF, has echoed everything when it
+    /// echoes, and closes its side; the stack's connection ends with both FINs acknowledged and no reset.
+    void stack_finishes(SendSide& side, KernelReader& kernel) {
+        side.close();
+        const bool eof =
+            step_until(side, [&kernel] { return !kernel.pump() || (kernel.eof() && kernel.echoed_all()); });
+        ASSERT_EQ(kernel.error(), 0) << "the kernel's socket failed: " << std::strerror(kernel.error());
+        ASSERT_TRUE(eof) << "the kernel read no EOF within " << patience().count() << " ms, after "
+                         << kernel.read().size() << " bytes";
+        ASSERT_EQ(shutdown(kernel.fd(), SHUT_WR), 0) << std::strerror(errno);
+        EXPECT_TRUE(step_until(side, [&side] { return side.ended(); }))
+            << "the stack's connection did not end within " << patience().count() << " ms of the kernel's FIN";
+        EXPECT_TRUE(side.clean_close()) << "both FINs acknowledged, no reset";
+    }
+
+    /// The stack as the sender against a kernel receiver over the tap: the stack's frames go through a `LossyDevice`
+    /// whose policy each case sets, and nothing shapes what the kernel sends. Waits are 30 s, for the 2 MB transfers.
+    class TcpTapRecovery : public TcpTap {
+    protected:
+        void SetUp() override {
+            TcpTap::SetUp();
+            if (IsSkipped() || HasFatalFailure()) {
+                return;
+            }
+            patience_storage().store(lossy_patience);
+        }
+
+        void TearDown() override {
+            patience_storage().store(default_patience);
+        }
+    };
+
+    /// The stack's counters of its loss recovery, printed and recorded as properties for the run's record.
+    void report_send_counts(const aloe::tcp::TcpCounters& stack) {
+        std::println("the stack: retransmits {}, fast_retransmits {}, recoveries {}, tail_probes {} (needless {}, "
+                     "repaired {}, early {}), rack_marked {}, lost_retransmits {}, reorder_timeouts {}, "
+                     "reordering_seen {}, duplicate_sacks_received {}, undos_duplicate_sack {}, undos_original_ack {}",
+                     stack.retransmits,
+                     stack.fast_retransmits,
+                     stack.recoveries,
+                     stack.tail_probes,
+                     stack.tail_probes_needless,
+                     stack.tail_probe_recoveries,
+                     stack.tail_probes_early,
+                     stack.rack_marked,
+                     stack.lost_retransmits,
+                     stack.reorder_timeouts,
+                     stack.reordering_seen,
+                     stack.duplicate_sacks_received,
+                     stack.undos_duplicate_sack,
+                     stack.undos_original_ack);
+        ::testing::Test::RecordProperty("stack_retransmits", std::to_string(stack.retransmits));
+        ::testing::Test::RecordProperty("stack_fast_retransmits", std::to_string(stack.fast_retransmits));
+        ::testing::Test::RecordProperty("stack_tail_probes", std::to_string(stack.tail_probes));
+        ::testing::Test::RecordProperty("stack_reordering_seen", std::to_string(stack.reordering_seen));
+    }
+
 }  // namespace
 
 TEST_F(TcpTap, BrickServer) {
@@ -1538,4 +1992,184 @@ TEST_F(TcpTapReceive, UnderNetemLossTheKernelRecoversFromTheBlocks) {
     // `tcpi_total_rto` also counts a SYN's timeout, a SYN or an ARP exchange that netem lost; the quarter covers it.
     EXPECT_LE(4U * rto, retrans) << "the kernel's tcpi_total_rto " << rto << " is more than a quarter of its "
                                  << "tcpi_total_retrans " << retrans << ": it waited out its timer, not the blocks";
+}
+
+TEST_F(TcpTapRecovery, EveryTailLossIsRepairedByAProbe) {
+    // 200 flights, alternately one segment of 100 bytes and three of mss(), each sent once the kernel's echo of the one
+    // before is back. Before each flight the case hands the policy the sequence of the flight's last byte, and the
+    // policy drops the first transmission of the segment that carries it: a loss at the tail every time, with nothing
+    // sent after it for RACK or duplicate ACKs to find it by. The kernel acknowledges and echoes what arrived, the
+    // first two segments of a three, then sends nothing. The stack's tail probe leaves two smoothed round trips after
+    // the last ACK, plus 40 ms with one segment in flight, ahead of the RTO's 200 ms or more (`rto_min`), and sends the
+    // lost segment again; the kernel acknowledges and echoes it. The ACK of a probe lands on the probe's end, which
+    // leaves its verdict open, and a lone segment lost next is probed all the same once a round-trip sample was taken
+    // since the probe: the probe's ACK gives one from its echo, with timestamps, which the kernel offers by default.
+    //
+    // Hence every byte echoed, one drop per flight, at least one probe per flight (more when one leaves before the
+    // kernel's ACK of what did arrive, two round trips being short on the tap), and no expiry of the RTO.
+    std::optional<aloe::wire::TcpSequence> last_byte;
+    LossyDevice<Port> device{
+        *port_, [&last_byte](const std::span<const std::byte> frame, [[maybe_unused]] const std::uint64_t index) {
+            const std::optional<TcpPayload> payload = tcp_payload_of(frame);
+            if (!last_byte || !payload || !payload->carries(*last_byte)) {
+                return LossyAction::Deliver;
+            }
+            last_byte.reset();
+            return LossyAction::Drop;
+        }};
+    SendSide side{device};
+    const KernelSocket kernel{kernel_connect(side)};
+    ASSERT_GE(kernel.fd(), 0);
+    // The kernel's echo of a short segment never waits for the ACK of the one before (Nagle).
+    const int no_delay = 1;
+    ASSERT_EQ(setsockopt(kernel.fd(), IPPROTO_TCP, TCP_NODELAY, &no_delay, sizeof(no_delay)), 0)
+        << std::strerror(errno);
+    ASSERT_TRUE(step_until(side, [&side] { return side.connection() != nullptr; }))
+        << "the stack raised no Accepted within " << patience().count() << " ms";
+    const auto& c = *side.connection();
+    ASSERT_TRUE(c.sack()) << "the kernel offers SACK-permitted by default";
+    ASSERT_TRUE(c.timestamps()) << "the kernel offers timestamps by default";
+    const std::size_t three = 3U * c.mss();
+    const auto stream       = numbered_words(tail_flights / 2 * (lone_size + three));
+    KernelReader echo{kernel.fd(), true};
+    std::size_t offered = 0;
+    for (std::size_t flight = 0; flight < tail_flights; ++flight) {
+        const std::size_t size = flight % 2 == 0 ? lone_size : three;
+        last_byte              = c.committed() + static_cast<std::uint32_t>(size - 1);
+        side.offer(std::span<const std::byte>{stream}.subspan(offered, size));
+        offered           += size;
+        const bool echoed  = step_until(side, [&side, &echo, offered] {
+            return !echo.pump() || side.ended() || side.received().size() >= offered;
+        });
+        ASSERT_EQ(echo.error(), 0) << "flight " << flight
+                                   << ": the kernel's socket failed: " << std::strerror(echo.error());
+        ASSERT_FALSE(side.ended()) << "flight " << flight << ": the stack's connection ended";
+        ASSERT_TRUE(echoed) << "flight " << flight << ": " << side.received().size() << " of " << offered
+                            << " bytes echoed within " << patience().count() << " ms";
+    }
+    stack_finishes(side, echo);
+    expect_same_bytes(echo.read(), stream, "the kernel", "the stack");
+    expect_same_bytes(side.received(), stream, "the stack", "it");
+    const aloe::tcp::TcpCounters& counters = side.counters();
+    report_send_counts(counters);
+    EXPECT_EQ(device.dropped(), tail_flights) << "the first transmission of each flight's last segment";
+    EXPECT_GE(counters.tail_probes, tail_flights) << "a probe repaired each flight's tail";
+    EXPECT_EQ(counters.retransmits, 0U) << "no expiry of the RTO";
+}
+
+TEST_F(TcpTapRecovery, ScatteredLossRarelyNeedsTheRto) {
+    // 2 MB from the stack, with every fiftieth frame that carries data dropped, a resend or a probe included, as a wire
+    // that loses 2% would. A loss with later segments behind it is found by RACK from the kernel's SACK blocks and
+    // resent as a segment marked lost (`fast_retransmits`); a loss at a tail is repaired by a probe (`tail_probes`);
+    // only a lost probe, or a lost resend with nothing sent after it, waits for the RTO (`retransmits`, one per
+    // expiry). The spec's "RTO expiries a small share of the losses" is the brief's tenth: ten times `retransmits` is
+    // at most `fast_retransmits + tail_probes`. The payload takes at least `size / mss()` frames of data, so at least a
+    // fiftieth of that many are dropped.
+    LossyDevice<Port> device{*port_,
+                             [segments = std::uint64_t{0}](const std::span<const std::byte> frame,
+                                                           [[maybe_unused]] const std::uint64_t index) mutable {
+                                 if (!tcp_payload_of(frame)) {
+                                     return LossyAction::Deliver;
+                                 }
+                                 return ++segments % drop_one_in == 0 ? LossyAction::Drop : LossyAction::Deliver;
+                             }};
+    SendSide side{device};
+    const KernelSocket kernel{kernel_connect(side)};
+    ASSERT_GE(kernel.fd(), 0);
+    ASSERT_TRUE(step_until(side, [&side] { return side.connection() != nullptr; }))
+        << "the stack raised no Accepted within " << patience().count() << " ms";
+    ASSERT_TRUE(side.connection()->sack()) << "the kernel offers SACK-permitted by default";
+    const std::size_t mss = side.connection()->mss();
+    const auto payload    = numbered_words(recovery_size);
+    KernelReader reader{kernel.fd(), false};
+    side.offer(payload);
+    ASSERT_TRUE(kernel_reads(side, reader, payload.size()));
+    stack_finishes(side, reader);
+    expect_same_bytes(reader.read(), payload, "the kernel", "the stack");
+    const aloe::tcp::TcpCounters& counters = side.counters();
+    report_send_counts(counters);
+    EXPECT_GE(device.dropped(), payload.size() / mss / drop_one_in);
+    EXPECT_LE(10U * counters.retransmits, counters.fast_retransmits + counters.tail_probes)
+        << "the RTO expired " << counters.retransmits << " times, more than a tenth of the "
+        << counters.fast_retransmits << " resends of segments marked lost and " << counters.tail_probes
+        << " tail probes, over " << device.dropped() << " drops";
+}
+
+TEST_F(TcpTapRecovery, ReorderingWithinABurstIsSeenAndNotResent) {
+    // 2 MB from the stack, with every fortieth frame that carries data swapped with the next frame of its `transmit`
+    // call, as a wire reorders neighbours; one that is the last of its call goes in order, a hold not made. The kernel
+    // receives the next frame first, normally the next segment, above a gap, answers it at once with a SACK block, then
+    // receives the held segment, which fills the gap, and acknowledges both. The two were sent in one turn of the
+    // stack, so they carry one stamp, and once the next is reported RACK waits out its whole reordering window before
+    // it would mark the held one lost: the window a connection starts with, a quarter of the minimum round trip.
+    // Samples taken from send stamps keep that minimum at tens of microseconds on the tap, above zero, and one taken
+    // from a timestamp echo counts at least a millisecond, as Linux's `tcp_rtt_tsopt_us` counts it, so it never pulls
+    // the minimum down. The cumulative ACK comes within the window and fills a hole below the highest sequence
+    // reported with a segment sent once: reordering seen, nothing resent. Hence the kernel's duplicate SACKs rise by
+    // at most a handful (a reordering timer that fires before a cumulative ACK the stack reads a turn after its SACK;
+    // a needless probe at the end of the transfer), and the stack saw reordering.
+    //
+    // A swap within a burst needs nothing learned: the window's growth from duplicate reports is pinned by the
+    // fabric's two-stack case, `AFrameHeldBehindFourIsResentOnceAndNotTheSecondTime`, not here. Every hold asked for
+    // is made or not, and at least `size / mss() / 40` were asked, the payload taking at least `size / mss()` frames
+    // of data. At least one must be made for the case to pin anything; how many are depends on how the stack's frames
+    // fall into calls, so the case prints both counts beside the kernel's.
+    const std::optional<std::uint64_t> dsacks_before = kernel_dsack_old_sent();
+    if (!dsacks_before) {
+        GTEST_SKIP() << "/proc/net/netstat has no TCPDSACKOldSent in its TcpExt rows";
+    }
+    LossyDevice<Port> device{*port_,
+                             [segments = std::uint64_t{0}](const std::span<const std::byte> frame,
+                                                           [[maybe_unused]] const std::uint64_t index) mutable {
+                                 if (!tcp_payload_of(frame)) {
+                                     return LossyAction::Deliver;
+                                 }
+                                 return ++segments % hold_one_in == 0 ? LossyAction::HoldBehindNext
+                                                                      : LossyAction::Deliver;
+                             }};
+    SendSide side{device};
+    const KernelSocket kernel{kernel_connect(side)};
+    ASSERT_GE(kernel.fd(), 0);
+    ASSERT_TRUE(step_until(side, [&side] { return side.connection() != nullptr; }))
+        << "the stack raised no Accepted within " << patience().count() << " ms";
+    const auto& c = *side.connection();
+    ASSERT_TRUE(c.sack()) << "the kernel offers SACK-permitted by default";
+    const std::size_t mss = c.mss();
+    const auto payload    = numbered_words(recovery_size);
+    KernelReader reader{kernel.fd(), false};
+    side.offer(payload);
+    ASSERT_TRUE(kernel_reads(side, reader, payload.size()));
+    // What RACK stood on at the end of the transfer, for the record: the window and the smoothed round trip it is
+    // capped by.
+    const auto window = std::chrono::duration_cast<std::chrono::microseconds>(c.reordering_window());
+    const auto srtt =
+        std::chrono::duration_cast<std::chrono::microseconds>(c.srtt().value_or(aloe::core::Duration::zero()));
+    stack_finishes(side, reader);
+    const std::optional<std::uint64_t> dsacks_after = kernel_dsack_old_sent();
+    ASSERT_TRUE(dsacks_after.has_value()) << "/proc/net/netstat lost its TCPDSACKOldSent";
+    const std::uint64_t dsacks = *dsacks_after - *dsacks_before;
+    expect_same_bytes(reader.read(), payload, "the kernel", "the stack");
+    const aloe::tcp::TcpCounters& counters = side.counters();
+    report_send_counts(counters);
+    std::println("the device swapped {} frames with the next of their call, and left in order {} it was asked to hold "
+                 "(the last of their call, or refused by the port); the kernel's TCPDSACKOldSent rose by {} "
+                 "(system-wide); at the end of the transfer the stack's reordering window was {} us and its smoothed "
+                 "round trip {} us",
+                 device.held(),
+                 device.holds_not_made(),
+                 dsacks,
+                 window.count(),
+                 srtt.count());
+    RecordProperty("device_held", std::to_string(device.held()));
+    RecordProperty("device_holds_not_made", std::to_string(device.holds_not_made()));
+    RecordProperty("kernel_dsack_old_sent", std::to_string(dsacks));
+    EXPECT_GE(device.held() + device.holds_not_made(), payload.size() / mss / hold_one_in)
+        << "every hold asked for is made or not, and the payload's frames of data ask for at least this many";
+    ASSERT_GT(device.held(), 0U) << "no frame the policy held had a next frame in its call: the device swapped "
+                                    "nothing, and the case pins nothing about the stack";
+    EXPECT_LE(dsacks, dsack_handful) << "the kernel's duplicate SACKs over " << device.held()
+                                     << " swaps within a burst: the stack resent segments its starting reordering "
+                                        "window covers";
+    EXPECT_GT(counters.reordering_seen, 0U)
+        << "no ACK showed the stack the reordering of " << device.held() << " swaps";
 }

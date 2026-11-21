@@ -246,3 +246,54 @@ TEST(TcpOptions, WritesOneToFourSackBlocks) {
     EXPECT_TRUE(
         std::ranges::equal(out, bytes({1, 1, 5, 18, 1, 2, 3, 4, 1, 2, 4, 4, 0xff, 0xff, 0xff, 0xf0, 0, 0, 0, 0x10})));
 }
+
+TEST(TcpOptions, ParseRecordsASackOption) {
+    const auto parsed =
+        TcpOptions::parse(bytes({1, 1, 5, 18, 0, 0, 0x03, 0xe8, 0, 0, 0x07, 0xd0, 0, 0, 0x0b, 0xb8, 0, 0, 0x0f, 0xa0}));
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->sack_at, 2U);
+    EXPECT_EQ(parsed->sack_count, 2U);
+    const auto blocks = bytes({0, 0, 0x03, 0xe8, 0, 0, 0x07, 0xd0, 0, 0, 0x0b, 0xb8, 0, 0, 0x0f, 0xa0});
+    EXPECT_EQ(TcpOptions::read_sack_block(blocks, 0), (TcpSackBlock{TcpSequence{1000}, TcpSequence{2000}}));
+    EXPECT_EQ(TcpOptions::read_sack_block(blocks, 1), (TcpSackBlock{TcpSequence{3000}, TcpSequence{4000}}));
+}
+
+TEST(TcpOptions, ParseRecordsASackOptionAfterTimestamps) {
+    const auto parsed = TcpOptions::parse(
+        bytes({1, 1, 8, 10, 0, 0, 0, 5, 0, 0, 0, 6, 1, 1, 5, 10, 0, 0, 0x03, 0xe8, 0, 0, 0x07, 0xd0}));
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->timestamp_value, 5U);
+    EXPECT_EQ(parsed->timestamp_echo, 6U);
+    EXPECT_EQ(parsed->sack_count, 1U);
+    EXPECT_EQ(parsed->sack_at, 14U);
+}
+
+TEST(TcpOptions, ParseReadsFourBlocksAndNoMore) {
+    std::vector<std::byte> options = bytes({1, 1, 5, 34});
+    options.resize(options.size() + 32);
+    const auto parsed = TcpOptions::parse(options);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->sack_count, 4U);
+}
+
+TEST(TcpOptions, ASackOptionWithABadLengthIsIgnoredAndTheRestIsRead) {
+    for (const unsigned length : {2U, 9U, 12U}) {
+        SCOPED_TRACE(::testing::Message() << "length " << length);
+        std::vector<std::byte> options = bytes({1, 1, 5, length});
+        options.resize(options.size() + length - 2);
+        const auto timestamps = bytes({1, 1, 8, 10, 0, 0, 0, 5, 0, 0, 0, 6});
+        options.insert(options.end(), timestamps.begin(), timestamps.end());
+        const auto parsed = TcpOptions::parse(options);
+        ASSERT_TRUE(parsed.has_value());
+        EXPECT_EQ(parsed->sack_count, 0U);
+        EXPECT_FALSE(parsed->sack_at.has_value());
+        EXPECT_EQ(parsed->timestamp_value, 5U);
+        EXPECT_EQ(parsed->timestamp_echo, 6U);
+    }
+}
+
+TEST(TcpOptions, ASackOptionThatRunsPastTheListIsMalformed) {
+    std::vector<std::byte> options = bytes({1, 1, 5, 18});
+    options.resize(options.size() + 6);  // ten bytes left of the eighteen
+    EXPECT_FALSE(TcpOptions::parse(options).has_value());
+}

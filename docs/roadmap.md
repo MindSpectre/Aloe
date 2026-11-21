@@ -65,8 +65,8 @@ does; the scenario scripts are Aloe's own. The steps, in order:
    against a floor of raw frames, on DPDK's ring driver with a scripted venue on a second core; per-message
    distributions, recorded in [docs/benchmarks/tick-to-trade.md](benchmarks/tick-to-trade.md) before any step
    adds work to the hot path. Every later step reruns it. The loads and the isolated round that inform the
-   two-core shard follow in a second part. The benchmark exists; its first recorded run waits for a quiet
-   machine with hugepages.
+   two-core shard follow in a second part. The benchmark exists, with a run recorded on hugepages on 2026-10-21,
+   though not on a quiet machine, and step 5's reruns against `main`.
 2. **Packet loan and test tools.** A packet the stack must keep after sending is lent to the device and comes
    back when the device is done with it: TCP sees ownership move and return, never a reference count. The
    DPDK backend implements the loan with the mbuf's reference count, the fabric by holding the packet. A
@@ -99,9 +99,27 @@ does; the scenario scripts are Aloe's own. The steps, in order:
    sender under netem reordering and loss, which count only on Linux 6.7 or later, and the benchmark's rerun, wait for a
    machine with root and hugepages, beside step 3's. Congestion-window growth on a flow the application limits moves to
    step 5. See the [TCP brick](architecture/tcp.md).
-5. **Loss recovery with SACK.** RACK-TLP (RFC 8985), what Linux runs by default, over the SACK blocks the peer
-   sends. Its tail loss probe resends a lost last segment, the end of an order, after about two round trips
-   instead of a full RTO. Congestion-window growth on a flow the application limits goes with it.
+5. **Loss recovery with SACK.** Landed, and it misses its latency bar: on the tick-to-trade benchmark the 64-byte tick
+   at level 0, cross-core, is 40 ns slower at p50, 450 to 490 ns, and 60 ns slower at p99, 670 to 730 ns, against `main`
+   at the step's base, where the bar was no change beyond run-to-run noise, 10 to 20 ns. That is the rerun after the
+   work a review found plainly unnecessary on the tick path was taken out; the first rerun had 40 and 70 ns, so the gap
+   at p50 is unchanged, `main` having come out 10 ns lower too, and only the p99 gap narrowed, 70 to 60 ns. The rest is
+   the general work every in-order ACK and send now carries, spread over the scoreboard, RACK, the tail probe and the
+   undo; the diagnostics did not divide it among them, and winning it back is an optimization pass of its own (see
+   [docs/benchmarks/tick-to-trade.md](benchmarks/tick-to-trade.md)). The sender reads the peer's SACK blocks into a
+   scoreboard on the retransmission queue's entries and finds a loss by RACK-TLP (RFC 8985), what Linux runs by default:
+   a segment is lost once one sent after it was delivered and a short reordering window has passed, a resend lost again
+   is found the same way, and a silent tail is probed after about two round trips, a lone segment 40 ms later, a setting
+   where Linux waits its minimum RTO, all ahead of the retransmission timer. A peer without SACK is read through
+   duplicate ACKs, and what follows a loss is one recovery for both: the open, recovery and loss states, with two things
+   beyond the step's first text, Proportional Rate Reduction (RFC 9937) for the window in recovery and an undo that
+   gives back a reduction a needless resend caused, by duplicate SACK or by the echoed timestamp; and the congestion
+   window grows only while it is in use, so a flow the application limits keeps ten segments until a loss and two after
+   a recovery. Its one departure from RFC 8985 by the author's decision is a second tail probe once the first is
+   acknowledged, so that two lone orders lost in a row are both probed where RFC 8985 and Linux leave the second to the
+   RTO; the TCP page's [note on departures](architecture/tcp.md#where-the-brick-departs-from-the-rfcs-and-from-linux)
+   lists it with the others. The tap cases against a Linux receiver, `TcpTapRecovery`, wait for a machine with root,
+   beside those of steps 3 and 4. See the [TCP brick](architecture/tcp.md).
 6. **Lifecycle and client hardening.** TIME_WAIT, keepalive, the FIN-WAIT-2 timer, ICMP destination
    unreachable and path MTU, and the edge cases the phase 1 reviews left open: a RST for a bad ACK in
    SYN-RECEIVED, refusing a peer MSS of zero or one too small to leave a receive window, reading the

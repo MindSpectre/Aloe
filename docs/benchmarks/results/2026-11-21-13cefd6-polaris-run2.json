@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "machine": {"cpu": "AMD Ryzen 5 7600X 6-Core Processor", "cpus": 12, "smt": "on", "governor": "performance", "clocksource": "tsc", "kernel": "7.2.15-200.fc44.x86_64", "hugepages_free": 63},
+  "run": {"command": "/home/grivin/Workspace/Aloe/build/release/benchmarks/tick_to_trade/tick_to_trade --topology both --hop --out /home/grivin/.cache/aloe-bench/rack-tlp/after-2.json", "revision": "13cefd6", "build": "Release", "timestamp": "2026-11-21T04:08:00Z", "tsc_ghz": 4.700, "rounds": 100000, "warmup": 10000, "gap_ns": 0, "stack_core": "2", "peer_core": "3", "no_huge": false},
+  "rows": [
+    {"round": "tick", "level": "floor", "topology": "cross-core", "payload": 64, "metric": "round", "count": 100000, "min": 180, "p50": 240, "p90": 250, "p99": 280, "p999": 450, "max": 17180},
+    {"round": "tick", "level": "floor", "topology": "cross-core", "payload": 256, "metric": "round", "count": 100000, "min": 330, "p50": 390, "p90": 410, "p99": 460, "p999": 1040, "max": 18090},
+    {"round": "tick", "level": "floor", "topology": "cross-core", "payload": 1024, "metric": "round", "count": 100000, "min": 900, "p50": 970, "p90": 1010, "p99": 1170, "p999": 3340, "max": 18090},
+    {"round": "tick", "level": "floor", "topology": "cross-core", "payload": 1448, "metric": "round", "count": 100000, "min": 1210, "p50": 1270, "p90": 1340, "p99": 1520, "p999": 3810, "max": 31920},
+    {"round": "tick", "level": "floor", "topology": "same-core", "payload": 64, "metric": "round", "count": 100000, "min": 100, "p50": 110, "p90": 110, "p99": 140, "p999": 210, "max": 8130},
+    {"round": "tick", "level": "floor", "topology": "same-core", "payload": 256, "metric": "round", "count": 100000, "min": 240, "p50": 260, "p90": 270, "p99": 290, "p999": 460, "max": 14070},
+    {"round": "tick", "level": "floor", "topology": "same-core", "payload": 1024, "metric": "round", "count": 100000, "min": 800, "p50": 830, "p90": 860, "p99": 920, "p999": 1870, "max": 16780},
+    {"round": "tick", "level": "floor", "topology": "same-core", "payload": 1448, "metric": "round", "count": 100000, "min": 1110, "p50": 1130, "p90": 1140, "p99": 1210, "p999": 3420, "max": 15680},
+    {"round": "tick", "level": "level0", "topology": "cross-core", "payload": 64, "metric": "round", "count": 100000, "min": 420, "p50": 500, "p90": 550, "p99": 780, "p999": 1380, "max": 23030},
+    {"round": "tick", "level": "level0", "topology": "cross-core", "payload": 256, "metric": "round", "count": 100000, "min": 590, "p50": 680, "p90": 730, "p99": 990, "p999": 2470, "max": 22840},
+    {"round": "tick", "level": "level0", "topology": "cross-core", "payload": 1024, "metric": "round", "count": 100000, "min": 1230, "p50": 1340, "p90": 1440, "p99": 1700, "p999": 4130, "max": 23490},
+    {"round": "tick", "level": "level0", "topology": "cross-core", "payload": 1448, "metric": "round", "count": 100000, "min": 1590, "p50": 1720, "p90": 1880, "p99": 2130, "p999": 4880, "max": 36110},
+    {"round": "tick", "level": "level0", "topology": "same-core", "payload": 64, "metric": "round", "count": 100000, "min": 330, "p50": 380, "p90": 400, "p99": 590, "p999": 790, "max": 19590},
+    {"round": "tick", "level": "level0", "topology": "same-core", "payload": 256, "metric": "round", "count": 100000, "min": 490, "p50": 530, "p90": 700, "p99": 840, "p999": 1360, "max": 22740},
+    {"round": "tick", "level": "level0", "topology": "same-core", "payload": 1024, "metric": "round", "count": 100000, "min": 1130, "p50": 1170, "p90": 1200, "p99": 1490, "p999": 3480, "max": 16320},
+    {"round": "tick", "level": "level0", "topology": "same-core", "payload": 1448, "metric": "round", "count": 100000, "min": 1490, "p50": 1530, "p90": 1560, "p99": 1830, "p999": 3880, "max": 16450},
+    {"round": "tick", "level": "level1", "topology": "cross-core", "payload": 64, "metric": "round", "count": 100000, "min": 470, "p50": 550, "p90": 580, "p99": 850, "p999": 1690, "max": 19400},
+    {"round": "tick", "level": "level1", "topology": "cross-core", "payload": 256, "metric": "round", "count": 100000, "min": 630, "p50": 730, "p90": 760, "p99": 1040, "p999": 2490, "max": 18410},
+    {"round": "tick", "level": "level1", "topology": "cross-core", "payload": 1024, "metric": "round", "count": 100000, "min": 1270, "p50": 1380, "p90": 1470, "p99": 1820, "p999": 4400, "max": 28020},
+    {"round": "tick", "level": "level1", "topology": "cross-core", "payload": 1448, "metric": "round", "count": 100000, "min": 1630, "p50": 1750, "p90": 1930, "p99": 2220, "p999": 4990, "max": 26180},
+    {"round": "gateway", "level": "floor", "topology": "cross-core", "payload": 128, "metric": "round", "count": 100000, "min": 60, "p50": 70, "p90": 70, "p99": 90, "p999": 120, "max": 10730},
+    {"round": "gateway", "level": "floor", "topology": "same-core", "payload": 128, "metric": "round", "count": 100000, "min": 30, "p50": 30, "p90": 40, "p99": 50, "p999": 80, "max": 17690},
+    {"round": "gateway", "level": "level0", "topology": "cross-core", "payload": 128, "metric": "round", "count": 100000, "min": 150, "p50": 160, "p90": 170, "p99": 250, "p999": 320, "max": 13310},
+    {"round": "gateway", "level": "level0", "topology": "same-core", "payload": 128, "metric": "round", "count": 100000, "min": 100, "p50": 120, "p90": 140, "p99": 210, "p999": 280, "max": 16470},
+    {"round": "gateway", "level": "level1", "topology": "cross-core", "payload": 128, "metric": "round", "count": 100000, "min": 160, "p50": 180, "p90": 190, "p99": 320, "p999": 400, "max": 21290},
+    {"round": "hop", "level": "-", "topology": "cross-core", "payload": 0, "metric": "hop", "count": 100000, "min": 30, "p50": 34, "p90": 40, "p99": 54, "p999": 64, "max": 8834}
+  ]
+}

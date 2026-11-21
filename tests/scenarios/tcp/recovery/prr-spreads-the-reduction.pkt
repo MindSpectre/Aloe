@@ -1,0 +1,147 @@
+// PRR, RFC 9937, spreads the window's reduction over the round trip in which the loss shows. The peer has neither
+// timestamps nor SACK, so a segment is 1000 bytes and each duplicate ACK stands for one segment the peer holds. Ten
+// segments acknowledged one by one double the window to 20000, a write fills it with twenty, and the first is lost.
+// A write of 1000 follows every duplicate and shows what the window allows; the send cap is raised to hold them.
+//
+// Duplicates 1 and 2 each take 1000 out of what is in flight, and one new segment leaves: limited transmit, 22000
+// outstanding. Duplicate 3 marks the head lost and recovery begins. The target leaves out the two segments sent
+// beyond the window (RFC 5681 3.2): 20000 / 2 = 10000. RecoverFS is the whole flight, 22000. With 3000 counted
+// received and 1000 lost, 18000 are in flight. Each duplicate from here delivers 1000, and while what is in flight is
+// above the target, ceil(prr_delivered * 10000 / 22000) may have been sent in recovery in all: 455 after duplicate
+// 3, 910 after 4, 1364 after 5, 1819 after 6 and so on, 5 / 11 of what was delivered, rounded up.
+//   3: 455 allowed, nothing sent yet: a window of 18455, on which the head is resent whole; a write gets nothing.
+//   4: 910 allowed, 1000 sent: nothing.
+//   5: 1364 allowed: a write sends 364.
+//   6 to 17: 454 or 455 more at each, as the rounding falls, and a write sends it.
+//   18: 9819 in flight, below the target: the conservative bound lets it up to the target and no further, 181.
+//   19: 9000 in flight: a whole segment.
+// The ACK of everything ends recovery with the window at the target, so a write accepts 10000.
+//
+// RFC 9937's Figure 1 is this recovery drawn in whole segments, a target of 10 for 20 in flight: one new segment for
+// every second duplicate. In bytes writable() offers what the window leaves, a part of a segment too, so a little
+// under half a segment leaves at every duplicate; under half, because the figure's sender reads the peer's blocks,
+// which makes its RecoverFS 20 where a count of duplicates leaves 22. Linux counts whole segments, as the figure
+// does; its reno halves the window too, 10 segments, and its PRR divides by the window it had on entry, 20, where
+// RFC 9937 divides by RecoverFS.
+--congestion=newreno
+--tcp_send_segments=64
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1000>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460>
++0 < . 1:1(0) ack 1 win 65535
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 20000) = 10000
++0 > P. 1:1001(1000) ack 1 win 65535
++0 > P. 1001:2001(1000) ack 1 win 65535
++0 > P. 2001:3001(1000) ack 1 win 65535
++0 > P. 3001:4001(1000) ack 1 win 65535
++0 > P. 4001:5001(1000) ack 1 win 65535
++0 > P. 5001:6001(1000) ack 1 win 65535
++0 > P. 6001:7001(1000) ack 1 win 65535
++0 > P. 7001:8001(1000) ack 1 win 65535
++0 > P. 8001:9001(1000) ack 1 win 65535
++0 > P. 9001:10001(1000) ack 1 win 65535
++0 < . 1:1(0) ack 1001 win 65535
++0 < . 1:1(0) ack 2001 win 65535
++0 < . 1:1(0) ack 3001 win 65535
++0 < . 1:1(0) ack 4001 win 65535
++0 < . 1:1(0) ack 5001 win 65535
++0 < . 1:1(0) ack 6001 win 65535
++0 < . 1:1(0) ack 7001 win 65535
++0 < . 1:1(0) ack 8001 win 65535
++0 < . 1:1(0) ack 9001 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 30000) = 20000
++0 > P. 10001:11001(1000) ack 1 win 65535
++0 > P. 11001:12001(1000) ack 1 win 65535
++0 > P. 12001:13001(1000) ack 1 win 65535
++0 > P. 13001:14001(1000) ack 1 win 65535
++0 > P. 14001:15001(1000) ack 1 win 65535
++0 > P. 15001:16001(1000) ack 1 win 65535
++0 > P. 16001:17001(1000) ack 1 win 65535
++0 > P. 17001:18001(1000) ack 1 win 65535
++0 > P. 18001:19001(1000) ack 1 win 65535
++0 > P. 19001:20001(1000) ack 1 win 65535
++0 > P. 20001:21001(1000) ack 1 win 65535
++0 > P. 21001:22001(1000) ack 1 win 65535
++0 > P. 22001:23001(1000) ack 1 win 65535
++0 > P. 23001:24001(1000) ack 1 win 65535
++0 > P. 24001:25001(1000) ack 1 win 65535
++0 > P. 25001:26001(1000) ack 1 win 65535
++0 > P. 26001:27001(1000) ack 1 win 65535
++0 > P. 27001:28001(1000) ack 1 win 65535
++0 > P. 28001:29001(1000) ack 1 win 65535
++0 > P. 29001:30001(1000) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 1000
++0 > P. 30001:31001(1000) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 1000
++0 > P. 31001:32001(1000) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 > P. 10001:11001(1000) ack 1 win 65535
++0 write(4, ..., 1000) = 0
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 0
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 364
++0 > P. 32001:32365(364) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 455
++0 > P. 32365:32820(455) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 454
++0 > P. 32820:33274(454) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 455
++0 > P. 33274:33729(455) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 454
++0 > P. 33729:34183(454) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 455
++0 > P. 34183:34638(455) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 454
++0 > P. 34638:35092(454) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 455
++0 > P. 35092:35547(455) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 454
++0 > P. 35547:36001(454) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 455
++0 > P. 36001:36456(455) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 455
++0 > P. 36456:36911(455) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 454
++0 > P. 36911:37365(454) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 455
++0 > P. 37365:37820(455) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 181
++0 > P. 37820:38001(181) ack 1 win 65535
++0 < . 1:1(0) ack 10001 win 65535
++0 write(4, ..., 1000) = 1000
++0 > P. 38001:39001(1000) ack 1 win 65535
++0 < . 1:1(0) ack 39001 win 65535
++0 write(4, ..., 20000) = 10000
++0 > P. 39001:40001(1000) ack 1 win 65535
++0 > P. 40001:41001(1000) ack 1 win 65535
++0 > P. 41001:42001(1000) ack 1 win 65535
++0 > P. 42001:43001(1000) ack 1 win 65535
++0 > P. 43001:44001(1000) ack 1 win 65535
++0 > P. 44001:45001(1000) ack 1 win 65535
++0 > P. 45001:46001(1000) ack 1 win 65535
++0 > P. 46001:47001(1000) ack 1 win 65535
++0 > P. 47001:48001(1000) ack 1 win 65535
++0 > P. 48001:49001(1000) ack 1 win 65535
++0 < . 1:1(0) ack 49001 win 65535

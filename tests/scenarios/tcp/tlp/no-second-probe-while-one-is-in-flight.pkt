@@ -1,0 +1,23 @@
+// No probe while an earlier one is in flight (RFC 8985 7.3's first condition, which keeps at most one segment beyond
+// the congestion window). The handshake's ACK 10 ms after the SYN-ACK gives an srtt of 10 ms and an RTO of 210 ms; the
+// write at 10 ms is probed at 10 + 2 * 10 + 40 = 70 ms, and the RTO then runs from the probe, to 280 ms. A second write
+// at 80 ms schedules the probe again, two segments now in flight, for 80 + 2 * 10 = 100 ms; at 100 ms the first probe's
+// end is still unacknowledged, so none goes and the RTO keeps its moment. The next segment is the RTO's resend of the
+// head at 280 ms: a probe at 100 ms would have stood where it is expected. Linux keeps the same limit
+// (tcp_send_loss_probe returns at tlp_high_seq), with its own numbers: its probe of a lone segment waits for the RTO.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.060 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 70 ecr 110>
++0.010 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 80 ecr 110>
++0.200 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 280 ecr 110>
++0.010 < . 1:1(0) ack 201 win 512 <nop,nop,TS val 390 ecr 280>

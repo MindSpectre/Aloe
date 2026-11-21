@@ -1,0 +1,23 @@
+// The last of three segments in flight, none acknowledged, is sent again two smoothed round trips after the three
+// left, with no allowance: several segments are in flight, so the peer's delayed ACK, which waits for a second
+// segment, is no reason to wait longer (RFC 8985 7.2). The handshake's ACK 10 ms after the SYN-ACK gives an srtt of
+// 10 ms; the three writes at 10 ms schedule the probe for 10 + 2 * 10 = 30 ms, and it is the highest segment sent,
+// 201:301, TS val 30 (RFC 8985 7.3). Only it: the first two wait for what its ACK will say. Linux adds 2 ms to a flight
+// of several (TCP_TIMEOUT_MIN_US) and probes at 32 ms.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.020 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 30 ecr 110>
++0 < . 1:1(0) ack 301 win 512 <nop,nop,TS val 130 ecr 30>

@@ -69,7 +69,8 @@ namespace aloe::tcp::detail {
                             .ts_value       = std::nullopt,
                             .ts_echo        = std::nullopt,
                             .window_scale   = std::nullopt,
-                            .sack_permitted = false};
+                            .sack_permitted = false,
+                            .sack           = {}};
             if (header->data_offset > wire::TcpHeader::size) {
                 const auto options = wire::TcpOptions::parse(std::span<const std::byte>{l4}.subspan(
                     wire::TcpHeader::size, header->data_offset - wire::TcpHeader::size));
@@ -85,6 +86,12 @@ namespace aloe::tcp::detail {
                 }
                 segment.ts_value = options->timestamp_value;
                 segment.ts_echo  = options->timestamp_echo;
+                if (options->sack_at) {
+                    segment.sack =
+                        std::span<const std::byte>{l4}
+                            .subspan(wire::TcpHeader::size)
+                            .subspan(*options->sack_at + 2, options->sack_count * wire::TcpOptions::sack_block_size);
+                }
             }
             if (!checksum_ok(datagram)) {
                 ++context_.counters.dropped_bad_checksum;
@@ -163,6 +170,7 @@ namespace aloe::tcp::detail {
             std::optional<std::uint32_t> ts_echo{};      ///< RFC 7323 TSecr, with it.
             std::optional<std::uint8_t> window_scale{};  ///< From the options of a SYN, as written.
             bool sack_permitted = false;                 ///< From the options of a SYN.
+            std::span<const std::byte> sack{};  ///< The SACK option's blocks, eight bytes each; empty without one.
 
             /// Sequence space the segment occupies: payload, SYN and FIN.
             [[nodiscard]] std::uint32_t length() const noexcept {
@@ -378,8 +386,10 @@ namespace aloe::tcp::detail {
             if (!end.after(next)) {  // entirely before rcv_nxt
                 if (block.state == State::SynReceived && header.flags.has(wire::TcpFlag::Syn) &&
                     !header.flags.has(wire::TcpFlag::Ack)) {
-                    // A duplicate SYN: the SYN-ACK again, from its entry.
-                    std::ignore = transmitter_.resend_head(block);
+                    // A duplicate SYN: the SYN-ACK again, from its entry, marked lost so a resend that waits for its
+                    // packet leaves at the flush.
+                    transmitter_.mark_head_lost(block);
+                    std::ignore = transmitter_.resend(block, block.queue.head());
                     return Sequenced::Refused;
                 }
                 report_old_duplicate(block, segment);
@@ -442,7 +452,7 @@ namespace aloe::tcp::detail {
                 return false;
             }
             const typename AckProcessor::Outcome outcome =
-                acks_.on_ack(block, header, segment.payload_length, segment.ts_echo);
+                acks_.on_ack(block, header, segment.payload_length, segment.ts_echo, segment.sack);
             if (outcome.advanced) {
                 lifecycle_.raise(block, stream::Event::Acked);
                 if (block.send.fin_sent && ack == block.send.nxt) {

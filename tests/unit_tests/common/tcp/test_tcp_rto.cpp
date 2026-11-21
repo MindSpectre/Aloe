@@ -121,6 +121,8 @@ TEST_P(TcpRto, AnAckOfNewDataResetsTheRetryCountAndKarnKeepsTheBackoff) {
     EXPECT_EQ(tcp_->counters().rtt_samples, 2U) << "transmitted once: a sample";
     EXPECT_EQ(c->rto(), 202500us)
         << "srtt 7/8 * 0 + 1/8 * 20 = 2.5, rttvar 3/4 * 0 + 1/4 * 20 = 5: 2.5 + max(4 * 5, 200), backoff gone";
+    EXPECT_EQ(tcp_->counters().undos_original_ack + tcp_->counters().undos_duplicate_sack, 0U)
+        << "no echo, and the first resend left before either ACK: neither answers an original";
 }
 
 TEST_P(TcpRto, KarnDiscardsTheSampleWhenAnyFreedEntryWasRetransmitted) {
@@ -266,7 +268,10 @@ TEST_P(TcpRto, TheFirstExpiryTellsTheCongestionControl) {
     std::ignore = collect();
     EXPECT_GT(c->congestion_window(), c->mss()) << "the initial window";
     advance(200ms);
-    EXPECT_EQ(c->congestion_window(), c->mss()) << "NewReno's on_timeout: one segment";
+    EXPECT_EQ(c->recovery_state(), aloe::tcp::RecoveryState::Loss);
+    EXPECT_EQ(c->congestion_window(), 1460U) << "NewReno's on_timeout: nothing in flight after the marking, plus one "
+                                                "segment";
+    EXPECT_EQ(c->congestion_state().ssthresh, 2920U) << "and on_congestion's target: two segments at the least";
 }
 
 TEST_P(TcpRtoHeld, AResendThatFindsNoNextHopWaitsForTheNextExpiryNotTheNextFlush) {

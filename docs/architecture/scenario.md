@@ -89,10 +89,10 @@ the column, for anything outside it:
 - **Option lines** before the first event, each at most once: `--tolerance_usecs=n`; `--tcp_rto_min_ms`,
   `--tcp_rto_max_ms`, `--tcp_rto_initial_ms`, `--tcp_user_timeout_ms` (milliseconds), `--tcp_retries`,
   `--tcp_data_retries`, `--tcp_retransmit_defers` (0 to 255), `--tcp_send_segments`, `--tcp_timestamps=0|1`,
-  `--tcp_receive_segments`, `--tcp_receive_window`, `--tcp_sack=0|1`, `--tcp_window_scaling=0|1` and
-  `--tcp_delayed_ack_ms`, which set the harness's `TcpConfig` for that script (`configured(config, script)` applies
-  them); and `--congestion=newreno|none|both`, the policies the script runs under (`both` when absent). Any other name
-  is a parse error, and so is an option line after the first event, so the dialect grows deliberately.
+  `--tcp_receive_segments`, `--tcp_receive_window`, `--tcp_sack=0|1`, `--tcp_window_scaling=0|1`, `--tcp_delayed_ack_ms`
+  and `--tcp_tail_probe_ack_delay_ms`, which set the harness's `TcpConfig` for that script (`configured(config, script)`
+  applies them); and `--congestion=newreno|none|both`, the policies the script runs under (`both` when absent). Any
+  other name is a parse error, and so is an option line after the first event, so the dialect grows deliberately.
 - **Backtick lines** are a parse error: the runner has no shell, and what a corpus script sets that way is the
   harness's configuration.
 - **Event times.** `+t` after the previous event, `t` since the script's start, a window `t1~t2` or `+a~+b`, and
@@ -261,90 +261,127 @@ scripts offer; `<nop,nop,TS ...>` on every later segment of a connection that ne
 ACK by `nop,nop,sack ...` while blocks are held or a duplicate is owed; windows from a budget of half of what 512 slots
 of `mss()` hold, or as many as a script's `--tcp_receive_segments` names, 65535 bytes to a peer that does not scale and
 370688 in units of 8 to one that does; the SYN's schedule of 1, 3, 7, 15 and 31 seconds after the first send with
-`TimedOut` at 63; data and the FIN resent on the measured RTO, from 200 ms after a handshake with no round trip;
-NewReno's windows where a script names it; and no delayed ACK unless a script sets `--tcp_delayed_ack_ms`. A script that
-names no policy runs under both. Its opening comment says what it pins, with the arithmetic behind every number.
+`TimedOut` at 63; data and the FIN resent on the measured RTO, from 200 ms after a handshake with no round trip; on a
+connection whose peer offers `sackOK`, the peer's blocks read, RACK's marks and a tail probe of the last segment sent,
+two smoothed round trips after a send and 40 ms more for a lone segment, ahead of the RTO; NewReno's windows, with the
+rate reduction in recovery, where a script names it; and no delayed ACK unless a script sets `--tcp_delayed_ack_ms`. A
+script that names no policy runs under both. Its opening comment says what it pins, with the arithmetic behind every
+number.
 
-| Script                                                    | What it pins                                                                                                                                  |
-|-----------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------|
-| `handshake/passive-open`                                  | Listen, a SYN without SACK or scaling in, SYN-ACK out with `<mss 1460,nop,nop,TS val 0 ecr 100>` and `win 65535`, ACK in, `accept`.           |
-| `handshake/active-open`                                   | `connect` returns `EINPROGRESS`, SYN out with `<mss 1460,sackOK,TS val 0 ecr 0,nop,wscale 3>`, SYN-ACK in with neither, ACK out at the flush. |
-| `handshake/active-open-offers-sack-and-window-scale`      | A SYN-ACK with `sackOK` and `wscale`: both in use, and the first ACK states the budget, 370688 bytes, in units of 8: `win 46336`.             |
-| `handshake/passive-open-negotiates-sack-and-window-scale` | A SYN that offers both is answered with both in Linux's layout; the SYN-ACK's field is unscaled, the first ACK's scaled by 3.                 |
-| `handshake/options-without-timestamps`                    | `--tcp_timestamps=0`: 12 bytes of options, the MSS then `nop,nop,sackOK,nop,wscale 3`; budget 373760, `win 46595` with 1000 bytes unread.     |
-| `handshake/sack-and-window-scale-off-by-config`           | `--tcp_sack=0`, `--tcp_window_scaling=0`: the SYN-ACK carries neither; our window is at most 65535, the peer's field of 512 is 512 bytes.     |
-| `handshake/syn-retransmitted-on-schedule`                 | No answer: the SYN again 1, 3, 7, 15 and 31 seconds after the first, each with the clock's value then, and `read` reports `ETIMEDOUT` at 63.  |
-| `handshake/syn-ack-retransmitted-on-schedule`             | The passive side's backoff: the SYN-ACK again 1, 2 and 4 seconds apart, then the late ACK, echoing the last, completes the handshake.         |
-| `handshake/syn-ack-again-after-a-restating-ack`           | A segment past the edge in SynReceived is answered with `win 8192`; the SYN-ACK again, after a SYN or its timer, states 65535 still.          |
-| `handshake/syn-to-closed-port-is-reset`                   | No listener: `R.` with sequence 0, acknowledging the SYN.                                                                                     |
-| `handshake/stray-ack-in-listen-is-reset`                  | An ACK to a listening port with no connection: `R` at its acknowledgement number.                                                             |
-| `data/inbound-data-is-acked-at-flush`                     | `--tcp_receive_segments=4`: data in, ACK at `+0` with the window less what is unread; a `read` sends an update only if it doubles it.         |
-| `data/write-segments-by-peer-mss`                         | The peer's SYN carried `mss 1000`: a `write` of 2500 leaves as three `P.` of 988, 988 and 524, the MSS less the timestamp option.             |
-| `data/duplicate-is-acked-at-once`                         | A segment that arrives twice is answered at once with the same acknowledgement, and `read` sees its bytes once.                               |
-| `reassembly/gap-filled-delivers-the-run`                  | A segment above a gap is held and answered at once with the window restated; the one that fills the gap delivers both, acked at once.         |
-| `reassembly/overlap-is-trimmed`                           | Two held segments overlap in part: the held bytes win, the second is kept from the first one's end, and the run reads 2500 bytes.             |
-| `reassembly/covering-segment-replaces-a-held-one`         | A segment above a gap that covers a held one from its first byte replaces it; the gap filled, the run reads 2000 bytes.                       |
-| `reassembly/fin-above-a-gap`                              | A FIN above a gap is remembered: the duplicate ACK stays at the gap, and the FIN is acknowledged only once the gap fills.                     |
-| `reassembly/cap-drops-the-highest`                        | `--tcp_receive_segments=4`: the lower sequence wins at the cap; a new highest is dropped, a lower one or in-order data takes its node.        |
-| `reassembly/fin-on-duplicate-data-is-remembered`          | Held data again with a FIN attached: the FIN is remembered, its number joins the block, and the filled gap takes run and FIN at once.         |
-| `reassembly/fin-below-held-data-is-acked-once`            | `--tcp_receive_segments=3`: the peer's FIN on in-order data below held data is answered by one ACK, of the FIN, with no block.                |
-| `sack/held-segment-is-reported`                           | A segment above a gap is answered with its SACK block after the timestamps; the one that fills the gap is acked at once with no block.        |
-| `sack/newest-block-first`                                 | Three segments above the gap: each ACK lists the block just changed first, then the others, most recently changed first.                      |
-| `sack/three-blocks-with-timestamps`                       | Four ranges held: three blocks fit beside the timestamps, so the oldest is left out; the fourth segment is answered by the flush.             |
-| `sack/four-blocks-without-timestamps`                     | `--tcp_timestamps=0`: four blocks fit, all that are kept, in 36 bytes of options.                                                             |
-| `sack/fourth-segment-above-a-gap-is-acked-at-the-flush`   | The first three segments above a gap are answered at once with the edge restated; the fourth by the flush, whose ACK moves it.                |
-| `sack/blocks-leave-as-the-gap-fills`                      | Two gaps filled one at a time: each join drops the block RCV.NXT passed, and the last ACK carries no block.                                   |
-| `sack/duplicate-below-rcv-nxt`                            | A segment already acknowledged arrives again: dropped, and answered at once with its range as a duplicate SACK.                               |
-| `sack/duplicate-prefix`                                   | An in-order segment with 500 old bytes: the prefix is reported as a duplicate SACK on the ACK at the flush, not at once.                      |
-| `sack/duplicate-of-held-data`                             | Held data arrives again: dropped, and reported as a duplicate SACK followed by the block that holds it.                                       |
-| `sack/overlapped-held-data-is-reported-at-the-join`       | An in-order segment runs 200 bytes into held data: the join reports the overlap as a duplicate SACK on the ACK it sends.                      |
-| `sack/syn-ack-again-reports-no-duplicate`                 | The peer's SYN-ACK again after the handshake: answered at once with the edge restated and no SACK option; a SYN is not payload.               |
-| `sack/peer-sack-blocks-are-skipped`                       | `--congestion=newreno`: the peer's duplicate ACKs carry SACK blocks, which are skipped; three of them still resend the head at once.          |
-| `ack/delayed-ack-waits-for-the-deadline`                  | `--tcp_delayed_ack_ms=40`: the ACK of one in-order segment leaves 40 ms after it.                                                             |
-| `ack/delayed-ack-two-full-segments-at-once`               | `--tcp_delayed_ack_ms=40`: two full segments' worth of bytes, two of 1448 or four of 724, is acknowledged at once.                            |
-| `ack/delayed-ack-rides-a-write`                           | `--tcp_delayed_ack_ms=40`: a `write` before the deadline carries the ACK, and no pure ACK follows.                                            |
-| `ack/delayed-ack-not-above-a-gap`                         | `--tcp_delayed_ack_ms=40`: a segment above a gap, and the one that fills it, are still answered at once.                                      |
-| `close/local-close-then-remote-fin`                       | `close`, FIN out, ACK in, the peer's FIN in, ACK out at once; no TIME_WAIT.                                                                   |
-| `close/remote-fin-then-local-close`                       | The peer's FIN in, ACK out at `+0`, `read` returns 0, `close`, FIN out, ACK in; a later segment is reset.                                     |
-| `close/close-at-zero-window-holds-fin`                    | `close` at a zero window: no FIN, a probe at +0.2, the answer opens the window and the FIN leaves at once; the peer's ACK and FIN end it.     |
-| `close/fin-waits-behind-a-full-window`                    | `close` with data filling the window: the FIN waits, unsent, until the ACK of the data, 100 ms later, makes room, then leaves at once.        |
-| `reset/rst-in-established`                                | `R.` in, without timestamps: `read` fails with `ECONNRESET`, the slot is released, and a later segment is answered with `R`.                  |
-| `reset/rst-to-syn-is-refused`                             | `connect`, SYN out, `R.` in: `read` reports `ECONNREFUSED`.                                                                                   |
-| `rto/data-retransmitted-after-rto`                        | One segment never acknowledged: resent at the RTO, 200 ms after a zero round trip, then at twice that; the ACK of the resend ends it.         |
-| `rto/backoff-ends-in-timeout`                             | `--tcp_data_retries=3`: resends at +0.2, +0.4 and +0.8, and the fourth expiry, 1.6 s later, ends it; `read` reports `ETIMEDOUT`.              |
-| `rto/karn-skips-a-retransmitted-sample`                   | `--tcp_timestamps=0`: the ACK of a resend gives no sample, so the next resend waits the backed-off 400 ms; a new ACK resets the RTO.          |
-| `rto/echo-sample-ends-the-backoff`                        | The Karn script with timestamps: the ACK of a resend echoes it and gives a sample, so the backoff ends and the next resend comes at +0.2.     |
-| `rto/partial-ack-resends-the-tail`                        | A partial ACK, then the timeout: the resend carries only the unacknowledged bytes.                                                            |
-| `rto/fin-retransmitted-on-rto`                            | The FIN unacknowledged: again at +0.2 and +0.4 on the measured RTO, then the peer's ACK leaves the connection in FIN-WAIT-2, silent.          |
-| `rto/user-timeout-aborts-at-the-deadline`                 | `--tcp_user_timeout_ms=500`: a resend at +0.2, the next expiry clamped from +0.6 to +0.5, where the connection ends without a resend.         |
-| `timestamp/timestamps-off-without-the-option`             | A SYN without the option: the SYN-ACK offers the MSS alone, no segment carries the option, and a segment holds the whole MSS.                 |
-| `timestamp/timestamps-off-by-config`                      | `--tcp_timestamps=0`: a SYN that offers timestamps is answered with the MSS alone, and no segment carries the option.                         |
-| `timestamp/paws-drops-an-old-timestamp`                   | A segment with an older value is acknowledged at once and its bytes are never read; the same bytes with a fresh value are taken.              |
-| `timestamp/segment-without-timestamp-is-accepted`         | A segment without the option on a timestamped connection is taken, acknowledged and read, as Linux takes it.                                  |
-| `window/zero-window-is-probed`                            | The window closes with nothing in flight: probes, pure ACKs at `snd_una - 1`, at +0.2, then +0.4 and +0.8 after the one before.               |
-| `window/window-opens-ends-probing`                        | The answer to the first probe opens the window: no probe for two seconds, and the next `write` leaves at once.                                |
-| `window/probes-unanswered-time-out`                       | `--tcp_data_retries=3`: three probes without an answer, and the fourth expiry ends the connection; `read` reports `ETIMEDOUT`.                |
-| `window/send-cap-blocks-until-acked`                      | `--tcp_send_segments=2`: `write(4, ..., 3000) = 1976`, two segments; their ACK frees both entries and the next `write` leaves.                |
-| `window/peer-without-window-scale-gets-65535`             | A peer that offers `sackOK` and no scaling: the SYN-ACK carries no `wscale`, and the window counts bytes, at most 65535.                      |
-| `window/scaled-peer-window-passes-65535`                  | `--congestion=none`, `--tcp_send_segments=64`: the peer's 1024 under scale 7 is 131072 bytes; a `write` of 80000 leaves whole.                |
-| `window/shift-above-14-is-used-as-14`                     | `--congestion=none`: a peer's scale of 15 is used as 14, so its field of 1 lets a `write` of 20000 accept 16384.                              |
-| `recovery/fast-retransmit-on-three-dupacks`               | `--congestion=newreno`: ten segments, the first lost; three duplicate ACKs resend it at once, before any timer.                               |
-| `recovery/limited-transmit-sends-two`                     | `--congestion=newreno`: the first and second duplicates each let one more segment out beyond the window; the third resends the head.          |
-| `recovery/newreno-partial-ack`                            | Five segments, the first two lost: the ACK of the resent head is short of `recover`, so the next head goes at once; both policies.            |
-| `recovery/newreno-full-ack-exits`                         | `--congestion=newreno`: the full ACK sets the window to `min(ssthresh, max(flight, mss) + mss)`, two segments; slow start resumes.            |
-| `recovery/no-second-fast-retransmit-after-rto`            | After a timeout, three duplicates that do not cover more than `recover` resend nothing; the loss episode resends the next head.               |
-| `congestion/initial-window-is-ten`                        | `--congestion=newreno`: `write(4, ..., 20000) = 9880`, ten segments of 988; after the first ACK the next `write` accepts two.                 |
-| `congestion/slow-start-doubles-per-round`                 | `--congestion=newreno`: ten segments acknowledged one by one double the window, and the next `write` accepts twenty.                          |
-| `congestion/congestion-avoidance-adds-one`                | `--congestion=newreno`: past the threshold, a window of acknowledged bytes adds one segment: two, then three.                                 |
-| `congestion/timeout-restarts-at-one`                      | `--congestion=newreno`: after a timeout one segment, then slow start to the threshold while each ACK resends the next lost head.              |
-| `congestion/idle-restarts-the-window`                     | `--congestion=newreno`: a `write` 300 ms after the last ACK, past the RTO with nothing in flight, restarts at ten segments.                   |
-| `congestion/no-congestion-control-sends-the-window`       | `--congestion=none`, `--tcp_send_segments=64`: a `write` of forty segments leaves at once.                                                    |
+A script shows a wait, RACK's or the probe's, only when its handshake has a round trip. At a round trip of zero, two
+round trips are zero and so is a quarter of the shortest: a probe for several segments is due at the next tick and RACK
+marks at once, and a lone segment is probed 40 ms after it left, well before the RTO, whenever its peer offers
+`sackOK`. The scripts about RACK, the probe and the undo stamp the third line of their handshake, the peer's ACK of the
+SYN-ACK, at `+0.010`, which gives a round trip of 10 ms, an RTO of 210 ms and, where it is not zero, a reordering
+window of 2.5 ms; a script about the RTO itself keeps a peer without `sackOK`, or shows the probe first.
+
+| Script                                                           | What it pins                                                                                                                                         |
+|------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `handshake/passive-open`                                         | Listen, a SYN without SACK or scaling in, SYN-ACK out with `<mss 1460,nop,nop,TS val 0 ecr 100>` and `win 65535`, ACK in, `accept`.                  |
+| `handshake/active-open`                                          | `connect` returns `EINPROGRESS`, SYN out with `<mss 1460,sackOK,TS val 0 ecr 0,nop,wscale 3>`, SYN-ACK in with neither, ACK out at the flush.        |
+| `handshake/active-open-offers-sack-and-window-scale`             | A SYN-ACK with `sackOK` and `wscale`: both in use, and the first ACK states the budget, 370688 bytes, in units of 8: `win 46336`.                    |
+| `handshake/passive-open-negotiates-sack-and-window-scale`        | A SYN that offers both is answered with both in Linux's layout; the SYN-ACK's field is unscaled, the first ACK's scaled by 3.                        |
+| `handshake/options-without-timestamps`                           | `--tcp_timestamps=0`: 12 bytes of options, the MSS then `nop,nop,sackOK,nop,wscale 3`; budget 373760, `win 46595` with 1000 bytes unread.            |
+| `handshake/sack-and-window-scale-off-by-config`                  | `--tcp_sack=0`, `--tcp_window_scaling=0`: the SYN-ACK carries neither; our window is at most 65535, the peer's field of 512 is 512 bytes.            |
+| `handshake/syn-retransmitted-on-schedule`                        | No answer: the SYN again 1, 3, 7, 15 and 31 seconds after the first, each with the clock's value then, and `read` reports `ETIMEDOUT` at 63.         |
+| `handshake/syn-ack-retransmitted-on-schedule`                    | The passive side's backoff: the SYN-ACK again 1, 2 and 4 seconds apart, then the late ACK, echoing the last, completes the handshake.                |
+| `handshake/syn-ack-again-after-a-restating-ack`                  | A segment past the edge in SynReceived is answered with `win 8192`; the SYN-ACK again, after a SYN or its timer, states 65535 still.                 |
+| `handshake/syn-to-closed-port-is-reset`                          | No listener: `R.` with sequence 0, acknowledging the SYN.                                                                                            |
+| `handshake/stray-ack-in-listen-is-reset`                         | An ACK to a listening port with no connection: `R` at its acknowledgement number.                                                                    |
+| `data/inbound-data-is-acked-at-flush`                            | `--tcp_receive_segments=4`: data in, ACK at `+0` with the window less what is unread; a `read` sends an update only if it doubles it.                |
+| `data/write-segments-by-peer-mss`                                | The peer's SYN carried `mss 1000`: a `write` of 2500 leaves as three `P.` of 988, 988 and 524, the MSS less the timestamp option.                    |
+| `data/duplicate-is-acked-at-once`                                | A segment that arrives twice is answered at once with the same acknowledgement, and `read` sees its bytes once.                                      |
+| `reassembly/gap-filled-delivers-the-run`                         | A segment above a gap is held and answered at once with the window restated; the one that fills the gap delivers both, acked at once.                |
+| `reassembly/overlap-is-trimmed`                                  | Two held segments overlap in part: the held bytes win, the second is kept from the first one's end, and the run reads 2500 bytes.                    |
+| `reassembly/covering-segment-replaces-a-held-one`                | A segment above a gap that covers a held one from its first byte replaces it; the gap filled, the run reads 2000 bytes.                              |
+| `reassembly/fin-above-a-gap`                                     | A FIN above a gap is remembered: the duplicate ACK stays at the gap, and the FIN is acknowledged only once the gap fills.                            |
+| `reassembly/cap-drops-the-highest`                               | `--tcp_receive_segments=4`: the lower sequence wins at the cap; a new highest is dropped, a lower one or in-order data takes its node.               |
+| `reassembly/fin-on-duplicate-data-is-remembered`                 | Held data again with a FIN attached: the FIN is remembered, its number joins the block, and the filled gap takes run and FIN at once.                |
+| `reassembly/fin-below-held-data-is-acked-once`                   | `--tcp_receive_segments=3`: the peer's FIN on in-order data below held data is answered by one ACK, of the FIN, with no block.                       |
+| `sack/held-segment-is-reported`                                  | A segment above a gap is answered with its SACK block after the timestamps; the one that fills the gap is acked at once with no block.               |
+| `sack/newest-block-first`                                        | Three segments above the gap: each ACK lists the block just changed first, then the others, most recently changed first.                             |
+| `sack/three-blocks-with-timestamps`                              | Four ranges held: three blocks fit beside the timestamps, so the oldest is left out; the fourth segment is answered by the flush.                    |
+| `sack/four-blocks-without-timestamps`                            | `--tcp_timestamps=0`: four blocks fit, all that are kept, in 36 bytes of options.                                                                    |
+| `sack/fourth-segment-above-a-gap-is-acked-at-the-flush`          | The first three segments above a gap are answered at once with the edge restated; the fourth by the flush, whose ACK moves it.                       |
+| `sack/blocks-leave-as-the-gap-fills`                             | Two gaps filled one at a time: each join drops the block RCV.NXT passed, and the last ACK carries no block.                                          |
+| `sack/duplicate-below-rcv-nxt`                                   | A segment already acknowledged arrives again: dropped, and answered at once with its range as a duplicate SACK.                                      |
+| `sack/duplicate-prefix`                                          | An in-order segment with 500 old bytes: the prefix is reported as a duplicate SACK on the ACK at the flush, not at once.                             |
+| `sack/duplicate-of-held-data`                                    | Held data arrives again: dropped, and reported as a duplicate SACK followed by the block that holds it.                                              |
+| `sack/overlapped-held-data-is-reported-at-the-join`              | An in-order segment runs 200 bytes into held data: the join reports the overlap as a duplicate SACK on the ACK it sends.                             |
+| `sack/syn-ack-again-reports-no-duplicate`                        | The peer's SYN-ACK again after the handshake: answered at once with the edge restated and no SACK option; a SYN is not payload.                      |
+| `sack/peer-sack-blocks-are-read`                                 | `--congestion=newreno`: each report lowers what is in flight and lets a segment out; at three reported RACK's window is zero and the head goes.      |
+| `sack/blocks-a-correct-peer-never-sends`                         | `--tcp_timestamps=0`: blocks past SND.NXT, reversed, at SND.UNA and over half a segment mark nothing; the tail probe goes at 30 ms.                  |
+| `sack/reneging-is-met-with-a-short-timer`                        | The peer acknowledges up to a segment it had reported: the RTO is armed at max(srtt / 2, 10 ms), clears the marks and resends the head.              |
+| `ack/delayed-ack-waits-for-the-deadline`                         | `--tcp_delayed_ack_ms=40`: the ACK of one in-order segment leaves 40 ms after it.                                                                    |
+| `ack/delayed-ack-two-full-segments-at-once`                      | `--tcp_delayed_ack_ms=40`: two full segments' worth of bytes, two of 1448 or four of 724, is acknowledged at once.                                   |
+| `ack/delayed-ack-rides-a-write`                                  | `--tcp_delayed_ack_ms=40`: a `write` before the deadline carries the ACK, and no pure ACK follows.                                                   |
+| `ack/delayed-ack-not-above-a-gap`                                | `--tcp_delayed_ack_ms=40`: a segment above a gap, and the one that fills it, are still answered at once.                                             |
+| `close/local-close-then-remote-fin`                              | `close`, FIN out, ACK in, the peer's FIN in, ACK out at once; no TIME_WAIT.                                                                          |
+| `close/remote-fin-then-local-close`                              | The peer's FIN in, ACK out at `+0`, `read` returns 0, `close`, FIN out, ACK in; a later segment is reset.                                            |
+| `close/close-at-zero-window-holds-fin`                           | `close` at a zero window: no FIN, a probe at +0.2, the answer opens the window and the FIN leaves at once; the peer's ACK and FIN end it.            |
+| `close/fin-waits-behind-a-full-window`                           | `close` with data filling the window: the FIN waits, unsent, until the ACK of the data, 100 ms later, makes room, then leaves at once.               |
+| `reset/rst-in-established`                                       | `R.` in, without timestamps: `read` fails with `ECONNRESET`, the slot is released, and a later segment is answered with `R`.                         |
+| `reset/rst-to-syn-is-refused`                                    | `connect`, SYN out, `R.` in: `read` reports `ECONNREFUSED`.                                                                                          |
+| `rto/data-retransmitted-after-rto`                               | One segment never acknowledged: resent at the RTO, 200 ms after a zero round trip, then at twice that; the ACK of the resend ends it.                |
+| `rto/backoff-ends-in-timeout`                                    | `--tcp_data_retries=3`: resends at +0.2, +0.4 and +0.8, and the fourth expiry, 1.6 s later, ends it; `read` reports `ETIMEDOUT`.                     |
+| `rto/karn-skips-a-retransmitted-sample`                          | `--tcp_timestamps=0`: the ACK of a resend gives no sample, so the next resend waits the backed-off 400 ms; a new ACK resets the RTO.                 |
+| `rto/echo-sample-ends-the-backoff`                               | The Karn script with timestamps: the ACK of a resend echoes it, a sample of one tick, so the backoff ends and the next resend comes at +0.201.       |
+| `rto/partial-ack-resends-the-tail`                               | A partial ACK, then the timeout: the resend carries only the unacknowledged bytes.                                                                   |
+| `rto/fin-retransmitted-on-rto`                                   | The FIN unacknowledged: again at +0.2 and +0.4 on the measured RTO, then the peer's ACK leaves the connection in FIN-WAIT-2, silent.                 |
+| `rto/user-timeout-aborts-at-the-deadline`                        | `--tcp_user_timeout_ms=500`: a resend at +0.2, the next expiry clamped from +0.6 to +0.5, where the connection ends without a resend.                |
+| `timestamp/timestamps-off-without-the-option`                    | A SYN without the option: the SYN-ACK offers the MSS alone, no segment carries the option, and a segment holds the whole MSS.                        |
+| `timestamp/timestamps-off-by-config`                             | `--tcp_timestamps=0`: a SYN that offers timestamps is answered with the MSS alone, and no segment carries the option.                                |
+| `timestamp/paws-drops-an-old-timestamp`                          | A segment with an older value is acknowledged at once and its bytes are never read; the same bytes with a fresh value are taken.                     |
+| `timestamp/segment-without-timestamp-is-accepted`                | A segment without the option on a timestamped connection is taken, acknowledged and read, as Linux takes it.                                         |
+| `window/zero-window-is-probed`                                   | The window closes with nothing in flight: probes, pure ACKs at `snd_una - 1`, at +0.2, then +0.4 and +0.8 after the one before.                      |
+| `window/window-opens-ends-probing`                               | The answer to the first probe opens the window: no probe for two seconds, and the next `write` leaves at once.                                       |
+| `window/probes-unanswered-time-out`                              | `--tcp_data_retries=3`: three probes without an answer, and the fourth expiry ends the connection; `read` reports `ETIMEDOUT`.                       |
+| `window/send-cap-blocks-until-acked`                             | `--tcp_send_segments=2`: `write(4, ..., 3000) = 1976`, two segments; their ACK frees both entries and the next `write` leaves.                       |
+| `window/peer-without-window-scale-gets-65535`                    | A peer that offers `sackOK` and no scaling: the SYN-ACK carries no `wscale`, and the window counts bytes, at most 65535.                             |
+| `window/scaled-peer-window-passes-65535`                         | `--congestion=none`, `--tcp_send_segments=64`: the peer's 1024 under scale 7 is 131072 bytes; a `write` of 80000 leaves whole.                       |
+| `window/shift-above-14-is-used-as-14`                            | `--congestion=none`: a peer's scale of 15 is used as 14, so its field of 1 lets a `write` of 20000 accept 16384.                                     |
+| `recovery/fast-retransmit-on-three-dupacks`                      | `--congestion=newreno`, no SACK: ten segments, the first lost; the third duplicate marks it, and the rate reduction's first step resends it at once. |
+| `recovery/limited-transmit-sends-two`                            | `--congestion=newreno`: each of the first two duplicates takes a segment out of what is in flight and lets one out; the third resends the head.      |
+| `recovery/no-second-fast-retransmit-after-rto`                   | `--congestion=newreno`: after a timeout three duplicates short of `recover` begin nothing and free nothing; the ACK of the head lets the second out. |
+| `recovery/partial-ack-resends-the-next-hole`                     | Five segments, the first two lost, no SACK: the ACK of the resent head is short of `recover` and marks the next head, resent at once.                |
+| `recovery/full-ack-ends-recovery`                                | `--congestion=newreno`: the full ACK leaves the window at the target, 2470; from there a window of ACKs adds one segment.                            |
+| `recovery/prr-spreads-the-reduction`                             | `--congestion=newreno`, no SACK or timestamps: about half a segment per duplicate above the target, the conservative bound below it.                 |
+| `congestion/initial-window-is-ten`                               | `--congestion=newreno`: `write(4, ..., 20000) = 9880`, ten segments of 988; after the first ACK the next `write` accepts two.                        |
+| `congestion/slow-start-doubles-per-round`                        | `--congestion=newreno`: ten segments acknowledged one by one double the window, and the next `write` accepts twenty.                                 |
+| `congestion/congestion-avoidance-adds-one`                       | `--congestion=newreno`: past the threshold, a window of acknowledged bytes adds one segment: two, then three.                                        |
+| `congestion/timeout-restarts-at-one`                             | `--congestion=newreno`: a timeout marks all three and restarts at one segment; the first ACK's slow start lets the two others out.                   |
+| `congestion/idle-restarts-the-window`                            | `--congestion=newreno`: a `write` 300 ms after the last ACK, past the RTO with nothing in flight, restarts at ten segments.                          |
+| `congestion/no-congestion-control-sends-the-window`              | `--congestion=none`, `--tcp_send_segments=64`: a `write` of forty segments leaves at once.                                                           |
+| `congestion/application-limited-flow-keeps-its-window`           | `--congestion=newreno`: twenty writes of 100 bytes, each acknowledged, grow nothing; a `write` of 20000 still sends 14480.                           |
+| `congestion/no-congestion-control-resends-what-a-timeout-marked` | `--congestion=none`: a timeout marks three segments and resends the head; the next ACK of any kind sends the other two at once.                      |
+| `rack/a-loss-in-the-middle-waits-a-quarter-round-trip`           | One later segment reported at a 10 ms round trip: the hole waits 2.5 ms, 3 on the wheel, for the reordering timer, then goes again.                  |
+| `rack/three-reported-segments-mark-at-once`                      | Three later segments reported and no reordering seen: the window is zero, and the hole is resent on that ACK.                                        |
+| `rack/a-late-segment-is-not-resent`                              | The hole arrives a millisecond after a later segment is reported, before the reordering timer: nothing is resent.                                    |
+| `rack/a-lost-resend-is-resent-again`                             | The resend is lost too: the next report marks it again by its resend's stamp, and it goes again under the same episode.                              |
+| `rack/a-timeout-marks-what-is-old`                               | The RTO marks the head and what was sent at least RACK's round trip ago; two segments 5 ms old are left to RACK.                                     |
+| `tlp/a-lone-segment-is-probed`                                   | A lone segment at a 10 ms round trip goes again 2 * 10 + 40 = 60 ms after it left, as a tail probe, well before the RTO.                             |
+| `tlp/the-tail-of-a-burst-is-probed`                              | Three segments unacknowledged: the last alone is probed two round trips after they left, with no allowance.                                          |
+| `tlp/allowance-of-zero`                                          | `--tcp_tail_probe_ack_delay_ms=0`: a lone segment is probed two round trips after it left, 20 ms.                                                    |
+| `tlp/the-probe-never-waits-past-the-rto`                         | `--tcp_tail_probe_ack_delay_ms=500`: the probe goes at the RTO's moment, 220 ms, and the RTO runs from it, not backed off.                           |
+| `tlp/a-needless-probe-leaves-the-window`                         | `--congestion=newreno`: the peer reports the probe as a duplicate: needless, and the window stays 14480.                                             |
+| `tlp/a-plain-duplicate-ack-closes-the-probe`                     | `--congestion=newreno`: a plain duplicate ACK with no SACK option closes the probe as needless; the window stays 14480.                              |
+| `tlp/a-probe-that-repaired-a-loss-cuts-the-window`               | `--congestion=newreno`: the first ACK past the probe's end with no duplicate report cuts the window once, to 2896.                                   |
+| `tlp/no-second-probe-while-one-is-in-flight`                     | A probe falls due while the first's end is unacknowledged: none goes, and the RTO resends the head at 280 ms.                                        |
+| `tlp/two-lone-segments-lost-in-a-row`                            | `--congestion=newreno`: the second lost order is probed once the first probe is acknowledged; RFC 8985 and Linux wait for the RTO.                   |
+| `undo/a-duplicate-report-gives-the-window-back`                  | `--congestion=newreno`: the original arrives after its resend and is reported as a duplicate; the window goes from 2896 back to 14480.               |
+| `undo/a-needless-timeout-is-undone-by-the-echo`                  | `--congestion=newreno`, no SACK: the ACK after a timeout echoes the original's stamp; the loss state is undone and the window restored.              |
 
 Where Linux differs today, the script's comment says how: Linux delays the ACK of in-order data and of a FIN by default,
 by up to 40 ms, where Aloe's delay is off unless configured; sizes its window from its own receive buffer, so its window
 numbers are not a script's; on a connection that uses SACK, answers the segments above a gap after the third on a timer
-of at most a millisecond, where Aloe answers them at the flush; retries a SYN six times; runs PRR in fast recovery; and
-probes a zero window only while it holds unsent data.
+of at most a millisecond, where Aloe answers them at the flush; retries a SYN six times; in its reno sets the target on
+a loss to half its window, where Aloe halves the flight, and runs the rate reduction in whole segments; adds its minimum
+RTO, 200 ms, to a lone segment's tail probe, which puts the probe at the RTO's moment, where Aloe adds 40 ms; adds 2 ms
+to the probe for several segments and to RACK's reordering timer, where Aloe adds nothing beyond the wheel's tick; sends
+no second tail probe while the first one's verdict is open, so the second of two lone segments lost in a row waits for
+its RTO, where Aloe probes it once the first probe is acknowledged; and probes a zero window only while it holds unsent
+data. The TCP page's [note on departures](tcp.md#where-the-brick-departs-from-the-rfcs-and-from-linux) lists where the
+brick departs from the RFCs and from Linux.
 
 ## Design notes
 
@@ -368,11 +405,11 @@ taken as close enough.
 segment fails the script wherever it lands, and every script runs in both checksum modes. A script cannot pass
 by asserting nothing.
 
-**The policy is an axis, as the checksum mode is.** A script that asserts nothing about the congestion window
-runs under `NewReno` and `NoCongestionControl` alike, so what the stack keeps under every policy, the RTO,
-timestamps, probes, fast retransmit and the `recover` guard, is pinned under both; a script that asserts a
-window names its policy. The harness and the runner are templates over the policy, so both runs drive the same
-code but the policy's.
+**The policy is an axis, as the checksum mode is.** A script that asserts nothing about the congestion window runs under
+`NewReno` and `NoCongestionControl` alike, so what the stack keeps under every policy, the RTO, timestamps, zero-window
+probes, RACK, the tail probe, fast retransmit and the `recover` guard, is pinned under both; a script that asserts a
+window names its policy. The harness and the runner are templates over the policy, so both runs drive the same code but
+the policy's.
 
 **A partial write is the brick's answer.** Packetdrill's scripts lean on the kernel's send buffer, which takes a
 whole `write` and sends it as the window opens. The brick has none: `prepare` offers what the windows and the

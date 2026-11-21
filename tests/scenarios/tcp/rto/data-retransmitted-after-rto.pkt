@@ -2,7 +2,8 @@
 // then the peer's ACK, echoing the last resend, ends the episode and nothing more is sent. Without SACK, as here,
 // Linux resends at the RTO too. With SACK its first resend would be a tail loss probe, which leaves the window
 // alone: two SRTTs plus rto_min for a lone segment, clamped to the RTO, and two SRTTs with more out, well before the
-// RTO (tcp_schedule_loss_probe). Aloe has neither SACK nor a tail loss probe until steps 4 and 5.
+// RTO (tcp_schedule_loss_probe). Aloe probes too when the peer offers SACK, its lone segment 40 ms after two SRTTs
+// (tlp/a-lone-segment-is-probed.pkt); this peer offers none, so the RTO is the first resend, as in Linux.
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0
 +0 listen(3, 1) = 0

@@ -1,0 +1,20 @@
+// A segment alone in flight, never acknowledged: sent again two round trips and the 40 ms allowance after it
+// left, as a probe: no backoff, no window cut. Linux adds its 200 ms minimum RTO where Aloe adds 40 ms, so its
+// probe leaves at the RTO's moment.
+// The handshake's ACK 10 ms after the SYN-ACK gives an srtt of 10 ms and an RTO of 10 + max(4 * 5, 200) = 210 ms. The
+// write at 10 ms is the only transmitted segment, so the probe waits 2 * 10 + 40 = 60 ms (RFC 8985 7.2, the allowance
+// being TLP.max_ack_delay) and leaves at 70 ms, TS val 70, well before the RTO's 220 ms. The peer's ACK echoes the
+// probe. Linux waits 2 * 10 + 200 = 220 ms, capped at its RTO's 210 (tcp_schedule_loss_probe).
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.060 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 70 ecr 110>
++0 < . 1:1(0) ack 101 win 512 <nop,nop,TS val 180 ecr 70>

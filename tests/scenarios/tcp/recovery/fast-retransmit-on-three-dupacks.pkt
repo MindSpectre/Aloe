@@ -1,5 +1,10 @@
-// Ten segments in flight, the first lost: three duplicate ACKs resend it at once, before any timer. The peer then
-// acknowledges everything. Linux does the same with its own recovery arithmetic (PRR), which does not show here.
+// Ten segments of 988 in flight, 9880, the first lost: three duplicate ACKs resend it at once, before any timer. The
+// peer has no SACK, so each duplicate stands for one segment it holds: at the third, 2964 are counted received and the
+// head, marked lost, is 988 more out of what is in flight, 9880 - 2964 - 988 = 5928. Recovery begins with the target
+// max(9880 / 2, 2 * 988) = 4940 and RecoverFS 9880, and PRR's first step allows ceil(988 * 4940 / 9880) = 494 above
+// what is in flight, a window of 6422, so the head leaves. The ACK of everything ends recovery. Linux resends at the
+// same duplicate and runs PRR too, in whole segments and dividing by the window it had where RFC 9937 divides by
+// RecoverFS; neither window shows here.
 --congestion=newreno
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0

@@ -443,7 +443,13 @@ TEST_P(TcpDelayedAcks, ADataSegmentLeavesTheDuplicateItCannotCarryToTheFlush) {
     EXPECT_EQ(frames[1].tcp->acknowledgement, base + 150U);
     EXPECT_EQ(aloe::frames::sack_blocks_of(frames[1]).size(), 1U);
     EXPECT_EQ(tcp_->counters().duplicate_sacks_sent, 1U);
-    EXPECT_TRUE(step(40).empty());
+    // Nothing is owed at the delay's deadline, 40 ms on. The 4 bytes, alone in flight to a peer that uses SACK, are
+    // probed then too: two round trips of zero, the handshake's, and the 40 ms allowance. A data segment, no pure ACK.
+    const auto later = step(40);
+    ASSERT_EQ(later.size(), 1U);
+    EXPECT_EQ(pure_acks(later), 0U);
+    EXPECT_EQ(aloe::frames::tcp_payload(later[0]).size(), 4U);
+    EXPECT_EQ(tcp_->counters().tail_probes, 1U);
     EXPECT_EQ(tcp_->counters().delayed_acks_sent, 0U);
 }
 

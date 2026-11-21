@@ -27,16 +27,20 @@
 namespace aloe::testing {
 
     /// A congestion control that only records what the stack told it: for tests of which hook fires when, with what.
+    /// Its window and its target are unbounded, so recovery runs no rate reduction over it.
     struct RecordingCongestionControl {
         struct State {
             std::uint32_t calls = 0;
             std::string_view last_hook{};
-            std::uint32_t last_flight = 0;
-            std::uint32_t last_acked  = 0;
+            std::uint32_t last_flight    = 0;  ///< The flight `on_ack` or `on_congestion` heard.
+            std::uint32_t last_in_flight = 0;  ///< What `on_timeout` heard as in flight.
+            std::uint32_t last_acked     = 0;
             std::optional<core::Duration> last_rtt{};
             std::uint64_t last_delivered         = 0;
             std::uint64_t last_delivered_at_send = 0;
             bool last_app_limited                = false;
+            bool last_window_limited             = false;
+            std::uint32_t last_largest_flight    = 0;
         };
 
         static constexpr void reset(State& state, const std::uint16_t /*mss*/) noexcept {
@@ -45,6 +49,10 @@ namespace aloe::testing {
         }
 
         [[nodiscard]] static constexpr std::uint32_t window(const State& /*state*/) noexcept {
+            return std::numeric_limits<std::uint32_t>::max();
+        }
+
+        [[nodiscard]] static constexpr std::uint32_t target(const State& /*state*/) noexcept {
             return std::numeric_limits<std::uint32_t>::max();
         }
 
@@ -57,43 +65,37 @@ namespace aloe::testing {
             state.last_delivered         = info.delivered;
             state.last_delivered_at_send = info.delivered_at_send;
             state.last_app_limited       = info.app_limited;
-        }
-
-        static constexpr void on_loss(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
-            ++state.calls;
-            state.last_hook   = "on_loss";
-            state.last_flight = flight;
-        }
-
-        static constexpr void on_dupack(State& state, const std::uint16_t /*mss*/) noexcept {
-            ++state.calls;
-            state.last_hook = "on_dupack";
+            state.last_window_limited    = info.window_limited;
+            state.last_largest_flight    = info.largest_flight;
         }
 
         static constexpr void
-        on_partial_ack(State& state, const std::uint32_t acked, const std::uint16_t /*mss*/) noexcept {
+        on_congestion(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
             ++state.calls;
-            state.last_hook  = "on_partial_ack";
-            state.last_acked = acked;
-        }
-
-        static constexpr void
-        on_recovery_end(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
-            ++state.calls;
-            state.last_hook   = "on_recovery_end";
+            state.last_hook   = "on_congestion";
             state.last_flight = flight;
         }
 
-        static constexpr void
-        on_timeout(State& state, const std::uint32_t flight, const std::uint16_t /*mss*/) noexcept {
+        static constexpr void on_recovery_end(State& state) noexcept {
             ++state.calls;
-            state.last_hook   = "on_timeout";
-            state.last_flight = flight;
+            state.last_hook = "on_recovery_end";
+        }
+
+        static constexpr void
+        on_timeout(State& state, const std::uint32_t in_flight, const std::uint16_t /*mss*/) noexcept {
+            ++state.calls;
+            state.last_hook      = "on_timeout";
+            state.last_in_flight = in_flight;
         }
 
         static constexpr void on_idle(State& state, const std::uint16_t /*mss*/) noexcept {
             ++state.calls;
             state.last_hook = "on_idle";
+        }
+
+        static constexpr void on_undo(State& state, const State& /*prior*/) noexcept {
+            ++state.calls;
+            state.last_hook = "on_undo";
         }
     };
 
@@ -268,6 +270,13 @@ namespace aloe::testing {
 
         /// A scripted passive open: SYN in, SYN-ACK out, ACK in, `Accepted` drained. Null on failure.
         [[nodiscard]] Connection* open_passive(frames::TcpPeer& peer) {
+            return open_passive(peer, core::Duration::zero());
+        }
+
+        /// As `open_passive(peer)`, with the clock advanced by `round_trip` between the SYN-ACK and the peer's ACK, so
+        /// the handshake's sample is `round_trip`: 10 ms gives an srtt of 10 ms, an RTO of 210 ms and RACK a minimum
+        /// round trip of 10 ms. A round trip of zero advances nothing.
+        [[nodiscard]] Connection* open_passive(frames::TcpPeer& peer, const core::Duration round_trip) {
             if (!tcp_->listening(tcp_listen_port)) {
                 std::ignore = tcp_->listen(tcp_listen_port);
             }
@@ -278,6 +287,9 @@ namespace aloe::testing {
                 return nullptr;
             }
             peer.see(frames[0]);
+            if (round_trip > core::Duration::zero()) {
+                advance(round_trip);
+            }
             receive(peer.ack());
             const auto event = poll();
             if (!event || !event->events.accepted()) {

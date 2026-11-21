@@ -39,26 +39,30 @@ only make sense inside Aloe's own test binaries, such as the EAL as a gtest envi
   `sack_permitted_timestamps_option(value, echo)` and `sack_option(blocks)` are the aligned blocks a Linux peer
   writes for the other options; and `joined(blocks)` puts blocks one after the other, a SYN's MSS then its
   timestamps, for `spec.options`. `sack_blocks_of(parsed)` reads back the SACK blocks of a frame the stack sent,
-  in the order written, since the brick's own option parser skips them; it is empty for a frame without any.
-- **`aloe::frames::TcpPeer`** -- the other end of a connection, scripted by the test. Built from a `TcpSpec`
-  in the peer's outbound orientation and its initial sequence number. `syn()`, `syn_ack(seen)`, `ack()`,
-  `ack(seen)`, `data(bytes)`, `fin()` and `rst()` each return one frame with the right numbers and advance the
-  peer's sequence; `segment(flags, payload, sequence, acknowledgement, with_mss)` builds any segment at explicit
-  numbers without changing state, for duplicates and gaps; `rewind(count)` moves the peer's sequence back to
-  script a retransmission. `see(frame)` observes a frame the stack transmitted and never replies: it advances
-  `rcv_nxt()`, `snd_una()`, `stack_window()` and `stack_mss()`, records the timestamp value it carries as
-  `ts_seen()`, and on a SYN without ACK adopts its ports. `set_timestamps(value)` makes every segment the peer
-  builds carry a timestamp option with `value` and the last value seen as its echo, behind the MSS on a SYN, and
-  `std::nullopt` stops it; a peer that never sets it offers no timestamps, so the stack's connection runs without
-  them and its `mss()` is the whole MSS. `set_window_scale(shift)` makes a SYN or SYN-ACK the peer builds offer
-  window scaling with `shift`, and `set_sack_permitted(true)` makes it offer SACK-permitted; a peer that sets
-  neither offers neither, so the stack's connection to it scales no window, its budget is at most 65535 and its
-  SYN-ACK carries neither option. A SYN or SYN-ACK lays its options out as Linux does: the MSS; then
-  `sackOK, TS`, `nop, nop, TS` or `nop, nop, sackOK`; then `nop, wscale`. `see` also records what the stack's own
-  SYN or SYN-ACK offered, `stack_window_scale()` and `stack_sack_permitted()`, and `stack_window_bytes()` is the
-  stack's last window in bytes: the raw field, shifted by the stack's scale when both ends offered scaling and the
-  frame was not a SYN. `set_window(window)` sets the raw window field every later segment offers, zero to make the
-  stack probe; under a window scale the stack reads it shifted.
+  in the order written, as values a test compares; it is empty for a frame without any.
+- **`aloe::frames::TcpPeer`** -- the other end of a connection, scripted by the test. Built from a `TcpSpec` in the
+  peer's outbound orientation and its initial sequence number. `syn()`, `syn_ack(seen)`, `ack()`, `ack(seen)`,
+  `data(bytes)`, `fin()` and `rst()` each return one frame with the right numbers and advance the peer's sequence;
+  `segment(flags, payload, sequence, acknowledgement, with_mss)` builds any segment at explicit numbers without changing
+  state, for duplicates and gaps; `rewind(count)` moves the peer's sequence back to script a retransmission;
+  `sack(acknowledgement, blocks)` is a pure ACK at the peer's sequence that acknowledges `acknowledgement` and carries
+  `blocks`, in the stack's own sequence numbers, behind `nop, nop, TS` when the peer sends timestamps, for a test of the
+  stack's sender. `see(frame)` observes a frame the stack transmitted and never replies: it advances `rcv_nxt()`,
+  `snd_una()`, `stack_window()` and `stack_mss()`, records the timestamp value it carries as `ts_seen()`, and on a SYN
+  without ACK adopts its ports. `set_timestamps(value)` makes every segment the peer builds carry a timestamp option
+  with `value` and the last value seen as its echo, behind the MSS on a SYN, and `std::nullopt` stops it; a peer that
+  never sets it offers no timestamps, so the stack's connection runs without them and its `mss()` is the whole MSS. The
+  echo matters to the stack's undo: until the peer `see`s a resend, its ACKs echo an older stamp, the SYN-ACK's until it
+  sees anything, and an ACK that echoes a stamp older than an episode's first resend reads as answering the original.
+  Four SACK blocks and the timestamp option do not fit in forty bytes of options, so a test of four blocks uses a peer
+  without timestamps. `set_window_scale(shift)` makes a SYN or SYN-ACK the peer builds offer window scaling with
+  `shift`, and `set_sack_permitted(true)` makes it offer SACK-permitted; a peer that sets neither offers neither, so the
+  stack's connection to it scales no window, its budget is at most 65535 and its SYN-ACK carries neither option. A SYN
+  or SYN-ACK lays its options out as Linux does: the MSS; then `sackOK, TS`, `nop, nop, TS` or `nop, nop, sackOK`; then
+  `nop, wscale`. `see` also records what the stack's own SYN or SYN-ACK offered, `stack_window_scale()` and
+  `stack_sack_permitted()`, and `stack_window_bytes()` is the stack's last window in bytes: the raw field, shifted by
+  the stack's scale when both ends offered scaling and the frame was not a SYN. `set_window(window)` sets the raw window
+  field every later segment offers, zero to make the stack probe; under a window scale the stack reads it shifted.
 - **`aloe::frames::fill(packet, bytes)`**, **`bytes_of(packet)`** -- bytes into and out of a packet of any
   backend. `flow_of(spec)` gives the `device::FlowTuple` a card would hash.
 
@@ -105,12 +109,15 @@ it always has.
 - **`aloe::fabric::ImpairmentCounters`** -- `dropped`, `duplicated`, `reordered` and `delayed`, from
   `Port::impairment_counters()`. A dropped frame still counts as transmitted on its queue: it left the port.
 
-Each frame gets one action. The script answers first. With no answer the model draws for loss, then
-duplication, then reordering, and the first that hits decides; a frame none of them takes is delayed when
-`delay` or `jitter` is set and delivered otherwise. A drop is gone. A duplicate is delivered twice in a row. A
-reorder is held until the port's next frame has been delivered, or until the next `Fabric::advance` when none
-follows. A delay waits on the fabric with a due stamp. The script runs under the port's impairment lock and
-inside `transmit`, which is `noexcept`: it must not call back into the port, and it must not throw.
+Each frame gets one action. The script answers first. With no answer the model draws for loss, then duplication, then
+reordering, and the first that hits decides; a frame none of them takes is delayed when `delay` or `jitter` is set and
+delivered otherwise. A drop is gone. A duplicate is delivered twice in a row. A reorder is held until the port's next
+frame has been delivered, or until the next `Fabric::advance` when none follows. A delay waits on the fabric with a due
+stamp. A delayed frame is not delivered when it is sent, so it does not release a reorder held before it: on a port
+whose frames are delayed, the held frame goes at the next `advance` with no delay of its own and lands ahead of the
+frames it was held behind. A test of a frame held behind the next on a path with a delay scripts that frame a longer
+`Delay` instead. The script runs under the port's impairment lock and inside `transmit`, which is `noexcept`: it must
+not call back into the port, and it must not throw.
 
 **Determinism.** The model draws from a `std::mt19937_64` seeded with `seed` and turns the engine's raw bits
 into a double itself, a 53-bit fraction, rather than through `std::uniform_real_distribution`, whose numbers

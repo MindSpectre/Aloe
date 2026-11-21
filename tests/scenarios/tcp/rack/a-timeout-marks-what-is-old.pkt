@@ -1,0 +1,40 @@
+// The retransmission timeout marks the head and, of the rest, only what was last sent at least RACK's round trip ago
+// (RFC 8985 6.3; Linux's tcp_timeout_mark_lost); later segments are left to RACK. The handshake's ACK 10 ms after the
+// SYN-ACK gives RACK its first round trip, 10 ms, and an RTO of 210 ms. Three segments leave at 10 ms; nothing answers,
+// so the tail probe sends the third again two round trips later, at 30 ms (RFC 8985 7.2), and the RTO runs 210 ms from
+// the probe, to 240 ms. Two more leave at 235 ms, 5 ms before it: the probe is scheduled again for min(235 + 20, 240),
+// the RTO's moment, and none goes while the first is in flight, so the expiry at 240 ms is the RTO's. The head is
+// resent alone, the second, 230 ms old, and the probed third, 210 ms old, are marked lost, and the fourth and fifth,
+// 5 ms old, are not. The resend's ACK at 245 ms comes sooner than the minimum round trip after the resend, so it may
+// be the original's and moves none of RACK's state; in the loss state the window is what was in flight after the
+// marking, 200, plus one segment, 1648, which no ACK grew since nothing filled it, and the pass sends the two entries
+// the timeout marked and nothing else. The ACK of everything ends the loss state. Linux's probe goes 2 ms later, at
+// 32 ms, and its RTO 210 ms after it; the writes at 235 ms schedule its probe again, at 257 ms, without the RTO's cap,
+// which it counts from the head's last transmission and finds already past (tcp_rto_delta_us); at 257 ms the probe
+// gives way to that overdue RTO, which fires a tick later, and the fourth and fifth, more than RACK's round trip old by
+// then, are marked lost too.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.020 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 30 ecr 110>
++0.205 write(4, ..., 100) = 100
++0 > P. 301:401(100) ack 1 win 46336 <nop,nop,TS val 235 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 401:501(100) ack 1 win 46336 <nop,nop,TS val 235 ecr 110>
++0.005 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 240 ecr 110>
++0.005 < . 1:1(0) ack 101 win 512 <nop,nop,TS val 130 ecr 240>
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 245 ecr 130>
++0 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 245 ecr 130>
++0.010 < . 1:1(0) ack 501 win 512 <nop,nop,TS val 140 ecr 245>

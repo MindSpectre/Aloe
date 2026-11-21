@@ -1,6 +1,11 @@
 // A partial acknowledgement, then the timeout: the resend carries only the unacknowledged bytes, as Linux trims
 // the head of its retransmit queue when it resends it. The peer's MSS of 1000 less the timestamp option makes a
 // write of 1000 two segments, 988 and 12; the partial ACK falls inside the first, and only the first goes again.
+// The partial ACK, in the millisecond the segments left, echoes their value: a sample of one tick, 1 ms, where the
+// clock shows none (as Linux's tcp_rtt_tsopt_us counts it), which restarts the RTO from it at 200.125 ms (srtt 0.125,
+// rttvar 0.25: 0.125 + max(1, 200)), so the resend comes at the first tick from that, +0.201 and value 201. Linux
+// takes no sample from an ACK that frees no whole segment (tcp_clean_rtx_queue sets no FLAG_DATA_ACKED), and resends
+// at +0.2.
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0
 +0 listen(3, 1) = 0
@@ -14,5 +19,5 @@
 +0 > P. 1:989(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
 +0 > P. 989:1001(12) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
 +0 < . 1:1(0) ack 501 win 65535 <nop,nop,TS val 100 ecr 0>
-+0.2 > P. 501:989(488) ack 1 win 65535 <nop,nop,TS val 200 ecr 100>
-+0 < . 1:1(0) ack 1001 win 65535 <nop,nop,TS val 100 ecr 200>
++0.201 > P. 501:989(488) ack 1 win 65535 <nop,nop,TS val 201 ecr 100>
++0 < . 1:1(0) ack 1001 win 65535 <nop,nop,TS val 100 ecr 201>

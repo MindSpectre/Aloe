@@ -25,6 +25,12 @@ add_unit_test(${UNIT_TESTING_TARGET}.Tcp
         test_tcp_sack_blocks.cpp
         test_tcp_ack_policy.cpp
         test_tcp_sack.cpp
+        test_tcp_scoreboard.cpp
+        test_tcp_rate_reduction.cpp
+        test_tcp_window_use.cpp
+        test_tcp_rack.cpp
+        test_tcp_tail_probe.cpp
+        test_tcp_undo.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Tcp
         PRIVATE

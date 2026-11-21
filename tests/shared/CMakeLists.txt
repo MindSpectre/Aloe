@@ -99,6 +99,7 @@ target_link_libraries(${SHARED_TESTING_TARGET}.Net INTERFACE
 ##############################################################################
 add_library(${SHARED_TESTING_TARGET}.Tcp INTERFACE
         tcp/tcp_fixture.hpp
+        tcp/tcp_sack_brick.hpp
         tcp/tcp_test_device.hpp
 )
 target_include_directories(${SHARED_TESTING_TARGET}.Tcp INTERFACE

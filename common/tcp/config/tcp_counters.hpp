@@ -11,26 +11,51 @@ namespace aloe::tcp {
         std::uint64_t pure_acks_sent        = 0;
         std::uint64_t control_segments_sent = 0;  ///< SYN, SYN-ACK, FIN, first sends and retransmits alike.
         std::uint64_t resets_sent           = 0;
-        /// Timer-driven resends of any kept segment, SYN, SYN-ACK, data and FIN: one per expiry, whether the resend
-        /// left, waited or was refused, and one per ACK of the loss episode after a timeout.
+        /// Resends at an expiry of the retransmission timer, of any kept segment, SYN, SYN-ACK, data and FIN: one per
+        /// expiry, whether the resend left, waited or was refused.
         std::uint64_t retransmits           = 0;
-        std::uint64_t fast_retransmits =
-            0;  ///< Resends driven by duplicate ACKs: the third, and partial ACKs in recovery.
-        std::uint64_t recoveries           = 0;  ///< Fast-recovery episodes entered.
+        /// Resends of entries marked lost, in recovery and in the loss state after a timeout: one per entry per mark,
+        /// at its first try, whether it left, waited or was refused. The expiry's own resend is `retransmits`'.
+        std::uint64_t fast_retransmits      = 0;
+        std::uint64_t recoveries            = 0;  ///< Episodes of recovery entered; a timeout's loss state is not one.
         /// A resend that found its packet lent and waited for the next flush: one per deferral, and one per stamp while
         /// a segment's packet and its copy both stay lent.
-        std::uint64_t retransmits_deferred = 0;
-        std::uint64_t retransmits_copied   = 0;  ///< A resend sent as a copy, after the deferral bound.
-        std::uint64_t zero_window_probes   = 0;
-        std::uint64_t duplicate_acks       = 0;
-        std::uint64_t rtt_samples          = 0;
-        std::uint64_t window_updates       = 0;  ///< Segments that extended the advertised edge.
-        std::uint64_t out_of_order_held    = 0;  ///< Segments held above a gap.
+        std::uint64_t retransmits_deferred  = 0;
+        std::uint64_t retransmits_copied    = 0;  ///< A resend sent as a copy, after the deferral bound.
+        std::uint64_t zero_window_probes    = 0;
+        std::uint64_t duplicate_acks        = 0;
+        std::uint64_t rtt_samples           = 0;
+        std::uint64_t window_updates        = 0;  ///< Segments that extended the advertised edge.
+        std::uint64_t out_of_order_held     = 0;  ///< Segments held above a gap.
         std::uint64_t out_of_order_released =
             0;  ///< Held out-of-order segments released to make room for a lower sequence.
         std::uint64_t sack_acks_sent       = 0;  ///< Pure ACKs that carried SACK blocks.
         std::uint64_t duplicate_sacks_sent = 0;  ///< Of them, those whose first block reported data that arrived twice.
         std::uint64_t delayed_acks_sent    = 0;  ///< ACKs the delay timer sent.
+        std::uint64_t sack_acks_received   = 0;  ///< ACKs received whose SACK option was read.
+        /// Of them, those whose first block was a believed duplicate report.
+        std::uint64_t duplicate_sacks_received = 0;
+        std::uint64_t rack_marked              = 0;  ///< Segments RACK marked lost.
+        std::uint64_t lost_retransmits         = 0;  ///< Of them, resends marked lost again.
+        std::uint64_t reorder_timeouts         = 0;  ///< Expiries of the reordering timer.
+        std::uint64_t reordering_seen          = 0;  ///< ACKs that showed reordering.
+        /// Expiries of the retransmission timer that found the head reported received: the peer reneged, and every
+        /// received mark was cleared.
+        std::uint64_t sack_reneging            = 0;
+        /// Tail probes sent (RFC 8985 7.3), each counted when its resend leaves: one the busy rule holds counts at the
+        /// flush that sends it, and one that never leaves counts nothing.
+        std::uint64_t tail_probes              = 0;
+        /// Probes a duplicate report or a plain duplicate ACK found needless: both copies arrived.
+        std::uint64_t tail_probes_needless     = 0;
+        std::uint64_t tail_probe_recoveries    = 0;  ///< Losses a probe repaired: the window cut once, no episode.
+        /// Verdicts a second probe closed as a loss before an ACK said which (`tail_probe_recoveries` counts them too):
+        /// how often Aloe's departure from RFC 8985 7.3 and 7.4.2 was used.
+        std::uint64_t tail_probes_early        = 0;
+        /// Reductions taken back because every resend of the episode was reported as a duplicate.
+        std::uint64_t undos_duplicate_sack     = 0;
+        /// Reductions taken back because an ACK that moved SND.UNA answered an original: its echo is older than the
+        /// episode's first resend, or nothing of the episode had been resent.
+        std::uint64_t undos_original_ack       = 0;
 
         std::uint64_t connections_opened         = 0;  ///< Active opens that reached ESTABLISHED.
         std::uint64_t connections_accepted       = 0;

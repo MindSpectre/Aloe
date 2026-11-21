@@ -1,0 +1,30 @@
+// A probe that repaired a loss cuts the window once, at the first ACK past its end, with nothing resent and no episode
+// (RFC 8985 7.4.2: "a congestion control response equivalent to a fast recovery"). The handshake's ACK 10 ms after the
+// SYN-ACK gives an srtt of 10 ms; the write at 10 ms is probed at 10 + 2 * 10 + 40 = 70 ms. The original was lost: the
+// ACK at 80 ms echoes the probe and lands on its end, which may answer either copy, so the window stays 14480. The next
+// order's ACK at 90 ms passes the probe's end with no duplicate report: a loss, repaired. NewReno's target is
+// max(flight / 2, 2 * 1448), the flight read after that ACK as a recovery's beginning reads it, 0, so 2896, and the
+// window becomes it at once; a write then takes two full segments. Linux cuts at the same ACK, through
+// tcp_init_cwnd_reduction and tcp_end_cwnd_reduction, but to half its window, max(10 / 2, 2) = 5 segments, where
+// RFC 5681's half of the flight, which Aloe follows, gives two.
+--congestion=newreno
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.060 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 70 ecr 110>
++0.010 < . 1:1(0) ack 101 win 512 <nop,nop,TS val 180 ecr 70>
++0 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 80 ecr 180>
++0.010 < . 1:1(0) ack 201 win 512 <nop,nop,TS val 190 ecr 80>
++0 write(4, ..., 20000) = 2896
++0 > P. 201:1649(1448) ack 1 win 46336 <nop,nop,TS val 90 ecr 190>
++0 > P. 1649:3097(1448) ack 1 win 46336 <nop,nop,TS val 90 ecr 190>
++0.010 < . 1:1(0) ack 3097 win 512 <nop,nop,TS val 200 ecr 90>

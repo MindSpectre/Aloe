@@ -119,7 +119,7 @@ namespace aloe::benchmarks {
              .thread_hook = ethdev::register_thread},
             device,
             stack_ip_config(peer_config),
-            tcp::TcpConfig{}
+            stack_tcp_config()
         };
         if (!arp_on_wire) {
             runtime.shard(0).stack().ip().learn(peer_config.peer_ip, peer_config.peer_mac, core::Clock::now());
