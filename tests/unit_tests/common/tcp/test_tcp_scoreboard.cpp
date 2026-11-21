@@ -346,6 +346,27 @@ TEST_F(TcpScoreboard, ClearAllLostIsAnUndo) {
     EXPECT_FALSE(queue.waiting()) << "a resend nothing owes any more does not wait";
 }
 
+// What resends leave as the next episode begins: the resends out (Linux's `retrans_out`), and whether a resend of an
+// episode is unacknowledged at all, out or marked lost again (`tcp_any_retrans_done`). A tail probe's second
+// transmission, which owes no mark, is neither: it carries no undo stamp forward.
+TEST_F(TcpScoreboard, AnEpisodesResendStaysUnacknowledgedUntilFreedAndAProbesIsNone) {
+    push_five();
+    resend(nodes[4]);  // the tail probed: sent twice, owing no mark
+    EXPECT_EQ(queue.resends_out(pool), 0U);
+    EXPECT_FALSE(queue.resent_unacknowledged(pool)) << "a probe's resend";
+    queue.mark_lost(pool, nodes[1]);
+    resend(nodes[1]);
+    queue.clear_lost(pool, nodes[1]);  // the resend the mark owed left
+    EXPECT_EQ(queue.resends_out(pool), 1U);
+    EXPECT_TRUE(queue.resent_unacknowledged(pool));
+    queue.mark_lost(pool, nodes[1]);  // found lost again: out no more, but unacknowledged still
+    EXPECT_EQ(queue.resends_out(pool), 0U);
+    EXPECT_TRUE(queue.resent_unacknowledged(pool));
+    queue.mark_lost(pool, nodes[4]);        // the probed tail found lost: a first loss
+    std::ignore = acknowledge(1200, 1000);  // frees the first two
+    EXPECT_FALSE(queue.resent_unacknowledged(pool)) << "the probed tail, marked, was resent by no episode";
+}
+
 TEST_F(TcpScoreboard, AWaitEndsWhenTheResendLeavesABlockReportsOrAnAckFreesTheEntry) {
     push_five();
     EXPECT_FALSE(queue.waiting());

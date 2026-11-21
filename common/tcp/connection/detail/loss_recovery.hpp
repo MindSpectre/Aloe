@@ -20,8 +20,8 @@ namespace aloe::tcp::detail {
         /// Resends a lost mark owed that are out, not marked lost again since, neither reported nor acknowledged:
         /// Linux's `retrans_out`. Each may yet be reported as a duplicate.
         std::uint32_t out   = 0;
-        /// Some entry neither reported nor acknowledged was resent, out or marked lost again since: Linux's
-        /// `tcp_any_retrans_done`. An ACK may yet answer that resend.
+        /// Some entry neither reported nor acknowledged was resent by an episode, out or marked lost again since:
+        /// Linux's `tcp_any_retrans_done`. An ACK may yet answer that resend. A tail probe's resend alone is none.
         bool unacknowledged = false;
     };
 
@@ -46,8 +46,8 @@ namespace aloe::tcp::detail {
      * holds the rate reduction.
      *
      * The undo's record (Linux's `tcp_init_undo`) is opened by every episode that sets a target: the episode's start,
-     * SND.UNA as it began; the policy's state then; the stamp of the first resend, which an earlier resend still
-     * unacknowledged keeps; and how many resends may still be reported as duplicates, which starts at the earlier
+     * SND.UNA as it began; the policy's state then; the stamp of the first resend, which an earlier episode's resend
+     * still unacknowledged keeps; and how many resends may still be reported as duplicates, which starts at the earlier
      * resends still out, and one more for a tail probe still in flight. A new episode replaces the record and an undo
      * closes it, so an episode is undone at most once; the end of an episode leaves it open, since the duplicate
      * reports trail the resends. Its two signs (`tcp_may_undo`): every resend counted was reported as a duplicate
@@ -362,9 +362,10 @@ namespace aloe::tcp::detail {
          * serial arithmetic of timestamp values. Either is missing without timestamps, and the caller passes no echo
          * of zero. The values tick in milliseconds: an original sent in its first resend's millisecond cannot be told
          * from it, and gives no sign. Linux's two exceptions to "nothing resent yet" have nothing to guard here: the
-         * first resend's stamp is cleared only by a new episode with no earlier resend unacknowledged (`open_undo`),
-         * where Linux's `tcp_is_non_sack_preventing_reopen` clears `retrans_stamp` within one, and no record is open in
-         * the handshake, where `tcp_clean_rtx_queue` clears it.
+         * first resend's stamp is cleared only where no resend of an episode is unacknowledged, as an episode begins
+         * (`open_undo`) or once it ended (`forget_first_resend`), where Linux's `tcp_is_non_sack_preventing_reopen`
+         * clears `retrans_stamp` within one, and no record is open in the handshake, where `tcp_clean_rtx_queue`
+         * clears it.
          */
         [[nodiscard]] bool answers_original(const std::optional<std::uint32_t> echo,
                                             const std::optional<std::uint32_t> first_resend_value) const noexcept {
@@ -377,6 +378,14 @@ namespace aloe::tcp::detail {
         /// The stamp of the episode's first resend, for the caller to turn into a timestamp value.
         [[nodiscard]] std::optional<core::TimePoint> first_resend() const noexcept {
             return first_resend_;
+        }
+
+        /// The episode ended, or an undo opened the connection, and no resend of an episode is unacknowledged any more:
+        /// the first resend's stamp is forgotten, as Linux's `tcp_try_to_open` clears `retrans_stamp` unless
+        /// `tcp_any_retrans_done`. The stamp is an episode's: a later one starts its own, and a tail probe, no
+        /// episode's resend, never carries this one forward. The record stays open for the reports that trail.
+        void forget_first_resend() noexcept {
+            first_resend_ = std::nullopt;
         }
 
         /**
@@ -431,11 +440,12 @@ namespace aloe::tcp::detail {
          *
          * What earlier resends leave carries over, as in Linux. The resends still out are counted among those that
          * may be reported, as `tcp_init_undo` starts `undo_retrans` at `retrans_out`: the duplicate report of one of
-         * them, which ends above `start`, would otherwise count down the episode's own resends. And while any earlier
-         * resend is unacknowledged, out or marked lost again, the first resend's stamp stays, as
+         * them, which ends above `start`, would otherwise count down the episode's own resends. And while an earlier
+         * episode's resend is unacknowledged, out or marked lost again, the first resend's stamp stays, as
          * `tcp_retrans_stamp_cleanup` keeps `retrans_stamp` while `tcp_any_retrans_done`: else an ACK of that resend,
          * while the episode's first waits for its packet, would read as one before any resend (`answers_original`).
-         * With none unacknowledged the stamp clears, and the episode's first resend sets it.
+         * With none unacknowledged the stamp clears, and the episode's first resend sets it; a tail probe's resend is
+         * no episode's and keeps nothing (`EarlierResends::unacknowledged`).
          */
         void open_undo(const wire::TcpSequence start, const EarlierResends earlier) noexcept {
             prior_           = congestion_;
@@ -467,7 +477,9 @@ namespace aloe::tcp::detail {
         bool resends_counted_     = false;   ///< Some resend was counted: a count of none means every one was reported.
         std::uint32_t unreported_ = 0;       ///< Resends counted and not yet reported as duplicates.
         wire::TcpSequence episode_start_{};  ///< SND.UNA as the episode began.
-        /// The first resend that left: the episode's, or an earlier one's still unacknowledged as the episode began.
+        /// The first resend that left of the episode, or of an earlier episode whose resends were still unacknowledged
+        /// as it began; nothing once an episode ended, or an undo reopened, with no resend of an episode
+        /// unacknowledged.
         std::optional<core::TimePoint> first_resend_{};
     };
 

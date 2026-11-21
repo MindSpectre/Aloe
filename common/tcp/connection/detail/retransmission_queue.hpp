@@ -315,12 +315,13 @@ namespace aloe::tcp::detail {
         }
 
         /// A resend of it left: it is lost no more, and waits no more. When it was marked lost, the resend that left is
-        /// the one the mark owed, and it is out (`SentSegment::resend_out`); a tail probe's, of an entry not marked,
-        /// is not.
+        /// the one the mark owed: it is out (`SentSegment::resend_out`), and an episode has resent the entry
+        /// (`SentSegment::mark_resent`); a tail probe's, of an entry not marked, is neither.
         void clear_lost(Pool& pool, const std::uint32_t index) noexcept {
             if (Entry& entry = pool.node(index); std::exchange(entry.lost, false)) {
-                lost_bytes_      -= outstanding(entry, acknowledged_);
-                entry.resend_out  = true;
+                lost_bytes_       -= outstanding(entry, acknowledged_);
+                entry.resend_out   = true;
+                entry.mark_resent  = true;
             }
             clear_waiting(pool, index);
         }
@@ -415,12 +416,13 @@ namespace aloe::tcp::detail {
             return out;
         }
 
-        /// Some entry neither reported nor acknowledged was resent, whatever its marks since: Linux's
-        /// `tcp_any_retrans_done`, which reads `retrans_out` and the head's `TCPCB_EVER_RETRANS`. Walks the queue; the
-        /// undo asks it as an episode begins.
+        /// Some entry neither reported nor acknowledged was resent by an episode, out or marked lost again since
+        /// (`SentSegment::mark_resent`): Linux's `tcp_any_retrans_done`, which reads `retrans_out` and the head's
+        /// `TCPCB_EVER_RETRANS`. A tail probe's second transmission alone is no episode's resend and counts for
+        /// nothing. Walks the queue; the undo asks it as an episode begins and as one ends.
         [[nodiscard]] bool resent_unacknowledged(const Pool& pool) const noexcept {
             for (std::uint32_t index = chain_.head; index != no_node; index = pool.node(index).next) {
-                if (const Entry& entry = pool.node(index); entry.resent() && !entry.reported) {
+                if (const Entry& entry = pool.node(index); entry.mark_resent && !entry.reported) {
                     return true;
                 }
             }

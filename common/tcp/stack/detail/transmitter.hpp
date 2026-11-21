@@ -419,6 +419,12 @@ namespace aloe::tcp::detail {
             return block.queue.resends_out(send_pool_);
         }
 
+        /// A resend of an episode is unacknowledged, out or marked lost again
+        /// (`RetransmissionQueue::resent_unacknowledged`).
+        [[nodiscard]] bool resent_unacknowledged(const ControlBlock& block) const noexcept {
+            return block.queue.resent_unacknowledged(send_pool_);
+        }
+
         /// `sack_block` names a queued entry that was resent (`RetransmissionQueue::names_resend`).
         [[nodiscard]] bool names_resend(const ControlBlock& block,
                                         const wire::TcpSackBlock& sack_block) const noexcept {
@@ -840,10 +846,10 @@ namespace aloe::tcp::detail {
         }
 
         /// What earlier resends leave in the queue as an episode begins, for the undo's record: the resends out, and
-        /// whether any entry still queued unreported was resent (`EarlierResends`).
+        /// whether an episode's resend of an entry still queued unreported is unacknowledged (`EarlierResends`).
         [[nodiscard]] EarlierResends earlier_resends(const ControlBlock& block) const noexcept {
             return EarlierResends{.out            = block.queue.resends_out(send_pool_),
-                                  .unacknowledged = block.queue.resent_unacknowledged(send_pool_)};
+                                  .unacknowledged = resent_unacknowledged(block)};
         }
 
         /**

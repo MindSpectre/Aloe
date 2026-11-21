@@ -90,7 +90,10 @@ namespace aloe::tcp::detail {
          *    and resending.
          * 7. The end of an episode: an ACK that covers `recover` in recovery or in the loss state ends it here, before
          *    detection (`end_on_this_ack`), unless an undo ended it, as Linux's `tcp_fastretrans_alert` settles its
-         *    state's exit (its step D) before it looks for losses (step E). Detection on that ACK then reads the
+         *    state's exit (its step D) before it looks for losses (step E). An episode ended either way forgets its
+         *    first resend's stamp when no resend of an episode is unacknowledged any more
+         *    (`LossRecovery::forget_first_resend`), as Linux's `tcp_try_to_open` clears `retrans_stamp` unless
+         *    `tcp_any_retrans_done`, and `tcp_try_undo_partial` the same. Detection on that ACK then reads the
          *    reordering window of the open state it leaves, which a reordering timer it arms reads too unless a new
          *    episode begins on that ACK, whose recovery window the timer then reads. On every other ACK detection comes
          *    first and reads the window of the state the ACK found, which the recovery state's step then moves on.
@@ -162,6 +165,9 @@ namespace aloe::tcp::detail {
                     undone.reopened || (found.state != RecoveryState::Open && block.recovery.recovered(ack));
                 if (ended && !undone.reopened) {
                     end_on_this_ack(block, found, ack, info);
+                }
+                if (ended && !transmitter_.resent_unacknowledged(block)) {
+                    block.recovery.forget_first_resend();  // Linux's `tcp_try_to_open`
                 }
                 detecting = block.sack.in_use() && !undone.held && (block.rack.advanced() || undone.undone);
                 if (detecting) {

@@ -40,13 +40,16 @@ namespace aloe::tcp::detail {
         bool framed                     = false;  ///< The packet holds the frame headers in front of the payload.
         std::uint64_t delivered_at_send = 0;
         bool app_limited                = false;
-        bool reported   = false;  ///< The peer reported it received; it stays queued until a cumulative ACK frees it.
-        bool lost       = false;  ///< Marked lost and not resent since: it owes a resend.
-        bool tried      = false;  ///< A resend of it was tried since it was marked lost, whatever came of it.
-        bool waiting    = false;  ///< Its resend found the packet lent and waits for the flush.
+        bool reported    = false;  ///< The peer reported it received; it stays queued until a cumulative ACK frees it.
+        bool lost        = false;  ///< Marked lost and not resent since: it owes a resend.
+        bool tried       = false;  ///< A resend of it was tried since it was marked lost, whatever came of it.
+        bool waiting     = false;  ///< Its resend found the packet lent and waits for the flush.
         /// The resend its last lost mark owed left, and it was not marked lost again since: Linux's
         /// `TCPCB_SACKED_RETRANS`. A tail probe, which resends an entry no mark owed, sets nothing here.
-        bool resend_out = false;
+        bool resend_out  = false;
+        /// A resend some lost mark owed left, at any time: an episode resent it, and a marking since does not undo
+        /// that. Linux's `TCPCB_EVER_RETRANS` but for a tail probe's resend, which is no episode's.
+        bool mark_resent = false;
         std::uint32_t next = no_node;
 
         /// The SYN or the FIN: a control segment.

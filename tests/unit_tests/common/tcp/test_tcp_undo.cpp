@@ -80,6 +80,27 @@ namespace {
             }
             return c;
         }
+
+        /**
+         * `mark_the_head(10ms)`, then at 30 ms the ACK of everything, echoing the resend, which repaired a real loss:
+         * the episode ends at its target, 2896, its first resend at 20 ms, with nothing resent still unacknowledged.
+         * Null, with a failure added, when it did not go so.
+         */
+        [[nodiscard]] Connection* end_a_real_loss() {
+            Frames resend;
+            Connection* c = mark_the_head(10ms, resend);
+            if (c == nullptr) {
+                return nullptr;
+            }
+            this->advance(10ms);
+            this->peer_.see(resend[0]);
+            this->receive(this->ack_of(this->at(500)));
+            if (c->recovery_state() != RecoveryState::Open || c->congestion_window() != 2896U) {
+                ADD_FAILURE() << "expected the episode ended at its target, got " << c->congestion_window();
+                return nullptr;
+            }
+            return c;
+        }
     };
 
     using TcpUndoBrick = UndoBrick<aloe::testing::TcpFixture>;
@@ -270,6 +291,19 @@ TEST(TcpUndo, TheFirstResendStaysWhileAnEarlierOneIsUnacknowledged) {
     clean.end(TcpSequence{11001});
     clean.on_timeout(TcpSequence{11001}, TcpSequence{14001}, 3000, 0, 1000, true, Earlier{});
     EXPECT_FALSE(clean.first_resend().has_value()) << "no earlier resend unacknowledged: a fresh stamp";
+}
+
+// The stamp is an episode's: once the episode ended, or an undo reopened, with no resend of an episode unacknowledged,
+// it is forgotten, as Linux's tcp_try_to_open clears `retrans_stamp`. The record stays open for the trailing reports.
+TEST(TcpUndo, TheStampIsForgottenWhenNoResendIsUnacknowledged) {
+    Recovery recovery = in_recovery();
+    recovery.on_resend(ms(20));
+    recovery.end(TcpSequence{11001});
+    recovery.forget_first_resend();
+    EXPECT_FALSE(recovery.first_resend().has_value());
+    EXPECT_TRUE(recovery.undo_open());
+    recovery.on_duplicate_report(TcpSequence{2001});
+    EXPECT_TRUE(recovery.every_resend_reported()) << "the count is the record's, and stays";
 }
 
 // Linux's tcp_end_cwnd_reduction sets the window to the target only for an episode that was not undone: here the
@@ -809,4 +843,54 @@ TEST_P(TcpUndoHeld, AnUndoClearsAResendWaitingBehindTheHead) {
     return_loans();
     EXPECT_TRUE(collect().empty());
     EXPECT_EQ(counters().fast_retransmits, 2U);
+}
+
+// The first resend's stamp is an episode's fact. An earlier episode that ended with nothing resent unacknowledged
+// leaves none, and a tail probe's second transmission, no episode's resend, carries none forward: Linux clears
+// `retrans_stamp` as `tcp_try_to_open` opens, and its probe sets none. So a timeout after an unanswered probe is
+// stamped by its own resend, and the late ACK of the original undoes it, as on a fresh connection
+// (`ANeedlessTimeoutIsUndoneByTheEcho`).
+TEST_P(TcpUndoBrick, ANeedlessTimeoutAfterAnEarlierEpisodeIsUndoneByTheEcho) {
+    auto* c = end_a_real_loss();  // the first resend at 20 ms; the episode over at 30 ms, srtt 10 ms, RTO 210 ms
+    ASSERT_NE(c, nullptr);
+    Frames one;
+    ASSERT_TRUE(send(*c, 1, one));  // at 30 ms, from 500: the probe for 30 + 2 * 10 + 40 = 90 ms
+    advance(60ms);
+    ASSERT_EQ(collect().size(), 1U) << "the probe, unanswered: the RTO from it, for 300 ms";
+    advance(210ms);
+    ASSERT_EQ(collect().size(), 1U) << "the RTO's resend";
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Loss);
+    ASSERT_EQ(c->congestion_window(), 1448U) << "nothing in flight after the marking, plus a segment";
+    advance(10ms);
+    // The original was only late: its ACK echoes 30 ms, after the first episode's resend and before the timeout's.
+    peer_.see(one[0]);
+    receive(ack_of(at(600)));
+    EXPECT_EQ(counters().undos_original_ack, 1U);
+    EXPECT_EQ(c->recovery_state(), RecoveryState::Open);
+    EXPECT_EQ(c->congestion_window(), 2896U) << "the window before the timeout: the first episode's target";
+}
+
+// The same for a recovery that begins while a probe is out: the partial ACK that answers the original undoes it.
+TEST_P(TcpUndoBrick, ARecoveryBegunWhileAProbeIsOutIsUndoneByTheEcho) {
+    auto* c = end_a_real_loss();
+    ASSERT_NE(c, nullptr);
+    Frames five;
+    ASSERT_TRUE(send(*c, 5, five));  // at 30 ms, from 500: the probe for 30 + 2 * 10 = 50 ms
+    advance(20ms);
+    ASSERT_EQ(collect().size(), 1U) << "the fifth, probed at 50 ms";
+    advance(10ms);
+    // At 60 ms the second to fourth reported: RACK's round trip 30 ms, so the first, due at 30 + 30 = 60 ms, is lost;
+    // the probed fifth was sent after RACK's segment. Recovery begins with the probe in flight, target
+    // max(500 / 2, 2896) = 2896; with 100 in flight PRR allows the 300 delivered, and the first is resent at 60 ms.
+    receive(peer_.sack(at(500), Blocks{range(600, 900)}));
+    ASSERT_EQ(collect().size(), 1U);
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Recovery);
+    advance(5ms);
+    // The first's original was only late: an ACK of four, short of `recover`, echoing 30 ms, after the first episode's
+    // resend at 20 ms and before this one's at 60 ms. No resend is out, so the reduction is taken back.
+    peer_.see(five[0]);
+    receive(ack_of(at(900)));
+    EXPECT_EQ(counters().undos_original_ack, 1U);
+    EXPECT_EQ(c->recovery_state(), RecoveryState::Open);
+    EXPECT_EQ(c->congestion_window(), 2896U);
 }
