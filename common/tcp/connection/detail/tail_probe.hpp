@@ -8,9 +8,9 @@
 namespace aloe::tcp::detail {
 
     /**
-     * @brief The tail loss probe of a connection that uses SACK, RFC 8985 section 7: whether a probe is in flight and
-     * where it ends, whether its verdict is open, whether a round-trip sample was taken since the last one, the wait,
-     * and what an ACK means for it.
+     * @brief The tail loss probe of a connection that uses SACK, RFC 8985 section 7: whether one is pending, whether a
+     * probe is in flight and where it ends, whether its verdict is open, whether a round-trip sample was taken since
+     * the last one, the wait, and what an ACK means for it.
      *
      * RFC 8985 keeps one variable, `TLP.end_seq`, for two facts that this class keeps apart. The probe is in flight
      * from the moment it leaves until a cumulative ACK reaches its end, the end of the segment it sent again. That is
@@ -20,11 +20,15 @@ namespace aloe::tcp::detail {
      * exactly on the probe's end may answer the original or the probe, so the verdict usually outlives the flight. The
      * flight is the RFC's limit of one probe out at a time (7.3); the verdict is what its 7.4 reads.
      *
-     * It owns no timer and sends nothing: the Transmitter arms the probe's timer from `wait` and resends the segment,
-     * the AckProcessor reads what an ACK settled, and a recovery or a timeout forgets both facts. A probe whose packet
-     * the device still holds is the probe from the moment the resend accepts it, to leave at the flush; one whose
-     * entry an ACK frees before it leaves never left, and is forgotten too (`Transmitter::acknowledge`). Sequence
-     * numbers compare in serial arithmetic, so the probe's end holds across the wrap.
+     * A probe is one from the moment its resend leaves, in place or as a copy, and not before. While the busy rule
+     * holds that resend, its packet still with the device, the probe is pending: not in flight, no verdict, counted
+     * nowhere, and no other is scheduled meanwhile (`may_probe`). It becomes a probe when the resend leaves at the
+     * flush, or ends without leaving: dropped when its wait ends otherwise, and forgotten with the rest at a recovery
+     * or a timeout. Linux sends no probe while the segment is still in a host queue (`skb_still_in_host_queue`).
+     *
+     * It owns no timer and sends nothing: the Transmitter arms the probe's timer from `wait`, resends the segment and
+     * says when the resend left, waits, or will not leave; the AckProcessor reads what an ACK settled. Sequence numbers
+     * compare in serial arithmetic, so the probe's end holds across the wrap.
      */
     class TailProbe {
     public:
@@ -53,9 +57,15 @@ namespace aloe::tcp::detail {
             return one_segment ? base + allowance : base;
         }
 
-        /// A probe may leave: none is in flight, and a round-trip sample was taken since the last (RFC 8985 7.3).
+        /// A probe may be sent: none is in flight or pending, and a round-trip sample was taken since the last left
+        /// (RFC 8985 7.3).
         [[nodiscard]] bool may_probe() const noexcept {
-            return !in_flight_ && sampled_;
+            return !in_flight_ && !pending_ && sampled_;
+        }
+
+        /// A probe's resend waits for its packet: not yet a probe.
+        [[nodiscard]] bool pending() const noexcept {
+            return pending_;
         }
 
         [[nodiscard]] bool in_flight() const noexcept {
@@ -71,11 +81,23 @@ namespace aloe::tcp::detail {
             return end_;
         }
 
-        /// A probe left, or waits to leave at the flush, ending at `end`, the end of the segment it sends again: in
-        /// flight, verdict open, no sample since. Its end and its verdict replace any earlier probe's.
+        /// The busy rule holds the probe's resend for the flush: pending, and nothing else is recorded.
+        void pend() noexcept {
+            pending_ = true;
+        }
+
+        /// The pending probe's wait ended without its resend leaving: its entry freed or reported, or the send refused.
+        /// Nothing of it remains.
+        void drop_pending() noexcept {
+            pending_ = false;
+        }
+
+        /// A probe left, ending at `end`, the end of the segment it sent again: no longer pending, in flight, verdict
+        /// open, no sample since. Its end and its verdict replace any earlier probe's.
         void sent(const wire::TcpSequence end) noexcept {
             end_       = end;
             in_flight_ = true;
+            pending_   = false;
             sampled_   = false;
         }
 
@@ -111,15 +133,19 @@ namespace aloe::tcp::detail {
             return Verdict::Open;
         }
 
-        /// A recovery or a timeout began, or the connection ended: nothing in flight, no verdict.
+        /// A recovery began (`Transmitter::begin_recovery`) or the retransmission timer expired
+        /// (`Transmitter::on_retransmit_timeout`): nothing in flight, no verdict, nothing pending. The connection's end
+        /// resets the whole part instead (`ControlBlock::clear`).
         void forget() noexcept {
             end_.reset();
             in_flight_ = false;
+            pending_   = false;
         }
 
     private:
         std::optional<wire::TcpSequence> end_{};  ///< The probe's end while its verdict is open; in flight within that.
         bool in_flight_ = false;
+        bool pending_   = false;  ///< A probe's resend waits for its packet, to leave at the flush.
         bool sampled_   = false;  ///< A round-trip sample was taken since the last probe left.
     };
 

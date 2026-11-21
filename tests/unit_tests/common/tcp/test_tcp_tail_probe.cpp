@@ -514,21 +514,25 @@ TEST_P(TcpTailProbeHeld, AProbeWhosePacketIsLentWaitsThenCopies) {
     auto* c = open_passive(peer_, 10ms);
     ASSERT_NE(c, nullptr);
     Frames one;
-    ASSERT_TRUE(send(*c, 1, one));
+    ASSERT_TRUE(send(*c, 1, one));  // at 10 ms: the probe for 70, the RTO for 220
     advance(60ms);
-    // The probe's packet is still lent: it waits for the flush, and it is the probe from now on.
+    // The probe's packet is still lent: the busy rule holds its resend for the flush. It is pending, not yet a probe:
+    // not counted, not in flight, no verdict, and the RTO keeps its moment.
     EXPECT_TRUE(collect().empty());
     EXPECT_EQ(counters().retransmits_deferred, 1U);
-    EXPECT_EQ(counters().tail_probes, 1U);
-    EXPECT_TRUE(c->tail_probe_in_flight());
+    EXPECT_EQ(counters().tail_probes, 0U);
+    EXPECT_FALSE(c->tail_probe_in_flight());
+    EXPECT_FALSE(c->tail_probe_verdict_open());
     advance(1ms);
-    // The next flush: still lent, the deferral bound reached, the copy goes.
+    // The next flush, at 71 ms: still lent, the deferral bound reached, the copy goes, and the probe is one from now.
     const auto copy = collect();
     ASSERT_EQ(copy.size(), 1U);
     EXPECT_EQ(copy[0].tcp->sequence, one[0].tcp->sequence);
     EXPECT_TRUE(std::ranges::equal(aloe::frames::tcp_payload(copy[0]), aloe::frames::tcp_payload(one[0])));
     EXPECT_EQ(counters().retransmits_copied, 1U);
     EXPECT_EQ(counters().tail_probes, 1U);
+    EXPECT_TRUE(c->tail_probe_in_flight());
+    EXPECT_TRUE(c->tail_probe_verdict_open());
     EXPECT_EQ(counters().retransmits, 0U);
     EXPECT_EQ(counters().fast_retransmits, 0U);
     const auto original = aloe::frames::parse_frame(tcp_->sent_segment(*c, 0).packet.data());
@@ -536,6 +540,11 @@ TEST_P(TcpTailProbeHeld, AProbeWhosePacketIsLentWaitsThenCopies) {
     EXPECT_EQ(original->l4, one[0].l4) << "nothing was written into the packet the device held";
     advance(5ms);
     EXPECT_TRUE(collect().empty()) << "the probe left: the flush has nothing more to send";
+    // The RTO runs from the copy, 71 + 210 = 281 ms: not from the expiry, 280, nor from the send, 220.
+    advance(204ms);
+    EXPECT_EQ(counters().retransmits, 0U);
+    advance(1ms);
+    EXPECT_EQ(counters().retransmits, 1U);
     return_loans();
 }
 
@@ -550,7 +559,8 @@ TEST_P(TcpTailProbeHeld, AProbeThatNeverLeftOpensNoVerdict) {
     advance(60ms);
     EXPECT_TRUE(collect().empty()) << "the probe's packet is still lent: it waits for the flush";
     ASSERT_EQ(counters().retransmits_deferred, 1U);
-    ASSERT_TRUE(c->tail_probe_in_flight());
+    EXPECT_FALSE(c->tail_probe_in_flight()) << "pending: not a probe until it leaves";
+    EXPECT_EQ(counters().tail_probes, 0U);
     advance(1ms);
     // At 71 ms, before the flush could send the copy, the original's ACK frees the entry the probe waits on.
     receive(peer_.ack(one[0]));
@@ -568,6 +578,139 @@ TEST_P(TcpTailProbeHeld, AProbeThatNeverLeftOpensNoVerdict) {
     EXPECT_FALSE(c->tail_probe_verdict_open());
     EXPECT_EQ(c->congestion_window(), 14480U) << "the initial window, untouched";
     EXPECT_EQ(counters().retransmits_copied, 0U);
+    return_loans();
+}
+
+// A block reports the entry a pending probe waits on: the original arrived above a hole, so the probe never leaves. The
+// cumulative ACK that then lands on the probe's end, and the next past it, find no probe and no verdict: no window cut.
+TEST_P(TcpTailProbeHeld, AProbeWhoseEntryABlockReportsNeverLeft) {
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(send(*c, 2, sent));  // at 10 ms: two in flight, the probe for 30, the second's
+    advance(20ms);
+    EXPECT_TRUE(collect().empty()) << "pending: the second's packet is still lent";
+    ASSERT_EQ(counters().retransmits_deferred, 1U);
+    advance(1ms);
+    // At 31 ms the second is reported, the first still missing, then the first arrives late and fills the hole.
+    receive(peer_.sack(at(0), Blocks{range(100, 200)}));
+    receive(ack_of(at(200)));
+    EXPECT_FALSE(c->tail_probe_in_flight());
+    EXPECT_FALSE(c->tail_probe_verdict_open());
+    EXPECT_EQ(counters().tail_probes, 0U);
+    return_loans();
+    EXPECT_TRUE(collect().empty()) << "nothing waits: the report ended the wait";
+    Frames third;
+    ASSERT_TRUE(send(*c, 1, third));
+    advance(10ms);
+    receive(peer_.ack(third[0]));  // past the second's end
+    EXPECT_EQ(counters().tail_probe_recoveries, 0U);
+    EXPECT_EQ(counters().tail_probes, 0U);
+    EXPECT_EQ(counters().recoveries, 0U);
+    EXPECT_EQ(c->congestion_window(), 14480U) << "the initial window, untouched";
+    return_loans();
+}
+
+// The flush cannot send a pending probe: the deferral bound is reached and the copy finds the pool empty. The probe
+// never left: no count, nothing in flight, no verdict, and the RTO stands at the moment it had, the send's.
+TEST_P(TcpTailProbeHeld, AProbeTheFlushCannotSendNeverLeft) {
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    Frames one;
+    ASSERT_TRUE(send(*c, 1, one));  // at 10 ms: the probe for 70, the RTO for 220
+    advance(60ms);
+    EXPECT_TRUE(collect().empty());
+    ASSERT_EQ(counters().retransmits_deferred, 1U);
+    std::vector<aloe::fabric::Packet> taken;  // every free packet of the stack's port
+    for (auto packet = port.allocate(0); packet; packet = port.allocate(0)) {
+        taken.push_back(std::move(*packet));
+    }
+    advance(1ms);
+    EXPECT_TRUE(collect().empty()) << "at 71 ms the copy finds no packet";
+    EXPECT_EQ(counters().allocation_failures, 1U);
+    EXPECT_EQ(counters().retransmits_copied, 0U);
+    taken.clear();
+    EXPECT_EQ(counters().tail_probes, 0U);
+    EXPECT_FALSE(c->tail_probe_in_flight());
+    EXPECT_FALSE(c->tail_probe_verdict_open());
+    EXPECT_EQ(c->congestion_window(), 14480U);
+    advance(148ms);
+    EXPECT_EQ(counters().retransmits, 0U) << "nothing at 219 ms";
+    advance(1ms);
+    EXPECT_EQ(counters().retransmits, 1U) << "the RTO at 220 ms, the moment it had";
+    EXPECT_EQ(counters().tail_probes, 0U);
+    return_loans();
+}
+
+// A timeout begins while a probe is pending: the busy rule holds its resend across the flushes (`retransmit_defers`),
+// so it is still waiting when the RTO expires. A probe that never left is no resend the peer can report, so the
+// episode's undo does not wait for it: the duplicate report of the timeout's resend undoes the timeout.
+TEST_P(TcpTailProbeHeld, AProbeATimeoutFindsPendingIsNotCountedForTheUndo) {
+    configure_tcp({.retransmit_defers = 8});
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(send(*c, 1, sent));  // at 10 ms: the probe for 70, the RTO for 220
+    advance(60ms);
+    EXPECT_TRUE(collect().empty());
+    ASSERT_EQ(counters().retransmits_deferred, 1U);
+    advance(230ms);  // the RTO's expiry, at 300 ms on this advance
+    ASSERT_EQ(counters().retransmits, 1U);
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Loss);
+    return_loans();
+    const auto resent = collect();  // the timeout's resend, its packet back
+    ASSERT_EQ(resent.size(), 1U);
+    EXPECT_EQ(resent[0].tcp->sequence, at(0));
+    // The original had arrived: the peer reports the resend as a duplicate, on the ACK of the data, echoing the resend.
+    peer_.see(resent[0]);
+    advance(10ms);
+    receive(peer_.sack(at(100), Blocks{range(0, 100)}));
+    EXPECT_EQ(counters().duplicate_sacks_received, 1U);
+    EXPECT_EQ(counters().undos_duplicate_sack, 1U) << "every resend of the episode reported";
+    EXPECT_EQ(c->recovery_state(), RecoveryState::Open);
+    EXPECT_EQ(c->congestion_window(), 14480U) << "the timeout undone";
+    EXPECT_EQ(counters().tail_probes, 0U);
+    EXPECT_FALSE(c->tail_probe_verdict_open());
+    return_loans();
+}
+
+// The second probe through the busy rule: the first's verdict is closed as a loss when the second leaves, not when its
+// expiry finds the packet lent.
+TEST_P(TcpTailProbeHeld, ASecondProbeClosesTheFirstVerdictWhenItLeaves) {
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    Frames one;
+    ASSERT_TRUE(send(*c, 1, one));  // at 10 ms: the probe for 70
+    advance(60ms);
+    EXPECT_TRUE(collect().empty());
+    advance(1ms);
+    const auto first = collect();  // the first probe's copy, at 71 ms
+    ASSERT_EQ(first.size(), 1U);
+    ASSERT_EQ(counters().tail_probes, 1U);
+    advance(10ms);
+    receive(peer_.ack(first[0]));  // at 81 ms, on the probe's end, echoing it: a sample of 10 ms
+    ASSERT_TRUE(c->tail_probe_verdict_open());
+    ASSERT_FALSE(c->tail_probe_in_flight());
+    return_loans();
+    Frames two;
+    ASSERT_TRUE(send(*c, 1, two));  // at 81 ms: probed at 81 + 2 * 10 + 40 = 141
+    advance(59ms);
+    EXPECT_TRUE(collect().empty());
+    advance(1ms);
+    EXPECT_TRUE(collect().empty()) << "at 141 ms the second's packet is lent: pending";
+    EXPECT_EQ(counters().tail_probe_recoveries, 0U);
+    EXPECT_EQ(counters().tail_probes_early, 0U);
+    EXPECT_EQ(counters().tail_probes, 1U);
+    EXPECT_TRUE(c->tail_probe_verdict_open()) << "the first's, still open";
+    EXPECT_EQ(c->congestion_window(), 14480U);
+    advance(1ms);
+    const auto second = collect();  // the copy, at 142 ms: now the second probe, and the first verdict closes
+    ASSERT_EQ(second.size(), 1U);
+    EXPECT_EQ(second[0].tcp->sequence, two[0].tcp->sequence);
+    EXPECT_EQ(counters().tail_probes, 2U);
+    EXPECT_EQ(counters().tail_probes_early, 1U);
+    EXPECT_EQ(counters().tail_probe_recoveries, 1U);
+    EXPECT_EQ(c->congestion_window(), 2896U) << "max(100 / 2, 2 * 1448): the first probe's cut, once";
+    EXPECT_TRUE(c->tail_probe_in_flight());
+    EXPECT_TRUE(c->tail_probe_verdict_open()) << "the second probe's";
     return_loans();
 }
 

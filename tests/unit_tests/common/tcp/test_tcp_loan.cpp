@@ -303,15 +303,17 @@ TEST_P(TcpLoan, AWaitingEntryABlockThenReportsIsNotResentAndTheNextEntryIsTriedA
     ASSERT_EQ(sent.size(), 3U);
     const aloe::wire::TcpSequence first = sent[0].tcp->sequence;
     // With SACK the tail probe of the third goes first, two round trips of zero after the sends, the handshake's: at
-    // the next tick. Its packet is lent, so it waits, and the next flush sends its copy. The RTO runs from the probe.
+    // the next tick. Its packet is lent, so it waits, pending, and the next flush sends its copy: the probe leaves at
+    // 2 ms, and the RTO runs from then, 2 + 200 = 202 ms.
     advance(1ms);
     EXPECT_TRUE(collect().empty());
     EXPECT_EQ(tcp_->counters().retransmits_deferred, 1U);
+    EXPECT_EQ(tcp_->counters().tail_probes, 0U);
     advance(1ms);
     ASSERT_EQ(collect().size(), 1U) << "the probe's copy";
     EXPECT_EQ(tcp_->counters().tail_probes, 1U);
     EXPECT_EQ(tcp_->counters().retransmits_copied, 1U);
-    advance(199ms);  // the RTO at 201 ms marks all three; the head's resend waits
+    advance(200ms);  // the RTO at 202 ms marks all three; the head's resend waits
     EXPECT_TRUE(collect().empty());
     advance(1ms);
     ASSERT_EQ(collect().size(), 1U) << "the head's copy; the second entry's first attempt waits for its packet";

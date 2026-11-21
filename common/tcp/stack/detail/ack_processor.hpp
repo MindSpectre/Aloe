@@ -118,9 +118,11 @@ namespace aloe::tcp::detail {
          *    stale window; then the zero-window probes and the FIN that waited for the window.
          * 11. The send timer (`Transmitter::set_timer`), after an ACK that ran detection or moved SND.UNA: the
          *    reordering timer, the tail probe or the RTO. The cumulative part recorded the RTO's moment without arming,
-         *    so an ACK that moved SND.UNA arms the wheel here once, and before only for a resend of the head
-         *    (`Transmitter::resend_lost`). Any other ACK leaves the timer as it was, a reordering timer still waiting
-         *    for its entries or a probe's included.
+         *    so an ACK that moved SND.UNA arms the wheel here, and before only for a resend of the head
+         *    (`Transmitter::resend_lost`) or for the FIN step 10 lets out, a FIN that waited for the window whose send
+         *    arms the timer as every first send does (`Transmitter::arm_after_send`): then it may be armed twice.
+         *    Any other ACK leaves the timer as it was, a reordering timer still waiting for its entries or a probe's
+         *    included.
          *
          * `payload_length` is the segment's, since an ACK that carries data is no duplicate.
          */
@@ -390,8 +392,8 @@ namespace aloe::tcp::detail {
          * The undo's checks, after the probe's ACK and before detection, in the order of Linux's
          * `tcp_fastretrans_alert`; `state` is the recovery state the ACK found, `info` is set when it moved SND.UNA,
          * and `reordering` says it showed reordering already. Each undo is counted by its sign and takes the policy's
-         * reduction back
-         * (`LossRecovery::undo`); the record it closes undoes nothing more, so an episode is undone once.
+         * reduction back (`LossRecovery::undo`); the record it closes undoes nothing more, so an episode is undone
+         * once.
          *
          * - Every resend of the episode reported as a duplicate (`tcp_try_undo_dsack`), open, which is after the
          *   episode ended, or in recovery: the lost marks stay. In recovery the episode ends there, as Linux's

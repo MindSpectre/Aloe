@@ -194,9 +194,9 @@ namespace aloe::tcp::detail {
          * The entry's lost mark says what the resend is. Of an entry marked lost, it is the resend the mark owes: once
          * it left, in place or as a copy, the mark is cleared, the resend is out (`SentSegment::resend_out`), it counts
          * against the rate reduction in recovery (`LossRecovery::on_sent`), and it is one of the episode's resends for
-         * the undo (`LossRecovery::on_resend`). Of an entry not marked, it is a tail probe, the one resend of an entry
-         * no mark owes (`on_tail_probe_timeout`, `retry_probe`): it clears nothing, marks nothing out and counts
-         * against nothing; the expiry counts it, in `tail_probes` alone.
+         * the undo (`LossRecovery::on_resend`). Of an entry not marked, it is a tail probe's, the one resend of an
+         * entry no mark owes (`on_tail_probe_timeout`, `retry_probe`): it clears nothing, marks nothing out and counts
+         * against nothing; the caller makes it a probe once it left, and counts it then, in `tail_probes` alone.
          */
         [[nodiscard]] std::expected<void, net::SendError> resend(ControlBlock& block,
                                                                  const std::uint32_t index) noexcept {
@@ -327,9 +327,10 @@ namespace aloe::tcp::detail {
          * RFC 9937 6.2 with what the ACK delivered, counted no further than RecoverFS; with nothing delivered, at a
          * timer or on an ACK that reported nothing new, no step runs and one segment may leave. A tail probe that was
          * out is forgotten, its flight and its verdict (RFC 8985 7.1; Linux's `tcp_init_cwnd_reduction` clears
-         * `tlp_high_seq`): the episode's resends answer for what is lost from here on. One still in flight is first
-         * counted in the undo's record the episode opened (`LossRecovery::count_probe`): the peer may yet report its
-         * copy as a duplicate. The record also starts from what earlier resends leave after the marking
+         * `tlp_high_seq`), and so is one pending, which never left: the episode's resends answer for what is lost from
+         * here on. One still in flight is first counted in the undo's record the episode opened
+         * (`LossRecovery::count_probe`): the peer may yet report its copy as a duplicate. A pending one is not: no copy
+         * of it is out to be reported. The record also starts from what earlier resends leave after the marking
          * (`earlier_resends`), as Linux's `tcp_init_undo` reads `retrans_out` after `tcp_mark_skb_lost` took a resend
          * found lost again out of it.
          */
@@ -355,31 +356,24 @@ namespace aloe::tcp::detail {
         /**
          * The queue frees what `ack` covers (`RetransmissionQueue::acknowledge`), `each` running for every entry it
          * frees that no block reported; a resend that waited is moot once its entry is freed, and the connection
-         * leaves the deferred list unless another of its entries still waits. Called before SND.UNA moves.
-         *
-         * A tail probe whose entry this frees while its resend waits for its packet never left: it was no probe, and
-         * it is forgotten, its flight and its verdict, and taken back out of `tail_probes`, which counted it when
-         * `resend` accepted it (`on_tail_probe_timeout`). Else this ACK, at or past the probe's end, would leave the
-         * verdict open, and the next ACK past the end would read the probe as a loss it repaired and cut the window.
-         * Linux sends no probe while the segment is still in a host queue (`skb_still_in_host_queue`).
+         * leaves the deferred list unless another of its entries still waits, and a pending tail probe whose entry it
+         * frees ends without leaving (`settle_pending_probe`). Called before SND.UNA moves.
          */
         template <std::invocable<const SentNode&> Each>
         [[nodiscard]] Freed acknowledge(ControlBlock& block, const Sequence ack, Each&& each) noexcept {
-            const bool probe_waited = probe_waiting(block);
             const Freed freed = block.queue.acknowledge(send_pool_, ack, block.send.una, std::forward<Each>(each));
-            if (probe_waited && !probe_waiting(block)) {
-                block.probe_state.forget();
-                --context_.counters.tail_probes;
-            }
+            settle_pending_probe(block);
             settle_deferred(block);
             return freed;
         }
 
         /// The entries `sack_block` covers whole marked received (`RetransmissionQueue::report`); one whose resend
-        /// waited for its packet waits no more.
+        /// waited for its packet waits no more, and a pending tail probe whose entry it reports ends without leaving
+        /// (`settle_pending_probe`).
         template <std::invocable<const SentNode&> Each>
         [[nodiscard]] Reported report(ControlBlock& block, const wire::TcpSackBlock& sack_block, Each&& each) noexcept {
             const Reported reported = block.queue.report(send_pool_, sack_block, std::forward<Each>(each));
+            settle_pending_probe(block);
             settle_deferred(block);
             return reported;
         }
@@ -583,8 +577,9 @@ namespace aloe::tcp::detail {
          *
          * The RTO is where the ACK, the resend pass or a send left it: restarted from now only by what restarts it, an
          * ACK that moved SND.UNA, a resend of the head, a send into an empty queue, a tail probe. An ACK that moved
-         * SND.UNA only records the RTO's new moment (`restart_rto_moment`), so this arms the wheel once for it,
-         * whichever kind it chooses, and a resend of the head is the only arm before. A reordering timer or a probe no
+         * SND.UNA only records the RTO's new moment (`restart_rto_moment`), so this arms the wheel for it, whichever
+         * kind it chooses; the only arms before are a resend of the head and the send of a FIN that waited for the
+         * window, which the ACK's window lets out (`arm_after_send`). A reordering timer or a probe no
          * longer wanted, or no timer at all after an expiry, gives way to the RTO at the moment it had, `rto_at`, not
          * to a fresh one. With nothing in flight the timer stays as it is: stopped by the ACK that emptied the queue,
          * or the zero-window probes' or the ARP poll's.
@@ -752,10 +747,11 @@ namespace aloe::tcp::detail {
          * for the window's use (`WindowUse::on_send`), limited when the congestion window leaves less than a segment
          * after it.
          *
-         * What is in flight and the congestion window are read once, before the send: the window's check, the entry's
-         * record of whether the windows allowed more than it carries, and the record for the window's use read them.
-         * The idle restart lowers the window, which is read again then; the send adds its bytes to what is in flight
-         * (`in_flight_after_send`) and leaves the window as it was.
+         * What is in flight and the congestion window are read before the send: the window's check, the entry's record
+         * of whether the windows allowed more than it carries, and the record for the window's use read them. The idle
+         * restart lowers the window, which is read again then. After the send, with SACK, what is in flight is what it
+         * was plus the bytes sent, read no more; without SACK it is read again (`in_flight_after_send`). The send
+         * leaves the window as it was.
          */
         [[nodiscard]] bool commit(ControlBlock& block, const std::size_t count) noexcept {
             assert(block.prepared && "commit without a prepare");
@@ -1334,30 +1330,72 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * A tail probe whose packet the device still held at its expiry (`on_tail_probe_timeout`), tried again at the
-         * flush through `resend`: the busy rule decides again, the copy fallback included. It has been the probe since
-         * `resend` accepted it, and its wait is found by its entry, the one waiting with no lost mark. A probe no
-         * longer in flight, forgotten by a recovery or a timeout that began meanwhile, has nothing left to do: its wait
-         * ends, and the connection leaves the deferred list unless another entry waits.
+         * A pending tail probe, whose packet the device still held at its expiry (`on_tail_probe_timeout`), tried again
+         * at the flush through `resend`: the busy rule decides again, the copy fallback included. Its wait is found by
+         * its entry, the one waiting with no lost mark. Once the resend leaves, in place or as a copy, it is a probe
+         * (`probe_left`); while it still waits, it stays pending. A send IP refuses, or a copy with no packet for it,
+         * ends the wait: the probe never left, and only its pending state is dropped; the RTO stays at the moment it
+         * had, as for a probe refused at its expiry. A wait with no probe pending any more, dropped by a recovery or a
+         * timeout that began meanwhile, has nothing left to do: it ends, and the connection leaves the deferred list
+         * unless another entry waits.
          */
         void retry_probe(ControlBlock& block) noexcept {
             const std::uint32_t index = block.queue.first_waiting_unmarked(send_pool_);
             if (index == no_node) {
                 return;
             }
-            if (!block.probe_state.in_flight()) {
+            if (!block.probe_state.pending()) {
                 block.queue.clear_waiting(send_pool_, index);
                 settle_deferred(block);
                 return;
             }
-            std::ignore = resend(block, index);
+            const SentNode& node = send_pool_.node(index);
+            const Sequence end   = node.first + node.length;
+            if (!resend(block, index)) {
+                block.probe_state.drop_pending();  // refused: no probe left
+                return;
+            }
+            if (!node.waiting) {
+                probe_left(block, end);
+            }
         }
 
-        /// A tail probe is in flight whose resend still waits for its packet: accepted by `resend` and not yet left.
-        /// Its wait is found by its entry, the one waiting with no lost mark; no walk while no entry waits, and none
-        /// while no probe is in flight.
-        [[nodiscard]] bool probe_waiting(const ControlBlock& block) const noexcept {
-            return block.probe_state.in_flight() && block.queue.first_waiting_unmarked(send_pool_) != no_node;
+        /**
+         * A tail probe's resend left, at its expiry or at the flush: from here it is a probe, ending at `end`, the end
+         * of the entry sent again. An earlier probe's verdict still open is closed first, as a loss repaired (below).
+         * It is counted in `tail_probes`, in flight with its verdict open (`TailProbe::sent`), and the RTO runs from
+         * now (`restart_rto`, which leaves a pending reordering timer in place and moves only the RTO's moment).
+         *
+         * A departure from RFC 8985 by the author's decision: the second probe. RFC 8985 7.3's `TLP_send_probe` sends
+         * nothing while TLP.end_seq is set, and 7.4.2 settles the verdict only on a later ACK; Linux's
+         * `tcp_send_loss_probe` returns at `tp->tlp_high_seq` the same way. A probe that rescued a lone segment is
+         * acknowledged exactly at its end, which leaves its verdict open until a later segment is acknowledged; when
+         * that later segment is lost too, the RFC and Linux give it no probe, and it waits for the RTO. Here, with the
+         * first probe's end acknowledged, its verdict is closed as a loss repaired when the second probe leaves, with
+         * the congestion response the next ACK past its end would have brought. The RFC's limit of one probe in flight
+         * holds, since the first is out of flight (`TailProbe::may_probe`), and so does its other condition, a
+         * round-trip sample since the first probe: the ACK of a segment sent twice gives one only through its echo, so
+         * without timestamps the second segment waits for the RTO as under the RFC. Counted in `tail_probes_early`,
+         * beside `tail_probe_recoveries`.
+         */
+        void probe_left(ControlBlock& block, const Sequence end) noexcept {
+            if (block.probe_state.verdict_open()) {
+                block.recovery.on_repaired(block.send.flight(), block.mss());
+                ++context_.counters.tail_probe_recoveries;
+                ++context_.counters.tail_probes_early;
+            }
+            block.probe_state.sent(end);
+            ++context_.counters.tail_probes;
+            restart_rto(block);
+        }
+
+        /// A pending tail probe whose wait ended without its resend leaving, its entry freed by a cumulative ACK or
+        /// reported by a block, never left: only its pending state is dropped. Nothing is counted, no verdict opens and
+        /// no window is cut. No walk while no probe is pending, and none while no entry waits.
+        void settle_pending_probe(ControlBlock& block) noexcept {
+            if (block.probe_state.pending() && block.queue.first_waiting_unmarked(send_pool_) == no_node) {
+                block.probe_state.drop_pending();
+            }
         }
 
         /// A SYN, SYN-ACK or FIN whose first send found no next hop: tried again every `unresolved_retry`, as no retry.
@@ -1387,8 +1425,9 @@ namespace aloe::tcp::detail {
          * the RTO once the send leaves, or gives the connection up as `Unresolved`. An expiry whose resend sends the
          * last entry that owed one, a head that had waited or been refused since the expiry before, may leave room
          * for new data: the connection gets its Writable hint (`hint_if_writable_rose`). A tail probe that was out is
-         * forgotten, its flight and its verdict; one still in flight is first counted in the undo's record the expiry
-         * opened, as in `begin_recovery` (Linux's `tcp_enter_loss` counts it in `tcp_init_undo`). A probe is in flight
+         * forgotten, its flight and its verdict, and a pending one with them; one still in flight is first counted in
+         * the undo's record the expiry opened, as in `begin_recovery` (Linux's `tcp_enter_loss` counts it in
+         * `tcp_init_undo`), and a pending one, never sent, is not. A probe is in flight
          * only while the connection is open, and an expiry from the open state always opens a record. A record the
          * expiry opens starts from what earlier resends leave after its marks (`earlier_resends`), as `tcp_enter_loss`
          * calls `tcp_init_undo` after `tcp_timeout_mark_lost`.
@@ -1469,13 +1508,14 @@ namespace aloe::tcp::detail {
 
         /**
          * The tail probe's timer ran out: RFC 8985 7.3's `TLP_send_probe`, Linux's `tcp_send_loss_probe`. A probe goes
-         * when one may (`TailProbe::may_probe`: none in flight, and a round-trip sample since the last) and the
-         * connection may still schedule one (`probe_schedulable`): the highest-sequence entry transmitted, sent again
-         * whole through `resend`, so the busy rule and the copy fallback apply to it and a probe whose packet is lent
-         * leaves at the flush (`retry_probe`). It is the probe from the moment `resend` accepts it, sent or waiting:
-         * its end recorded, the end of that entry, counted in `tail_probes`, and the RTO armed from now. One that waits
-         * and whose entry an ACK frees before it leaves was never sent: `acknowledge` forgets it and takes the count
-         * back. It is nothing else: no retry and no backoff, no episode, no mark cleared, no rate reduction.
+         * when one may (`TailProbe::may_probe`: none in flight or pending, and a round-trip sample since the last) and
+         * the connection may still schedule one (`probe_schedulable`): the highest-sequence entry transmitted, sent
+         * again whole through `resend`, so the busy rule and the copy fallback apply to it. When the resend left, it is
+         * a probe from now (`probe_left`): its end recorded, the end of that entry, counted in `tail_probes`, and the
+         * RTO armed from now. When the busy rule holds it, it is pending (`TailProbe::pend`): not yet a probe, counted
+         * nowhere, and the RTO keeps the moment it had; it becomes one when it leaves at the flush (`retry_probe`), or
+         * ends without leaving. It is nothing else: no retry and no backoff, no episode, no mark cleared, no rate
+         * reduction.
          *
          * The user timeout bounds the probe through the RTO's moment, which the probe's deadline never passes: an
          * expiry at the user timeout's moment times the connection out there and sends no probe. That check departs
@@ -1483,7 +1523,8 @@ namespace aloe::tcp::detail {
          * through `tcp_write_timeout`, so Linux sends the probe and times the connection out at the RTO's expiry
          * after it.
          *
-         * When no probe goes, or IP refused it, the RTO keeps the moment it had, `rto_at`, as Linux's `tcp_rearm_rto`
+         * When no probe goes, IP refused it or it is pending, the RTO keeps the moment it had, `rto_at`, as Linux's
+         * `tcp_rearm_rto`
          * arms what is left of the RTO after an expiry of the probe's timer; Linux counts that from the head's last
          * transmission (`tcp_rto_delta_us`), where Aloe keeps the moment the RTO was last armed. A probe's deadline
          * never passes that moment, so when it was that moment, the RTO's is now: this expiry is the RTO's
@@ -1497,7 +1538,8 @@ namespace aloe::tcp::detail {
          * Where this departs from `tcp_send_loss_probe` and RFC 8985 7.3: a probe never carries new data, where the RFC
          * says the sender "SHOULD transmit a previously unsent data segment, if one exists": none exists, since the
          * brick has no send buffer. Linux skips the probe when the segment is still in a host queue
-         * (`skb_still_in_host_queue`), where here the busy rule defers it and then sends a copy, as every resend.
+         * (`skb_still_in_host_queue`), where here the busy rule defers it and then sends a copy, as every resend; like
+         * Linux's skipped probe, a deferred one is no probe until it has left.
          */
         [[nodiscard]] TimerExpiry on_tail_probe_timeout(ControlBlock& block) noexcept {
             if (user_timed_out(block)) {
@@ -1509,29 +1551,13 @@ namespace aloe::tcp::detail {
                 const SentNode& node = send_pool_.node(index);
                 const Sequence end   = node.first + node.length;
                 if (resend(block, index)) {
-                    if (block.probe_state.verdict_open()) {
-                        // A departure from RFC 8985's procedure, by the author's decision: the second probe.
-                        // RFC 8985 7.3's TLP_send_probe sends nothing while TLP.end_seq is set, and 7.4.2 settles the
-                        // verdict only on a later ACK; Linux's tcp_send_loss_probe returns at `tp->tlp_high_seq` the
-                        // same way. A probe that rescued a lone segment is acknowledged exactly at its end, which
-                        // leaves its verdict open until a later segment is acknowledged; when that later segment is
-                        // lost too, the RFC and Linux give it no probe, and it waits for the RTO. Here, with the first
-                        // probe's end acknowledged, its verdict is closed as a loss repaired, with the congestion
-                        // response the next ACK past its end would have brought, and the second probe goes. The RFC's
-                        // limit of one probe in flight holds, since the first is out of flight (`may_probe`), and so
-                        // does its other condition, a round-trip sample since the first probe: the ACK of a segment
-                        // sent twice gives one only through its echo, so without timestamps the second segment waits
-                        // for the RTO as under the RFC. Counted in `tail_probes_early`, beside `tail_probe_recoveries`.
-                        block.recovery.on_repaired(block.send.flight(), block.mss());
-                        ++context_.counters.tail_probe_recoveries;
-                        ++context_.counters.tail_probes_early;
+                    if (!node.waiting) {
+                        probe_left(block, end);  // the second probe's departure is said there
+                        return TimerExpiry::Handled;
                     }
-                    block.probe_state.sent(end);
-                    ++context_.counters.tail_probes;
-                    arm_retransmit(block);
-                    return TimerExpiry::Handled;
+                    block.probe_state.pend();  // the busy rule holds it: a probe once it leaves at the flush
                 }
-                // IP refused it: no probe, as Linux's `rearm_timer`.
+                // IP refused it, or it is pending: no probe yet, as Linux's `rearm_timer`.
             }
             if (block.rto_at <= context_.now) {
                 return on_retransmit_timeout(block);

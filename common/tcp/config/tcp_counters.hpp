@@ -42,7 +42,9 @@ namespace aloe::tcp {
         /// Expiries of the retransmission timer that found the head reported received: the peer reneged, and every
         /// received mark was cleared.
         std::uint64_t sack_reneging            = 0;
-        std::uint64_t tail_probes              = 0;  ///< Tail probes sent (RFC 8985 7.3), a deferred one included.
+        /// Tail probes sent (RFC 8985 7.3), each counted when its resend leaves: one the busy rule holds counts at the
+        /// flush that sends it, and one that never leaves counts nothing.
+        std::uint64_t tail_probes              = 0;
         /// Probes a duplicate report or a plain duplicate ACK found needless: both copies arrived.
         std::uint64_t tail_probes_needless     = 0;
         std::uint64_t tail_probe_recoveries    = 0;  ///< Losses a probe repaired: the window cut once, no episode.
