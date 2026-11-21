@@ -917,12 +917,16 @@ TEST_P(TcpScoreboardBrick, ARandomChannelNeverBreaksTheScoreboard) {
             }
             advance(std::chrono::milliseconds{1});
 
+            // `in_flight()` is floored at zero and capped by the flight, so the totals it is taken from must fit the
+            // flight too, which they can only when no entry is marked both received and lost.
             EXPECT_LE(c->in_flight(), c->unacknowledged());
+            EXPECT_LE(std::uint64_t{c->reported_bytes()} + c->lost_bytes(), c->unacknowledged());
             std::uint64_t reported = 0;
             std::uint64_t lost     = 0;
             const TcpSequence una  = c->acknowledged();
             for (std::size_t position = 0; position < c->queued_segments(); ++position) {
-                const auto& entry       = tcp_->sent_segment(*c, position);
+                const auto& entry = tcp_->sent_segment(*c, position);
+                EXPECT_FALSE(entry.reported && entry.lost) << "entry " << position;
                 const TcpSequence from  = una.after(entry.first) ? una : entry.first;
                 const auto uncovered    = static_cast<std::uint32_t>((entry.first + entry.length) - from);
                 reported               += entry.reported ? uncovered : 0U;
@@ -933,6 +937,11 @@ TEST_P(TcpScoreboardBrick, ARandomChannelNeverBreaksTheScoreboard) {
             EXPECT_EQ(resent_reported, 0U) << "a segment left that starts an entry marked received";
             EXPECT_EQ(receiver.corrupt(), 0U) << "a byte the receiver got is not the stream's";
         }
+        // The run's premise: the channel dropped, duplicated and held segments, and the receiver forgot ranges.
+        EXPECT_GT(channel.dropped(), 0U);
+        EXPECT_GT(channel.duplicated(), 0U);
+        EXPECT_GT(channel.held(), 0U);
+        EXPECT_GT(receiver.forgotten(), 0U);
         EXPECT_GT(offered, 0U);
         EXPECT_EQ(receiver.next(), offered) << "every byte written arrived in order";
         EXPECT_EQ(c->queued_segments(), 0U);

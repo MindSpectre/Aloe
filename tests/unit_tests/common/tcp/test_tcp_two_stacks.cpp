@@ -839,7 +839,13 @@ TEST_P(TcpTwoStacks, AFrameHeldBehindFourIsResentOnceAndNotTheSecondTime) {
     // the seventh unacknowledged, is a partial ACK in recovery that answers an original: reordering is recorded, and
     // with the resend acknowledged by it the reduction is undone (Linux's `tcp_try_undo_partial`). The resend arrives
     // as a duplicate, and its report, reordering seen, doubles the window to twice a quarter of the 10 ms minimum round
-    // trip, 5 ms. The second time RACK waits that long for the late segment, whose ACK comes 3 ms after the report.
+    // trip, 5 ms.
+    //
+    // The second time, reordering seen is what spares the late segment: three segments reported no longer make the
+    // window zero, so RACK waits for it, and its ACK comes 3 ms after the report. The doubled window leaves that wait
+    // 2 ms to spare. At the window's base, 2.5 ms, the timer would be due 12.5 ms after the flight, which the wheel
+    // rounds up to the tick the ACK arrives in, and the ACK would cancel it only because a tick receives before it
+    // advances the wheel.
     //
     // The seventh is what makes that ACK partial. Without it the ACK of the late original covers all that was sent and
     // ends recovery, where the undo records no reordering, as Linux's `tcp_try_undo_recovery` records none and RFC
@@ -863,6 +869,10 @@ TEST_P(TcpTwoStacks, AFrameHeldBehindFourIsResentOnceAndNotTheSecondTime) {
         ASSERT_EQ(c->unacknowledged(), 0U) << "flight " << flight;
         EXPECT_EQ(cc.fast_retransmits, 1U) << "flight " << flight;
         EXPECT_EQ(cc.undos_original_ack + cc.undos_duplicate_sack, 1U) << "flight " << flight;
+        if (flight == 0) {
+            EXPECT_GE(cc.reordering_seen, 1U) << "the partial ACK of the late original";
+            EXPECT_EQ(c->reordering_window(), 5ms) << "doubled by the resend's duplicate report";
+        }
     }
     EXPECT_EQ(cc.retransmits, 0U);
     EXPECT_EQ(served_.size(), 14U * mss);
@@ -937,12 +947,18 @@ TEST_P(TcpTwoStacksNoCongestion, ATransferUnderLossAndReorderingDeliversEveryByt
 
 TEST_P(TcpTwoStacksFourSlots, AReceiverThatReleasesForRoomDoesNotStallTheSender) {
     drop_client_data({1});
-    // Six sends of 100 bytes at the 11th tick, the first lost. The server holds the second to the fifth in its four
-    // slots, refuses the sixth, and reports what it holds; the report marks the first lost, and its resend finds every
-    // slot taken by data above it: the server releases the fifth, which it had reported, to take the first. The ACK
-    // of the first four leaves the fifth at the head, reported and gone, and the short timer of reneging clears every
-    // mark and resends. The client's `sack_reneging` may count that; the echo must complete.
+    // Six sends of 100 bytes at the 11th tick, the first lost. At 16 the server holds the second to the fifth in its
+    // four slots, refuses the sixth, and reports what it holds; at 21 the report, four segments, marks the first lost
+    // and it is resent; at 26 the resend finds every slot taken by data above it, and the server releases the fifth,
+    // which it had reported, to take the first. At 31 the ACK of the first four leaves the fifth at the head, reported
+    // and gone: the short timer of reneging, max(srtt / 2, 10 ms) with srtt 10.875 ms, clears every mark at 41 and
+    // resends the fifth, the ACK of the fifth lets the sixth out at 51, and the echo completes at 61, 50 ms after the
+    // drop. Without the short timer the fifth would wait for the RTO, 210.875 ms from the ACK at 31, and the echo would
+    // complete at 262, 251 ms after the drop. The client's `sack_reneging` may count the reneging.
     EXPECT_TRUE(run_echo(600, 2000, 100));
     EXPECT_EQ(client_port_.impairment_counters().dropped, 1U);
     EXPECT_GT(server_.tcp.counters().out_of_order_released, 0U);
+    ASSERT_TRUE(dropped_at_.has_value());
+    ASSERT_TRUE(echoed_at_.has_value());
+    EXPECT_LT(*echoed_at_ - *dropped_at_, 100ms) << "by the short timer, not the RTO";
 }
