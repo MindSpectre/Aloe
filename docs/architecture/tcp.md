@@ -295,16 +295,15 @@ using Stack    = aloe::runtime::TcpStack<aloe::ethdev::Port, aloe::tcp::NoConges
 
 ## Counters
 
-`TcpCounters`, one per stack, read on the owning thread or after it has stopped. Every counter only rises but
-`tail_probes`, which takes back a probe that never left (below). Every drop and every send failure increments exactly
-one counter. Until step 6 adds an event for it, the counters are the signal that a connection left the fast path: one
-that never does moves none of `retransmits`, `fast_retransmits`, `recoveries`, `retransmits_deferred`,
-`retransmits_copied`, `tail_probes`, `reorder_timeouts`, `zero_window_probes` and `dropped_paws`; one whose incoming
-segments each arrive once and in order moves none of `out_of_order_held`, `out_of_order_released`, `sack_acks_sent` and
-`duplicate_sacks_sent`; and one whose own segments each arrive once and in order moves none of `sack_acks_received`,
-`duplicate_sacks_received`, `rack_marked`, `reordering_seen` and the undos. A tail probe can go with nothing lost, when
-the peer's ACK takes longer than the probe's wait, two round trips and, for a lone segment, the allowance:
-`tail_probes_needless` counts those it learns of.
+`TcpCounters`, one per stack, monotonic, read on the owning thread or after it has stopped. Every drop and every send
+failure increments exactly one counter. Until step 6 adds an event for it, the counters are the signal that a connection
+left the fast path: one that never does moves none of `retransmits`, `fast_retransmits`, `recoveries`,
+`retransmits_deferred`, `retransmits_copied`, `tail_probes`, `reorder_timeouts`, `zero_window_probes` and
+`dropped_paws`; one whose incoming segments each arrive once and in order moves none of `out_of_order_held`,
+`out_of_order_released`, `sack_acks_sent` and `duplicate_sacks_sent`; and one whose own segments each arrive once and in
+order moves none of `sack_acks_received`, `duplicate_sacks_received`, `rack_marked`, `reordering_seen` and the undos. A
+tail probe can go with nothing lost, when the peer's ACK takes longer than the probe's wait, two round trips and, for a
+lone segment, the allowance: `tail_probes_needless` counts those it learns of.
 
 The counters changed meaning with loss recovery by SACK: `retransmits` now counts only the resends at an expiry of the
 retransmission timer, one per expiry, where it also counted one per ACK of the loss episode after it; the resends of
@@ -329,7 +328,7 @@ and in the loss state; and `recoveries` counts the episodes entered by either de
 |             | `recoveries`                 | Episodes of recovery entered, by RACK on an ACK or at the reordering timer, or by duplicate ACKs, from the loss state too; a timeout's loss state is not one.                                               |
 |             | `retransmits_deferred`       | Resends that found their packet still lent after a reclaim and waited for the next flush: one per deferral, and one per tick while a segment's packet and its copy are both lent.                           |
 |             | `retransmits_copied`         | Resends sent as a copy, after `retransmit_defers` deferrals.                                                                                                                                                |
-|             | `tail_probes`                | Tail loss probes sent (RFC 8985 7.3), counted when the resend takes them: one that waits for its packet counts at once, and is taken back if an ACK frees its entry before it left.                         |
+|             | `tail_probes`                | Tail loss probes sent (RFC 8985 7.3), each counted when its resend leaves: one the busy rule holds counts at the flush that sends it, and one that never leaves counts nothing.                             |
 |             | `tail_probes_needless`       | Probes found needless: both copies arrived, as a duplicate report of the probe or a plain duplicate ACK showed.                                                                                             |
 |             | `tail_probe_recoveries`      | Losses a probe repaired: the window cut to the target once, nothing resent, no episode. Counts `tail_probes_early` too.                                                                                     |
 |             | `tail_probes_early`          | Of them, verdicts a second probe closed as a loss before an ACK said which: how often the departure from RFC 8985 7.3 and 7.4.2 was used.                                                                   |
@@ -705,8 +704,10 @@ runs these steps in order, the order of Linux's `tcp_ack` and `tcp_fastretrans_a
 9. the recovery state, which begins, goes on or ends, with the window in recovery; then the resend pass, as far as
    that window allows, unless the undo held back a partial ACK;
 10. the peer's window, the zero-window probes and the FIN that waited for the window;
-11. after an ACK that ran detection or moved `acknowledged()`, the send timer, armed once: the reordering timer, the
-    tail probe or the RTO, which the cumulative part restarted. Any other ACK leaves the timer as it was.
+11. after an ACK that ran detection or moved `acknowledged()`, the send timer: the reordering timer, the tail probe or
+    the RTO, at the moment the cumulative part recorded. The wheel is armed here, and before only for a resend of the
+    head or for a FIN that waited for the window and that step 10 sends, armed as every first send is. Any other ACK
+    leaves the timer as it was.
 
 **The scoreboard is two marks on the retransmission queue.** Each entry can be marked reported received, by a SACK
 block, and lost, which owes a resend; the queue keeps the totals, the bytes and the segments reported, the bytes lost
@@ -785,9 +786,11 @@ still a probe. The wheel rounds the deadline up to its tick, the only floor. Whe
 none is in flight and a round-trip sample was taken since the last one (RFC 8985 7.3): the last segment sent goes again
 whole, through the resend of an entry, so the busy rule and the copy apply to it. It is a tail probe (`tail_probes`) and
 nothing else: it takes no retry, backs nothing off, clears no mark, starts no episode and is not one of an episode's
-resends. The RTO runs from the probe; when none went, the RTO keeps its moment. A probe whose packet the device still
-holds is the probe from the expiry on and leaves at the flush; when an ACK frees its entry first, it never left, so it
-is no probe: forgotten, its verdict with it, and taken back out of `tail_probes`.
+resends. The RTO runs from the probe; when none went, the RTO keeps its moment. A probe is one once its resend leaves,
+and not before. When the device still holds its packet, the busy rule holds the resend and the probe is pending: not in
+flight, no verdict, counted nowhere, no other scheduled, and the RTO keeps its moment. It becomes a probe when the flush
+sends it, in place or as a copy, counted then and with the RTO from then; when its wait ends otherwise, an ACK freeing
+its entry, a block reporting it, the send refused, or a recovery or a timeout beginning, it never was one.
 
 RFC 8985 keeps one variable, `TLP.end_seq`, for two facts that the connection keeps apart (`tail_probe_in_flight()`,
 `tail_probe_verdict_open()`): the probe is in flight until a cumulative ACK reaches its end, and its verdict is open
@@ -804,8 +807,9 @@ probe has turned a silent flight into an ordinary recovery. A recovery or a time
 Two lone orders lost one after the other are both probed: where RFC 8985's procedure and Linux send no probe while the
 first's verdict is open, so that the second order waits for the RTO, Aloe sends the second probe once the first's end is
 acknowledged and a round-trip sample was taken since, and closes the first verdict as a loss repaired
-(`tail_probes_early`). That is its one departure from RFC 8985's procedure, set out with what it keeps and what it
-needs, timestamps among them, in the [note on departures](#where-the-brick-departs-from-the-rfcs-and-from-linux).
+(`tail_probes_early`), when the second probe leaves. That is its one departure from RFC 8985 by the author's decision,
+set out with what it keeps and what it needs, timestamps among them, in the
+[note on departures](#where-the-brick-departs-from-the-rfcs-and-from-linux).
 
 **One recovery, three states.** The connection is open, in recovery or in the loss state (`recovery_state()`).
 
@@ -899,17 +903,18 @@ after it, and a burst larger than that then takes more than one round trip. A de
 
 **What an in-order ACK and a send cost.** For a connection that uses SACK, with nothing lost or reordered, an ACK of an
 order frees its entry, writes RACK's fields for it and feeds its round-trip sample to RACK's minimum and to the probe; a
-probe waiting for its packet, the probe's verdict, reneging and the undo's record are a branch each; detection runs, its
-walk stops at the head, and it computes no reordering window and writes no counter; the policy's growth returns at once
-when the window was not in use; the resend pass returns without a walk; and the timer is cancelled when nothing is left
-in flight, else armed once, for the probe, at a deadline the RTO's moment bounds. The send of an order makes two
+pending probe, the probe's verdict, reneging and the undo's record are a branch each; detection runs, its walk stops at
+the head, and it computes no reordering window and writes no counter; the policy's growth returns at once when the
+window was not in use; the resend pass returns without a walk; and the timer is cancelled when nothing is left in
+flight, else armed once, for the probe, at a deadline the RTO's moment bounds. The send of an order makes two
 subtractions more in `writable()`, reads what is in flight and the congestion window once for its check, its entry and
 the window's use, records that use, computes the probe's deadline and arms the wheel for it in place of the RTO, with
 the RTO's moment kept beside it. No entry is walked, no block read, no state entered, nothing copied. It is not free,
 and it misses the bar of 10 to 20 ns set for the step: on the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md),
 against `main` at this step's base, the 64-byte tick at level 0, cross-core, is 40 ns slower at p50, 450 to 490 ns, and
 60 ns at p99, 670 to 730 ns, 30 of the 40 in the `tcp` leg that acknowledges the previous order. That is after the work
-a review found plainly unnecessary here was taken out, which gave back one 10 ns step. The benchmark page records both
+a review found plainly unnecessary here was taken out: against the first rerun the gap is the same 40 ns at p50, `main`
+having come out 10 ns lower too, 460 to 450 ns, and 10 ns narrower at p99, 70 to 60 ns. The benchmark page records both
 reruns, what the diagnostics measured of the cause and what they did not isolate, and the changes that could win the
 rest back.
 
@@ -1221,7 +1226,8 @@ The RFCs are the specification, and where they leave a choice Aloe does what Lin
 in the places below; the other parts' departures are in their design notes above (the handshake's window and RTO in the
 note on the retransmission timer, the user timeout's count, PAWS, zero-window probing, the answers above a gap).
 
-From an RFC's own text, each with who decided it:
+Departures decided against an RFC's text, each with who decided it (where Aloe follows Linux against the letter of
+RFC 8985 is a group of its own below):
 
 - **A second tail probe before the first's verdict is known** (RFC 8985 7.3, `TLP_send_probe`, and 7.4.2), by the
   author's decision. RFC 8985's procedure sends no probe while `TLP.end_seq` is set, and Linux's `tcp_send_loss_probe`
@@ -1259,10 +1265,11 @@ Where an RFC leaves the choice and Aloe does not do what Linux does:
   RTO.
 - **No floor under the probe's wait or the reordering timer** beyond the wheel's tick; Linux adds 2 ms
   (`TCP_TIMEOUT_MIN_US`) to the probe for a flight of several and to `tcp_rack_mark_lost`'s wait.
-- **A probe never carries new data** (RFC 8985 7.3: the sender "SHOULD transmit a previously unsent data segment, if
-  one exists"): none exists, since the brick has no send buffer. A probe whose packet the device still holds is
-  deferred and then copied, as every resend is; Linux skips it (`skb_still_in_host_queue`). One whose entry an ACK
-  frees before it leaves was never sent: it is forgotten, with no verdict, and not counted.
+- **A probe never carries new data** (RFC 8985 7.3: the sender "SHOULD transmit a previously unsent data segment, if one
+  exists"): none exists, since the brick has no send buffer. A probe whose packet the device still holds is deferred and
+  then copied, as every resend is; Linux skips it (`skb_still_in_host_queue`). One whose entry an ACK frees, a block
+  reports, or a recovery or a timeout finds still held, or whose send is refused, was never a probe: pending until it
+  leaves, it is counted, in flight and given a verdict only then.
 - **A send does not replace a pending reordering timer**: the entries RACK left waiting keep their wait, which a send
   cannot settle; Linux's `tcp_schedule_loss_probe` replaces whatever timer is pending.
 - **After an expiry of the probe's timer that sent no probe, the RTO keeps the moment it was last armed for**; Linux

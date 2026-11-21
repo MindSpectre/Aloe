@@ -1,7 +1,7 @@
 // RFC 8985's TLP_send_probe and Linux send no second probe while the first's verdict is open, so the second segment
 // would wait for the RTO; Aloe sends one once the first probe's end is acknowledged.
-// That is Aloe's one departure from RFC 8985's procedure (7.3 and 7.4.2; Linux's tcp_send_loss_probe). The
-// handshake's ACK 10 ms after the SYN-ACK gives an srtt of 10 ms. The first order, written at 10 ms, is lost and
+// That is Aloe's one departure from RFC 8985 by the author's decision (7.3 and 7.4.2; Linux's tcp_send_loss_probe).
+// The handshake's ACK 10 ms after the SYN-ACK gives an srtt of 10 ms. The first order, written at 10 ms, is lost and
 // probed at 10 + 2 * 10 + 40 = 70 ms; the probe arrives, and the ACK at 80 ms lands on its end and echoes it: a sample
 // of 10 ms, srtt still 10 ms, and the verdict open, since that ACK may answer either copy. The second order, written at
 // 80 ms into the empty queue, is lost too; nothing is in flight but it, so it is probed at 80 + 2 * 10 + 40 = 140 ms,
