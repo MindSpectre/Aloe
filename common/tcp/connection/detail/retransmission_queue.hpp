@@ -385,6 +385,17 @@ namespace aloe::tcp::detail {
             return no_node;
         }
 
+        /// A resend a lost mark owed is out and its entry is neither reported nor acknowledged: Linux's `retrans_out`
+        /// is not zero. Walks the queue; the undo asks it only on a partial ACK that answered an original.
+        [[nodiscard]] bool resend_unacknowledged(const Pool& pool) const noexcept {
+            for (std::uint32_t index = chain_.head; index != no_node; index = pool.node(index).next) {
+                if (const Entry& entry = pool.node(index); entry.resend_out && !entry.reported) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /// The first entry whose resend waits for its packet with no lost mark that owes it: a tail probe's, since
         /// every other resend is of an entry marked lost. `no_node` when none, with no walk while no entry waits.
         [[nodiscard]] std::uint32_t first_waiting_unmarked(const Pool& pool) const noexcept {

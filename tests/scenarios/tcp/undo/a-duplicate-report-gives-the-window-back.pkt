@@ -1,0 +1,47 @@
+// A resend the peer reports as a duplicate was needless, and the reduction it caused is taken back, after the episode
+// has ended: the reports trail the resends. The handshake's ACK 10 ms after the SYN-ACK gives a round trip of 10 ms;
+// four segments leave at 10 ms. The ACK at 20 ms reports the last three: no reordering seen, so RACK's window is zero
+// and the first is lost; recovery's target is max(400 / 2, 2 * 1448) = 2896, and the first is resent at 20 ms. The
+// resend arrives first, filling the hole: the ACK of everything at 30 ms echoes it, 20, which is not older than the
+// episode's first resend, so it answers no original, and recovery ends at its target. A write then takes 2896, two
+// segments. The original, only late, arrives at 35 ms: the peer reports it as a duplicate, 1:101, below the ACK, believed
+// since the connection resent one segment. Every resend of the episode is reported, so the policy's state copied as it
+// began comes back, the larger of each pair: the window 14480, NewReno's initial ten segments, and no target. A write
+// takes the 14480 less the 2896 in flight, 11584, eight segments. Linux undoes on the same report (tcp_try_undo_dsack,
+// as tcp_check_dsack brings undo_retrans to zero), to the same ten segments; its recovery ends at half its window, five
+// segments, where RFC 5681's half of the flight, which Aloe follows, gives two.
+--congestion=newreno
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 301:401(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 120 ecr 10,nop,nop,sack 101:401>
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 20 ecr 120>
++0.010 < . 1:1(0) ack 401 win 512 <nop,nop,TS val 130 ecr 20>
++0 write(4, ..., 20000) = 2896
++0 > P. 401:1849(1448) ack 1 win 46336 <nop,nop,TS val 30 ecr 130>
++0 > P. 1849:3297(1448) ack 1 win 46336 <nop,nop,TS val 30 ecr 130>
++0.005 < . 1:1(0) ack 401 win 512 <nop,nop,TS val 135 ecr 20,nop,nop,sack 1:101>
++0 write(4, ..., 20000) = 11584
++0 > P. 3297:4745(1448) ack 1 win 46336 <nop,nop,TS val 35 ecr 135>
++0 > P. 4745:6193(1448) ack 1 win 46336 <nop,nop,TS val 35 ecr 135>
++0 > P. 6193:7641(1448) ack 1 win 46336 <nop,nop,TS val 35 ecr 135>
++0 > P. 7641:9089(1448) ack 1 win 46336 <nop,nop,TS val 35 ecr 135>
++0 > P. 9089:10537(1448) ack 1 win 46336 <nop,nop,TS val 35 ecr 135>
++0 > P. 10537:11985(1448) ack 1 win 46336 <nop,nop,TS val 35 ecr 135>
++0 > P. 11985:13433(1448) ack 1 win 46336 <nop,nop,TS val 35 ecr 135>
++0 > P. 13433:14881(1448) ack 1 win 46336 <nop,nop,TS val 35 ecr 135>
++0.010 < . 1:1(0) ack 14881 win 512 <nop,nop,TS val 145 ecr 35>

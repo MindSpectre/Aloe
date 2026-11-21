@@ -605,13 +605,16 @@ TEST_P(TcpRackBrick, AReportAboveRecoverOnTheAckThatEndsRecoveryWaitsAQuarterRou
     // Four reported, at 20 ms: the window is zero, the head is lost and recovery begins with `recover` at the fifth
     // segment's last byte. Nothing is in flight; PRR allows the 400 delivered, so the head and two new segments go.
     receive(peer_.sack(at(0), Blocks{range(100, 500)}));
-    ASSERT_EQ(collect().size(), 1U);
+    const auto head = collect();
+    ASSERT_EQ(head.size(), 1U);
     std::vector<aloe::frames::ParsedFrame> fresh;
     ASSERT_TRUE(send(*c, 2, fresh));
     advance(10ms);
-    // At 30 ms the ACK covers `recover` and reports the second new segment, sent at 20 ms. Recovery ends first; then,
-    // open with one segment reported, the window is 10 / 4 = 2.5 ms, and the first new segment waits until
-    // 20 + 10 + 2.5 = 32.5 ms. In recovery's window, zero, it would have been lost at once.
+    // At 30 ms the ACK covers `recover` and reports the second new segment, sent at 20 ms. The head's resend filled the
+    // hole, so the ACK echoes it and answers no original: recovery ends, undone by nothing; then, open with one segment
+    // reported, the window is 10 / 4 = 2.5 ms, and the first new segment waits until 20 + 10 + 2.5 = 32.5 ms. In
+    // recovery's window, zero, it would have been lost at once.
+    peer_.see(head[0]);
     receive(peer_.sack(at(500), Blocks{range(600, 700)}));
     EXPECT_TRUE(collect().empty()) << "nothing resent on the ACK that ended recovery";
     EXPECT_EQ(c->recovery_state(), RecoveryState::Open);
@@ -635,13 +638,16 @@ TEST_P(TcpRackBrick, AHoleAboveRecoverIsMarkedByTheReorderingTimerNotByTheRto) {
     // Three reported, at 20 ms: the head is lost; with the fifth unreported, 100 stay in flight, and PRR allows
     // 300 above them, so the head and two new segments go.
     receive(peer_.sack(at(0), Blocks{range(100, 400)}));
-    ASSERT_EQ(collect().size(), 1U);
+    const auto head = collect();
+    ASSERT_EQ(head.size(), 1U);
     std::vector<aloe::frames::ParsedFrame> fresh;
     ASSERT_TRUE(send(*c, 2, fresh));
     advance(10ms);
     // At 30 ms the ACK covers `recover`, freeing the fifth original, sent at 10 ms, last: RACK's round trip is 20 ms.
-    // Recovery ends, and the first new segment waits 20 + 20 + 2.5 - 30 = 12.5 ms, until 42.5 ms, 43 on the wheel. A
-    // wait reckoned with recovery's window of zero, 10 ms, would expire at 40 ms into the open window and mark nothing.
+    // It echoes the head's resend, which filled the hole, so recovery ends, undone by nothing, and the first new
+    // segment waits 20 + 20 + 2.5 - 30 = 12.5 ms, until 42.5 ms, 43 on the wheel. A wait reckoned with recovery's
+    // window of zero, 10 ms, would expire at 40 ms into the open window and mark nothing.
+    peer_.see(head[0]);
     receive(peer_.sack(at(500), Blocks{range(600, 700)}));
     EXPECT_TRUE(collect().empty());
     EXPECT_EQ(c->recovery_state(), RecoveryState::Open);
@@ -673,15 +679,18 @@ TEST_P(TcpRackBrick, ALossFoundOnTheAckThatEndsRecoveryBeginsTheNext) {
     // so PRR's window is the target: the head's resend and four new segments fill it.
     receive(peer_.sack(at(0), Blocks{range(mss, 10 * mss)}));
     ASSERT_EQ(c->congestion_state().ssthresh, 7240U);
-    ASSERT_EQ(collect().size(), 1U);
+    const auto head = collect();
+    ASSERT_EQ(head.size(), 1U);
     ASSERT_EQ(c->send(aloe::frames::pattern(4U * mss)), 4U * mss);
     ASSERT_EQ(collect().size(), 4U);
     advance(10ms);
-    // At 30 ms the ACK covers `recover` and reports the last three new segments. Recovery ends, the window is its
-    // target, 7240; open, three reported and no reordering seen make the reordering window zero, so the first new
-    // segment, sent at 20 ms against RACK's round trip of 10 ms, is lost on this ACK, and the next episode begins on
-    // it. Its target is max(min(5792, 7240) / 2, 2896) = 2896; RecoverFS 5792 - 4344 + 5792 = 7240 with the 14480
-    // the ACK advanced less the 8688 fewer reported; nothing is in flight, so PRR allows the target and the hole goes.
+    // At 30 ms the ACK covers `recover` and reports the last three new segments; it echoes the head's resend, which
+    // filled the hole, so it answers no original. Recovery ends, the window is its target, 7240; open, three reported
+    // and no reordering seen make the reordering window zero, so the first new segment, sent at 20 ms against RACK's
+    // round trip of 10 ms, is lost on this ACK, and the next episode begins on it. Its target is
+    // max(min(5792, 7240) / 2, 2896) = 2896; RecoverFS 5792 - 4344 + 5792 = 7240 with the 14480 the ACK advanced less
+    // the 8688 fewer reported; nothing is in flight, so PRR allows the target and the hole goes.
+    peer_.see(head[0]);
     receive(peer_.sack(at(10 * mss), Blocks{range(11 * mss, 14 * mss)}));
     const auto resent = collect();
     ASSERT_EQ(resent.size(), 1U);
@@ -690,6 +699,7 @@ TEST_P(TcpRackBrick, ALossFoundOnTheAckThatEndsRecoveryBeginsTheNext) {
     EXPECT_EQ(counters().recoveries, 2U);
     EXPECT_EQ(counters().rack_marked, 2U);
     EXPECT_EQ(c->congestion_state().ssthresh, 2896U) << "a new target, from the flight of the new episode";
+    peer_.see(resent[0]);  // the hole's resend repaired it: the last ACK echoes it
     receive(ack_of(at(14 * mss)));
     EXPECT_EQ(c->recovery_state(), RecoveryState::Open);
     EXPECT_EQ(c->congestion_window(), 2896U) << "the second episode ends at its own target";

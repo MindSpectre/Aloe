@@ -49,6 +49,11 @@ namespace aloe::tcp {
         /// Verdicts a second probe closed as a loss before an ACK said which (`tail_probe_recoveries` counts them too):
         /// how often Aloe's departure from RFC 8985 7.3 and 7.4.2 was used.
         std::uint64_t tail_probes_early        = 0;
+        /// Reductions taken back because every resend of the episode was reported as a duplicate.
+        std::uint64_t undos_duplicate_sack     = 0;
+        /// Reductions taken back because an ACK that moved SND.UNA answered an original: its echo is older than the
+        /// episode's first resend, or nothing of the episode had been resent.
+        std::uint64_t undos_original_ack       = 0;
 
         std::uint64_t connections_opened         = 0;  ///< Active opens that reached ESTABLISHED.
         std::uint64_t connections_accepted       = 0;

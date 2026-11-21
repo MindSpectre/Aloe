@@ -191,10 +191,11 @@ namespace aloe::tcp::detail {
          * pass counts no resend twice, whoever tried first.
          *
          * The entry's lost mark says what the resend is. Of an entry marked lost, it is the resend the mark owes: once
-         * it left, in place or as a copy, the mark is cleared, the resend is out (`SentSegment::resend_out`), and it
-         * counts against the rate reduction in recovery (`LossRecovery::on_sent`). Of an entry not marked, it is a tail
-         * probe, the one resend of an entry no mark owes (`on_tail_probe_timeout`, `retry_probe`): it clears nothing,
-         * marks nothing out and counts against nothing; the expiry counts it, in `tail_probes` alone.
+         * it left, in place or as a copy, the mark is cleared, the resend is out (`SentSegment::resend_out`), it counts
+         * against the rate reduction in recovery (`LossRecovery::on_sent`), and it is one of the episode's resends for
+         * the undo (`LossRecovery::on_resend`). Of an entry not marked, it is a tail probe, the one resend of an entry
+         * no mark owes (`on_tail_probe_timeout`, `retry_probe`): it clears nothing, marks nothing out and counts
+         * against nothing; the expiry counts it, in `tail_probes` alone.
          */
         [[nodiscard]] std::expected<void, net::SendError> resend(ControlBlock& block,
                                                                  const std::uint32_t index) noexcept {
@@ -224,6 +225,7 @@ namespace aloe::tcp::detail {
                 block.queue.clear_lost(send_pool_, index);
                 if (marked) {
                     block.recovery.on_sent(unacknowledged(block, node));
+                    block.recovery.on_resend(context_.now);
                 }
             }
             settle_deferred(block);
@@ -327,7 +329,9 @@ namespace aloe::tcp::detail {
          * RFC 9937 6.2 with what the ACK delivered, counted no further than RecoverFS; with nothing delivered, at a
          * timer or on an ACK that reported nothing new, no step runs and one segment may leave. A tail probe that was
          * out is forgotten, its flight and its verdict (RFC 8985 7.1; Linux's `tcp_init_cwnd_reduction` clears
-         * `tlp_high_seq`): the episode's resends answer for what is lost from here on.
+         * `tlp_high_seq`): the episode's resends answer for what is lost from here on. One still in flight is first
+         * counted in the undo's record the episode opened (`LossRecovery::count_probe`): the peer may yet report its
+         * copy as a duplicate.
          */
         void begin_recovery(ControlBlock& block, const std::uint32_t delivered) noexcept {
             const std::uint32_t flight = block.send.flight();
@@ -335,6 +339,9 @@ namespace aloe::tcp::detail {
             const std::uint32_t recover_fs =
                 block.sack.in_use() ? flight - block.queue.reported_bytes() + delivered : flight;
             block.recovery.begin_recovery(block.send.nxt, flight, recover_fs, mss);
+            if (block.probe_state.in_flight()) {
+                block.recovery.count_probe();
+            }
             block.probe_state.forget();
             ++context_.counters.recoveries;
             if (delivered == 0) {
@@ -402,6 +409,20 @@ namespace aloe::tcp::detail {
         /// peer reneged on what it reported.
         [[nodiscard]] bool head_reported(const ControlBlock& block) const noexcept {
             return block.queue.head_reported(send_pool_);
+        }
+
+        /// A resend a lost mark owed is still out, neither reported nor acknowledged
+        /// (`RetransmissionQueue::resend_unacknowledged`).
+        [[nodiscard]] bool resend_unacknowledged(const ControlBlock& block) const noexcept {
+            return block.queue.resend_unacknowledged(send_pool_);
+        }
+
+        /// An undo that takes the marks back (`RetransmissionQueue::clear_all_lost`): no entry owes a resend any more
+        /// and none waits for its packet to send one, so the connection leaves the deferred list, and the flush finds
+        /// no wait it could take for a tail probe's (`retry_probe`).
+        void clear_all_lost(ControlBlock& block) noexcept {
+            block.queue.clear_all_lost(send_pool_);
+            settle_deferred(block);
         }
 
         /// RACK's detection over the queue (`Rack::detect`) with the connection's reordering window; nothing without
@@ -1243,7 +1264,9 @@ namespace aloe::tcp::detail {
          * the RTO once the send leaves, or gives the connection up as `Unresolved`. An expiry whose resend sends the
          * last entry that owed one, a head that had waited or been refused since the expiry before, may leave room
          * for new data: the connection gets its Writable hint (`hint_if_writable_rose`). A tail probe that was out is
-         * forgotten, its flight and its verdict.
+         * forgotten, its flight and its verdict; one still in flight is first counted in the undo's record the expiry
+         * opened, as in `begin_recovery` (Linux's `tcp_enter_loss` counts it in `tcp_init_undo`). A probe is in flight
+         * only while the connection is open, and an expiry from the open state always opens a record.
          */
         [[nodiscard]] TimerExpiry on_retransmit_timeout(ControlBlock& block) noexcept {
             assert(!block.queue.empty() && "the RTO runs while something is queued");
@@ -1264,6 +1287,9 @@ namespace aloe::tcp::detail {
                                           in_flight_bytes(block),
                                           block.mss(),
                                           block.retransmit_count == 1);
+            }
+            if (block.probe_state.in_flight()) {
+                block.recovery.count_probe();
             }
             block.probe_state.forget();  // RFC 8985 7.1; Linux's `tcp_enter_loss` clears `tlp_high_seq`
             std::ignore = resend(block, block.queue.head());
@@ -1286,8 +1312,10 @@ namespace aloe::tcp::detail {
          * (`set_timer`): entries still waiting are left to the next ACK. An expiry is no retry: it moves neither the
          * retry count nor the backoff, and the user timeout bounds it through the RTO's moment, which it never passes:
          * an expiry at the user timeout's moment times the connection out there, detects nothing and resends nothing.
-         * A resend that clears the last lost mark may leave room for new data: the connection gets its Writable hint
-         * (`hint_if_writable_rose`).
+         * That check departs from Linux, whose `tcp_rack_reo_timeout` never reads the user timeout: only
+         * `tcp_retransmit_timer` does, through `tcp_write_timeout`, so Linux resends at that moment and times the
+         * connection out at the RTO's expiry after it. A resend that clears the last lost mark may leave room for new
+         * data: the connection gets its Writable hint (`hint_if_writable_rose`).
          *
          * Where this differs from `tcp_rack_reo_timeout`: entering recovery, Linux steps its rate reduction as if one
          * segment were delivered, which allows the same one segment; in recovery it steps nothing and its window
@@ -1323,7 +1351,10 @@ namespace aloe::tcp::detail {
          * else: no retry and no backoff, no episode, no mark cleared, no rate reduction.
          *
          * The user timeout bounds the probe through the RTO's moment, which the probe's deadline never passes: an
-         * expiry at the user timeout's moment times the connection out there and sends no probe.
+         * expiry at the user timeout's moment times the connection out there and sends no probe. That check departs
+         * from Linux, whose `tcp_send_loss_probe` never reads the user timeout: only `tcp_retransmit_timer` does,
+         * through `tcp_write_timeout`, so Linux sends the probe and times the connection out at the RTO's expiry
+         * after it.
          *
          * When no probe goes, or IP refused it, the RTO keeps the moment it had, `rto_at`, as Linux's `tcp_rearm_rto`
          * arms what is left of the RTO after an expiry of the probe's timer; Linux counts that from the head's last

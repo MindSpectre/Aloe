@@ -1,10 +1,12 @@
 #pragma once
 
 #include <algorithm>
+#include <aloe/core>
 #include <aloe/wire>
 #include <cassert>
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 #include <congestion_control.hpp>
 #include <detail/rate_reduction.hpp>
@@ -29,8 +31,16 @@ namespace aloe::tcp::detail {
      * serial comparison never sees `recover` half the space behind.
      *
      * It decides nothing about which entries are lost or resent: the stack marks, tells it what happened, and reads
-     * the window. It owns the state, `recover`, the duplicate count, the policy's state and the copy of it taken as an
-     * episode begins, for the undo, and it holds the rate reduction.
+     * the window. It owns the state, `recover`, the duplicate count, the policy's state and the undo's record, and it
+     * holds the rate reduction.
+     *
+     * The undo's record (Linux's `tcp_init_undo`) is opened by every episode that sets a target: the episode's start,
+     * SND.UNA as it began; the policy's state then; the stamp of the episode's first resend; and how many resends may
+     * still be reported as duplicates, which a tail probe still in flight as the episode began starts at one. A new
+     * episode replaces the record and an undo closes it, so an episode is undone at most once; the end of an episode
+     * leaves it open, since the duplicate reports trail the resends. Its two signs (`tcp_may_undo`): every resend
+     * counted was reported as a duplicate (`every_resend_reported`), or an ACK that moved SND.UNA answers an original
+     * (`answers_original`). Which sign is read on which ACK, and what else an undo clears, is the stack's.
      *
      * The duplicate count also stands in for the peer's reports on a connection without SACK, as Linux emulates them
      * (`tcp_add_reno_sack`, `tcp_remove_reno_sacks`), in bytes: each duplicate is one segment the peer holds above the
@@ -146,8 +156,9 @@ namespace aloe::tcp::detail {
 
         /**
          * An entry was marked lost while open, or a resend was found lost again in the loss state: `recover` is one
-         * before `nxt`, the policy's state is copied for the undo, the policy is told of the congestion, which from
-         * the loss state too sets a new target, as Linux's `tcp_enter_recovery` does, and PRR begins with `recover_fs`.
+         * before `nxt`, the undo's record opens with the policy's state copied and `nxt - flight`, SND.UNA, as the
+         * episode's start, the policy is told of the congestion, which from the loss state too sets a new target, as
+         * Linux's `tcp_enter_recovery` does, and PRR begins with `recover_fs`.
          *
          * The policy hears `flight`, SND.NXT - SND.UNA, less what was sent beyond its window. RFC 5681 3.2 step 2: data
          * sent by limited transmit "MUST NOT be included" in the flight the target is computed from. Limited transmit
@@ -161,7 +172,7 @@ namespace aloe::tcp::detail {
                             const std::uint16_t mss) noexcept {
             assert(state_ != RecoveryState::Recovery && "an episode of recovery begins once");
             recover_ = wire::TcpSequence{nxt.value - 1};
-            prior_   = congestion_;
+            open_undo(wire::TcpSequence{nxt.value - flight});
             CongestionControl::on_congestion(
                 congestion_, std::min(flight, CongestionControl::window(congestion_)), mss);
             state_ = RecoveryState::Recovery;
@@ -216,12 +227,13 @@ namespace aloe::tcp::detail {
             return ack.after(recover_);
         }
 
-        /// The episode ends: from recovery the policy's window becomes its target; the state is open and the duplicate
-        /// count is cleared. `recover` slides with `ack` only when `ack` covers more than it. An episode that ends at
-        /// exactly the ACK that covers `recover` leaves it in place, so duplicates at that acknowledgement begin no
-        /// recovery until an ACK of new data moves SND.UNA above it.
+        /// The episode ends: from recovery the policy's window becomes its target, unless the episode was undone, as
+        /// Linux's `tcp_end_cwnd_reduction` tests `undo_marker`; the state is open and the duplicate count is cleared.
+        /// The undo's record stays open. `recover` slides with `ack` only when `ack` covers more than it. An episode
+        /// that ends at exactly the ACK that covers `recover` leaves it in place, so duplicates at that acknowledgement
+        /// begin no recovery until an ACK of new data moves SND.UNA above it.
         void end(const wire::TcpSequence ack) noexcept {
-            if (state_ == RecoveryState::Recovery) {
+            if (state_ == RecoveryState::Recovery && undo_open_) {
                 CongestionControl::on_recovery_end(congestion_);
             }
             state_   = RecoveryState::Open;
@@ -234,9 +246,11 @@ namespace aloe::tcp::detail {
         /**
          * The RTO expired. The policy's target is set again only when this window was not reduced yet: the state was
          * open, or `una` already covers `recover`, or the state was loss and `first_expiry` (the first since an ACK of
-         * new data); Linux's `tcp_enter_loss`. Then the policy's state is copied first, as when recovery begins, and
-         * the policy hears the flight as it is. In every case the policy's window restarts at `in_flight` plus one
-         * segment, the state is loss, `recover` is one before `nxt` and the duplicate count is cleared.
+         * new data); Linux's `tcp_enter_loss`. Then the undo's record opens first, with `una` as the episode's start
+         * and the policy's state copied, as when recovery begins, and the policy hears the flight as it is; otherwise
+         * the record stays the one this window's reduction opened. In every case the policy's window restarts at
+         * `in_flight` plus one segment, the state is loss, `recover` is one before `nxt` and the duplicate count is
+         * cleared.
          */
         void on_timeout(const wire::TcpSequence una,
                         const wire::TcpSequence nxt,
@@ -246,7 +260,7 @@ namespace aloe::tcp::detail {
                         const bool first_expiry) noexcept {
             if (state_ == RecoveryState::Open || una.after(recover_) ||
                 (state_ == RecoveryState::Loss && first_expiry)) {
-                prior_ = congestion_;
+                open_undo(una);
                 CongestionControl::on_congestion(congestion_, flight, mss);
             }
             CongestionControl::on_timeout(congestion_, in_flight, mss);
@@ -256,17 +270,120 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * An ACK of new data, open or in the loss state: the policy hears of it; open, `recover` slides with `ack`.
-         * The duplicate count is cleared. The guard compares in serial arithmetic, which reads a `recover` left more
-         * than 2^31 behind as ahead, so one set at the open or by the last episode would refuse every recovery after
-         * 2 GiB; hence the slide. In the loss state `recover` stays: the episode is measured against it.
+         * An ACK of new data, open or in the loss state: the policy hears of it; open, `recover` slides with `ack`,
+         * but for an episode's `recover` that `ack` does not reach, which only an undo that reopened short of it leaves
+         * (`holds_guard`). The duplicate count is cleared. The guard compares in serial arithmetic, which reads a
+         * `recover` left more than 2^31 behind as ahead, so one set at the open or by the last episode would refuse
+         * every recovery after 2 GiB; hence the slide. In the loss state `recover` stays: the episode is measured
+         * against it.
          */
         void on_ack(const AckInfo& info, const wire::TcpSequence ack) noexcept {
             assert(state_ != RecoveryState::Recovery && "the window in recovery is not the policy's to grow");
             dupacks_ = 0;
             CongestionControl::on_ack(congestion_, info);
-            if (state_ == RecoveryState::Open) {
+            if (state_ == RecoveryState::Open && !holds_guard(ack, info.flight)) {
                 slide(ack);
+            }
+        }
+
+        // The undo's record.
+        /// An episode's undo is open.
+        [[nodiscard]] bool undo_open() const noexcept {
+            return undo_open_;
+        }
+
+        /// A resend of the episode left, not a probe: counted, and the first one's stamp kept. Nothing while no undo is
+        /// open: a new episode replaces the record before its first resend.
+        ///
+        /// Where this departs from Linux's `tcp_retransmit_skb`, which stamps `retrans_stamp` and counts `undo_retrans`
+        /// at every attempt, one the busy rule defers included: a resend counts here once it left, so an ACK that
+        /// moves SND.UNA while the first one still waits for its packet answers an original (`answers_original`), as
+        /// the spec's "Undo" has it.
+        void on_resend(const core::TimePoint now) noexcept {
+            if (!undo_open_) {
+                return;
+            }
+            ++unreported_;
+            resends_counted_ = true;
+            if (!first_resend_) {
+                first_resend_ = now;
+            }
+        }
+
+        /// A probe was in flight when the episode began: one more resend that may be reported.
+        ///
+        /// Where this departs from Linux's `tcp_init_undo`: it also counts the resends of an earlier episode still in
+        /// flight (`retrans_out`), and the probe while `tlp_high_seq` is set, its verdict open; here only the probe,
+        /// and only while it is in flight. A report of a probe whose end SND.UNA already covers ends at or below the
+        /// episode's start and could never count down (`on_duplicate_report`).
+        void count_probe() noexcept {
+            if (undo_open_) {
+                ++unreported_;
+                resends_counted_ = true;
+            }
+        }
+
+        /// A believed duplicate report for resent data that ends above the episode's start: one resend fewer to wait
+        /// for, never below none.
+        ///
+        /// Where this departs from Linux, which counts down `undo_retrans` by the segments a report covers
+        /// (`tcp_check_dsack` for data already acknowledged, `tcp_sacktag_one` for each resent buffer still queued):
+        /// one resend per report here, which a peer reports one segment at a time; and for queued data Linux counts
+        /// only a buffer that was resent, where the caller's belief, no more duplicates reported than segments ever
+        /// resent (`RetransmissionQueue::duplicate_report`), stands for that test.
+        void on_duplicate_report(const wire::TcpSequence end) noexcept {
+            if (undo_open_ && unreported_ > 0 && end.after(episode_start_)) {
+                --unreported_;
+            }
+        }
+
+        /// The first sign, `tcp_try_undo_dsack`'s: resends were counted and every one was reported.
+        [[nodiscard]] bool every_resend_reported() const noexcept {
+            return resends_counted_ && unreported_ == 0;
+        }
+
+        /**
+         * The second sign, Linux's `tcp_packet_delayed`, for an ACK that moved SND.UNA: nothing of the episode was
+         * resent yet, or `echo` is older than `first_resend_value`, the timestamp value of the first resend, in the
+         * serial arithmetic of timestamp values. Either is missing without timestamps, and the caller passes no echo
+         * of zero. The values tick in milliseconds: an original sent in its first resend's millisecond cannot be told
+         * from it, and gives no sign. Linux's two exceptions to "nothing resent yet" have nothing to guard here: the
+         * first resend's stamp is cleared only by a new episode, where Linux's `tcp_is_non_sack_preventing_reopen`
+         * clears `retrans_stamp` within one, and no record is open in the handshake, where `tcp_clean_rtx_queue`
+         * clears it.
+         */
+        [[nodiscard]] bool answers_original(const std::optional<std::uint32_t> echo,
+                                            const std::optional<std::uint32_t> first_resend_value) const noexcept {
+            if (!first_resend_) {
+                return true;
+            }
+            return echo && first_resend_value && static_cast<std::int32_t>(*echo - *first_resend_value) < 0;
+        }
+
+        /// The stamp of the episode's first resend, for the caller to turn into a timestamp value.
+        [[nodiscard]] std::optional<core::TimePoint> first_resend() const noexcept {
+            return first_resend_;
+        }
+
+        /**
+         * The reduction is taken back, Linux's `tcp_undo_cwnd_reduction`: the policy's `on_undo` with the state copied
+         * at the start, and the undo closes; nothing once it is closed. `reopen` also ends the episode: the state is
+         * open and the duplicate count cleared, as `end` leaves them, but the window stays the one restored.
+         *
+         * `recover` stays where the episode set it. An undo that reopens short of it, on a partial ACK or in the loss
+         * state, keeps RFC 6582's guard of the episode: duplicates its needless resends draw begin no recovery until an
+         * ACK covers more than the highest sequence out when it began, as after a timeout that was not undone, and
+         * `on_ack` does not slide it back meanwhile. At the ACK that covers it, the guard admits what `end` would.
+         */
+        void undo(const bool reopen) noexcept {
+            if (!undo_open_) {
+                return;
+            }
+            CongestionControl::on_undo(congestion_, prior_);
+            undo_open_ = false;
+            if (reopen) {
+                state_   = RecoveryState::Open;
+                dupacks_ = 0;
             }
         }
 
@@ -285,6 +402,28 @@ namespace aloe::tcp::detail {
             recover_ = wire::TcpSequence{ack.value - 2};
         }
 
+        /// `recover` is at or ahead of `ack`, by less than `flight`, SND.NXT - SND.UNA before the ACK: an episode's,
+        /// which lies below SND.NXT, not yet covered. Ahead by more, it is a `recover` left 2^31 behind.
+        [[nodiscard]] bool holds_guard(const wire::TcpSequence ack, const std::uint32_t flight) const noexcept {
+            const std::int32_t ahead = recover_ - ack;
+            return ahead >= 0 && static_cast<std::uint32_t>(ahead) < flight;
+        }
+
+        /**
+         * An episode sets a target: the undo's record opens anew from `start`, SND.UNA, with the policy's state as it
+         * is, nothing resent and nothing to report, whatever an earlier episode left. Linux's `tcp_init_undo` with the
+         * state `tcp_enter_recovery` and `tcp_enter_loss` copy, but as it is: Linux records the old target as at least
+         * three quarters of the old window (`tcp_current_ssthresh`), which is not copied.
+         */
+        void open_undo(const wire::TcpSequence start) noexcept {
+            prior_           = congestion_;
+            undo_open_       = true;
+            episode_start_   = start;
+            first_resend_    = std::nullopt;
+            unreported_      = 0;
+            resends_counted_ = false;
+        }
+
         /// PRR runs, and its window is the connection's: in recovery, under a policy whose target is bounded. A policy
         /// with no target has nothing to reduce, as Linux leaves the window alone when the threshold is infinite
         /// (`tcp_end_cwnd_reduction`).
@@ -297,8 +436,14 @@ namespace aloe::tcp::detail {
         std::uint8_t dupacks_ = 0;
         wire::TcpSequence recover_{};  ///< The highest sequence out as the episode began; open, slid below SND.UNA.
         State congestion_{};           ///< The policy's state; reset where the connection is Established.
-        State prior_{};                ///< The policy's state as the episode began: what an undo restores.
         RateReduction rate_{};         ///< The window in recovery.
+        // The undo's record.
+        State prior_{};                      ///< The policy's state as the episode began: what an undo restores.
+        bool undo_open_           = false;   ///< An episode's undo is open: opened as it began, closed by its undo.
+        bool resends_counted_     = false;   ///< Some resend was counted: a count of none means every one was reported.
+        std::uint32_t unreported_ = 0;       ///< Resends counted and not yet reported as duplicates.
+        wire::TcpSequence episode_start_{};  ///< SND.UNA as the episode began.
+        std::optional<core::TimePoint> first_resend_{};  ///< The episode's first resend that left.
     };
 
 }  // namespace aloe::tcp::detail
