@@ -352,8 +352,11 @@ TEST_P(TcpRefusingNextHopGone, AFinTheDeviceRefusedLeavesAtTheNextPollOnceTheNex
     ASSERT_EQ(fin.size(), 1U) << "the poll sent the FIN, not the next RTO";
     EXPECT_TRUE(aloe::testing::is_flags(fin[0], {aloe::wire::TcpFlag::Fin, aloe::wire::TcpFlag::Ack}));
     EXPECT_EQ(c->rto(), 200ms) << "a send that never left lost nothing: no backoff";
+    // The FIN's one transmission was the poll's: the expiry's resend found no next hop and never left, so nothing of
+    // the loss episode was resent, and the ACK of the FIN answers an original and undoes the expiry's reduction.
     receive(peer_.ack(fin[0]));
     EXPECT_EQ(c->state(), aloe::tcp::State::FinWait2);
+    EXPECT_EQ(tcp_->counters().undos_original_ack, 1U);
 }
 
 TEST_P(TcpSendQueue, EstablishedSetsANodeAsideForTheFin) {

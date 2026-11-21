@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <aloe/core>
 #include <aloe/fabric>
 #include <aloe/frames>
@@ -7,8 +8,13 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <optional>
+#include <random>
+#include <span>
+#include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -147,6 +153,191 @@ namespace {
     /// leaves the entries before it 2.5 ms to arrive. At a round trip of zero the window would be zero too, and RACK
     /// would mark them at once.
     using TcpScoreboardBrick = aloe::testing::SackBrick<aloe::testing::TcpFixture>;
+
+    /// The randomized test's stream: the byte at each offset from its first, with no period a misplaced segment could
+    /// match.
+    [[nodiscard]] std::byte stream_byte(const std::uint32_t offset) noexcept {
+        return std::byte{static_cast<std::uint8_t>(offset ^ (offset >> 8U) ^ (offset >> 16U))};
+    }
+
+    /// A part of the stream, as offsets from its first byte.
+    struct Range {
+        std::uint32_t first = 0;
+        std::uint32_t end   = 0;
+    };
+
+    /**
+     * @brief The randomized test's receiver: what it holds of the stream, as ranges of offsets. It answers each segment
+     * with a cumulative ACK and up to four blocks, as many as the option space leaves, the newest first; a segment it
+     * already had with a duplicate report in front of them (RFC 2883), then, when that segment lies above the ACK, the
+     * block that holds it. It may forget its highest range, as a receiver that releases what it held and had reported.
+     */
+    class ModelReceiver {
+    public:
+        struct Answer {
+            std::uint32_t ack = 0;
+            std::vector<Range> blocks;
+        };
+
+        /// `blocks`, the most an answer carries: four, or three beside a timestamp option.
+        explicit ModelReceiver(const std::size_t blocks) noexcept
+            : blocks_{blocks} {
+        }
+
+        /// When `forget`, the highest range held above the ACK is forgotten first; then the segment of `payload` at
+        /// `first` is taken in and answered.
+        [[nodiscard]] Answer
+        receive(const std::uint32_t first, const std::span<const std::byte> payload, const bool forget) {
+            if (forget && !held_.empty()) {
+                held_.erase(std::ranges::max_element(held_, {}, &Range::first));
+                ++forgotten_;
+            }
+            const auto end = static_cast<std::uint32_t>(first + payload.size());
+            for (std::uint32_t at = 0; at < payload.size(); ++at) {
+                if (payload[at] != stream_byte(first + at)) {
+                    ++corrupt_;
+                    break;
+                }
+            }
+            Answer answer{};
+            std::optional<Range> holder{};
+            if (end <= next_) {
+                answer.blocks.push_back(Range{.first = first, .end = end});
+            } else if (const auto found = std::ranges::find_if(
+                           held_,
+                           [first, end](const Range& range) { return range.first <= first && end <= range.end; });
+                       found != held_.end()) {
+                holder = *found;
+                answer.blocks.push_back(Range{.first = first, .end = end});
+                answer.blocks.push_back(*holder);
+            } else {
+                take(Range{.first = std::max(first, next_), .end = end});
+            }
+            answer.ack = next_;
+            for (const Range& range : held_) {
+                if (answer.blocks.size() == blocks_) {
+                    break;
+                }
+                if (!holder || range.first != holder->first) {
+                    answer.blocks.push_back(range);
+                }
+            }
+            return answer;
+        }
+
+        /// Everything before it was received in order.
+        [[nodiscard]] std::uint32_t next() const noexcept {
+            return next_;
+        }
+
+        /// Segments with a byte that is not the stream's at its offset.
+        [[nodiscard]] std::uint64_t corrupt() const noexcept {
+            return corrupt_;
+        }
+
+        [[nodiscard]] std::uint64_t forgotten() const noexcept {
+            return forgotten_;
+        }
+
+    private:
+        /// `range` merged with every range it touches, the newest; RCV.NXT moves past it when it reaches it.
+        void take(Range range) {
+            for (auto at = held_.begin(); at != held_.end();) {
+                if (at->end < range.first || range.end < at->first) {
+                    ++at;
+                    continue;
+                }
+                range.first = std::min(range.first, at->first);
+                range.end   = std::max(range.end, at->end);
+                at          = held_.erase(at);
+            }
+            if (range.first <= next_) {
+                next_ = std::max(next_, range.end);
+                return;
+            }
+            held_.insert(held_.begin(), range);
+        }
+
+        std::size_t blocks_ = 0;
+        std::uint32_t next_ = 0;
+        std::vector<Range> held_;  ///< Above `next_`, disjoint, the newest first.
+        std::uint64_t corrupt_   = 0;
+        std::uint64_t forgotten_ = 0;
+    };
+
+    /**
+     * @brief The randomized test's path from the sender to the receiver: every segment arrives `delay` steps after it
+     * left, in order, but 5 in 100 are dropped, 2 in 100 arrive twice and 10 in 100 are held back behind up to four
+     * later segments, or, when fewer follow, `longest_hold` steps at most. The ACKs come back at once, so a round trip
+     * is `delay` steps.
+     */
+    class ModelChannel {
+    public:
+        static constexpr int delay        = 5;
+        static constexpr int longest_hold = 4;
+
+        void send(aloe::frames::ParsedFrame frame, const int step, std::mt19937& engine) {
+            std::uniform_int_distribution<int> percent{0, 99};
+            if (percent(engine) < 5) {
+                ++dropped_;
+                return;
+            }
+            const bool twice  = percent(engine) < 2;
+            const int behind  = percent(engine) < 10 ? std::uniform_int_distribution<int>{1, 4}(engine) : 0;
+            duplicated_      += twice ? 1U : 0U;
+            held_            += behind > 0 ? 1U : 0U;
+            if (twice) {
+                wire_.push_back({.frame = frame, .due = step + delay, .behind = behind});
+            }
+            wire_.push_back({.frame = std::move(frame), .due = step + delay, .behind = behind});
+        }
+
+        /// What arrives at `step`, in the order it arrives: each segment due, in the order they left, but one held
+        /// back, which follows the last of the segments it waited for, or arrives `longest_hold` steps late.
+        [[nodiscard]] std::vector<aloe::frames::ParsedFrame> deliver(const int step) {
+            std::vector<aloe::frames::ParsedFrame> arrived;
+            for (bool moved = true; moved;) {
+                moved = false;
+                for (auto at = wire_.begin(); at != wire_.end() && at->due <= step; ++at) {
+                    if (at->behind > 0 && step - at->due < longest_hold) {
+                        continue;
+                    }
+                    for (auto waiting = wire_.begin(); waiting != at; ++waiting) {
+                        waiting->behind -= waiting->behind > 0 ? 1 : 0;
+                    }
+                    arrived.push_back(std::move(at->frame));
+                    wire_.erase(at);
+                    moved = true;
+                    break;
+                }
+            }
+            return arrived;
+        }
+
+        [[nodiscard]] std::uint64_t dropped() const noexcept {
+            return dropped_;
+        }
+
+        [[nodiscard]] std::uint64_t duplicated() const noexcept {
+            return duplicated_;
+        }
+
+        [[nodiscard]] std::uint64_t held() const noexcept {
+            return held_;
+        }
+
+    private:
+        struct InTransit {
+            aloe::frames::ParsedFrame frame{};
+            int due    = 0;
+            int behind = 0;  ///< Later segments still to arrive before it.
+        };
+
+        std::deque<InTransit> wire_;
+        std::uint64_t dropped_    = 0;
+        std::uint64_t duplicated_ = 0;
+        std::uint64_t held_       = 0;
+    };
 
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpScoreboardBrick,
@@ -618,8 +809,135 @@ TEST_P(TcpScoreboardBrick, AReportedHeadAcknowledgedInPartAndResentKeepsTheTotal
     EXPECT_EQ(c->reported_bytes(), 0U) << "a reported head at the RTO is reneging: the received marks are cleared";
     EXPECT_EQ(c->lost_bytes(), 300U) << "and everything is lost: the three entries behind the head";
     EXPECT_EQ(c->in_flight(), 50U) << "what is left of the head, resent";
+    // The peer got the resend: its ACK echoes the resend's timestamp, not the SYN-ACK's, so it answers no original.
+    peer_.see(resent[0]);
     receive(ack_of(at(500)));
     EXPECT_EQ(c->queued_segments(), 0U);
     EXPECT_EQ(c->reported_bytes(), 0U) << "nothing left in the totals once every entry is freed";
     EXPECT_EQ(c->in_flight(), 0U);
+    EXPECT_EQ(tcp_->counters().undos_original_ack + tcp_->counters().undos_duplicate_sack, 0U);
+}
+
+// The sender's parts together under a randomized channel: 2000 steps of 1 ms over one connection whose peer is the
+// model receiver, which answers every segment that reaches it; then again over a second connection, to a peer that
+// offers timestamps, whose echoes undo what the first's reports alone cannot, and whose option leaves an answer room
+// for three blocks where the first has four. The tail probe waits two round trips, its allowance at zero. In each of
+// the first 1000 steps the application writes, one time in eight, a burst of up to eight segments of 1 to `mss()`
+// bytes, as far as `writable()` allows: flights with tails, and gaps after them. The 1000 steps left cover a resend
+// lost twice, two RTOs of 205 and 410 ms. After every step what is in flight is within what is unacknowledged, the
+// totals agree with the marks of the entries, no segment that left starts an entry the scoreboard held as received,
+// and every byte the receiver got is the stream's; at the end every byte written arrived in order, the queue is empty
+// and the connection is open.
+TEST_P(TcpScoreboardBrick, ARandomChannelNeverBreaksTheScoreboard) {
+    constexpr int steps         = 2000;
+    constexpr int writing_steps = 1000;
+    configure_tcp({.tail_probe_ack_delay = aloe::core::Duration::zero()});
+    std::mt19937 engine{20261121};  // NOLINT(cert-msc51-cpp): a fixed seed, so the run reproduces
+    aloe::frames::TcpPeer stamped{aloe::testing::peer_spec(aloe::testing::tcp_peer_port + 1), TcpSequence{5000U}};
+    stamped.set_timestamps(100);
+    stamped.set_sack_permitted(true);
+    peer_.set_timestamps(std::nullopt);  // four blocks take the option bytes a timestamp option would share
+
+    struct Run {
+        std::string_view name{};
+        aloe::frames::TcpPeer* peer = nullptr;
+        std::size_t blocks          = 0;
+    };
+
+    for (const Run& run : {
+             Run{.name = "no timestamps, four blocks", .peer = &peer_,   .blocks = 4},
+             Run{.name = "timestamps, three blocks",   .peer = &stamped, .blocks = 3}
+    }) {
+        SCOPED_TRACE(run.name);
+        aloe::frames::TcpPeer& peer = *run.peer;
+        auto* c                     = open_passive(peer, std::chrono::milliseconds{10});
+        ASSERT_NE(c, nullptr);
+        const TcpSequence base = c->committed();  // the stream's first byte
+        const std::size_t mss  = c->mss();
+        ModelReceiver receiver{run.blocks};
+        ModelChannel channel;
+        std::uint32_t offered         = 0;
+        std::uint64_t resent_reported = 0;
+
+        // A segment the stack sent: it must not start an entry marked received, which is read before anything else
+        // moves the marks; then it takes the channel.
+        const auto left = [&](aloe::frames::ParsedFrame frame, const int step) {
+            if (!frame.tcp || aloe::frames::tcp_payload(frame).empty()) {
+                return;
+            }
+            for (std::size_t position = 0; position < c->queued_segments(); ++position) {
+                const auto& entry = tcp_->sent_segment(*c, position);
+                if (!frame.tcp->sequence.before(entry.first) &&
+                    frame.tcp->sequence.before(entry.first + entry.length)) {
+                    resent_reported += entry.reported ? 1U : 0U;
+                    break;
+                }
+            }
+            channel.send(std::move(frame), step, engine);
+        };
+
+        for (int step = 0; step < steps && !HasFailure(); ++step) {
+            SCOPED_TRACE(step);
+            if (step < writing_steps && std::uniform_int_distribution<int>{0, 7}(engine) == 0) {
+                const int writes = std::uniform_int_distribution<int>{1, 8}(engine);
+                for (int write = 0; write < writes && c->writable() > 0; ++write) {
+                    const std::size_t size =
+                        std::min(std::uniform_int_distribution<std::size_t>{1, mss}(engine), c->writable());
+                    std::vector<std::byte> bytes(size);
+                    for (std::size_t at = 0; at < size; ++at) {
+                        bytes[at] = stream_byte(offered + static_cast<std::uint32_t>(at));
+                    }
+                    offered += static_cast<std::uint32_t>(c->send(bytes));
+                }
+            }
+            for (aloe::frames::ParsedFrame& frame : collect()) {
+                left(std::move(frame), step);
+            }
+            for (const aloe::frames::ParsedFrame& frame : channel.deliver(step)) {
+                const auto first = static_cast<std::uint32_t>(frame.tcp->sequence - base);
+                // RFC 7323's TS.Recent: the value of a segment at or below RCV.NXT that is no older than the last.
+                const std::optional<aloe::wire::TcpOptions> options =
+                    aloe::wire::TcpOptions::parse(aloe::frames::tcp_options_of(frame));
+                if (first <= receiver.next() && options && options->timestamp_value &&
+                    (!peer.ts_seen() || static_cast<std::int32_t>(*options->timestamp_value - *peer.ts_seen()) >= 0)) {
+                    peer.see(frame);
+                }
+                const bool forget                  = std::uniform_int_distribution<int>{0, 49}(engine) == 0;
+                const ModelReceiver::Answer answer = receiver.receive(first, aloe::frames::tcp_payload(frame), forget);
+                std::vector<Block> blocks;
+                blocks.reserve(answer.blocks.size());
+                for (const Range& range : answer.blocks) {
+                    blocks.push_back(Block{.first = base + range.first, .end = base + range.end});
+                }
+                receive(blocks.empty() ? peer.segment({aloe::wire::TcpFlag::Ack}, {}, peer.snd_nxt(), base + answer.ack)
+                                       : peer.sack(base + answer.ack, blocks));
+                for (aloe::frames::ParsedFrame& sent_now : collect()) {
+                    left(std::move(sent_now), step);
+                }
+            }
+            advance(std::chrono::milliseconds{1});
+
+            EXPECT_LE(c->in_flight(), c->unacknowledged());
+            std::uint64_t reported = 0;
+            std::uint64_t lost     = 0;
+            const TcpSequence una  = c->acknowledged();
+            for (std::size_t position = 0; position < c->queued_segments(); ++position) {
+                const auto& entry       = tcp_->sent_segment(*c, position);
+                const TcpSequence from  = una.after(entry.first) ? una : entry.first;
+                const auto uncovered    = static_cast<std::uint32_t>((entry.first + entry.length) - from);
+                reported               += entry.reported ? uncovered : 0U;
+                lost                   += entry.lost ? uncovered : 0U;
+            }
+            EXPECT_EQ(c->reported_bytes(), reported) << "the sum over the entries marked received";
+            EXPECT_EQ(c->lost_bytes(), lost) << "the sum over the entries marked lost";
+            EXPECT_EQ(resent_reported, 0U) << "a segment left that starts an entry marked received";
+            EXPECT_EQ(receiver.corrupt(), 0U) << "a byte the receiver got is not the stream's";
+        }
+        EXPECT_GT(offered, 0U);
+        EXPECT_EQ(receiver.next(), offered) << "every byte written arrived in order";
+        EXPECT_EQ(c->queued_segments(), 0U);
+        EXPECT_EQ(c->recovery_state(), aloe::tcp::RecoveryState::Open);
+        c->release();
+        std::ignore = collect();  // the release's RST
+    }
 }

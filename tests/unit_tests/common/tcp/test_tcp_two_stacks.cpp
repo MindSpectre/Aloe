@@ -3,11 +3,14 @@
 #include <aloe/frames>
 #include <aloe/tcp>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -21,12 +24,28 @@ namespace {
     using Ipv4      = aloe::net::Ipv4<aloe::fabric::Port>;
     using Config    = aloe::tcp::TcpConfig;
     using TimePoint = aloe::core::TimePoint;
+    using aloe::fabric::Action;
+    using aloe::fabric::Egress;
+    using aloe::fabric::Verdict;
+    using aloe::tcp::RecoveryState;
+    using aloe::wire::TcpSequence;
 
     constexpr aloe::wire::MacAddress server_mac{0x02, 0, 0, 0, 0, 0x0a};
     constexpr aloe::wire::MacAddress client_mac{0x02, 0, 0, 0, 0, 0x0b};
     constexpr aloe::wire::Ipv4Address server_ip{10, 0, 0, 10};
     constexpr aloe::wire::Ipv4Address client_ip{10, 0, 0, 11};
-    constexpr std::size_t message = 5000;  ///< More than three segments at MSS 1460.
+    constexpr std::size_t message          = 5000;  ///< More than three segments at MSS 1460.
+    /// Each egress's delay in the cases of loss recovery: a round trip of 10 ms between the two stacks.
+    constexpr aloe::core::Duration one_way = 5ms;
+
+    /// The frame parsed, when it is a TCP segment that carries payload.
+    [[nodiscard]] std::optional<aloe::frames::ParsedFrame> data_segment(const std::span<const std::byte> frame) {
+        std::optional<aloe::frames::ParsedFrame> parsed = aloe::frames::parse_frame(frame);
+        if (!parsed || !parsed->tcp || aloe::frames::tcp_payload(*parsed).empty()) {
+            return std::nullopt;
+        }
+        return parsed;
+    }
 
     /// One brick with its loop state: what a program writes once per shard.
     template <typename CongestionControl>
@@ -98,8 +117,96 @@ namespace {
         BasicBrick<CongestionControl> server_;
         BasicBrick<CongestionControl> client_;
         TimePoint now_{};
+        std::optional<TimePoint> dropped_at_{};  ///< The stamp of the last drop a client script made.
+        std::optional<TimePoint> echoed_at_{};   ///< When `run_echo`'s client had every byte back.
+        std::vector<std::byte> served_;          ///< What `tick` read on the server, in order.
 
-        /// Learns both MACs, listens, connects, and ticks until both ends are Established. Null on failure.
+        /// Both egresses `one_way` late, so a round trip is 10 ms. Set before the handshake, it gives the first sample
+        /// too: the server's is 10 ms; the client's 11 ms, its SYN stamped at `connect` and leaving at the next flush.
+        void delay_both_ways() {
+            server_port_.set_impairment({.delay = one_way});
+            client_port_.set_impairment({.delay = one_way});
+        }
+
+        /// As `delay_both_ways`, and the client's data segments counted in `lost`, from one, are dropped, each once;
+        /// `dropped_at_` is the stamp of the last.
+        void drop_client_data(std::vector<std::size_t> lost) {
+            server_port_.set_impairment({.delay = one_way});
+            client_port_.set_impairment({.delay  = one_way,
+                                         .script = [this, lost = std::move(lost), counted = std::size_t{0}](
+                                                       const Egress& egress) mutable -> std::optional<Verdict> {
+                                             if (!data_segment(egress.frame) ||
+                                                 !std::ranges::contains(lost, ++counted)) {
+                                                 return std::nullopt;
+                                             }
+                                             dropped_at_ = now_;
+                                             return Verdict{.action = Action::Drop};
+                                         }});
+        }
+
+        /// From now on the first transmission of each client data segment that starts at one of `firsts` takes
+        /// `verdict`; every other client frame stays `one_way` late. A drop's stamp is `dropped_at_`.
+        void script_client_segments(std::vector<TcpSequence> firsts, const Verdict verdict) {
+            client_port_.set_impairment({.delay  = one_way,
+                                         .script = [this, firsts = std::move(firsts), verdict](
+                                                       const Egress& egress) mutable -> std::optional<Verdict> {
+                                             const std::optional<aloe::frames::ParsedFrame> segment =
+                                                 data_segment(egress.frame);
+                                             if (!segment) {
+                                                 return std::nullopt;
+                                             }
+                                             const auto found = std::ranges::find(firsts, segment->tcp->sequence);
+                                             if (found == firsts.end()) {
+                                                 return std::nullopt;
+                                             }
+                                             firsts.erase(found);
+                                             if (verdict.action == Action::Drop) {
+                                                 dropped_at_ = now_;
+                                             }
+                                             return verdict;
+                                         }});
+        }
+
+        /// One tick of 1 ms: the fabric steps, the server reads whatever arrived into `served_`, then the client's
+        /// events are drained and `client` runs, before the client's flush.
+        template <std::invocable Work>
+        void tick(const Work& client) {
+            now_ += 1ms;
+            fabric_.advance(now_);
+            server_.receive(now_);
+            while (const auto event = server_.tcp.poll_event()) {
+                auto& s = *event->connection;
+                for (const std::span<const std::byte> chunk : s.unread()) {
+                    served_.insert(served_.end(), chunk.begin(), chunk.end());
+                }
+                s.consume(s.unread().size());
+            }
+            server_.flush(now_);
+            client_.receive(now_);
+            while (client_.tcp.poll_event()) {}
+            client();
+            client_.flush(now_);
+        }
+
+        void tick() {
+            tick([] {});
+        }
+
+        /// 2% loss and 10% reordering on both egresses, each `one_way` late, from fixed seeds. A frame the model
+        /// reorders is held until the next advance, undelayed, so it arrives ahead of the frames sent with it.
+        void lose_and_reorder_both_ways() {
+            client_port_.set_impairment({.loss    = 0.02,
+                                         .reorder = 0.1,
+                                         .delay   = one_way,
+                                         .seed    = 19});  // NOLINT(cert-msc51-cpp): a fixed seed keeps the run
+            server_port_.set_impairment({.loss    = 0.02,
+                                         .reorder = 0.1,
+                                         .delay   = one_way,
+                                         .seed    = 23});  // NOLINT(cert-msc51-cpp): a fixed seed keeps the run
+        }
+
+        /// Learns both MACs, listens, connects, and ticks until both ends are Established. Null on failure. Over a path
+        /// `one_way` late each way the server accepts at the 16th tick.
         [[nodiscard]] typename Tcp::ConnectionType* establish(typename Tcp::ConnectionType*& client) {
             server_.ip.learn(client_ip, client_mac, now_);
             client_.ip.learn(server_ip, server_mac, now_);
@@ -112,7 +219,7 @@ namespace {
             }
             client                               = *session;
             typename Tcp::ConnectionType* server = nullptr;
-            for (int tick = 0; tick < 10 && (server == nullptr || client->state() != aloe::tcp::State::Established);
+            for (int tick = 0; tick < 100 && (server == nullptr || client->state() != aloe::tcp::State::Established);
                  ++tick) {
                 now_ += 1ms;
                 fabric_.advance(now_);
@@ -144,9 +251,11 @@ namespace {
             while (client_.tcp.poll_event()) {}
         }
 
-        /// Connects, sends `bytes`, has the server echo them back and both sides close, within `ticks` of 1 ms.
-        /// Returns whether both closed and the echo matched.
-        [[nodiscard]] bool run_echo(const std::size_t bytes, const int ticks) {
+        /// Connects, sends `bytes` in sends of at most `chunk`, has the server echo them back and both sides close,
+        /// within `ticks` of 1 ms. Returns whether both closed and the echo matched; `echoed_at_` is when it matched.
+        [[nodiscard]] bool run_echo(const std::size_t bytes,
+                                    const int ticks,
+                                    const std::size_t chunk = std::numeric_limits<std::size_t>::max()) {
             server_.ip.learn(client_ip, client_mac, now_);
             client_.ip.learn(server_ip, server_mac, now_);
             if (!server_.tcp.listen(7).has_value()) {
@@ -186,14 +295,22 @@ namespace {
                 client_.receive(now_);
                 while (const auto event = client_.tcp.poll_event()) {
                     if (event->events.connected() || event->events.writable()) {
-                        offered += c.send(std::span<const std::byte>{sent}.subspan(offered));
+                        while (offered < bytes) {
+                            const std::size_t accepted = c.send(
+                                std::span<const std::byte>{sent}.subspan(offered, std::min(chunk, bytes - offered)));
+                            if (accepted == 0) {
+                                break;  // resume on Writable
+                            }
+                            offered += accepted;
+                        }
                     }
                     if (event->events.readable()) {
-                        for (const std::span<const std::byte> chunk : c.unread()) {
-                            echoed.insert(echoed.end(), chunk.begin(), chunk.end());
+                        for (const std::span<const std::byte> read : c.unread()) {
+                            echoed.insert(echoed.end(), read.begin(), read.end());
                         }
                         c.consume(c.unread().size());
                         if (echoed.size() == bytes) {
+                            echoed_at_ = now_;
                             c.close();
                         }
                     }
@@ -501,9 +618,8 @@ TEST_P(TcpTwoStacks, DelayedSegmentsArriveInOrderAfterTheStep) {
 }
 
 // The receive side between two Aloe stacks: both offer SACK-permitted, window scaling and timestamps, so the receiver
-// holds what arrives above a gap and reports it, and the sender may fill a window past what 16 bits state. Aloe's own
-// sender does not read SACK blocks: behind a loss it counts duplicate ACKs, and no case here expects new data to flow
-// while it recovers.
+// holds what arrives above a gap and reports it, and the sender may fill a window past what 16 bits state. The sender
+// reads those reports: the cases of its loss recovery between two stacks follow at the end of the file.
 
 TEST_P(TcpTwoStacks, BothOptionsAreNegotiatedBetweenTwoStacks) {
     Tcp::ConnectionType* c = nullptr;
@@ -618,4 +734,215 @@ TEST_P(TcpTwoStacksLongFlight, AWindowPast65535BytesIsUsed) {
     EXPECT_EQ(server_.tcp.counters().dropped_out_of_window + server_.tcp.counters().dropped_no_slot, 0U);
     c->release();
     s->release();
+}
+
+// Loss recovery between two Aloe stacks, each egress `one_way` late from before the handshake: the round trip is 10 ms,
+// the client's smoothed round trip about 11 ms, so a tail probe waits about 22 ms, and 40 ms more for a lone segment;
+// RACK's reordering window is a quarter of the minimum round trip, 2.5 ms; the RTO is srtt plus `rto_min`, over 200 ms.
+// Both stacks offer timestamps, so a full segment carries 1448 bytes. The fabric is advanced once per tick.
+
+TEST_P(TcpTwoStacks, TheLastSegmentOfAFlightIsResentByTheProbe) {
+    drop_client_data({3});
+    // A flight of three at the 11th tick, the third lost. The ACK of the first two, at the 21st, leaves the third alone
+    // in flight: its probe goes 2 * 10.875 + 40 ms later, at the 83rd tick, and the echo completes at the 93rd, 82 ms
+    // after the drop.
+    EXPECT_TRUE(run_echo(3U * 1448U, 2000));
+    const auto& cc = client_.tcp.counters();
+    EXPECT_EQ(client_port_.impairment_counters().dropped, 1U);
+    EXPECT_GE(cc.tail_probes, 1U);
+    EXPECT_EQ(cc.retransmits, 0U) << "no expiry of the RTO";
+    ASSERT_TRUE(dropped_at_.has_value());
+    ASSERT_TRUE(echoed_at_.has_value());
+    EXPECT_LT(*echoed_at_ - *dropped_at_, 100ms) << "well before the RTO";
+    EXPECT_GE(client_.tcp.config().rto_min, 200ms) << "the RTO, which never drops below rto_min";
+}
+
+TEST_P(TcpTwoStacks, ALoneSegmentLostIsResentByTheProbe) {
+    drop_client_data({1});
+    // One order of 100 bytes at the 11th tick, lost: its probe goes 2 * 11 + 40 ms later, before the RTO's 211 ms.
+    EXPECT_TRUE(run_echo(100, 2000));
+    const auto& cc = client_.tcp.counters();
+    EXPECT_EQ(client_port_.impairment_counters().dropped, 1U);
+    EXPECT_EQ(cc.tail_probes, 1U);
+    EXPECT_EQ(cc.retransmits, 0U);
+}
+
+TEST_P(TcpTwoStacks, TwoLoneSegmentsLostInARowAreBothProbed) {
+    delay_both_ways();
+    Tcp::ConnectionType* c = nullptr;
+    Tcp::ConnectionType* s = establish(c);
+    ASSERT_NE(s, nullptr);
+    // The first transmission of each of two orders is lost. The first's probe is acknowledged exactly at its end, which
+    // leaves its verdict open, and the echo of the probe gives a sample; the second's probe goes all the same, closing
+    // that verdict as a loss repaired: Aloe's departure from RFC 8985 7.3 and 7.4.2.
+    constexpr std::size_t order = 100;
+    const TcpSequence first     = c->committed();
+    script_client_segments({first, first + order}, Verdict{.action = Action::Drop});
+    for (int sent = 0; sent < 2; ++sent) {
+        ASSERT_EQ(c->send(aloe::frames::pattern(order)), order);
+        client_.flush(now_);
+        for (int t = 0; t < 1000 && c->unacknowledged() > 0; ++t) {
+            tick();
+        }
+        ASSERT_EQ(c->unacknowledged(), 0U) << "order " << sent;
+    }
+    const auto& cc = client_.tcp.counters();
+    EXPECT_EQ(client_port_.impairment_counters().dropped, 2U);
+    EXPECT_EQ(cc.tail_probes, 2U);
+    EXPECT_EQ(cc.tail_probes_early, 1U);
+    EXPECT_EQ(cc.retransmits, 0U);
+    EXPECT_EQ(served_.size(), 2U * order);
+    c->release();
+    s->release();
+}
+
+TEST_P(TcpTwoStacks, AFrameHeldBehindTheNextCausesNoResend) {
+    delay_both_ways();
+    Tcp::ConnectionType* c = nullptr;
+    Tcp::ConnectionType* s = establish(c);
+    ASSERT_NE(s, nullptr);
+    // The fourth of a flight of five is one tick later than its flight, so it arrives behind the fifth, the next. The
+    // fabric's own `Reorder` would not do on this path: it holds a frame until the next advance and delivers it then,
+    // undelayed, four milliseconds ahead of the flight it belongs to. The report of the fifth leaves the fourth RACK's
+    // window to arrive in, a quarter of the 10 ms minimum round trip; its ACK comes 1 ms after the report, fills the
+    // hole below the highest sequence reported, and is reordering seen.
+    const TcpSequence first = c->committed();
+    const std::size_t mss   = c->mss();
+    const auto flight       = aloe::frames::pattern(5U * mss);
+    script_client_segments({first + static_cast<std::uint32_t>(3U * mss)},
+                           Verdict{.action = Action::Delay, .delay = one_way + 1ms});
+    ASSERT_EQ(c->send(flight), flight.size());
+    client_.flush(now_);
+    for (int t = 0; t < 1000 && c->unacknowledged() > 0; ++t) {
+        tick();
+    }
+    ASSERT_EQ(c->unacknowledged(), 0U);
+    const auto& cc = client_.tcp.counters();
+    EXPECT_EQ(cc.fast_retransmits, 0U);
+    EXPECT_EQ(cc.tail_probes, 0U);
+    EXPECT_EQ(cc.retransmits, 0U);
+    EXPECT_EQ(cc.reordering_seen, 1U);
+    EXPECT_EQ(served_, flight);
+    c->release();
+    s->release();
+}
+
+TEST_P(TcpTwoStacks, AFrameHeldBehindFourIsResentOnceAndNotTheSecondTime) {
+    delay_both_ways();
+    Tcp::ConnectionType* c = nullptr;
+    Tcp::ConnectionType* s = establish(c);
+    ASSERT_NE(s, nullptr);
+    // Twice a flight of six whose second segment is 3 ms later than the rest, behind the four after it, and one more
+    // segment half a round trip after the flight. The first time reordering was never seen: once three segments are
+    // reported the window is zero, the second is marked lost and resent, and recovery begins with the seventh out. The
+    // late original arrived before the resend left, and the ACK of it, which echoes the original's timestamp and leaves
+    // the seventh unacknowledged, is a partial ACK in recovery that answers an original: reordering is recorded, and
+    // with the resend acknowledged by it the reduction is undone (Linux's `tcp_try_undo_partial`). The resend arrives
+    // as a duplicate, and its report, reordering seen, doubles the window to twice a quarter of the 10 ms minimum round
+    // trip, 5 ms. The second time RACK waits that long for the late segment, whose ACK comes 3 ms after the report.
+    //
+    // The seventh is what makes that ACK partial. Without it the ACK of the late original covers all that was sent and
+    // ends recovery, where the undo records no reordering, as Linux's `tcp_try_undo_recovery` records none and RFC
+    // 8985 counts no resent segment as reordered, and the second flight is resent too.
+    const TcpSequence first = c->committed();
+    const std::size_t mss   = c->mss();
+    script_client_segments({first + static_cast<std::uint32_t>(mss), first + static_cast<std::uint32_t>(8U * mss)},
+                           Verdict{.action = Action::Delay, .delay = one_way + 3ms});
+    const auto& cc = client_.tcp.counters();
+    for (int flight = 0; flight < 2; ++flight) {
+        ASSERT_EQ(c->send(aloe::frames::pattern(6U * mss)), 6U * mss);
+        client_.flush(now_);
+        for (int t = 0; t < 5; ++t) {
+            tick();
+        }
+        ASSERT_EQ(c->send(aloe::frames::pattern(mss)), mss);
+        client_.flush(now_);
+        for (int t = 0; t < 25; ++t) {  // the resend's duplicate report is back two round trips after the flight
+            tick();
+        }
+        ASSERT_EQ(c->unacknowledged(), 0U) << "flight " << flight;
+        EXPECT_EQ(cc.fast_retransmits, 1U) << "flight " << flight;
+        EXPECT_EQ(cc.undos_original_ack + cc.undos_duplicate_sack, 1U) << "flight " << flight;
+    }
+    EXPECT_EQ(cc.retransmits, 0U);
+    EXPECT_EQ(served_.size(), 14U * mss);
+    c->release();
+    s->release();
+}
+
+TEST_P(TcpTwoStacks, NewDataFlowsDuringRecovery) {
+    delay_both_ways();
+    Tcp::ConnectionType* c = nullptr;
+    Tcp::ConnectionType* s = establish(c);
+    ASSERT_NE(s, nullptr);
+    // Twenty full segments, written as `writable()` allows; the first transmission of the fourth is lost. Three
+    // segments reported behind it mark it lost and begin recovery; PRR lets new data out with its resend.
+    const std::size_t mss   = c->mss();
+    const auto stream       = aloe::frames::pattern(20U * mss);
+    const TcpSequence first = c->committed();
+    script_client_segments({first + static_cast<std::uint32_t>(3U * mss)}, Verdict{.action = Action::Drop});
+    std::size_t offered = 0;
+    std::optional<TcpSequence> at_first_resend;
+    std::optional<TcpSequence> at_recovery_end;
+    for (int t = 0; t < 1000 && (offered < stream.size() || c->unacknowledged() > 0); ++t) {
+        tick([&] {
+            // What was committed as the first resend left, and as the ACK that ended recovery arrived: read after the
+            // receive that did either, before this tick's writes.
+            if (!at_first_resend && client_.tcp.counters().fast_retransmits > 0) {
+                at_first_resend = c->committed();
+                ASSERT_EQ(c->recovery_state(), RecoveryState::Recovery);
+            } else if (at_first_resend && !at_recovery_end && c->recovery_state() == RecoveryState::Open) {
+                at_recovery_end = c->committed();
+            }
+            while (offered < stream.size() && c->writable() > 0) {
+                const std::size_t accepted = c->send(std::span<const std::byte>{stream}.subspan(
+                    offered, std::min(c->writable(), stream.size() - offered)));
+                if (accepted == 0) {
+                    break;
+                }
+                offered += accepted;
+            }
+        });
+    }
+    ASSERT_EQ(c->unacknowledged(), 0U);
+    ASSERT_TRUE(at_first_resend.has_value());
+    ASSERT_TRUE(at_recovery_end.has_value());
+    EXPECT_TRUE(at_recovery_end->after(*at_first_resend)) << "new data committed while in recovery";
+    const auto& cc = client_.tcp.counters();
+    EXPECT_EQ(client_port_.impairment_counters().dropped, 1U);
+    EXPECT_EQ(cc.recoveries, 1U);
+    EXPECT_EQ(cc.retransmits, 0U);
+    EXPECT_EQ(served_, stream);
+    c->release();
+    s->release();
+}
+
+TEST_P(TcpTwoStacks, ATransferUnderLossAndReorderingDeliversEveryByte) {
+    lose_and_reorder_both_ways();
+    EXPECT_TRUE(run_echo(200000, 60000)) << "every byte echoed in order, whatever the counters say";
+    EXPECT_GT(client_port_.impairment_counters().dropped, 0U) << "the seed loses some of the client's frames";
+    EXPECT_GT(server_port_.impairment_counters().dropped, 0U) << "and some of the server's";
+    EXPECT_GT(client_port_.impairment_counters().reordered, 0U) << "the seed reorders some of the client's frames";
+    EXPECT_GT(server_port_.impairment_counters().reordered, 0U) << "and some of the server's";
+}
+
+TEST_P(TcpTwoStacksNoCongestion, ATransferUnderLossAndReorderingDeliversEveryByte) {
+    lose_and_reorder_both_ways();
+    EXPECT_TRUE(run_echo(200000, 60000)) << "every byte echoed in order, whatever the counters say";
+    EXPECT_GT(client_port_.impairment_counters().dropped, 0U) << "the seed loses some of the client's frames";
+    EXPECT_GT(server_port_.impairment_counters().dropped, 0U) << "and some of the server's";
+    EXPECT_GT(client_port_.impairment_counters().reordered, 0U) << "the seed reorders some of the client's frames";
+    EXPECT_GT(server_port_.impairment_counters().reordered, 0U) << "and some of the server's";
+}
+
+TEST_P(TcpTwoStacksFourSlots, AReceiverThatReleasesForRoomDoesNotStallTheSender) {
+    drop_client_data({1});
+    // Six sends of 100 bytes at the 11th tick, the first lost. The server holds the second to the fifth in its four
+    // slots, refuses the sixth, and reports what it holds; the report marks the first lost, and its resend finds every
+    // slot taken by data above it: the server releases the fifth, which it had reported, to take the first. The ACK
+    // of the first four leaves the fifth at the head, reported and gone, and the short timer of reneging clears every
+    // mark and resends. The client's `sack_reneging` may count that; the echo must complete.
+    EXPECT_TRUE(run_echo(600, 2000, 100));
+    EXPECT_EQ(client_port_.impairment_counters().dropped, 1U);
+    EXPECT_GT(server_.tcp.counters().out_of_order_released, 0U);
 }
