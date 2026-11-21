@@ -65,8 +65,8 @@ does; the scenario scripts are Aloe's own. The steps, in order:
    against a floor of raw frames, on DPDK's ring driver with a scripted venue on a second core; per-message
    distributions, recorded in [docs/benchmarks/tick-to-trade.md](benchmarks/tick-to-trade.md) before any step
    adds work to the hot path. Every later step reruns it. The loads and the isolated round that inform the
-   two-core shard follow in a second part. The benchmark exists; its first recorded run waits for a quiet
-   machine with hugepages.
+   two-core shard follow in a second part. The benchmark exists, with a run recorded on hugepages on 2026-10-21,
+   though not on a quiet machine, and step 5's reruns against `main`.
 2. **Packet loan and test tools.** A packet the stack must keep after sending is lent to the device and comes
    back when the device is done with it: TCP sees ownership move and return, never a reference count. The
    DPDK backend implements the loan with the mbuf's reference count, the fabric by holding the packet. A
@@ -114,11 +114,12 @@ does; the scenario scripts are Aloe's own. The steps, in order:
    open, recovery and loss states, with two things beyond the step's first text, Proportional Rate Reduction (RFC 9937)
    for the window in recovery and an undo that gives back a reduction a needless resend caused, by duplicate SACK or by
    the echoed timestamp; and the congestion window grows only while it is in use, so a flow the application limits keeps
-   ten segments until a loss and two after a recovery. Its one departure from an RFC's procedure, by the author's
+   ten segments until a loss and two after a recovery. Its one departure from RFC 8985's procedure, by the author's
    decision, is a second tail probe once the first is acknowledged, so that two lone orders lost in a row are both
-   probed where RFC 8985 and Linux leave the second to the RTO. The tap cases against a Linux receiver,
-   `TcpTapRecovery`, wait for a machine with root, beside those of steps 3 and 4.
-   See the [TCP brick](architecture/tcp.md).
+   probed where RFC 8985 and Linux leave the second to the RTO; the TCP page's
+   [note on departures](architecture/tcp.md#where-the-brick-departs-from-the-rfcs-and-from-linux) lists it with the
+   others. The tap cases against a Linux receiver, `TcpTapRecovery`, wait for a machine with root, beside those of
+   steps 3 and 4. See the [TCP brick](architecture/tcp.md).
 6. **Lifecycle and client hardening.** TIME_WAIT, keepalive, the FIN-WAIT-2 timer, ICMP destination
    unreachable and path MTU, and the edge cases the phase 1 reviews left open: a RST for a bad ACK in
    SYN-RECEIVED, refusing a peer MSS of zero or one too small to leave a receive window, reading the

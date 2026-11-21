@@ -380,7 +380,8 @@ RTO, 200 ms, to a lone segment's tail probe, which puts the probe at the RTO's m
 to the probe for several segments and to RACK's reordering timer, where Aloe adds nothing beyond the wheel's tick; sends
 no second tail probe while the first one's verdict is open, so the second of two lone segments lost in a row waits for
 its RTO, where Aloe probes it once the first probe is acknowledged; and probes a zero window only while it holds unsent
-data.
+data. The TCP page's [note on departures](tcp.md#where-the-brick-departs-from-the-rfcs-and-from-linux) lists where the
+brick departs from the RFCs and from Linux.
 
 ## Design notes
 

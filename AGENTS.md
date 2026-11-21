@@ -386,8 +386,9 @@ basenames are unique across modules: `packet.hpp` is the concept,
   echoes a stamp older than an episode's first resend reads as answering the original, and the undo takes the
   reduction back (`undos_original_ack`): a test that is not about the undo has its peer `see` the resend before it
   acknowledges it.
-- Four SACK blocks do not fit beside the timestamp option in forty bytes of options (12 + 2 + 32 = 46), and the frame
-  builder asserts on a longer list: a test that sends four blocks uses a peer without timestamps.
+- Four SACK blocks do not fit beside the timestamp option in forty bytes of options: the builder writes 12 + 36 = 48,
+  two nops and the timestamps, then two nops, the SACK option's kind and length and four blocks of eight, and asserts
+  on more than forty: a test that sends four blocks uses a peer without timestamps.
 - The fabric's `Action::Reorder` holds a frame until the port's next frame is delivered or the next `Fabric::advance`,
   and a frame the impairment delays is not delivered when it is sent, so on a port with `delay` set the held frame goes
   at the next `advance`, with no delay of its own, ahead of the frames it was held behind. A test of a frame held

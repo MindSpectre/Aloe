@@ -26,7 +26,7 @@ the end of phase 2, and the stack makes no deployment or latency claim yet.
 
 - **Done:** phase 0, the shard runtime, and phase 1, minimal TCP.
 - **Phase 2, full TCP, steps 1 to 5 landed:** the tick-to-trade benchmark
-  (its first recorded run waits for a quiet machine with hugepages), packet
+  (a run recorded on hugepages, not yet on a quiet machine), packet
   loan with scripted impairment and a packetdrill-style scenario runner,
   reliable send (RTO, timestamps and PAWS, zero-window probes, fast retransmit
   and NewReno, bounded recovery), the receive side (segments held above a
