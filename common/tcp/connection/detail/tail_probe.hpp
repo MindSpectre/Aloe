@@ -13,14 +13,18 @@ namespace aloe::tcp::detail {
      * and what an ACK means for it.
      *
      * RFC 8985 keeps one variable, `TLP.end_seq`, for two facts that this class keeps apart. The probe is in flight
-     * from the moment it leaves until a cumulative ACK reaches its end, the SND.NXT it was sent at. Its verdict is open
-     * from the moment it leaves until it is known whether it was needless or repaired a loss; an ACK that lands exactly
-     * on the probe's end may answer the original or the probe, so the verdict usually outlives the flight. The flight
-     * is the RFC's limit of one probe out at a time (7.3); the verdict is what its 7.4 reads.
+     * from the moment it leaves until a cumulative ACK reaches its end, the end of the segment it sent again. That is
+     * SND.NXT but while a FIN waits for the peer's window: the stack's SND.NXT counts that FIN from the close, where
+     * the RFC's SND.NXT and Linux's `snd_nxt`, which `tlp_high_seq` takes, count only what was sent. Its verdict is
+     * open from the moment it leaves until it is known whether it was needless or repaired a loss; an ACK that lands
+     * exactly on the probe's end may answer the original or the probe, so the verdict usually outlives the flight. The
+     * flight is the RFC's limit of one probe out at a time (7.3); the verdict is what its 7.4 reads.
      *
      * It owns no timer and sends nothing: the Transmitter arms the probe's timer from `wait` and resends the segment,
-     * the AckProcessor reads what an ACK settled, and a recovery or a timeout forgets both facts. Sequence numbers
-     * compare in serial arithmetic, so the probe's end holds across the wrap.
+     * the AckProcessor reads what an ACK settled, and a recovery or a timeout forgets both facts. A probe whose packet
+     * the device still holds is the probe from the moment the resend accepts it, to leave at the flush; one whose
+     * entry an ACK frees before it leaves never left, and is forgotten too (`Transmitter::acknowledge`). Sequence
+     * numbers compare in serial arithmetic, so the probe's end holds across the wrap.
      */
     class TailProbe {
     public:
@@ -67,8 +71,8 @@ namespace aloe::tcp::detail {
             return end_;
         }
 
-        /// A probe left with SND.NXT at `end`: in flight, verdict open, no sample since. Its end and its verdict
-        /// replace any earlier probe's.
+        /// A probe left, or waits to leave at the flush, ending at `end`, the end of the segment it sends again: in
+        /// flight, verdict open, no sample since. Its end and its verdict replace any earlier probe's.
         void sent(const wire::TcpSequence end) noexcept {
             end_       = end;
             in_flight_ = true;

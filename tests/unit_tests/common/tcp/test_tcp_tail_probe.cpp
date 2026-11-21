@@ -481,6 +481,9 @@ TEST_P(TcpTailProbeBrick, AFinWaitingForTheWindowIsNotTheProbe) {
     EXPECT_FALSE(probe[0].tcp->flags.has(aloe::wire::TcpFlag::Fin));
     EXPECT_EQ(probe[0].tcp->sequence, one[0].tcp->sequence) << "the last segment transmitted, not the FIN";
     EXPECT_EQ(counters().tail_probes, 1U);
+    advance(10ms);
+    receive(peer_.ack(probe[0]));  // the data's ACK, one short of SND.NXT, which counts the FIN
+    EXPECT_FALSE(c->tail_probe_in_flight()) << "the probe ends with the data it sent again, not at SND.NXT";
 }
 
 TEST_P(TcpTailProbeBrick, AProbeTakesNoRetry) {

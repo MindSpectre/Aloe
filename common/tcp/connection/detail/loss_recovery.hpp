@@ -120,9 +120,10 @@ namespace aloe::tcp::detail {
         }
 
         /// Without SACK, what the duplicates stand for as received above the hole: one segment each, Linux's
-        /// `tcp_add_reno_sack` in bytes, before the caller's cap. Nothing in the loss state, where Linux counts a
-        /// duplicate only for the new data F-RTO sent (`tcp_process_loss`), and F-RTO is not built: after a timeout a
-        /// duplicate says nothing of what the peer holds.
+        /// `tcp_add_reno_sack` in bytes, before the caller's cap. Nothing in the loss state, which is stricter than
+        /// Linux: `tcp_process_loss` counts a duplicate there whenever new data went out after the timeout
+        /// (`after(snd_nxt, high_seq)`), which its F-RTO sends. F-RTO is not built, and here a duplicate after a
+        /// timeout stands for nothing the peer holds.
         [[nodiscard]] std::uint32_t duplicate_bytes(const std::uint16_t mss) const noexcept {
             return state_ == RecoveryState::Loss ? 0 : std::uint32_t{dupacks_} * mss;
         }

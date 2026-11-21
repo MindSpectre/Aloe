@@ -115,7 +115,7 @@ namespace aloe::tcp::detail {
             for (ControlBlock* block = deferred_.front(); block != nullptr;) {
                 ControlBlock* next       = DeferredList::next_of(*block);  // a resend that leaves may unlink block
                 const std::size_t before = writable(*block);
-                std::ignore              = resend_lost(*block);
+                resend_lost(*block);
                 retry_probe(*block);
                 hint_if_writable_rose(*block, before);
                 block = next;
@@ -234,8 +234,8 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * The resend pass, Linux's `tcp_xmit_retransmit_queue`: the entries marked lost, lowest sequence first, each
-         * through `resend`, until none is marked, the window allows no more, or one could not leave, refused or
+         * The resend pass, Linux's `tcp_xmit_retransmit_queue`: sends the entries marked lost, lowest sequence first,
+         * each through `resend`, until none is marked, the window allows no more, or one could not leave, refused or
          * waiting for its packet; one that waits keeps the connection on the deferred list, and the flush runs the
          * pass again. RFC 8985 9.3 holds a resend to the congestion window like new data: nothing leaves once what is
          * in flight matches the window (`LossRecovery::may_send`), and an entry marked lost is not in flight until its
@@ -249,10 +249,9 @@ namespace aloe::tcp::detail {
          * entry the timer's expiry tried first. When the entry that left is the head, the RTO is armed from now, as
          * Linux re-arms it on resending the head, so the timer an earlier send armed does not expire before the
          * resend's ACK can return; unless the reordering timer is pending, which stays, and only the RTO's moment
-         * moves (`restart_rto`). Returns the sequence space that left.
+         * moves (`restart_rto`). It returns nothing: what left shows on the entries, which no longer owe a resend.
          */
-        [[nodiscard]] std::uint32_t resend_lost(ControlBlock& block) noexcept {
-            std::uint32_t left  = 0;
+        void resend_lost(ControlBlock& block) noexcept {
             std::uint32_t index = block.queue.first_lost(send_pool_);
             while (index != no_node) {
                 if (!handshaking(block) && !block.recovery.may_send(in_flight_bytes(block))) {
@@ -265,13 +264,11 @@ namespace aloe::tcp::detail {
                 if (!resend(block, index) || node.waiting) {
                     break;  // refused, or waiting for its packet: the timer or the flush tries again
                 }
-                left += unacknowledged(block, node);
                 if (index == block.queue.head()) {
                     restart_rto(block);
                 }
                 index = block.queue.first_lost(send_pool_);  // the resend that left cleared this one's mark
             }
-            return left;
         }
 
         /// Marks the head lost; nothing when the queue is empty or nothing is in flight, nor for a head marked
@@ -816,7 +813,9 @@ namespace aloe::tcp::detail {
             // cwnd" (`tcp_write_xmit`), which counts segments, stated in bytes. Not `!may_send`: in bytes a window can
             // keep room for part of a segment, and a sender that waits for room for a whole message, with no prepare
             // for the window to cut short, would never be recorded as limited, and its window would never grow again
-            // in congestion avoidance. Only the congestion window's room counts, not the peer's.
+            // in congestion avoidance. Only the congestion window's room counts, not the peer's. What is recorded is
+            // what is in flight after the send, a departure from Linux, whose `tcp_cwnd_validate` records
+            // `packets_out` in `max_packets_out`: everything outstanding, the segments reported and lost included.
             const std::uint32_t after = in_flight_after_send(block, in_flight, payload);
             block.window_use.on_send(
                 block.send.una, block.send.nxt, after, congestion_room(window, after) < block.mss());
@@ -1462,7 +1461,7 @@ namespace aloe::tcp::detail {
                     block.recovery.on_recovery_timer(in_flight_bytes(block), block.mss());
                 }
             }
-            std::ignore = resend_lost(block);
+            resend_lost(block);
             hint_if_writable_rose(block, writable_before);
             set_timer(block, core::Duration::zero());
             return TimerExpiry::Handled;

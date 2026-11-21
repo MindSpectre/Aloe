@@ -8,8 +8,11 @@
 namespace aloe::tcp {
 
     /// The peer's window is the only limit: for private cross-connects. Loss recovery still happens; this is not a
-    /// stripped stack. Its target is unbounded too, so recovery runs no rate reduction over it: what is marked lost
-    /// goes again as soon as it is marked.
+    /// stripped stack. Its target is unbounded too, so recovery runs no rate reduction over it: what an ACK or the
+    /// reordering timer marks lost goes again in the resend pass that follows the marking. A timeout resends the head
+    /// alone; the other entries it marks wait for the next resend pass, at the next acknowledgement, or at the flush
+    /// when the head's resend waited for its packet, and then all leave at once. Linux has no such policy: its window
+    /// after a timeout is one segment whatever the congestion control (`tcp_enter_loss`).
     struct NoCongestionControl {
         struct State {};
 

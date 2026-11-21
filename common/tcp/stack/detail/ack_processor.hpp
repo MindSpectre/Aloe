@@ -73,7 +73,12 @@ namespace aloe::tcp::detail {
          * 1. The SACK option's blocks, `sack`, eight bytes each and empty without one, read into the scoreboard
          *    (`read_blocks`), on an ACK below SND.UNA too; each entry they newly report advances RACK. A believed
          *    duplicate report that is not the tail probe's and reports resent data (`reports_resend`) is one resend
-         *    fewer for the undo to wait for (`LossRecovery::on_duplicate_report`), whatever else this ACK does.
+         *    fewer for the undo to wait for (`LossRecovery::on_duplicate_report`), whatever else this ACK does. The
+         *    probe's own report, while its verdict is open, settles that verdict and takes nothing off the undo's
+         *    count, which is an earlier episode's: a departure from Linux, whose `tcp_check_dsack` takes it off
+         *    `undo_retrans` as any other. A probe an episode forgot has no verdict open, and its report counts as any
+         *    other against that episode's count, which counted the probe if it was still in flight
+         *    (`LossRecovery::count_probe`).
          * 2. An ACK of new data frees what it covers, advancing RACK by each entry no block had reported, and samples
          *    the round trip (`acknowledge_data`). A duplicate ACK, of something in flight, is judged against the
          *    window as it stands, before this segment updates it, the field scaled by the peer's shift, and counted.
@@ -85,7 +90,9 @@ namespace aloe::tcp::detail {
          *    yet, as Linux's `tcp_process_tlp_ack` runs before `tcp_fastretrans_alert`.
          * 5. Reneging: an ACK that moved SND.UNA and left a head the peer reported received arms the RTO short
          *    (`Transmitter::arm_reneging`), and nothing more of this ACK runs until the peer's window, as Linux's
-         *    `tcp_check_sack_reneging` returns from `tcp_fastretrans_alert`.
+         *    `tcp_check_sack_reneging` returns from `tcp_fastretrans_alert`. Where this departs from Linux: `tcp_ack`
+         *    still runs `tcp_cong_control` on that ACK, a step of the rate reduction or the policy's growth, where this
+         *    takes no step of the policy or of the rate reduction.
          * 6. The undo's checks (`try_undo`), before anything more is marked, as Linux tries its undos in
          *    `tcp_fastretrans_alert` before `tcp_identify_packet_loss`: an undo may end the episode the ACK found, and
          *    a partial ACK that answers an original while a resend is out holds the rest of this ACK back from marking
@@ -97,12 +104,13 @@ namespace aloe::tcp::detail {
          *    (`LossRecovery::forget_first_resend`), as Linux's `tcp_try_to_open` clears `retrans_stamp` unless
          *    `tcp_any_retrans_done`, and `tcp_try_undo_partial` the same. Detection on that ACK then reads the
          *    reordering window of the open state it leaves, which a reordering timer it arms reads too unless a new
-         *    episode begins on that ACK, whose recovery window the timer then reads. On every other ACK detection comes
-         *    first and reads the window of the state the ACK found, which the recovery state's step then moves on.
+         *    episode begins on that ACK, whose recovery window the timer then reads. On every other ACK detection
+         *    comes first and reads the window of the state the ACK found, which the recovery state's step then moves
+         *    on.
          * 8. Detection: RACK's, on a connection that uses SACK, when its state moved, and after every undo, which
          *    makes RACK look at the queue again whether or not it moved, as Linux's `tcp_undo_cwnd_reduction` sets
          *    `rack.advanced` (`Transmitter::detect`); without SACK, the duplicate count's, in the recovery state's
-         * step.
+         *    step.
          * 9. The recovery state (`update_recovery`): on an ACK that ended an episode, by covering `recover` or by an
          *    undo, a new one when something is marked lost; on any other, by the state the ACK found. Then the resend
          *    pass, which sends what is marked lost as far as the window allows.
@@ -179,7 +187,7 @@ namespace aloe::tcp::detail {
                 }
                 update_recovery(block, found, ack, duplicates, info, detected, ended, undone.held);
                 if (!undone.held) {
-                    std::ignore = transmitter_.resend_lost(block);
+                    transmitter_.resend_lost(block);
                 }
             }
             if (!ack.before(block.send.una)) {
@@ -266,6 +274,12 @@ namespace aloe::tcp::detail {
          * reported in the same option is not taken for reordering. A believed duplicate report that is valid and names
          * a resent entry a block reported shows reordering. Blocks a correct peer never sends mark nothing and are not
          * an error.
+         *
+         * Two departures from Linux. A duplicate report on an ACK too old for its blocks is ignored with them, where
+         * `tcp_sacktag_write_queue` runs `tcp_check_dsack` before it returns for such an ACK, so Linux still counts the
+         * report and may take it off `undo_retrans`. And a duplicate report of the highest entry reported, when that
+         * entry was resent, shows reordering as one of a lower entry does, where `tcp_check_sack_reordering` returns
+         * for a sequence at or above the highest reported (`tcp_highest_sack_seq`) and counts reordering only below it.
          */
         [[nodiscard]] Blocks
         read_blocks(ControlBlock& block, const Sequence ack, const std::span<const std::byte> sack) noexcept {
@@ -390,7 +404,8 @@ namespace aloe::tcp::detail {
          *   and the connection is open. At the ACK that covers `recover` (`tcp_try_undo_recovery`) the undo opens the
          *   connection in place of the end's step to the target, the marks left to detection.
          * - An ACK that moved SND.UNA in the loss state with either sign (`tcp_try_undo_loss`, which reads
-         *   `tcp_may_undo`): every lost mark is cleared, the retry count too, and the connection is open. The policy
+         *   `tcp_may_undo`): every lost mark is cleared, and the connection is open; the retry count the ACK's
+         *   cumulative part has cleared already, as on every ACK of new data (`on_acknowledged`). The policy
          *   then hears the ACK, from the window restored, as it hears every ACK of new data in the loss state and as
          *   Linux's `tcp_cong_control` grows after the undo; when detection then marks something and a new episode
          *   begins on the ACK, it has grown first, as at the end of the loss state (`end_on_this_ack`). Linux reads the
@@ -428,7 +443,6 @@ namespace aloe::tcp::detail {
                     return {};
                 }
                 transmitter_.clear_all_lost(block);
-                block.retransmit_count = 0;
                 block.recovery.undo(true);
                 block.recovery.on_ack(*info, ack);
                 if (reported) {
@@ -553,6 +567,10 @@ namespace aloe::tcp::detail {
          * (`Transmitter::restart_rto_moment`): the ACK's last step arms the wheel once, with the kind it chooses
          * (`Transmitter::set_timer`), or reneging arms the RTO short. A partial ACK frees nothing, samples only from
          * its echo, and restarts the RTO. Returns the sample taken, if any.
+         *
+         * Where this departs from Linux: the echo of a partial ACK that frees no whole entry gives a sample, where
+         * `tcp_clean_rtx_queue` sets no `FLAG_DATA_ACKED` for it and `tcp_ack_update_rtt` takes none, so an RTO after
+         * such an ACK can fall a tick away from Linux's.
          */
         std::optional<core::Duration> on_acknowledged(ControlBlock& block,
                                                       const Transmitter::Freed& freed,
@@ -619,7 +637,7 @@ namespace aloe::tcp::detail {
          *
          * - Open. Without SACK, the third duplicate that RFC 6582 admits marks the head lost. An entry marked lost, by
          *   either detector, begins recovery (`Transmitter::begin_recovery`), with PRR's first step for this ACK:
-         * Linux's `tcp_time_to_recover`. Else an ACK of new data is the policy's to hear.
+         *   Linux's `tcp_time_to_recover`. Else an ACK of new data is the policy's to hear.
          * - Recovery. One step of PRR with what the ACK delivered and what is in flight now; without SACK, one that
          *   moved SND.UNA is RFC 6582's partial ACK and marks the new head first, as Linux's `tcp_newreno_mark_lost`
          *   does, unless it is `held`, which still steps PRR, as Linux's `tcp_cwnd_reduction` runs after
@@ -632,7 +650,8 @@ namespace aloe::tcp::detail {
          *
          * In recovery no ACK reaches the policy's `on_ack`, the one that ends it included: the window there is the
          * rate reduction's, and its end is `on_recovery_end`. What differs with SACK and without is how a loss is
-         * detected and how what an ACK delivered is counted (`delivered`).
+         * detected and how what an ACK delivered is counted (`settle_delivery`), which comes before what is in flight
+         * is read, in recovery and as one begins.
          */
         void update_recovery(ControlBlock& block,
                              const Found& found,
@@ -646,7 +665,9 @@ namespace aloe::tcp::detail {
             const bool sack              = block.sack.in_use();
             const std::uint32_t advance  = info ? info->acked : 0;
             const auto begin_on_this_ack = [this, &block, &found, advance, duplicate] {
-                transmitter_.begin_recovery(block, delivered(block, found, advance, duplicate));
+                // Settled first: `begin_recovery` reads what is in flight, which reads the duplicate count.
+                const std::uint32_t delivery = settle_delivery(block, found, advance, duplicate);
+                transmitter_.begin_recovery(block, delivery);
             };
             if (ended) {
                 if (block.queue.lost_bytes() > 0) {
@@ -667,8 +688,8 @@ namespace aloe::tcp::detail {
                     break;
                 case RecoveryState::Recovery: {
                     const bool marked             = !held && (sack ? detected.marked > 0 : info && mark_head(block));
-                    // What the ACK delivered first: it settles the duplicate count, which what is in flight reads.
-                    const std::uint32_t delivery  = delivered(block, found, advance, duplicate);
+                    // Settled first: what is in flight reads the duplicate count.
+                    const std::uint32_t delivery  = settle_delivery(block, found, advance, duplicate);
                     const std::uint32_t in_flight = transmitter_.in_flight_bytes(block);
                     block.recovery.on_recovery_ack(delivery, in_flight, info && !marked, block.mss());
                     break;
@@ -724,7 +745,10 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * What this ACK delivered, RFC 9937 6.2's DeliveredData; `advance` is how far it moved SND.UNA.
+         * Settles what this ACK delivered, RFC 9937 6.2's DeliveredData, and returns it; `advance` is how far it moved
+         * SND.UNA. A step, not a query: without SACK in recovery it takes the segments an advance covers out of the
+         * duplicate count (`LossRecovery::remove_duplicates`), which what is in flight reads
+         * (`Transmitter::in_flight_bytes`), so it runs once per ACK and before that is read.
          *
          * With SACK it is exact: the advance plus the signed change in bytes reported received, since a cumulative ACK
          * takes out of that total what it covers. Without SACK it is Linux's estimate in bytes: one segment for a
@@ -734,8 +758,10 @@ namespace aloe::tcp::detail {
          * cut where the episode's total would pass RecoverFS (RFC 9937 6.2); the ACK that begins recovery is held to
          * it by the first step (`Transmitter::begin_recovery`).
          */
-        [[nodiscard]] static std::uint32_t
-        delivered(ControlBlock& block, const Found& found, const std::uint32_t advance, const bool duplicate) noexcept {
+        [[nodiscard]] static std::uint32_t settle_delivery(ControlBlock& block,
+                                                           const Found& found,
+                                                           const std::uint32_t advance,
+                                                           const bool duplicate) noexcept {
             if (block.sack.in_use()) {
                 return advance + (block.queue.reported_bytes() - found.reported);
             }
