@@ -92,11 +92,11 @@
 // The cases of `TcpTapRecovery` make the stack the sender: it listens, the kernel connects, and the stack's frames go
 // through a `LossyDevice` whose policy each case sets, while nothing shapes the kernel's. They check that a tail loss
 // is repaired by a tail probe and never by the RTO, that one data segment in fifty lost over 2 MB costs few expiries of
-// the RTO against the resends and probes that repair the rest, and that data segments held behind the next frame teach
-// the stack the reordering, so the kernel sends few duplicate SACKs. The last reads `TCPDSACKOldSent` from the
-// `TcpExt:` rows of `/proc/net/netstat`, a system-wide count, so it wants an otherwise idle machine, and skips when the
-// field is missing. They step the stack on the test's thread as `TcpTapReceive` does, have not yet been run against a
-// kernel either, and are run alone for the same reason:
+// the RTO against the resends and probes that repair the rest, and that a data segment swapped with the next frame of
+// its burst is waited for, not resent, so the kernel sends few duplicate SACKs. The last reads `TCPDSACKOldSent` from
+// the `TcpExt:` rows of `/proc/net/netstat`, a system-wide count, so it wants an otherwise idle machine, and skips when
+// the field is missing. They step the stack on the test's thread as `TcpTapReceive` does, have not yet been run against
+// a kernel either, and are run alone for the same reason:
 //
 //     sudo ./build/debug/tests/manual_tests/tcp/Aloe.Tests.Manual.Tcp.Tap --gtest_filter='TcpTapRecovery.*'
 //
@@ -245,12 +245,12 @@ namespace {
     enum class LossyAction : std::uint8_t {
         Deliver,         ///< Hands it to the port.
         Drop,            ///< Frees it and reports it sent, as a wire that loses the frame would.
-        HoldBehindNext,  ///< Reports it sent, and hands it to the port once the next frame the device is given has
-                         ///< gone.
+        HoldBehindNext,  ///< Swaps it with the next frame of the same `transmit` call, which goes first; with no next
+                         ///< frame in the call, hands it to the port in order.
     };
 
     /// Decides what `LossyDevice` does with a frame, from its bytes, a whole Ethernet frame, and its index among the
-    /// frames the device has taken, from zero. It is asked once per index.
+    /// frames the device was given, from zero. It is asked once per frame, in the order the stack gave them.
     using LossyPolicy = std::function<LossyAction(std::span<const std::byte> frame, std::uint64_t index)>;
 
     /// `LossyDevice`'s default policy: every tenth frame dropped, the rest delivered.
@@ -261,15 +261,19 @@ namespace {
 
     /**
      * @brief The port seen through a device that does with each frame the stack hands it what a `LossyPolicy` says, as
-     * a wire that loses or reorders frames would.
+     * a wire that loses frames or swaps neighbours would.
      *
      * A dropped packet is freed, which returns its loan, and counted as accepted, so the stack sees a transmit that
-     * succeeded. A held packet is accepted too, kept with its queue, and handed to the port on that queue right after
-     * the next frame given there has been delivered or dropped; when the port refuses it then, it stays held until the
-     * frame after. One packet is held at a time: a hold asked while one is held is a delivery, and the held one follows
-     * that frame. A frame the port refuses stays with the caller under its index, and is delivered without asking the
-     * policy again when the caller hands it over again. A packet still held when the device is destroyed is freed with
-     * it, which returns its loan and its buffer to the pool.
+     * succeeded. A held frame swaps places with the next frame of the same call, whose fate the policy then decides:
+     * that frame is dropped or handed to the port first, then the held one, so the two leave swapped within the call
+     * and nothing outlives it. A hold is not made, and the frame goes in order, when the frame is the last of its call
+     * or is itself the next frame of a hold.
+     *
+     * A frame the port refuses stays with the caller, as does every frame after it. When the port refuses the next
+     * frame of a hold, the two are swapped back, so the caller has them as it gave them; when it refuses the held frame
+     * after the next one left, the held frame is the first the caller has left. Frames a refusal leaves with the caller
+     * were decided already: they are delivered in order, without asking the policy again, when the caller hands them
+     * over again, first, as `ShardQueue` does. So no frame is sent twice or lost.
      */
     template <aloe::device::IsDevice Device>
     class LossyDevice {
@@ -278,15 +282,21 @@ namespace {
 
         explicit LossyDevice(Device& owner, LossyPolicy policy = drop_every_tenth)
             : device_{owner},
-              policy_{std::move(policy)} {
+              policy_{std::move(policy)},
+              decided_(owner.queue_count(), 0) {
         }
 
         [[nodiscard]] std::uint64_t dropped() const noexcept {
             return dropped_;
         }
-        /// Frames held behind the next one.
+        /// Frames that left right behind the next frame of their call, swapped with it.
         [[nodiscard]] std::uint64_t held() const noexcept {
             return holds_;
+        }
+        /// Holds the policy asked for that were not made: the frame was the last of its call or the next frame of a
+        /// hold, or the port refused the pair. With `held()`, every hold asked for.
+        [[nodiscard]] std::uint64_t holds_not_made() const noexcept {
+            return holds_not_made_;
         }
         [[nodiscard]] std::uint16_t queue_count() const noexcept {
             return device_.queue_count();
@@ -315,26 +325,38 @@ namespace {
             return device_.receive(queue, out);
         }
 
-        /// Hands the packets over one at a time, each as the policy says. Returns the accepted prefix.
+        /// Hands the packets over one at a time, each as the policy says, a held one right after the next. Returns the
+        /// accepted prefix.
         [[nodiscard]] std::size_t transmit(const std::uint16_t queue, std::span<Packet> in) noexcept {
-            for (std::size_t index = 0; index < in.size(); ++index) {
-                const LossyAction action = refused_ == seen_ ? LossyAction::Deliver : policy_(in[index].data(), seen_);
-                const bool hold          = action == LossyAction::HoldBehindNext && held_.empty();
+            std::uint8_t& decided = decided_[queue];
+            std::size_t slot      = 0;
+            while (slot < in.size()) {
+                LossyAction action = LossyAction::Deliver;
+                if (decided > 0) {
+                    --decided;  // a frame a refusal left with the caller: in order
+                } else {
+                    action = decide(in[slot]);
+                }
+                if (action == LossyAction::HoldBehindNext && slot + 1 < in.size()) {
+                    const std::size_t taken = swap_ahead(queue, in.subspan(slot, 2));
+                    if (taken < 2) {
+                        decided = static_cast<std::uint8_t>(decided + 2 - taken);
+                        return slot + taken;
+                    }
+                    slot += 2;
+                    continue;
+                }
+                if (action == LossyAction::HoldBehindNext) {
+                    ++holds_not_made_;  // the last frame of its call: in order
+                }
                 if (action == LossyAction::Drop) {
-                    in[index] = Packet{};
+                    in[slot] = Packet{};
                     ++dropped_;
-                } else if (hold) {
-                    held_       = std::move(in[index]);
-                    held_queue_ = queue;
-                    ++holds_;
-                } else if (device_.transmit(queue, in.subspan(index, 1)) == 0) {
-                    refused_ = seen_;
-                    return index;
+                } else if (device_.transmit(queue, in.subspan(slot, 1)) == 0) {
+                    ++decided;
+                    return slot;
                 }
-                ++seen_;
-                if (!hold) {
-                    release(queue);
-                }
+                ++slot;
             }
             return in.size();
         }
@@ -348,22 +370,48 @@ namespace {
         }
 
     private:
-        /// Hands the held packet to the port when it was held on `queue`; an accepted one is moved from, which empties
-        /// `held_`.
-        void release(const std::uint16_t queue) noexcept {
-            if (!held_.empty() && queue == held_queue_) {
-                std::ignore = device_.transmit(queue, std::span<Packet>{&held_, 1});
+        /// The policy's action for the next frame the stack gave, asked once.
+        [[nodiscard]] LossyAction decide(Packet& packet) noexcept {
+            const LossyAction action = policy_(packet.data(), asked_);
+            ++asked_;
+            return action;
+        }
+
+        /// `pair[0]`, held, swaps places with `pair[1]`, the next frame of its call, which the policy decides now and
+        /// which is dropped or handed over first; then the held frame goes. Returns how many of the two slots were
+        /// accepted: none when the port refused the next frame, and the two are swapped back; one when it refused the
+        /// held frame, which the caller keeps in the second slot.
+        [[nodiscard]] std::size_t swap_ahead(const std::uint16_t queue, std::span<Packet> pair) noexcept {
+            std::swap(pair[0], pair[1]);
+            const LossyAction action = decide(pair[0]);
+            if (action == LossyAction::HoldBehindNext) {
+                ++holds_not_made_;  // the next frame of a hold goes as it is
             }
+            if (action == LossyAction::Drop) {
+                pair[0] = Packet{};
+                ++dropped_;
+            } else if (device_.transmit(queue, pair.first(1)) == 0) {
+                std::swap(pair[0], pair[1]);
+                ++holds_not_made_;
+                return 0;
+            }
+            if (device_.transmit(queue, pair.last(1)) == 0) {
+                ++holds_not_made_;
+                return 1;
+            }
+            ++holds_;
+            return 2;
         }
 
         Device& device_;
         LossyPolicy policy_;
-        Packet held_{};                           ///< The packet held behind the next frame; empty when none is.
-        std::uint16_t held_queue_ = 0;            ///< The queue `held_` came from and goes out on.
-        std::optional<std::uint64_t> refused_{};  ///< The index of a frame the port refused, delivered when retried.
-        std::uint64_t seen_    = 0;               ///< Frames taken: delivered, dropped or held.
-        std::uint64_t dropped_ = 0;
-        std::uint64_t holds_   = 0;
+        /// Per queue, the frames at the front of the caller's next call that the policy decided before a refusal left
+        /// them with the caller.
+        std::vector<std::uint8_t> decided_;
+        std::uint64_t asked_          = 0;  ///< Frames the policy decided: the next one's index.
+        std::uint64_t dropped_        = 0;
+        std::uint64_t holds_          = 0;
+        std::uint64_t holds_not_made_ = 0;
     };
 
     static_assert(aloe::device::IsDevice<LossyDevice<Port>>);
@@ -1430,8 +1478,7 @@ namespace {
     constexpr std::size_t recovery_size   = std::size_t{2} << 20;
     constexpr std::uint64_t drop_one_in   = 50;
     constexpr std::uint64_t hold_one_in   = 40;
-    /// The brief's "a handful" of duplicate SACKs the kernel may send while the stack learns the reordering, read as
-    /// five.
+    /// The brief's "a handful" of duplicate SACKs the kernel may send in the reordering case, read as five.
     constexpr std::uint64_t dsack_handful = 5;
 
     /// The sequence space the payload of a TCP segment covers.
@@ -2048,20 +2095,25 @@ TEST_F(TcpTapRecovery, ScatteredLossRarelyNeedsTheRto) {
         << " tail probes, over " << device.dropped() << " drops";
 }
 
-TEST_F(TcpTapRecovery, ReorderingIsLearned) {
-    // 2 MB from the stack, with every fortieth frame that carries data held behind the next frame the stack sends,
-    // normally the next segment: the kernel receives that one first, above a gap, answers it at once with a SACK block,
-    // then receives the held one, which fills the gap, and acknowledges both. Once the next segment is reported, RACK
-    // marks the held one lost unless it left less than a reordering window before it, and otherwise waits out the rest
-    // of the window: a quarter of the minimum round trip, times a multiplier that duplicate reports grow once
-    // reordering was seen, and never more than the smoothed round trip. When the cumulative ACK comes within the wait,
-    // it fills a hole below the highest sequence reported with a segment sent once, which is reordering seen. When the
-    // held segment is marked, the stack resends it needlessly, and the kernel reports the copy with a duplicate SACK,
-    // which `TCPDSACKOldSent` counts; once reordering was seen, that report grows the window, and a later hold is
-    // waited for rather than resent. Over some 36 holds, the kernel's count rises by at most a handful, the spec's
-    // "near zero after the first", and the stack saw reordering at least once. RACK's minimum round trip takes every
-    // sample as it is, one from a timestamp's echo in whole milliseconds included, so on the tap it may fall to zero,
-    // and the window with it: the case prints the window and the smoothed round trip it ended with.
+TEST_F(TcpTapRecovery, ReorderingWithinABurstIsSeenAndNotResent) {
+    // 2 MB from the stack, with every fortieth frame that carries data swapped with the next frame of its `transmit`
+    // call, as a wire reorders neighbours; one that is the last of its call goes in order, a hold not made. The kernel
+    // receives the next frame first, normally the next segment, above a gap, answers it at once with a SACK block, then
+    // receives the held segment, which fills the gap, and acknowledges both. The two were sent in one turn of the
+    // stack, so they carry one stamp, and once the next is reported RACK waits out its whole reordering window before
+    // it would mark the held one lost: the window a connection starts with, a quarter of the minimum round trip.
+    // Samples taken from send stamps keep that minimum at tens of microseconds on the tap, above zero, and one taken
+    // from a timestamp echo counts at least a millisecond, as Linux's `tcp_rtt_tsopt_us` counts it, so it never pulls
+    // the minimum down. The cumulative ACK comes within the window and fills a hole below the highest sequence
+    // reported with a segment sent once: reordering seen, nothing resent. Hence the kernel's duplicate SACKs rise by
+    // at most a handful (a reordering timer that fires before a cumulative ACK the stack reads a turn after its SACK;
+    // a needless probe at the end of the transfer), and the stack saw reordering.
+    //
+    // A swap within a burst needs nothing learned: the window's growth from duplicate reports is pinned by the
+    // fabric's two-stack case, `AFrameHeldBehindFourIsResentOnceAndNotTheSecondTime`, not here. Every hold asked for
+    // is made or not, and at least `size / mss() / 40` were asked, the payload taking at least `size / mss()` frames
+    // of data. At least one must be made for the case to pin anything; how many are depends on how the stack's frames
+    // fall into calls, so the case prints both counts beside the kernel's.
     const std::optional<std::uint64_t> dsacks_before = kernel_dsack_old_sent();
     if (!dsacks_before) {
         GTEST_SKIP() << "/proc/net/netstat has no TCPDSACKOldSent in its TcpExt rows";
@@ -2099,15 +2151,25 @@ TEST_F(TcpTapRecovery, ReorderingIsLearned) {
     expect_same_bytes(reader.read(), payload, "the kernel", "the stack");
     const aloe::tcp::TcpCounters& counters = side.counters();
     report_send_counts(counters);
-    std::println("the kernel's TCPDSACKOldSent rose by {} (system-wide) over {} holds; at the end of the transfer the "
-                 "stack's reordering window was {} us and its smoothed round trip {} us",
-                 dsacks,
+    std::println("the device swapped {} frames with the next of their call, and left in order {} it was asked to hold "
+                 "(the last of their call, or refused by the port); the kernel's TCPDSACKOldSent rose by {} "
+                 "(system-wide); at the end of the transfer the stack's reordering window was {} us and its smoothed "
+                 "round trip {} us",
                  device.held(),
+                 device.holds_not_made(),
+                 dsacks,
                  window.count(),
                  srtt.count());
+    RecordProperty("device_held", std::to_string(device.held()));
+    RecordProperty("device_holds_not_made", std::to_string(device.holds_not_made()));
     RecordProperty("kernel_dsack_old_sent", std::to_string(dsacks));
-    EXPECT_GE(device.held(), payload.size() / mss / hold_one_in);
+    EXPECT_GE(device.held() + device.holds_not_made(), payload.size() / mss / hold_one_in)
+        << "every hold asked for is made or not, and the payload's frames of data ask for at least this many";
+    ASSERT_GT(device.held(), 0U) << "no frame the policy held had a next frame in its call: the device swapped "
+                                    "nothing, and the case pins nothing about the stack";
     EXPECT_LE(dsacks, dsack_handful) << "the kernel's duplicate SACKs over " << device.held()
-                                     << " holds: the stack kept resending held segments needlessly";
-    EXPECT_GT(counters.reordering_seen, 0U) << "no ACK showed the stack the reordering";
+                                     << " swaps within a burst: the stack resent segments its starting reordering "
+                                        "window covers";
+    EXPECT_GT(counters.reordering_seen, 0U)
+        << "no ACK showed the stack the reordering of " << device.held() << " swaps";
 }
