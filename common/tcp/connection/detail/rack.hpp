@@ -5,6 +5,7 @@
 #include <aloe/device>
 #include <aloe/wire>
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -170,17 +171,21 @@ namespace aloe::tcp::detail {
          * never marked, and its loss is a first one, as Linux's probe sets only `TCPCB_EVER_RETRANS`
          * (`SentSegment::resend_out`). RFC 8985's `RACK_detect_loss`, Linux's `tcp_rack_detect_loss`, which walks its
          * list in transmit order where this walks the queue in sequence order. Clears `advanced()`.
+         *
+         * `window_of()` gives the reordering window, asked once and only when an entry needs it: an empty queue, or a
+         * head never resent and not sent before RACK's segment, an in-order ACK's case, computes none.
          */
-        template <device::IsPacket Packet>
+        template <device::IsPacket Packet, std::invocable<> WindowOf>
         [[nodiscard]] Detected detect(RetransmissionQueue<Packet>& queue,
                                       SentSegmentPool<Packet>& pool,
-                                      const core::Duration window,
+                                      WindowOf&& window_of,
                                       const core::TimePoint now) noexcept {
             advanced_ = false;
             Detected detected{};
             if (!segment_) {
                 return detected;
             }
+            std::optional<core::Duration> window{};
             for (std::uint32_t index = queue.head(); index != no_node; index = pool.node(index).next) {
                 const SentSegment<Packet>& entry = pool.node(index);
                 if (entry.transmits == 0) {
@@ -193,7 +198,10 @@ namespace aloe::tcp::detail {
                 if (!before || entry.reported || entry.lost) {
                     continue;
                 }
-                if (const core::Duration remaining = entry.sent + round_trip_ + window - now;
+                if (!window) {
+                    window = window_of();
+                }
+                if (const core::Duration remaining = entry.sent + round_trip_ + *window - now;
                     remaining > core::Duration::zero()) {
                     detected.wait = std::max(detected.wait, remaining);
                     continue;
@@ -205,6 +213,15 @@ namespace aloe::tcp::detail {
                 ++detected.marked;
             }
             return detected;
+        }
+
+        /// `detect` with the reordering window already known.
+        template <device::IsPacket Packet>
+        [[nodiscard]] Detected detect(RetransmissionQueue<Packet>& queue,
+                                      SentSegmentPool<Packet>& pool,
+                                      const core::Duration window,
+                                      const core::TimePoint now) noexcept {
+            return detect(queue, pool, [window] noexcept { return window; }, now);
         }
 
         /// The round trip of the last segment acknowledged that RACK took; zero before one.

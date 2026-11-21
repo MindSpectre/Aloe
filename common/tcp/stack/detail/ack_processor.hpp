@@ -4,6 +4,7 @@
 #include <aloe/core>
 #include <aloe/wire>
 #include <array>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -62,6 +63,7 @@ namespace aloe::tcp::detail {
                                     const Sequence ack,
                                     const std::optional<std::uint32_t> echo) noexcept {
             std::ignore = acknowledge(block, ack, echo, block.queue.highest_reported());
+            assert(!transmitter_.in_flight(block) && "the handshake's ACK is of SND.NXT: no RTO is left to arm");
         }
 
         /**
@@ -107,8 +109,10 @@ namespace aloe::tcp::detail {
          * 10. The peer's window: RFC 793 updates it only when SND.UNA <= SEG.ACK <= SND.NXT, a stale ACK carrying a
          *    stale window; then the zero-window probes and the FIN that waited for the window.
          * 11. The send timer (`Transmitter::set_timer`), after an ACK that ran detection or moved SND.UNA: the
-         *    reordering timer, the tail probe or the RTO. Any other ACK leaves the timer as it was, a reordering timer
-         *    still waiting for its entries or a probe's included.
+         *    reordering timer, the tail probe or the RTO. The cumulative part recorded the RTO's moment without arming,
+         *    so an ACK that moved SND.UNA arms the wheel here once, and before only for a resend of the head
+         *    (`Transmitter::resend_lost`). Any other ACK leaves the timer as it was, a reordering timer still waiting
+         *    for its entries or a probe's included.
          *
          * `payload_length` is the segment's, since an ACK that carries data is no duplicate.
          */
@@ -543,10 +547,12 @@ namespace aloe::tcp::detail {
          * names the transmission it answers, so the echo on the ACK of a resend ends the backoff too
          * (`Timestamps::sample`). The sample feeds RACK's minimum round trip too, as Linux's `tcp_update_rtt_min`, and
          * lets the next tail probe go (RFC 8985 7.3: a sample since the last probe; `TailProbe::sampled`). The
-         * timer restarts from now while anything is in flight and stops when nothing is, RFC 6298's rule, which covers
-         * RFC 6582's re-arm on a partial ACK; a head that never left, the FIN a close holds for the window, is
-         * `send_unsent`'s or the probes'. A partial ACK frees nothing, samples only from its echo, and restarts the
-         * timer. Returns the sample taken, if any.
+         * RTO restarts from now while anything is in flight and the timer stops when nothing is, RFC 6298's rule, which
+         * covers RFC 6582's re-arm on a partial ACK; a head that never left, the FIN a close holds for the window, is
+         * `send_unsent`'s or the probes'. The restart records the RTO's moment only
+         * (`Transmitter::restart_rto_moment`): the ACK's last step arms the wheel once, with the kind it chooses
+         * (`Transmitter::set_timer`), or reneging arms the RTO short. A partial ACK frees nothing, samples only from
+         * its echo, and restarts the RTO. Returns the sample taken, if any.
          */
         std::optional<core::Duration> on_acknowledged(ControlBlock& block,
                                                       const Transmitter::Freed& freed,
@@ -563,7 +569,7 @@ namespace aloe::tcp::detail {
                 ++context_.counters.rtt_samples;
             }
             if (transmitter_.in_flight(block)) {
-                transmitter_.arm_retransmit(block);
+                transmitter_.restart_rto_moment(block);
             } else {
                 transmitter_.disarm(block);
             }

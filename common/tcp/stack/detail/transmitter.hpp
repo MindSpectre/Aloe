@@ -127,7 +127,7 @@ namespace aloe::tcp::detail {
         /// timer; `Refused`, counted, when no node is free.
         [[nodiscard]] std::expected<void, net::SendError>
         queue_control(ControlBlock& block, const wire::TcpFlags flags, const Sequence sequence) noexcept {
-            const std::optional<std::uint32_t> entry = enqueue(block, Packet{}, 0, flags, sequence, 1);
+            const std::optional<std::uint32_t> entry = enqueue(block, Packet{}, 0, flags, sequence, 1, room(block));
             if (!entry) {
                 ++context_.counters.send_refused;
                 return std::unexpected{net::SendError::Refused};
@@ -139,7 +139,8 @@ namespace aloe::tcp::detail {
         /// it.
         [[nodiscard]] std::optional<std::uint32_t> enqueue_fin(ControlBlock& block, const Sequence fin) noexcept {
             return block.queue.push_fin(
-                send_pool_, entry(block, Packet{}, 0, wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, fin, 1));
+                send_pool_,
+                entry(block, Packet{}, 0, wire::TcpFlags{wire::TcpFlag::Fin, wire::TcpFlag::Ack}, fin, 1, room(block)));
         }
 
         /**
@@ -452,16 +453,19 @@ namespace aloe::tcp::detail {
             settle_deferred(block);
         }
 
-        /// RACK's detection over the queue (`Rack::detect`) with the connection's reordering window; nothing without
-        /// SACK. Counts `rack_marked` and `lost_retransmits`.
+        /// RACK's detection over the queue (`Rack::detect`) with the connection's reordering window, computed only once
+        /// an entry needs it; nothing without SACK. Counts `rack_marked` and `lost_retransmits`, written only when
+        /// something was marked.
         [[nodiscard]] Rack::Detected detect(ControlBlock& block) noexcept {
             if (!block.sack.in_use()) {
                 return {};
             }
-            const Rack::Detected detected =
-                block.rack.detect(block.queue, send_pool_, block.reordering_window(), context_.now);
-            context_.counters.rack_marked      += detected.marked;
-            context_.counters.lost_retransmits += detected.resends_lost;
+            const Rack::Detected detected = block.rack.detect(
+                block.queue, send_pool_, [&block] noexcept { return block.reordering_window(); }, context_.now);
+            if (detected.marked > 0) {
+                context_.counters.rack_marked      += detected.marked;
+                context_.counters.lost_retransmits += detected.resends_lost;
+            }
             return detected;
         }
 
@@ -566,17 +570,27 @@ namespace aloe::tcp::detail {
             arm_rto_at(block, rto_deadline(block, block.rtt.rto()));
         }
 
+        /// The RTO's moment from now, recorded in `rto_at` with the wheel left as it is: an ACK that moved SND.UNA
+        /// restarts the RTO there, and its last step arms the wheel once, with the kind `set_timer` chooses, whose
+        /// deadline that moment bounds.
+        void restart_rto_moment(ControlBlock& block) noexcept {
+            block.rto_at = rto_deadline(block, block.rtt.rto());
+        }
+
         /**
          * The send timer after an ACK or an expiry, the last step of an acknowledgement: the reordering timer for
          * `wait` when it is not zero, never past `rto_at`; else the tail probe when one may be scheduled
-         * (`probe_schedulable`, `arm_tail_probe`); else the RTO while something is in flight; else nothing. One place
-         * chooses the kind; after a send, `arm_after_send` chooses between the probe and the RTO the same way.
+         * (`probe_schedulable`, `arm_tail_probe`); else the RTO while something is in flight, unless it is armed at
+         * its moment already (`rto_armed`); else nothing. One place chooses the kind; after a send, `arm_after_send`
+         * chooses between the probe and the RTO the same way.
          *
          * The RTO is where the ACK, the resend pass or a send left it: restarted from now only by what restarts it, an
-         * ACK that moved SND.UNA, a resend of the head, a send into an empty queue, a tail probe. A reordering timer or
-         * a probe no longer wanted, or no timer at all after an expiry, gives way to the RTO at the moment it had,
-         * `rto_at`, not to a fresh one. With nothing in flight the timer stays as it is: stopped by the ACK that
-         * emptied the queue, or the zero-window probes' or the ARP poll's.
+         * ACK that moved SND.UNA, a resend of the head, a send into an empty queue, a tail probe. An ACK that moved
+         * SND.UNA only records the RTO's new moment (`restart_rto_moment`), so this arms the wheel once for it,
+         * whichever kind it chooses, and a resend of the head is the only arm before. A reordering timer or a probe no
+         * longer wanted, or no timer at all after an expiry, gives way to the RTO at the moment it had, `rto_at`, not
+         * to a fresh one. With nothing in flight the timer stays as it is: stopped by the ACK that emptied the queue,
+         * or the zero-window probes' or the ARP poll's.
          *
          * No floor under the reordering timer beyond the wheel's tick, which rounds its deadline up: Linux's
          * `tcp_rack_mark_lost` adds 2 ms (`TCP_TIMEOUT_MIN_US`) to the wait, where RFC 8985 leaves the choice.
@@ -591,7 +605,7 @@ namespace aloe::tcp::detail {
                 arm_tail_probe(block);
                 return;
             }
-            if (in_flight(block) && block.timer_kind != TimerKind::Retransmit) {
+            if (in_flight(block) && !rto_armed(block)) {
                 arm_rto_at(block, block.rto_at);
             }
         }
@@ -681,11 +695,8 @@ namespace aloe::tcp::detail {
         /// The MSS, within what the two windows allow (`room`), in Established or CloseWait with no prepare open, the
         /// queue below the send cap and no entry that owes a resend; else zero.
         [[nodiscard]] std::size_t writable(const ControlBlock& block) const noexcept {
-            if (block.prepared || (block.state != State::Established && block.state != State::CloseWait)) {
+            if (!takes_data(block)) {
                 return 0;
-            }
-            if (block.queue.size() >= context_.config.send_segments) {
-                return 0;  // the send cap: the ACK that frees an entry raises Writable
             }
             return static_cast<std::size_t>(std::min<std::uint64_t>(block.mss(), room(block)));
         }
@@ -695,7 +706,8 @@ namespace aloe::tcp::detail {
          * `commit` (with any count) or `release`: the span stays valid through any state change in between. Nothing,
          * without allocating, for a count of zero or nothing writable; an allocation failure counts one
          * `allocation_failures`, marks a retry hint and retains nothing. An offer the congestion window cut short is
-         * a send the window held back, whatever is committed of it (`record_held_back`).
+         * a send the window held back, whatever is committed of it (`record_held_back`). What is in flight and the
+         * congestion window are read once, for both.
          */
         [[nodiscard]] std::optional<std::span<std::byte>> prepare(ControlBlock& block,
                                                                   const std::size_t count) noexcept {
@@ -703,9 +715,11 @@ namespace aloe::tcp::detail {
             if (count == 0) {
                 return std::nullopt;
             }
-            const std::size_t room = writable(block);
+            const std::uint32_t in_flight = in_flight_bytes(block);
+            const std::uint32_t window    = block.recovery.window();
+            const std::size_t room        = writable(block, in_flight, window);
             if (room < std::min<std::size_t>(count, block.mss())) {
-                record_held_back(block, count);
+                record_held_back(block, count, in_flight, window);
             }
             if (room == 0) {
                 return std::nullopt;  // nothing allocates when nothing is writable
@@ -740,6 +754,11 @@ namespace aloe::tcp::detail {
          * recovery counts against the rate reduction (`LossRecovery::on_sent`), and every segment that left is recorded
          * for the window's use (`WindowUse::on_send`), limited when the congestion window leaves less than a segment
          * after it.
+         *
+         * What is in flight and the congestion window are read once, before the send: the window's check, the entry's
+         * record of whether the windows allowed more than it carries, and the record for the window's use read them.
+         * The idle restart lowers the window, which is read again then; the send adds its bytes to what is in flight
+         * (`in_flight_after_send`) and leaves the window as it was.
          */
         [[nodiscard]] bool commit(ControlBlock& block, const std::size_t count) noexcept {
             assert(block.prepared && "commit without a prepare");
@@ -758,7 +777,10 @@ namespace aloe::tcp::detail {
                 ++context_.counters.commits_refused;  // closed since the prepare: no hint, the events say why
                 return false;
             }
-            if (count > writable(block)) {  // the preparation is released, so this is the credit the peer offers now
+            const std::uint32_t in_flight = in_flight_bytes(block);
+            std::uint32_t window          = block.recovery.window();
+            // The preparation is released, so this is the credit the peer offers now.
+            if (count > writable(block, in_flight, window)) {
                 // RFC 1122: a sender copes with a shrunk window by not sending into it.
                 ++context_.counters.commits_refused;
                 mark_retry(block);
@@ -767,6 +789,7 @@ namespace aloe::tcp::detail {
             packet.trim_back(prepared - count);
             if (block.queue.idle(context_.now, block.rtt.rto())) {
                 block.recovery.on_idle(block.mss());  // RFC 5681's restart after an idle RTO
+                window = block.recovery.window();     // lowered; nothing is in flight
             }
             const auto payload                       = static_cast<std::uint16_t>(count);
             const std::uint32_t previous_tail        = block.queue.tail();
@@ -775,7 +798,8 @@ namespace aloe::tcp::detail {
                                                                payload,
                                                                wire::TcpFlags{wire::TcpFlag::Ack, wire::TcpFlag::Psh},
                                                                block.send.nxt,
-                                                               payload);
+                                                               payload,
+                                                               room(block, in_flight, window));
             if (!entry) {
                 ++context_.counters.allocation_failures;  // no queue node free: the packet goes back to the pool
                 mark_retry(block);
@@ -793,9 +817,9 @@ namespace aloe::tcp::detail {
             // keep room for part of a segment, and a sender that waits for room for a whole message, with no prepare
             // for the window to cut short, would never be recorded as limited, and its window would never grow again
             // in congestion avoidance. Only the congestion window's room counts, not the peer's.
-            const std::uint32_t in_flight = in_flight_bytes(block);
+            const std::uint32_t after = in_flight_after_send(block, in_flight, payload);
             block.window_use.on_send(
-                block.send.una, block.send.nxt, in_flight, block.recovery.room(in_flight) < block.mss());
+                block.send.una, block.send.nxt, after, congestion_room(window, after) < block.mss());
             ++context_.counters.data_segments_sent;
             return true;
         }
@@ -880,13 +904,58 @@ namespace aloe::tcp::detail {
             if (block.queue.lost_bytes() > 0) {
                 return 0;
             }
-            return std::min(peer_room(block), block.recovery.room(in_flight_bytes(block)));
+            return room(block, in_flight_bytes(block), block.recovery.window());
+        }
+
+        /// `room()` with what is in flight, `in_flight`, and the congestion window, `window`, read by the caller, which
+        /// reads each once for all it decides.
+        [[nodiscard]] static std::uint64_t
+        room(const ControlBlock& block, const std::uint32_t in_flight, const std::uint32_t window) noexcept {
+            if (block.queue.lost_bytes() > 0) {
+                return 0;
+            }
+            return std::min(peer_room(block), congestion_room(window, in_flight));
         }
 
         /// What the peer's window allows beyond the sequence space outstanding, floored at zero.
         [[nodiscard]] static std::uint64_t peer_room(const ControlBlock& block) noexcept {
             const std::uint32_t flight = block.send.flight();
             return block.send.wnd > flight ? block.send.wnd - flight : 0;
+        }
+
+        /// What the congestion window `window` allows beyond `in_flight`, floored at zero, in 64 bits: as
+        /// `LossRecovery::room` reads it, from a window the caller already read.
+        [[nodiscard]] static std::uint64_t congestion_room(const std::uint32_t window,
+                                                           const std::uint32_t in_flight) noexcept {
+            return window > in_flight ? std::uint64_t{window} - in_flight : 0;
+        }
+
+        /// Established or CloseWait with no prepare open and the queue below the send cap: what `writable()` asks
+        /// before the windows.
+        [[nodiscard]] bool takes_data(const ControlBlock& block) const noexcept {
+            if (block.prepared || (block.state != State::Established && block.state != State::CloseWait)) {
+                return false;
+            }
+            return block.queue.size() < context_.config.send_segments;  // the ACK that frees an entry raises Writable
+        }
+
+        /// `writable()` with what is in flight and the congestion window read by the caller (`room`).
+        [[nodiscard]] std::size_t
+        writable(const ControlBlock& block, const std::uint32_t in_flight, const std::uint32_t window) const noexcept {
+            if (!takes_data(block)) {
+                return 0;
+            }
+            return static_cast<std::size_t>(std::min<std::uint64_t>(block.mss(), room(block, in_flight, window)));
+        }
+
+        /// What is in flight once a send of `count` new bytes left, from `before`, what was in flight before it, with
+        /// nothing marked lost (`room`). With SACK the send adds its bytes and nothing else: no mark moves. Without
+        /// SACK what the duplicates stand for is capped by the flight (`in_flight_bytes`), and the cap moves with the
+        /// send, so it is read again.
+        [[nodiscard]] std::uint32_t in_flight_after_send(const ControlBlock& block,
+                                                         const std::uint32_t before,
+                                                         const std::uint32_t count) const noexcept {
+            return block.sack.in_use() ? before + count : in_flight_bytes(block);
         }
 
         /**
@@ -896,14 +965,17 @@ namespace aloe::tcp::detail {
          * part of the offer would be recorded as limited too, less than a segment being left after it; this record
          * stands when nothing is committed. Linux's `tcp_write_xmit` sets `is_cwnd_limited` for a send its congestion
          * window held back (`tcp_tso_should_defer`, and a window with no room left) and records it even when nothing
-         * left. Only where data may be sent: before Established the policy has no window.
+         * left. Only where data may be sent: before Established the policy has no window. `in_flight` and `window` are
+         * what `prepare` read.
          */
-        void record_held_back(ControlBlock& block, const std::size_t count) noexcept {
+        void record_held_back(ControlBlock& block,
+                              const std::size_t count,
+                              const std::uint32_t in_flight,
+                              const std::uint32_t window) noexcept {
             if (block.state != State::Established && block.state != State::CloseWait) {
                 return;
             }
-            const std::uint32_t in_flight = in_flight_bytes(block);
-            if (block.recovery.room(in_flight) < std::min<std::uint64_t>({count, block.mss(), peer_room(block)})) {
+            if (congestion_room(window, in_flight) < std::min<std::uint64_t>({count, block.mss(), peer_room(block)})) {
                 block.window_use.on_send(block.send.una, block.send.nxt, in_flight, /*limited=*/true);
             }
         }
@@ -1027,37 +1099,41 @@ namespace aloe::tcp::detail {
         }
 
         /// A queue entry for a segment about to leave, with what a rate sample reads: the delivered count, and whether
-        /// the windows allowed more than it carries.
-        [[nodiscard]] SentNode entry(const ControlBlock& block,
-                                     Packet&& packet,
-                                     const std::uint16_t payload,
-                                     const wire::TcpFlags flags,
-                                     const Sequence first,
-                                     const std::uint32_t length) const noexcept {
+        /// the windows allowed more than it carries, `allowed` being what they allow before it (`room`).
+        [[nodiscard]] static SentNode entry(const ControlBlock& block,
+                                            Packet&& packet,
+                                            const std::uint16_t payload,
+                                            const wire::TcpFlags flags,
+                                            const Sequence first,
+                                            const std::uint32_t length,
+                                            const std::uint64_t allowed) noexcept {
             return SentNode{.packet            = std::move(packet),
                             .first             = first,
                             .length            = length,
                             .payload           = payload,
                             .flags             = flags,
                             .delivered_at_send = block.queue.delivered(),
-                            .app_limited       = room(block) > payload};
+                            .app_limited       = allowed > payload};
         }
 
         /**
-         * An entry for a segment about to leave, linked at the tail of the queue. `packet` may be empty for a SYN or
-         * SYN-ACK, which `transmit_entry` gives one. Nothing, the packet back to its pool, when no node is free or a
-         * data segment would pass the send cap. The FIN's entry is `enqueue_fin`.
+         * An entry for a segment about to leave, linked at the tail of the queue, `allowed` what the windows allow
+         * before it (`entry`). `packet` may be empty for a SYN or SYN-ACK, which `transmit_entry` gives one. Nothing,
+         * the packet back to its pool, when no node is free or a data segment would pass the send cap. The FIN's entry
+         * is `enqueue_fin`.
          */
         [[nodiscard]] std::optional<std::uint32_t> enqueue(ControlBlock& block,
                                                            Packet&& packet,
                                                            const std::uint16_t payload,
                                                            const wire::TcpFlags flags,
                                                            const Sequence first,
-                                                           const std::uint32_t length) noexcept {
+                                                           const std::uint32_t length,
+                                                           const std::uint64_t allowed) noexcept {
             if (payload > 0 && block.queue.size() >= context_.config.send_segments) {
                 return std::nullopt;
             }
-            return block.queue.push(send_pool_, entry(block, std::move(packet), payload, flags, first, length));
+            return block.queue.push(send_pool_,
+                                    entry(block, std::move(packet), payload, flags, first, length, allowed));
         }
 
         /// A transmission of the entry left, from its packet or as a copy: stamped, on the queue too when it carries
@@ -1192,6 +1268,13 @@ namespace aloe::tcp::detail {
             block.rto_at     = deadline;
             block.timer_kind = TimerKind::Retransmit;
             wheel_.arm(block.timer, deadline);
+        }
+
+        /// The RTO is armed at its moment: the kind, and the wheel's deadline at `rto_at`. The kind alone does not say
+        /// it once an ACK recorded a new moment without arming (`restart_rto_moment`).
+        [[nodiscard]] static bool rto_armed(const ControlBlock& block) noexcept {
+            return block.timer_kind == TimerKind::Retransmit && block.timer.armed() &&
+                   block.timer.deadline == block.rto_at;
         }
 
         /// The RTO from now, after a resend of the head; while the reordering timer is pending it stays, and only the
