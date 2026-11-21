@@ -93,6 +93,11 @@ nanoseconds, stripped of the warm-up and sorted only after the run.
 - any of TCP's receive-side counts, segments held out of order and released, ACKs sent with SACK blocks or a
   duplicate report, and ACKs the delay timer sent, is not zero: a clean ring never reorders, and the delayed ACK is
   off by default;
+- any of TCP's loss-recovery counts is not zero: duplicate reports received, segments RACK marked lost and resends
+  marked lost again, expiries of the reordering timer, ACKs that showed reordering, reneging, tail probes and their
+  three verdicts (needless, a repaired loss, closed early by a second probe), and undos of either sign. Nothing is lost
+  or reordered on a clean ring, and with one order in flight a probe waits until the retransmission timeout (see "The
+  tail probe's allowance" below), so a probe is a round that stalled that long: a finding, not noise;
 - the venue sees an order for another round or, at levels 0 and 1, one with a bad checksum or out of sequence;
 - a round outlasts the deadline, one second or twice `--gap`, whichever is longer;
 - a stamp pair is missing or inverted, checked per round and per breakdown leg, and the message names the round,
@@ -189,7 +194,11 @@ mask.
   round's payload is the 128-byte order.
 - `--rounds N` and `--warmup N` set the measured rounds and the discarded rounds before them, 100 000 and
   10 000 by default.
-- `--gap NS` pauses that many nanoseconds between rounds, 0 by default. The deadlines grow with it.
+- `--gap NS` pauses that many nanoseconds between rounds, 0 by default. The deadlines grow with it. In the tick
+  round the gap is bounded by the retransmission timeout, about 200 ms: the order waits through it for the next tick,
+  the venue's only ACK of it, and a longer gap draws a tail probe of the order at the RTO's moment, which the venue
+  refuses as out of sequence. The gateway round's gap has no such bound, since the venue acknowledges each order at
+  once and the gap falls after that.
 - `--topology cross|same|both`. `cross`, the default, puts the venue on its own core. `same` runs the venue
   inline on the stack's thread, strictly in turn with the stack, for the floor and level 0; level 1 is a
   `Runtime`, which owns its thread, so it has no same-core configuration, and `--level 1 --topology same` is
@@ -300,6 +309,15 @@ grows with the payload.
   never fires. The venue still skips pure ACKs when it matches an order to its tick, as a defence.
 - **Level 1 is cross-core only.** `--topology same` covers the floor and level 0, because a `Runtime` owns its
   thread and cannot share it with the venue.
+- **The tail probe's allowance.** Every stack the benchmark builds, at both levels and in both topologies, sets
+  `TcpConfig::tail_probe_ack_delay` to 500 ms, the most it allows, where the default is 40 ms (`stack_tcp_config` in
+  `level_bricks.hpp`). The venue acknowledges an order only with its next tick, where a real venue acknowledges at
+  once or within its delayed ACK. With the default a lone order would be probed two round trips and 40 ms after it
+  left, so any `--gap` above about 40 ms in the tick round would draw a probe the strict venue refuses. With 500 ms the
+  probe of a lone order falls at the retransmission timeout's moment, and the tick round's `--gap` is bounded by the
+  RTO, about 200 ms, as it was before the probe existed. The measured path is the same code either way: the probe's
+  deadline is computed and the wheel armed once per order, and the diagnostics of the rerun of 2026-11-21 below
+  measured the branch's head with either value at the same p50 and p99.
 - **Level 1's listener and its two yields.** Level 1 opens its listener through `Streams::ensure_listener`
   before the runtime starts, because the shard's first step receives the venue's SYN before the accepting task
   has run, and a SYN that finds no listener is reset. A public `Streams::listen` would be the proper door and is
@@ -468,6 +486,81 @@ tail. `compare-benchmark.py` flags six p50 lines between run 1 and run 2, every 
 same-core floor at 1448 and 1460 B. The gap run leaves every p50 at one of its two modes and raises the p99.9 of
 most lines, the cross-core floor at 64 B from 449 to 1799 ns: five idle microseconds between rounds cost the tail.
 
+### Rerun of step 5: 2026-11-21, loss recovery with SACK against `main`, host polaris
+
+Step 5 (the SACK scoreboard, RACK-TLP, one recovery with PRR, the undo) against `main` at the branch's base, on the
+same machine and cores as the recorded run, kernel 7.2.15, both sides built with the `release` preset and
+`-DDO_BENCHMARKS=ON`: `main` at 1aeddb9 in a worktree, and the branch's head, 13cefd6, carrying this step's benchmark
+changes (the sanity counters and the probe's allowance above), which touch no stack code. Run unprivileged on 64 free
+hugepages reserved beforehand, not on a quiet machine: a browser, two IDEs and a chat client were open, the CPUs about
+95 % idle. Three rounds of runs, each a headline run of `main` and one of the branch, `--topology both --hop`, then a
+breakdown run of each in the same order, `--level 0 --breakdown --topology both`, about three seconds apiece. Every row
+is read as the median of its three runs; the floor and the hop came out within one 10 ns step of each other on the two
+sides, so the machine did not change between them.
+
+The files under `results/`: `2026-11-21-1aeddb9-polaris.json` and `2026-11-21-13cefd6-polaris.json` are the first
+headline run of each side, `-run2` and `-run3` the next two, and `-breakdown`, `-run2-breakdown` and
+`-run3-breakdown` the breakdown runs that followed each.
+
+The 64-byte tick at level 0, cross-core, in nanoseconds:
+
+| side            | run 1 p50 | run 2 p50 | run 3 p50 | median p50 | run 1 p99 | run 2 p99 | run 3 p99 | median p99 |
+|-----------------|----------:|----------:|----------:|-----------:|----------:|----------:|----------:|-----------:|
+| `main`, 1aeddb9 |       460 |       470 |       460 |        460 |       670 |       680 |       670 |        670 |
+| step 5, 13cefd6 |       500 |       500 |       500 |        500 |       740 |       780 |       730 |        740 |
+
+Its legs, from the breakdown runs, medians of three:
+
+| side            | receive | ip | tcp | application | tcp-flush | queue-flush | round | tcp p99 | application p99 |
+|-----------------|--------:|---:|----:|------------:|----------:|------------:|------:|--------:|----------------:|
+| `main`, 1aeddb9 |     120 | 50 | 110 |         170 |        10 |          40 |   500 |     170 |             270 |
+| step 5, 13cefd6 |     120 | 50 | 140 |         180 |        10 |          40 |   540 |     250 |             310 |
+
+The other rows, medians of three, p50 and p99 in nanoseconds:
+
+| round   | level   | topology   | payload | `main` p50 | step 5 p50 | `main` p99 | step 5 p99 |
+|---------|---------|------------|--------:|-----------:|-----------:|-----------:|-----------:|
+| tick    | floor   | cross-core |      64 |        230 |        240 |        290 |        280 |
+| tick    | level 0 | same-core  |      64 |        320 |        380 |        550 |        640 |
+| tick    | level 1 | cross-core |      64 |        510 |        550 |        750 |        880 |
+| tick    | level 0 | cross-core |     256 |        630 |        680 |        870 |        980 |
+| tick    | level 0 | cross-core |    1448 |       1660 |       1720 |       2000 |       2120 |
+| gateway | level 0 | cross-core |     128 |        150 |        160 |        230 |        250 |
+| gateway | level 1 | cross-core |     128 |        160 |        180 |        280 |        320 |
+| hop     | -       | cross-core |       0 |         34 |         34 |         60 |         54 |
+
+`compare-benchmark.py` over the two sides' medians flags 26 percentiles of the headline, every level 0 and level 1
+tick row up to 256 B among them, and 46 of the breakdown, where the `tcp` leg moves by 30 to 40 ns at p50 at every
+payload in both topologies. The gate is not met. At 64 B, level 0, cross-core, the tick is 40 ns slower at p50 and
+70 ns slower at p99, against a bar of 10 to 20 ns. Of the 40 ns, 30 are in the `tcp` leg, which acknowledges the
+previous order, and 10 in the application leg, which sends the next. The gateway round, which sends an order and
+processes its bare ACK outside the window, moves by 10 ns at p50 and 20 ns at p99.
+
+Where it comes from, measured the same day on the 64-byte tick at level 0, cross-core, three runs per binary,
+alternating; diagnostics, not kept as result files:
+
+- **Spread over the branch's commits.** A bisection gives, as medians of p50: 460 ns at 1aeddb9; 460 ns after the
+  scoreboard, with the `tcp` leg 10 ns longer; 460 ns after one recovery with PRR and the growth rule, with p99 30 ns
+  longer; 480 ns after RACK; 490 ns after the tail probe and the undo; 500 ns at 13cefd6. No step accounts for it.
+- **Not the four candidates.** Builds of 13cefd6 with each of them taken out, for the measurement only, sit within one
+  or two 10 ns steps of the head: the probe's arm at every send, RACK's update, detection and minimum round trip on
+  the ACK, the window's record at every send, and the undo's checks; all four out together measured the same as the
+  head. The allowance does not matter either: 13cefd6 with the default 40 ms and with 500 ms measured the same.
+- **What grew.** In the same-core run, where the venue runs inline and nothing spins, the stack's thread spends per
+  round 187 cycles more (1334 to 1521), on 151 more instructions (1334 to 1485), four more L1 data misses (7.0 to
+  11.2) and seven more loads blocked by an older store (65.7 to 73.0). `ControlBlock` grew from 704 to 944 bytes and
+  a queue entry from 88 to 96. The profile puts the cycles on the in-order ACK, in `AckProcessor::on_ack` and the
+  queue's `acknowledge`, where the parts' results (`Freed`, `Cumulative`, `AckInfo`) pass between calls through
+  memory and stall on the stores that wrote them, and in the reset of a freed entry; and, at the send, on the wheel's
+  arm. Forcing the ACK's helpers inline gave back 10 ns at p50, 490 ns in two sets of runs, and nothing with the
+  four candidates taken out as well.
+
+The regression stands at 40 ns at p50 and 70 ns at p99 and is recorded here rather than fixed: it is the cost of the
+general machinery the branch puts on every in-order ACK and send, not of one step that could be taken out. Winning it
+back is an optimization of its own, measured against these files: a short path for an in-order ACK that finds nothing
+reported, lost or probed, the fields an ACK and a send touch kept together in `ControlBlock`, and no results passed
+through memory between the parts of an ACK.
+
 ## Tracking regressions
 
 Every step of phase 2 reruns both baseline commands on the same machine and the same cores, and commits both
@@ -507,9 +600,11 @@ perf report -i /tmp/tick-to-trade.perf.data
 Each step adds a line here, read from its headline file: the date, the revision, the step, and p50 and p99.9 of
 level 0, cross-core, for the tick round at 64 bytes and for the gateway round.
 
-| Date    | Revision | Step                  | Tick, 64 B, p50 | Tick, 64 B, p99.9 | Gateway, p50 | Gateway, p99.9 |
-|---------|----------|-----------------------|-----------------|-------------------|--------------|----------------|
-| pending | pending  | 1. Baseline benchmark | pending         | pending           | pending      | pending        |
+| Date       | Revision | Step                                     | Tick, 64 B, p50 | Tick, 64 B, p99.9 | Gateway, p50 | Gateway, p99.9 |
+|------------|----------|------------------------------------------|-----------------|-------------------|--------------|----------------|
+| pending    | pending  | 1. Baseline benchmark                    | pending         | pending           | pending      | pending        |
+| 2026-11-21 | 1aeddb9  | `main` at step 5's base, medians of 3    | 460             | 1310              | 150          | 300            |
+| 2026-11-21 | 13cefd6  | 5. Loss recovery with SACK, medians of 3 | 500             | 1300              | 160          | 320            |
  
 Step 3 (reliable send) gates on the 64-byte tick at level 0, cross-core: p50 and p99 within 50 ns of a run of `main`
 at the branch's merge base (`git worktree add ../aloe-base $(git merge-base main HEAD)`, built with the `release`
@@ -534,6 +629,11 @@ send; the offer's compare against the silly-window threshold and the two shifts 
 doubling test in `consume`. The first fix to reach for is the one TLDK and Onload have: recognise an option block that
 is exactly `nop, nop, TS` with one 32-bit compare and read its two values directly, in place of the walk over the
 options every segment takes today.
+
+Step 5 (loss recovery with SACK: the scoreboard, RACK-TLP, one recovery with PRR and the undo) gates the same way, on
+the same bar, against `main` at its base, 1aeddb9. Its rerun was made on hugepages and is recorded under "Rerun of
+step 5" above: the bar is not met, the 64-byte tick at level 0, cross-core, being 40 ns slower at p50 and 70 ns at p99,
+and the reason and what would win it back are recorded there.
 
 ## What comes next
 

@@ -11,10 +11,10 @@
 
 namespace aloe::benchmarks {
 
-    /// Fails `state` when the stack dropped, refused or starved anything during the run, or held, reported or delayed
-    /// anything a clean ring never causes: a benchmark that measured garbage must say so instead of reporting it. Only
-    /// the wait for ARP is allowed: `send_unresolved` on either brick, and `ip.dropped_arp_unsolicited`, which is the
-    /// IP brick's rule rather than a loss.
+    /// Fails `state` when the stack dropped, refused or starved anything during the run, or held, reported, delayed,
+    /// marked lost, probed or undid anything a clean ring never causes: a benchmark that measured garbage must say so
+    /// instead of reporting it. Only the wait for ARP is allowed: `send_unresolved` on either brick, and
+    /// `ip.dropped_arp_unsolicited`, which is the IP brick's rule rather than a loss.
     inline void check_stack_counters(RunState& state,
                                      const tcp::TcpCounters& tcp,
                                      const net::Ipv4Counters& ip,
@@ -50,6 +50,20 @@ namespace aloe::benchmarks {
         expect_zero(tcp.sack_acks_sent, "tcp.sack_acks_sent");
         expect_zero(tcp.duplicate_sacks_sent, "tcp.duplicate_sacks_sent");
         expect_zero(tcp.delayed_acks_sent, "tcp.delayed_acks_sent");
+        expect_zero(tcp.duplicate_sacks_received, "tcp.duplicate_sacks_received");
+        expect_zero(tcp.rack_marked, "tcp.rack_marked");
+        expect_zero(tcp.lost_retransmits, "tcp.lost_retransmits");
+        expect_zero(tcp.reorder_timeouts, "tcp.reorder_timeouts");
+        expect_zero(tcp.reordering_seen, "tcp.reordering_seen");
+        expect_zero(tcp.sack_reneging, "tcp.sack_reneging");
+        // With one order in flight the probe waits until the retransmission timeout (`stack_tcp_config`): a probe is a
+        // round that stalled for the RTO, a finding and not noise.
+        expect_zero(tcp.tail_probes, "tcp.tail_probes");
+        expect_zero(tcp.tail_probes_needless, "tcp.tail_probes_needless");
+        expect_zero(tcp.tail_probe_recoveries, "tcp.tail_probe_recoveries");
+        expect_zero(tcp.tail_probes_early, "tcp.tail_probes_early");
+        expect_zero(tcp.undos_duplicate_sack, "tcp.undos_duplicate_sack");
+        expect_zero(tcp.undos_original_ack, "tcp.undos_original_ack");
         expect_zero(ip.transmit_refused, "ip.transmit_refused");
         expect_zero(ip.dropped_short, "ip.dropped_short");
         expect_zero(ip.dropped_not_for_us, "ip.dropped_not_for_us");

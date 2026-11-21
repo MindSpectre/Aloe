@@ -2,6 +2,7 @@
 
 #include <aloe/ethdev>
 #include <aloe/net>
+#include <aloe/tcp>
 #include <chrono>
 
 #include <run_state.hpp>
@@ -17,6 +18,19 @@ namespace aloe::benchmarks {
                 .prefix        = 24,
                 .arp_reachable = std::chrono::hours{24},
                 .arp_expire    = std::chrono::hours{48}};
+    }
+
+    /**
+     * TCP's configuration at every level: the defaults, with a tail probe that waits 500 ms beyond two round trips for
+     * a lone segment, the most `TcpConfig` allows, where the default waits 40 ms. The venue acknowledges an order only
+     * with its next tick, where a real venue acknowledges at once or within its delayed ACK; with the default, a tick
+     * round's gap above about 40 ms would draw a probe of the order, which the strict venue refuses. With 500 ms the
+     * probe of a lone order falls at the retransmission timeout's moment, about 200 ms, so the tick round's `--gap` is
+     * bounded by the RTO, as it was before the probe existed. The measured path runs the same code either way: the
+     * probe's deadline is computed and the wheel armed once per order.
+     */
+    [[nodiscard]] inline tcp::TcpConfig stack_tcp_config() noexcept {
+        return {.tail_probe_ack_delay = std::chrono::milliseconds{500}};
     }
 
     /**

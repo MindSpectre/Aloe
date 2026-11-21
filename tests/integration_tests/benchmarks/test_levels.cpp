@@ -138,15 +138,16 @@ TEST(Levels, BricksTickCrossCore) {
     run_level0(small(Round::Tick, Level::Bricks, Topology::CrossCore, 256), "lv0-tick-cross");
 }
 
-// The gap outlasts the peer's deadline and stays under the tail probe's wait, two round trips and the 40 ms allowance:
-// the venue acknowledges an order only with its next tick, so a longer gap would draw a probe of the order, which the
-// strict venue refuses as a segment out of sequence.
+// The gap outlasts the peer's deadline and stays under the retransmission timeout, 200 ms: the venue acknowledges an
+// order only with its next tick, and the benchmark's stack waits 500 ms beyond two round trips before it probes a lone
+// segment (`stack_tcp_config`), so the order's probe would fall at the RTO's moment. A longer gap would draw it, and
+// the strict venue refuses it as a segment out of sequence.
 TEST(Levels, BricksTickCrossCoreGapOutlastsTheDeadline) {
     RoundConfig config = small(Round::Tick, Level::Bricks, Topology::CrossCore, 64);
     config.rounds      = 3;
     config.warmup      = 0;
-    config.gap         = 20ms;
-    run_level0(config, "lv0-gap-dl", false, 10ms);  // the gap is silence by design, not a lost peer
+    config.gap         = 150ms;
+    run_level0(config, "lv0-gap-dl", false, 100ms);  // the gap is silence by design, not a lost peer
 }
 
 TEST(Levels, BricksTickWithArpOnTheWire) {
