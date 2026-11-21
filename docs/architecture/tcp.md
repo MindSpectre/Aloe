@@ -901,11 +901,12 @@ the policy's growth returns at once when the window was not in use; the resend p
 timer is cancelled when nothing is left in flight, else set to the probe. The send of an order makes two subtractions
 more in `writable()`, records the window's use, computes the probe's deadline and arms the wheel for it in place of the
 RTO, with the RTO's moment kept beside it. No entry is walked, no block read, no state entered, nothing copied. It is
-not free: on the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md), against `main` at this step's base, the
-64-byte tick at level 0, cross-core, is 40 ns slower at p50, 460 to 500 ns, and 70 ns at p99, 670 to 740 ns, 30 of the
-40 in the `tcp` leg that acknowledges the previous order, above the bar of 10 to 20 ns set for the step. The benchmark
-page records the runs, what the diagnostics measured of the cause and what they did not isolate, and the changes that
-could win it back.
+not free, and it misses the bar of 10 to 20 ns set for the step: on the
+[tick-to-trade benchmark](../benchmarks/tick-to-trade.md), against `main` at this step's base, the 64-byte tick at
+level 0, cross-core, is 40 ns slower at p50, 450 to 490 ns, and 60 ns at p99, 670 to 730 ns, 30 of the 40 in the `tcp`
+leg that acknowledges the previous order. That is after the work a review found plainly unnecessary here was taken out,
+which gave back one 10 ns step. The benchmark page records both reruns, what the diagnostics measured of the cause and
+what they did not isolate, and the changes that could win the rest back.
 
 **Where the brick departs from the RFCs and from Linux.** The RFCs are the specification, and where they leave a choice
 Aloe does what Linux does. Loss recovery departs from that in the places below; the other parts' departures are in their
@@ -1318,9 +1319,9 @@ brings RFC 5961's challenge ACK. The same wider target holds for a FIN forged in
 in-order data that crosses it is refused each time it is resent, so the stream stalls until the peer gives up, where
 Linux usually drops the stale FIN once real data passes it; step 6's challenge ACK covers both. The brick makes no
 deployment or latency claim yet: the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a recorded baseline;
-its rerun for loss recovery with SACK found the 64-byte tick 40 ns slower at p50 than before it, as the note on what an
-in-order ACK and a send cost says, and winning that back is work of its own; its reruns with reliable send and with the
-receive side alone are owed, as its page says.
+its reruns for loss recovery with SACK found the 64-byte tick 40 ns slower at p50 than before it, after the cleanup of
+the tick path too, as the note on what an in-order ACK and a send cost says, and winning that back is work of its own;
+its reruns with reliable send and with the receive side alone are owed, as its page says.
 
 **Hardening is deferred too.** The brick is not yet meant for hostile peers. It has no SYN cookies, so a SYN
 flood fills the fixed table until the half-open connections time out; its initial sequence numbers come from a

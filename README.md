@@ -32,8 +32,8 @@ the end of phase 2, and the stack makes no deployment or latency claim yet.
   and NewReno, bounded recovery), the receive side (segments held above a
   gap without a copy, SACK and duplicate SACK, window scaling, an optional
   delayed ACK) and loss recovery with SACK (a scoreboard, RACK-TLP, PRR and
-  the undo), which costs the benchmark's 64-byte tick 40 ns at p50, as its
-  page records.
+  the undo), which misses its latency bar: it costs the benchmark's 64-byte
+  tick 40 ns at p50 and 60 ns at p99, as its page records.
 - **Next:** the lifecycle and client hardening (TIME_WAIT, keepalive, path MTU,
   RFC 6528 and RFC 5961), where the API freezes. TLS and HTTP/1.1 with
   WebSocket follow.
