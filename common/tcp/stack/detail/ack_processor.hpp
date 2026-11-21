@@ -35,13 +35,14 @@ namespace aloe::tcp::detail {
     template <typename Ip, typename CongestionControl>
     class AckProcessor {
     public:
-        using ControlBlock = detail::ControlBlock<Ip, CongestionControl>;
-        using Context      = StackContext<Ip, CongestionControl>;
-        using Transmitter  = detail::Transmitter<Ip, CongestionControl>;
-        using Sequence     = wire::TcpSequence;
-        using Freed        = Transmitter::Freed;
-        using Reported     = Transmitter::Reported;
-        using SentNode     = Transmitter::SentNode;
+        using ControlBlock    = detail::ControlBlock<Ip, CongestionControl>;
+        using Context         = StackContext<Ip, CongestionControl>;
+        using Transmitter     = detail::Transmitter<Ip, CongestionControl>;
+        using Sequence        = wire::TcpSequence;
+        using Freed           = Transmitter::Freed;
+        using Reported        = Transmitter::Reported;
+        using SentNode        = Transmitter::SentNode;
+        using DuplicateReport = Transmitter::DuplicateReport;
 
         /// What an acceptable ACK did, for the Receiver to publish.
         struct Outcome {
@@ -218,16 +219,20 @@ namespace aloe::tcp::detail {
             std::uint32_t reported = 0;  ///< Sequence space newly marked received.
             bool reordering        = false;
             std::optional<wire::TcpSackBlock> duplicate{};  ///< A believed duplicate report.
+            /// A duplicate report no longer than the largest window the peer offered, believed or not: what the tail
+            /// probe's verdict reads (`reports_probe`).
+            std::optional<wire::TcpSackBlock> recognised{};
         };
 
         /**
          * The first step of an acceptable ACK: its SACK option read into the scoreboard. Nothing on a connection that
          * does not use SACK, with no option, or for an ACK older than SND.UNA by more than the largest window the peer
-         * offered (`tcp_sacktag_write_queue`). The duplicate report is recognised first, from the option alone, and
-         * counted when believed (`RetransmissionQueue::duplicate_report`); then each other block that is valid marks
-         * the entries it covers whole, lowest first, as Linux sorts them, so lower data reported in the same option
-         * is not taken for reordering. A believed duplicate report that is valid and names a resent entry a block
-         * reported shows reordering. Blocks a correct peer never sends mark nothing and are not an error.
+         * offered (`tcp_sacktag_write_queue`). The duplicate report is recognised first, from the option alone, kept
+         * for the tail probe's verdict, and counted when believed (`RetransmissionQueue::duplicate_report`); then each
+         * other block that is valid marks the entries it covers whole, lowest first, as Linux sorts them, so lower data
+         * reported in the same option is not taken for reordering. A believed duplicate report that is valid and names
+         * a resent entry a block reported shows reordering. Blocks a correct peer never sends mark nothing and are not
+         * an error.
          */
         [[nodiscard]] Blocks
         read_blocks(ControlBlock& block, const Sequence ack, const std::span<const std::byte> sack) noexcept {
@@ -243,7 +248,11 @@ namespace aloe::tcp::detail {
             const std::optional<wire::TcpSackBlock> second =
                 count > 1 ? std::optional{wire::TcpOptions::read_sack_block(sack, 1)} : std::nullopt;
             Blocks blocks{};
-            if (transmitter_.duplicate_report(block, first, second, ack)) {
+            const DuplicateReport report = transmitter_.duplicate_report(block, first, second, ack);
+            if (report != DuplicateReport::None) {
+                blocks.recognised = first;
+            }
+            if (report == DuplicateReport::Believed) {
                 blocks.duplicate  = first;
                 blocks.reordering = valid_block(block, first, edge) && transmitter_.names_reported_resend(block, first);
                 ++context_.counters.duplicate_sacks_received;
@@ -274,16 +283,17 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * The ACK's believed duplicate report is the tail probe's: of at most one segment, ending at the end of a probe
-         * whose verdict is open, so the original and the probe both arrived. RFC 8985 7.4's "DSACK option matching
-         * TLP.end_seq", Linux's `FLAG_DSACK_TLP` (`tcp_dsack_seen`), which Linux sets before it judges whether the
-         * report is believed, where here only a believed report counts: one the peer could not have sent, more
-         * duplicates than the connection ever resent, settles nothing.
+         * The ACK's duplicate report is the tail probe's: of at most one segment, ending at the end of a probe whose
+         * verdict is open, so the original and the probe both arrived. RFC 8985 7.4's "DSACK option matching
+         * TLP.end_seq", Linux's `FLAG_DSACK_TLP`, in `tcp_dsack_seen`'s order: after its first test, a report longer
+         * than the largest window the peer offered is none (`Blocks::recognised`), and before its second, the count of
+         * duplicates against resends, so a report of the probe settles its verdict believed or not. The count still
+         * gates all the rest: only a believed report is counted, undoes, or grows RACK's window (`Blocks::duplicate`).
          */
         [[nodiscard]] static bool reports_probe(const ControlBlock& block, const Blocks& blocks) noexcept {
             const std::optional<Sequence> end = block.probe_state.end();
-            return end && blocks.duplicate && blocks.duplicate->end == *end &&
-                   static_cast<std::uint32_t>(blocks.duplicate->end - blocks.duplicate->first) <= block.mss();
+            return end && blocks.recognised && blocks.recognised->end == *end &&
+                   static_cast<std::uint32_t>(blocks.recognised->end - blocks.recognised->first) <= block.mss();
         }
 
         /**

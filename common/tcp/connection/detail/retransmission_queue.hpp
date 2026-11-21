@@ -59,6 +59,13 @@ namespace aloe::tcp::detail {
             bool reordering = false;  ///< It newly reported a never-resent entry below the highest already reported.
         };
 
+        /// What the first block of a SACK option is (`duplicate_report`).
+        enum class DuplicateReport : std::uint8_t {
+            None,         ///< No duplicate report, or one longer than the largest window the peer offered.
+            Disbelieved,  ///< A duplicate report, counted, that the count refuses: more reported than ever resent.
+            Believed,     ///< A duplicate report, counted and believed.
+        };
+
         [[nodiscard]] bool empty() const noexcept {
             return chain_.empty();
         }
@@ -238,27 +245,27 @@ namespace aloe::tcp::detail {
 
         /**
          * RFC 2883 as Linux reads it (`tcp_check_dsack`, `tcp_dsack_seen`): `first` is a duplicate report when it
-         * starts below `ack`, or `second` contains it. Not believed, and false, when it is longer than `max_window` or
-         * when the peer has by now reported more duplicate segments than this queue ever resent. Every report within
-         * `max_window` counts toward what the peer reported, believed or not, as `tcp_dsack_seen` counts it: one
-         * segment, or its length in segments of `mss` rounded up. A reversed one is neither counted nor believed. It
-         * reads the option alone, so it holds with nothing outstanding.
+         * starts below `ack`, or `second` contains it. None when it is not one, is reversed, or is longer than
+         * `max_window`, Linux's first test; such a report is not counted. Every other report counts toward what the
+         * peer reported, as `tcp_dsack_seen` counts it: one segment, or its length in segments of `mss` rounded up.
+         * Then it is believed unless the peer has by now reported more duplicate segments than this queue ever resent,
+         * Linux's second test. It reads the option alone, so it holds with nothing outstanding.
          */
-        [[nodiscard]] bool duplicate_report(const wire::TcpSackBlock& first,
-                                            const std::optional<wire::TcpSackBlock>& second,
-                                            const wire::TcpSequence ack,
-                                            const std::uint32_t max_window,
-                                            const std::uint16_t mss) noexcept {
+        [[nodiscard]] DuplicateReport duplicate_report(const wire::TcpSackBlock& first,
+                                                       const std::optional<wire::TcpSackBlock>& second,
+                                                       const wire::TcpSequence ack,
+                                                       const std::uint32_t max_window,
+                                                       const std::uint16_t mss) noexcept {
             const bool contained = second && !first.first.before(second->first) && !first.end.after(second->end);
             if ((!first.first.before(ack) && !contained) || !first.first.before(first.end)) {
-                return false;
+                return DuplicateReport::None;
             }
             const auto length = static_cast<std::uint32_t>(first.end - first.first);
             if (length > max_window) {
-                return false;
+                return DuplicateReport::None;
             }
             duplicate_segments_ += length > mss && mss > 0 ? (length + mss - 1) / mss : 1;
-            return duplicate_segments_ <= resent_segments_;
+            return duplicate_segments_ <= resent_segments_ ? DuplicateReport::Believed : DuplicateReport::Disbelieved;
         }
 
         /// `block` names, whole, a queued entry that was resent and is marked received.

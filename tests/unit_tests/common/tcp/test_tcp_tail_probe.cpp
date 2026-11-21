@@ -33,6 +33,7 @@ namespace {
     using TcpTailProbeBrick    = aloe::testing::SackBrick<aloe::testing::TcpFixture>;
     using TcpTailProbeHeld     = aloe::testing::SackBrick<aloe::testing::TcpHeldFixture>;
     using TcpTailProbeRefusing = aloe::testing::SackBrick<aloe::testing::TcpRefusingFixture>;
+    using TcpTailProbeRecorded = aloe::testing::SackBrick<aloe::testing::TcpRecordedFixture>;
 
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpTailProbeBrick,
@@ -46,6 +47,11 @@ namespace {
                              aloe::testing::offloads_name);
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpTailProbeRefusing,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpTailProbeRecorded,
                              ::testing::Values(aloe::fabric::EmulatedOffloads::None,
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
@@ -653,4 +659,203 @@ TEST_P(TcpTailProbeBrick, TheProbesDuplicateReportGrowsNoReorderingWindow) {
     EXPECT_EQ(counters().duplicate_sacks_received, 1U);
     EXPECT_EQ(counters().tail_probes_needless, 1U);
     EXPECT_EQ(c->reordering_window(), 2500us) << "any other duplicate report would have grown it to 5 ms";
+}
+
+// RFC 8985 7.4.2 reads a duplicate report matching the probe's end with no test of belief, and Linux's `tcp_dsack_seen`
+// sets `FLAG_DSACK_TLP` before its count test: the probe's report closes its verdict as needless even when the count of
+// duplicates reported has run ahead of the resends, here by a duplicate of the first order that the network made.
+TEST_P(TcpTailProbeBrick, TheProbesDuplicateReportClosesItsVerdictBelievedOrNot) {
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(send(*c, 1, sent));  // at 10 ms
+    advance(10ms);
+    // At 20 ms the ACK of the first order reports it twice, though nothing was resent: one duplicate counted against no
+    // resend, so not believed.
+    receive(peer_.sack(at(100), Blocks{range(0, 100)}));
+    ASSERT_EQ(c->acknowledged(), at(100));
+    EXPECT_EQ(counters().duplicate_sacks_received, 0U);
+    Frames second;
+    ASSERT_TRUE(send(*c, 1, second));  // at 20 ms, alone: probed at 20 + 2 * 10 + 40 = 80
+    advance(60ms);
+    const auto probe = collect();
+    ASSERT_EQ(probe.size(), 1U);
+    advance(10ms);
+    receive(peer_.ack(probe[0]));  // on the probe's end: open
+    ASSERT_TRUE(c->tail_probe_verdict_open());
+    // Both copies arrived, and the peer reports the second: two duplicates counted against one resend, not believed,
+    // and the probe's all the same.
+    receive(peer_.sack(c->committed(), Blocks{range(100, 200)}));
+    EXPECT_EQ(counters().duplicate_sacks_received, 0U);
+    EXPECT_EQ(counters().tail_probes_needless, 1U);
+    EXPECT_FALSE(c->tail_probe_verdict_open());
+    Frames third;
+    ASSERT_TRUE(send(*c, 1, third));
+    advance(10ms);
+    receive(peer_.ack(third[0]));  // past the probe's end: nothing is left to repair
+    EXPECT_EQ(counters().tail_probe_recoveries, 0U);
+    EXPECT_EQ(c->congestion_window(), 14480U);
+}
+
+// Linux's first test of a duplicate report stands: one longer than the largest window the peer ever offered is no
+// report at all (`tcp_dsack_seen`), and the probe's verdict reads nothing of it.
+TEST_P(TcpTailProbeBrick, AReportLongerThanTheLargestWindowClosesNothing) {
+    peer_.set_window(100);  // every window the peer states, its SYN's too: 100 bytes
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(send(*c, 1, sent));  // at 10 ms: probed at 70
+    advance(60ms);
+    const auto probe = collect();
+    ASSERT_EQ(probe.size(), 1U);
+    advance(10ms);
+    receive(peer_.ack(probe[0]));
+    // 101 bytes ending at the probe's end: within one segment, and past the 100 the peer ever offered.
+    const aloe::wire::TcpSackBlock too_long{.first = TcpSequence{at(0).value - 1U}, .end = at(100)};
+    receive(peer_.sack(c->committed(), Blocks{too_long}));
+    EXPECT_EQ(counters().tail_probes_needless, 0U);
+    EXPECT_TRUE(c->tail_probe_verdict_open());
+    Frames second;
+    ASSERT_TRUE(send(*c, 1, second));
+    advance(10ms);
+    receive(peer_.ack(second[0]));  // past the probe's end, the verdict still open: a loss repaired
+    EXPECT_EQ(counters().tail_probe_recoveries, 1U);
+    EXPECT_EQ(c->congestion_window(), 2896U);
+}
+
+// The ACK that ends an episode can leave RACK waiting with nothing reported: it acknowledges a resend sent after an
+// order above `recover`, which then waits RACK's window. A send meets a reordering timer pending while a probe may be
+// scheduled, and the order of the spec's last step stands: the reordering timer, when RACK asked for one, before the
+// probe. The recorder's window is unbounded, so every order and resend goes when it is due.
+TEST_P(TcpTailProbeRecorded, ASendKeepsAPendingReorderingTimer) {
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(send(*c, 3, sent));  // the first, second and third at 10 ms
+    advance(3ms);
+    Frames later;
+    ASSERT_TRUE(send(*c, 2, later));  // the fourth and fifth at 13 ms
+    advance(7ms);
+    // At 20 ms the second is reported, then the first arrives late: reordering is seen, so RACK's window is a quarter
+    // of the minimum round trip, 2.5 ms, in recovery too. Both ACKs sample 10 ms.
+    receive(peer_.sack(at(0), Blocks{range(100, 200)}));
+    receive(ack_of(at(200)));
+    ASSERT_EQ(counters().reordering_seen, 1U);
+    advance(10ms);
+    // At 30 ms the fifth is reported: RACK's round trip 30 - 13 = 17 ms. The third, sent at 10 ms, was due at
+    // 10 + 17 + 2.5 = 29.5: lost, and recovery begins, `recover` at the fifth's end; the fourth, sent at 13 ms below
+    // the fifth, waits until 32.5 ms.
+    receive(peer_.sack(at(200), Blocks{range(400, 500)}));
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Recovery);
+    ASSERT_EQ(collect().size(), 1U) << "the third";
+    advance(1ms);
+    Frames order;
+    ASSERT_TRUE(send(*c, 1, order));  // the sixth at 31 ms, above `recover`
+    advance(2ms);
+    const auto fourth = collect();  // the reordering timer at 33 ms marks the fourth
+    ASSERT_EQ(fourth.size(), 1U);
+    ASSERT_EQ(fourth[0].tcp->sequence, at(300));
+    advance(10ms);
+    // At 43 ms the ACK of everything below the sixth echoes the fourth's resend and ends the episode. RACK takes that
+    // resend, sent at 33 ms, and its round trip of 10 ms; the sixth, sent at 31 ms before it and reported by nothing,
+    // waits until 31 + 10 + 2.5 = 43.5 ms, 44 on the wheel. Open, nothing reported: a probe could be scheduled.
+    peer_.see(fourth[0]);
+    receive(ack_of(at(500)));
+    ASSERT_EQ(c->recovery_state(), RecoveryState::Open);
+    ASSERT_EQ(c->reported_bytes(), 0U);
+    Frames next;
+    ASSERT_TRUE(send(*c, 1, next));  // the seventh at 43 ms
+    advance(1ms);
+    const auto marked = collect();
+    ASSERT_EQ(marked.size(), 1U) << "the sixth, by the reordering timer, which the send left pending";
+    EXPECT_EQ(marked[0].tcp->sequence, at(500));
+    EXPECT_EQ(counters().reorder_timeouts, 2U);
+    EXPECT_EQ(counters().tail_probes, 0U);
+}
+
+// The user timeout counts from the head's first transmission, and a probe is no retry: with one between, a connection
+// times out at the same stamp as one to a peer without SACK, whose timer alone runs.
+TEST_P(TcpTailProbeBrick, TheUserTimeoutIsUnmovedByAProbe) {
+    configure_tcp({.user_timeout = 500ms});
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    aloe::frames::TcpPeer plain{aloe::testing::peer_spec(aloe::testing::tcp_peer_port + 1), TcpSequence{5000}};
+    plain.set_timestamps(100);
+    auto* timer_alone = open_passive(plain, 10ms);
+    ASSERT_NE(timer_alone, nullptr);
+    ASSERT_FALSE(timer_alone->sack());
+    ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);  // both at 20 ms: the deadline is 20 + 500 = 520
+    ASSERT_EQ(timer_alone->send(aloe::frames::pattern(100)), 100U);
+    ASSERT_EQ(collect().size(), 2U);
+    advance(60ms);
+    ASSERT_EQ(collect().size(), 1U) << "the probe at 80 ms; the RTO now runs from it, to 290";
+    advance(150ms);
+    ASSERT_EQ(collect().size(), 1U) << "the other's RTO at 230 ms";
+    advance(60ms);
+    ASSERT_EQ(collect().size(), 1U) << "this one's at 290 ms";
+    EXPECT_EQ(counters().tail_probes, 1U);
+    EXPECT_EQ(counters().retransmits, 2U);
+    // Each RTO backed off to 420 ms, past the deadline, and is clamped to it.
+    advance(229ms);
+    EXPECT_EQ(c->state(), aloe::tcp::State::Established);
+    EXPECT_EQ(timer_alone->state(), aloe::tcp::State::Established);
+    advance(1ms);
+    EXPECT_EQ(c->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(timer_alone->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(counters().connections_user_timed_out, 2U);
+}
+
+// A reordering expiry is no retry either: the deadline stays the head's first transmission plus the user timeout,
+// 10 + 500 = 510 ms, where a peer without SACK would have its timer alone time the connection out too.
+TEST_P(TcpTailProbeBrick, TheUserTimeoutIsUnmovedByAReorderingExpiry) {
+    configure_tcp({.user_timeout = 500ms});
+    auto* c = open_and_send();  // five at 10 ms
+    ASSERT_NE(c, nullptr);
+    advance(10ms);
+    receive(peer_.sack(at(100), Blocks{range(200, 300)}));  // the second waits for the reordering timer, at 23 ms
+    advance(3ms);
+    ASSERT_EQ(collect().size(), 1U);
+    EXPECT_EQ(counters().reorder_timeouts, 1U);
+    EXPECT_EQ(c->retransmit_count(), 0U);
+    advance(210ms);  // the RTO from the head's resend at 23 ms
+    ASSERT_EQ(collect().size(), 1U);
+    EXPECT_EQ(counters().retransmits, 1U);
+    advance(276ms);  // backed off to 420 ms, past the deadline, and clamped to it
+    EXPECT_EQ(c->state(), aloe::tcp::State::Established);
+    advance(1ms);
+    EXPECT_EQ(c->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(counters().connections_user_timed_out, 1U);
+}
+
+// The user timeout bounds the probe through the RTO's moment, which the probe's timer never passes: a probe due at the
+// deadline does not go, and the connection times out there.
+TEST_P(TcpTailProbeBrick, AProbeDueAtTheUserTimeoutTimesTheConnectionOut) {
+    configure_tcp({.user_timeout = 50ms});
+    auto* c = open_passive(peer_, 10ms);
+    ASSERT_NE(c, nullptr);
+    Frames one;
+    ASSERT_TRUE(send(*c, 1, one));  // at 10 ms: the RTO's moment clamped to 10 + 50 = 60, the probe's, 70, to it
+    advance(49ms);
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(c->state(), aloe::tcp::State::Established);
+    advance(1ms);
+    EXPECT_TRUE(collect().empty()) << "no probe at the deadline";
+    EXPECT_EQ(c->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(counters().tail_probes, 0U);
+    EXPECT_EQ(counters().connections_user_timed_out, 1U);
+}
+
+// The same for the reordering timer: clamped to the deadline, its expiry there times the connection out.
+TEST_P(TcpTailProbeBrick, AReorderingExpiryAtTheUserTimeoutTimesTheConnectionOut) {
+    configure_tcp({.user_timeout = 12ms});
+    auto* c = open_and_send();  // five at 10 ms: the deadline is 22 ms
+    ASSERT_NE(c, nullptr);
+    advance(10ms);
+    // At 20 ms the third is reported: the second would wait until 22.5 ms, past the deadline, which bounds the timer.
+    receive(peer_.sack(at(100), Blocks{range(200, 300)}));
+    advance(1ms);
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(c->state(), aloe::tcp::State::Established);
+    advance(1ms);
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(c->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(counters().reorder_timeouts, 0U);
+    EXPECT_EQ(counters().connections_user_timed_out, 1U);
 }

@@ -26,6 +26,7 @@ namespace {
     using Pool   = aloe::tcp::detail::SentSegmentPool<aloe::fabric::Packet>;
     using Queue  = aloe::tcp::detail::RetransmissionQueue<aloe::fabric::Packet>;
     using Entry  = Queue::Entry;
+    using Report = Queue::DuplicateReport;
     using aloe::tcp::detail::no_node;
 
     [[nodiscard]] Block B(const std::uint32_t first, const std::uint32_t end) {
@@ -274,31 +275,33 @@ TEST_F(TcpScoreboard, ADuplicateReportBelowTheAckIsRecognised) {
     push_five();
     resend(nodes[0]);
     resend(nodes[1]);
-    EXPECT_TRUE(queue.duplicate_report(B(900, 1000), std::nullopt, TcpSequence{1000}, 65535, 1460));
+    EXPECT_EQ(queue.duplicate_report(B(900, 1000), std::nullopt, TcpSequence{1000}, 65535, 1460), Report::Believed);
     std::ignore = acknowledge(1500, 1000);
     ASSERT_TRUE(queue.empty());
-    EXPECT_TRUE(queue.duplicate_report(B(1400, 1500), std::nullopt, TcpSequence{1500}, 65535, 1460))
+    EXPECT_EQ(queue.duplicate_report(B(1400, 1500), std::nullopt, TcpSequence{1500}, 65535, 1460), Report::Believed)
         << "from the option alone: with nothing outstanding too";
 }
 
 TEST_F(TcpScoreboard, ADuplicateReportInsideTheSecondBlockIsRecognised) {
     push_five();
     resend(nodes[0]);
-    EXPECT_TRUE(queue.duplicate_report(B(1200, 1300), B(1100, 1400), TcpSequence{1000}, 65535, 1460));
-    EXPECT_FALSE(queue.duplicate_report(B(1200, 1300), B(1300, 1400), TcpSequence{1000}, 65535, 1460))
+    EXPECT_EQ(queue.duplicate_report(B(1200, 1300), B(1100, 1400), TcpSequence{1000}, 65535, 1460), Report::Believed);
+    EXPECT_EQ(queue.duplicate_report(B(1200, 1300), B(1300, 1400), TcpSequence{1000}, 65535, 1460), Report::None)
         << "a second block that does not contain the first: an ordinary block";
 }
 
 TEST_F(TcpScoreboard, ADuplicateReportThatCannotBeTrueIsNotBelieved) {
     push_five();
-    EXPECT_FALSE(queue.duplicate_report(B(900, 1000), std::nullopt, TcpSequence{1000}, 65535, 1460))
+    EXPECT_EQ(queue.duplicate_report(B(900, 1000), std::nullopt, TcpSequence{1000}, 65535, 1460), Report::Disbelieved)
         << "nothing was ever resent";
     for (int count = 0; count < 99; ++count) {
         resend(nodes[0]);  // so many resends that the count no longer refuses what follows
     }
-    EXPECT_FALSE(queue.duplicate_report(B(1000U - 70000U, 1000), std::nullopt, TcpSequence{1000}, 65535, 1460))
-        << "longer than any window the peer offered";
-    EXPECT_TRUE(queue.duplicate_report(B(1000U - 65535U, 1000), std::nullopt, TcpSequence{1000}, 65535, 1460))
+    EXPECT_EQ(queue.duplicate_report(B(1000U - 70000U, 1000), std::nullopt, TcpSequence{1000}, 65535, 1460),
+              Report::None)
+        << "longer than any window the peer offered: no report at all";
+    EXPECT_EQ(queue.duplicate_report(B(1000U - 65535U, 1000), std::nullopt, TcpSequence{1000}, 65535, 1460),
+              Report::Believed)
         << "as long as the largest window: believed";
 }
 

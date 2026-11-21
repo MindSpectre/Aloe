@@ -58,13 +58,14 @@ namespace aloe::tcp::detail {
     template <typename Ip, typename CongestionControl>
     class Transmitter {
     public:
-        using Packet       = Ip::Packet;
-        using ControlBlock = detail::ControlBlock<Ip, CongestionControl>;
-        using Context      = StackContext<Ip, CongestionControl>;
-        using Sequence     = wire::TcpSequence;
-        using SentNode     = SentSegment<Packet>;
-        using Freed        = RetransmissionQueue<Packet>::Freed;
-        using Reported     = RetransmissionQueue<Packet>::Reported;
+        using Packet          = Ip::Packet;
+        using ControlBlock    = detail::ControlBlock<Ip, CongestionControl>;
+        using Context         = StackContext<Ip, CongestionControl>;
+        using Sequence        = wire::TcpSequence;
+        using SentNode        = SentSegment<Packet>;
+        using Freed           = RetransmissionQueue<Packet>::Freed;
+        using Reported        = RetransmissionQueue<Packet>::Reported;
+        using DuplicateReport = RetransmissionQueue<Packet>::DuplicateReport;
 
         Transmitter(Context& context, loop::TimerWheel& wheel)
             : context_{context},
@@ -363,12 +364,13 @@ namespace aloe::tcp::detail {
             return reported;
         }
 
-        /// Whether the option's `first` block is a believed duplicate report (`RetransmissionQueue::duplicate_report`),
-        /// against the largest window the peer offered and the connection's MSS.
-        [[nodiscard]] bool duplicate_report(ControlBlock& block,
-                                            const wire::TcpSackBlock& first,
-                                            const std::optional<wire::TcpSackBlock>& second,
-                                            const Sequence ack) noexcept {
+        /// What the option's `first` block is, a duplicate report believed or not or none
+        /// (`RetransmissionQueue::duplicate_report`), against the largest window the peer offered and the connection's
+        /// MSS.
+        [[nodiscard]] DuplicateReport duplicate_report(ControlBlock& block,
+                                                       const wire::TcpSackBlock& first,
+                                                       const std::optional<wire::TcpSackBlock>& second,
+                                                       const Sequence ack) noexcept {
             return block.queue.duplicate_report(first, second, ack, block.send.max_wnd, block.mss());
         }
 
@@ -614,8 +616,7 @@ namespace aloe::tcp::detail {
                 case TimerKind::Retransmit:
                     return on_retransmit_timeout(block);
                 case TimerKind::Reorder:
-                    on_reorder_timeout(block);
-                    return TimerExpiry::Handled;
+                    return on_reorder_timeout(block);
                 case TimerKind::ArpPoll:
                     return on_arp_poll(block);
                 case TimerKind::Probe:
@@ -1112,6 +1113,14 @@ namespace aloe::tcp::detail {
             return head.transmits > 0 ? &head : nullptr;
         }
 
+        /// The user timeout ran out: the head left at least that long ago (`user_timed_head`). The RTO's expiry checks
+        /// it first, and so do the reordering timer's and the probe's, which the user timeout bounds through the RTO's
+        /// moment, so that an expiry at its moment ends the connection there and sends nothing.
+        [[nodiscard]] bool user_timed_out(const ControlBlock& block) const noexcept {
+            const SentNode* head = user_timed_head(block);
+            return head != nullptr && context_.now - head->first_sent >= context_.config.user_timeout;
+        }
+
         /// `after` from now; under a user timeout on a synchronized connection, never later than the head's first
         /// transmission plus the timeout, Linux's `tcp_clamp_rto_to_user_timeout`, and never earlier than now.
         [[nodiscard]] core::TimePoint rto_deadline(const ControlBlock& block,
@@ -1147,12 +1156,17 @@ namespace aloe::tcp::detail {
          * the tail probe from now when one may be scheduled, as Linux's `tcp_write_xmit` calls
          * `tcp_schedule_loss_probe` after it sends new data or the FIN; else the RTO into an empty queue, as before.
          * One arm of the wheel per segment, and none for a segment behind others when no probe may be scheduled. Any
-         * other timer stays: the RTO keeps its moment, and a reordering timer keeps waiting for the entries RACK left,
-         * which a send cannot settle.
+         * other timer stays: the RTO keeps its moment, and a pending reordering timer keeps waiting for the entries
+         * RACK left, which a send cannot settle, even where a probe could be scheduled, as `set_timer` puts RACK's wait
+         * before the probe. An ACK that ends an episode can leave such a wait with nothing reported. Linux's
+         * `tcp_schedule_loss_probe` replaces whatever timer is pending.
          */
         void arm_after_send(ControlBlock& block, const bool into_empty) noexcept {
             if (into_empty) {
                 block.rto_at = rto_deadline(block, block.rtt.rto());
+            }
+            if (block.timer_kind == TimerKind::Reorder) {
+                return;
             }
             if (probe_schedulable(block)) {
                 arm_tail_probe(block);
@@ -1233,8 +1247,7 @@ namespace aloe::tcp::detail {
          */
         [[nodiscard]] TimerExpiry on_retransmit_timeout(ControlBlock& block) noexcept {
             assert(!block.queue.empty() && "the RTO runs while something is queued");
-            if (const SentNode* head = user_timed_head(block);
-                head != nullptr && context_.now - head->first_sent >= context_.config.user_timeout) {
+            if (user_timed_out(block)) {
                 return TimerExpiry::UserTimedOut;
             }
             const bool handshake = handshaking(block);
@@ -1271,7 +1284,8 @@ namespace aloe::tcp::detail {
          * (`begin_recovery` with nothing delivered). In recovery the episode that is open goes on, and one segment may
          * leave (`LossRecovery::on_recovery_timer`). Then the resend pass, and the RTO at the moment it had
          * (`set_timer`): entries still waiting are left to the next ACK. An expiry is no retry: it moves neither the
-         * retry count nor the backoff, and the user timeout bounds it through the RTO's moment, which it never passes.
+         * retry count nor the backoff, and the user timeout bounds it through the RTO's moment, which it never passes:
+         * an expiry at the user timeout's moment times the connection out there, detects nothing and resends nothing.
          * A resend that clears the last lost mark may leave room for new data: the connection gets its Writable hint
          * (`hint_if_writable_rose`).
          *
@@ -1280,7 +1294,10 @@ namespace aloe::tcp::detail {
          * stands, where here one segment may leave all the same, so an expiry that marks the episode's next loss lets
          * its resend out without waiting for an ACK.
          */
-        void on_reorder_timeout(ControlBlock& block) noexcept {
+        [[nodiscard]] TimerExpiry on_reorder_timeout(ControlBlock& block) noexcept {
+            if (user_timed_out(block)) {
+                return TimerExpiry::UserTimedOut;
+            }
             ++context_.counters.reorder_timeouts;
             const std::size_t writable_before = writable(block);
             if (const Rack::Detected detected = detect(block); detected.marked > 0) {
@@ -1293,6 +1310,7 @@ namespace aloe::tcp::detail {
             std::ignore = resend_lost(block);
             hint_if_writable_rose(block, writable_before);
             set_timer(block, core::Duration::zero());
+            return TimerExpiry::Handled;
         }
 
         /**
@@ -1303,6 +1321,9 @@ namespace aloe::tcp::detail {
          * leaves at the flush (`retry_probe`). It is the probe from the moment `resend` accepts it, sent or waiting:
          * its end recorded, the end of that entry, counted in `tail_probes`, and the RTO armed from now. It is nothing
          * else: no retry and no backoff, no episode, no mark cleared, no rate reduction.
+         *
+         * The user timeout bounds the probe through the RTO's moment, which the probe's deadline never passes: an
+         * expiry at the user timeout's moment times the connection out there and sends no probe.
          *
          * When no probe goes, or IP refused it, the RTO keeps the moment it had, `rto_at`, as Linux's `tcp_rearm_rto`
          * arms what is left of the RTO after an expiry of the probe's timer; Linux counts that from the head's last
@@ -1321,6 +1342,9 @@ namespace aloe::tcp::detail {
          * (`skb_still_in_host_queue`), where here the busy rule defers it and then sends a copy, as every resend.
          */
         [[nodiscard]] TimerExpiry on_tail_probe_timeout(ControlBlock& block) noexcept {
+            if (user_timed_out(block)) {
+                return TimerExpiry::UserTimedOut;
+            }
             if (block.probe_state.may_probe() && probe_schedulable(block)) {
                 const std::uint32_t index = block.queue.last_sent(send_pool_);
                 assert(index != no_node && "a probe is scheduled only while something is in flight");
