@@ -11,8 +11,9 @@ This page describes the design the stack is built towards. Today the repository 
 [`core`](core.md), [`execution`](execution.md) and [`log`](log.md) modules, the protocol formats in [`wire`](wire.md),
 the [device layer](device.md), the [loop bricks](loop.md), the [shard runtime](runtime.md), the IP base
 ([`net`](net.md)), the [stream](stream.md) contract, [TCP](tcp.md) with a reliable send side, a receive side that holds
-what arrives above a gap and reports it with SACK blocks, and its senders in the runtime and, apart from the stack, the
-[fixtures](fixtures.md) for testing code written over the bricks; the rest arrives phase by phase, as the
+what arrives above a gap and reports it with SACK blocks, loss recovery that reads the peer's blocks and finds a loss by
+RACK-TLP, with PRR and an undo, and its senders in the runtime and, apart from the stack, the [fixtures](fixtures.md)
+for testing code written over the bricks; the rest arrives phase by phase, as the
 [roadmap](../roadmap.md) lays out. Each section says what exists and what is still design.
 
 ## The shard, as a rule

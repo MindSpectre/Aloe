@@ -282,6 +282,15 @@ TEST(ParseScript, ParsesTheReceiveSideOptionLines) {
                                                 .delayed_ack      = 40ms}));
 }
 
+TEST(ParseScript, ParsesTheTailProbeAllowanceLine) {
+    const auto script = parse_script("--tcp_tail_probe_ack_delay_ms=0\n0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(script.has_value()) << script.error().message;
+    EXPECT_EQ(script->tcp, (aloe::scenario::ScriptTcpOptions{.tail_probe_ack_delay = 0ms}));
+    const auto twice = parse_script("--tcp_tail_probe_ack_delay_ms=10\n--tcp_tail_probe_ack_delay_ms=20\n");
+    ASSERT_FALSE(twice.has_value());
+    EXPECT_NE(twice.error().message.find("given twice"), std::string_view::npos);
+}
+
 TEST(ParseScript, ARepeatedReceiveSideLineIsAnError) {
     const auto twice = parse_script("--tcp_sack=1\n--tcp_sack=1\n");
     ASSERT_FALSE(twice.has_value());

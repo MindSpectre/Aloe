@@ -370,3 +370,24 @@ TEST(TcpPeer, ThePeerReadsTheStacksOptions) {
     EXPECT_EQ(plain.stack_window_scale(), std::optional<std::uint8_t>{3});
     EXPECT_EQ(plain.stack_window_bytes(), 100U) << "the peer did not offer scaling: the field is bytes";
 }
+
+TEST(TcpPeer, APeerAckCarriesTheBlocksAfterItsTimestamps) {
+    using aloe::wire::TcpSackBlock;
+    const std::array blocks{
+        TcpSackBlock{TcpSequence{1001}, TcpSequence{2001}}
+    };
+    TcpPeer peer{peer_to_stack(), TcpSequence{1000U}};
+    peer.set_timestamps(100);
+    const auto with = aloe::frames::parse_frame(peer.sack(TcpSequence{5001}, blocks)).value();
+    ASSERT_TRUE(with.tcp.has_value());
+    EXPECT_EQ(with.tcp->flags, TcpFlags{TcpFlag::Ack});
+    EXPECT_EQ(with.tcp->acknowledgement, TcpSequence{5001});
+    EXPECT_EQ(with.tcp->data_offset - aloe::wire::TcpHeader::size, 24U);
+    EXPECT_TRUE(with.l4.size() == with.tcp->data_offset) << "a pure ACK";
+    EXPECT_EQ(aloe::frames::sack_blocks_of(with), std::vector<TcpSackBlock>(blocks.begin(), blocks.end()));
+    EXPECT_EQ(aloe::wire::TcpOptions::parse(aloe::frames::tcp_options_of(with))->timestamp_value, 100U);
+    peer.set_timestamps(std::nullopt);
+    const auto without = aloe::frames::parse_frame(peer.sack(TcpSequence{5001}, blocks)).value();
+    EXPECT_EQ(without.tcp->data_offset - aloe::wire::TcpHeader::size, 12U);
+    EXPECT_EQ(aloe::frames::sack_blocks_of(without).size(), 1U);
+}

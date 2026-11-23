@@ -1,0 +1,88 @@
+// A flow the application limits keeps its window: twenty writes of 100 bytes, each acknowledged before the next,
+// leave 100 bytes in flight at every send, never the window, and slow start grows only a window below twice the
+// most in flight, 200. The initial window stands, ten segments of 1448, the peer's MSS of 1460 less the timestamp
+// option, so a write of 20000 sends 14480. Growing on every ACK, as before, would have made the window
+// 14480 + 20 * 100 = 16480. Linux grows only while tcp_is_cwnd_limited holds too: in packets, one in flight against
+// a window of ten.
+--congestion=newreno
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 101 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 201 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 201:301(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 301 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 301:401(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 401 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 401:501(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 501 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 501:601(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 601 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 601:701(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 701 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 701:801(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 801 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 801:901(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 901 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 901:1001(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1001 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 1001:1101(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1101 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 1101:1201(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1201 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 1201:1301(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1301 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 1301:1401(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1401 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 1401:1501(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1501 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 1501:1601(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1601 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 1601:1701(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1701 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 1701:1801(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1801 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 1801:1901(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1901 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 100) = 100
++0 > P. 1901:2001(100) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 2001 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 20000) = 14480
++0 > P. 2001:3449(1448) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 3449:4897(1448) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 4897:6345(1448) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 6345:7793(1448) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 7793:9241(1448) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 9241:10689(1448) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 10689:12137(1448) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 12137:13585(1448) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 13585:15033(1448) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 15033:16481(1448) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 16481 win 65535 <nop,nop,TS val 100 ecr 0>

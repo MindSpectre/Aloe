@@ -259,7 +259,10 @@ namespace aloe::benchmarks {
         RingPair pair{
             {.name = options.ring_name, .pool_size = 8192}
         };
-        // In the gateway round the peer awaits the next order through the stack's gap.
+        // In the gateway round the peer awaits the next order through the stack's gap, so the deadline grows with it.
+        // In the tick round the order waits through the venue's gap for the next tick, its only ACK, so the gap is
+        // bounded by the retransmission timeout, about 200 ms: a longer one draws a probe of the order
+        // (`stack_tcp_config`), which the strict venue refuses.
         const PeerConfig peer_config{.stack_mac = pair.stack().mac(),
                                      .deadline  = std::max<core::Duration>(std::chrono::seconds{1}, 2 * options.gap)};
         PeerWorker worker{options.peer_core};

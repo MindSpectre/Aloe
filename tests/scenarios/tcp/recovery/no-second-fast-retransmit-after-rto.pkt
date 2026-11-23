@@ -1,8 +1,13 @@
-// RFC 6582's guard: two segments, the first resent by the timeout at +0.2, which records recover = 1976, the last byte
-// sent. Three duplicates then acknowledge 1, which does not cover more than recover, so they start no fast retransmit
-// and nothing goes out. The ACK of the head is short of recover: the loss episode the timeout began resends the next
-// head at once; the ACK of both ends it. Linux stays in its loss state until the same ACK and resends the second
-// segment on the first ACK as well.
+// RFC 6582's guard, and the loss state's resends: two segments of 988, the first resent by the timeout at +0.2. The
+// timeout marks both lost, records recover = 1976, the last byte sent, sets the target max(1976 / 2, 2 * 988) = 1976
+// and restarts the window at what is in flight after the marking, nothing, plus one segment, which the head's resend
+// fills. Three duplicates then acknowledge 1, which does not cover more than recover: they begin no recovery, and
+// after a timeout a duplicate takes nothing out of what is in flight either, so nothing leaves. The ACK of the head,
+// a tenth of a second later so that an earlier resend would fail the line, is short of recover: slow start doubles
+// the window and the second segment, marked at the timeout, leaves at once. The ACK of both ends the loss state.
+// Linux stays in its loss state until the same ACK and resends the second segment on the first ACK of new data as
+// well (tcp_process_loss).
+--congestion=newreno
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0
 +0 listen(3, 1) = 0
@@ -19,9 +24,9 @@
 +0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 200>
 +0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 200>
 +0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 200>
-+0 < . 1:1(0) ack 989 win 65535 <nop,nop,TS val 100 ecr 200>
-+0 > P. 989:1977(988) ack 1 win 65535 <nop,nop,TS val 200 ecr 100>
-+0 < . 1:1(0) ack 1977 win 65535 <nop,nop,TS val 100 ecr 200>
++0.1 < . 1:1(0) ack 989 win 65535 <nop,nop,TS val 100 ecr 200>
++0 > P. 989:1977(988) ack 1 win 65535 <nop,nop,TS val 300 ecr 100>
++0 < . 1:1(0) ack 1977 win 65535 <nop,nop,TS val 100 ecr 300>
 +2 close(4) = 0
-+0 > F. 1977:1977(0) ack 1 win 65535 <nop,nop,TS val 2200 ecr 100>
-+0 < . 1:1(0) ack 1978 win 65535 <nop,nop,TS val 100 ecr 2200>
++0 > F. 1977:1977(0) ack 1 win 65535 <nop,nop,TS val 2300 ecr 100>
++0 < . 1:1(0) ack 1978 win 65535 <nop,nop,TS val 100 ecr 2300>

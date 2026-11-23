@@ -1,0 +1,21 @@
+// --tcp_tail_probe_ack_delay_ms=500: a probe never waits past the moment the RTO would fire, and a probe due then is
+// still a probe (RFC 8985 7.2). The handshake's ACK 10 ms after the SYN-ACK gives an srtt of 10 ms and an RTO of 210 ms;
+// the write at 10 ms would be probed at 10 + 2 * 10 + 500 = 530 ms, past the RTO's 220 ms, so the probe goes at 220 ms.
+// After it the RTO runs from now, 220 + 210 = 430 ms, unbacked off: the probe took no retry. Had the expiry at 220 ms
+// been the RTO's, the next would have come at 220 + 420 = 640 ms. Linux's own allowance, its 200 ms minimum RTO, puts
+// every lone segment's probe at the RTO's moment the same way.
+--tcp_tail_probe_ack_delay_ms=500
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.210 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 220 ecr 110>
++0.210 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 430 ecr 110>
++0.010 < . 1:1(0) ack 101 win 512 <nop,nop,TS val 540 ecr 430>

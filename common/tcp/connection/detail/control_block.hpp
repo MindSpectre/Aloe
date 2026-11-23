@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <aloe/core>
 #include <aloe/loop>
 #include <aloe/stream>
 #include <aloe/wire>
@@ -13,6 +14,7 @@
 #include <detail/connection_list.hpp>
 #include <detail/frame_template.hpp>
 #include <detail/loss_recovery.hpp>
+#include <detail/rack.hpp>
 #include <detail/reassembly_queue.hpp>
 #include <detail/receive_queue.hpp>
 #include <detail/receive_window.hpp>
@@ -20,7 +22,9 @@
 #include <detail/rtt_estimator.hpp>
 #include <detail/sack_blocks.hpp>
 #include <detail/send_sequence.hpp>
+#include <detail/tail_probe.hpp>
 #include <detail/tcp_timestamps.hpp>
+#include <detail/window_use.hpp>
 #include <detail/zero_window_probe.hpp>
 #include <flow_table.hpp>
 #include <tcp_config.hpp>
@@ -31,9 +35,11 @@ namespace aloe::tcp::detail {
     /// What the connection's timer for its sends, `timer`, does when it fires.
     enum class TimerKind : std::uint8_t {
         None,        ///< Not armed.
-        Retransmit,  ///< The RTO: the head of the retransmission queue goes again.
+        Retransmit,  ///< The RTO: what is out is marked lost and the head of the retransmission queue goes again.
         ArpPoll,     ///< A SYN, SYN-ACK or FIN whose first send found no next hop: the send is tried again.
         Probe,       ///< The peer's window is zero and nothing is in flight: a zero-window probe goes.
+        Reorder,     ///< RACK left entries waiting: detection runs again, and what it marks is resent (RFC 8985).
+        TailProbe,   ///< The tail of what is out may be lost: the last segment sent goes again (RFC 8985 7.3).
     };
 
     /**
@@ -107,6 +113,11 @@ namespace aloe::tcp::detail {
         [[nodiscard]] bool probing() const noexcept {
             return timer_kind == TimerKind::Probe;
         }
+        /// RACK's reordering window as the connection stands (`Rack::window`): in recovery or the loss state or not,
+        /// the segments reported received, and the smoothed round trip.
+        [[nodiscard]] core::Duration reordering_window() const noexcept {
+            return rack.window(recovery.state() != RecoveryState::Open, queue.reported_segments(), rtt.srtt());
+        }
 
         /// Back to the state of a fresh slot; the stack, the index, the MSS and the timers' trampolines stay. The stack
         /// cancels both timers, unlinks the block from its lists, returns the held packets and drops the queue first.
@@ -134,10 +145,14 @@ namespace aloe::tcp::detail {
             queue            = {};
             recovery         = {};
             rtt              = {};
+            rack             = {};
+            probe_state      = {};
             probe            = {};
             timestamps       = {};
+            window_use       = {};
             sack             = {};
             timer_kind       = TimerKind::None;
+            rto_at           = {};
             retransmit_count = 0;
             unresolved_polls = 0;
         }
@@ -160,7 +175,7 @@ namespace aloe::tcp::detail {
         Link<ControlBlock> event_link{};
         Link<ControlBlock> ack_link{};
         Link<ControlBlock> retry_link{};
-        Link<ControlBlock> deferred_link{};  ///< A resend found its packet lent; the next flush tries again.
+        Link<ControlBlock> deferred_link{};  ///< A resend of one of its entries waits for its packet, for the flush.
         bool finish_pending = false;         ///< The protocol is done; Closed is raised once the last ACK is queued.
 
         // The protocol's state, one part per concern.
@@ -173,16 +188,23 @@ namespace aloe::tcp::detail {
         RetransmissionQueue<Packet> queue{};
         LossRecovery<CongestionControl> recovery{};
         RttEstimator rtt{};
+        Rack rack{};  ///< RACK's state: every ACK that reports or acknowledges something writes it (SACK in use).
+        TailProbe probe_state{};  ///< The tail probe's flight and its open verdict (SACK in use); `probe` is the
+                                  ///< zero-window probe's.
         ZeroWindowProbe probe{};
         Timestamps timestamps{};
+        // Behind the parts an in-order ACK touches.
+        WindowUse window_use{};  ///< Written by each send of new data, read once by an ACK of new data.
         // Behind the parts an in-order segment touches.
         SackBlocks sack{};
 
-        // The connection's wheel timer: the RTO, the ARP poll or the probe.
+        // The connection's wheel timer: the RTO, the reordering timer, the tail probe, the ARP poll or the zero-window
+        // probe.
         TimerNode timer;
-        TimerKind timer_kind           = TimerKind::None;  ///< What `timer` does when it fires.
-        std::uint8_t retransmit_count  = 0;  ///< Expiries since the last ACK of new data, deferred and refused too.
-        std::uint16_t unresolved_polls = 0;  ///< Polls since the last send that left; the config bounds them.
+        TimerKind timer_kind = TimerKind::None;  ///< What `timer` does when it fires.
+        core::TimePoint rto_at{};                ///< The moment the RTO would fire, set wherever it is armed.
+        std::uint8_t retransmit_count  = 0;      ///< Expiries since the last ACK of new data, deferred and refused too.
+        std::uint16_t unresolved_polls = 0;      ///< Polls since the last send that left; the config bounds them.
         /// The delayed ACK's wheel timer: armed only while an ACK of in-order data waits for `delayed_ack`.
         TimerNode ack_timer;
     };

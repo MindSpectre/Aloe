@@ -1,0 +1,41 @@
+// A timeout whose original was only late is undone by the ACK that echoes the original's timestamp, older than the
+// timeout's resend (Linux's tcp_packet_delayed). The peer offers timestamps and no SACK, so no tail probe goes before
+// the RTO and the sign needs no blocks. The handshake's ACK 10 ms after the SYN-ACK gives an srtt of 10 ms and an RTO of
+// 210 ms; the write at 10 ms is resent at 220 ms. The timeout marks it lost, sets the target to max(100 / 2, 2 * 1448)
+// = 2896, and restarts the window at what is in flight after the marking, nothing, plus a segment: 1448. After the
+// resend 100 is in flight, so a write takes 1348, which leaves less than a segment of the window: the window is in use.
+// The original's ACK at 230 ms echoes 10, older than the resend's 220: the loss state is undone, its marks and retry
+// count cleared, and the policy's state copied at the timeout comes back, the window 14480 and no target. The policy
+// then hears the ACK, as every ACK of new data in the loss state, from the window restored, as Linux's
+// tcp_cong_control grows after the undo: slow start adds the 100 acknowledged, 14580. A write takes 14580 less the 1348
+// in flight, 13232: nine segments and 200 bytes. Linux undoes on the same ACK (tcp_try_undo_loss) but holds a
+// connection without SACK in the loss state until the next ACK (tcp_is_non_sack_preventing_reopen), and its slow start
+// adds a whole segment, counting in segments.
+--congestion=newreno
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0.010 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 65535 <nop,nop,TS val 10 ecr 110>
++0.210 > P. 1:101(100) ack 1 win 65535 <nop,nop,TS val 220 ecr 110>
++0 write(4, ..., 20000) = 1348
++0 > P. 101:1449(1348) ack 1 win 65535 <nop,nop,TS val 220 ecr 110>
++0.010 < . 1:1(0) ack 101 win 65535 <nop,nop,TS val 120 ecr 10>
++0 write(4, ..., 20000) = 13232
++0 > P. 1449:2897(1448) ack 1 win 65535 <nop,nop,TS val 230 ecr 120>
++0 > P. 2897:4345(1448) ack 1 win 65535 <nop,nop,TS val 230 ecr 120>
++0 > P. 4345:5793(1448) ack 1 win 65535 <nop,nop,TS val 230 ecr 120>
++0 > P. 5793:7241(1448) ack 1 win 65535 <nop,nop,TS val 230 ecr 120>
++0 > P. 7241:8689(1448) ack 1 win 65535 <nop,nop,TS val 230 ecr 120>
++0 > P. 8689:10137(1448) ack 1 win 65535 <nop,nop,TS val 230 ecr 120>
++0 > P. 10137:11585(1448) ack 1 win 65535 <nop,nop,TS val 230 ecr 120>
++0 > P. 11585:13033(1448) ack 1 win 65535 <nop,nop,TS val 230 ecr 120>
++0 > P. 13033:14481(1448) ack 1 win 65535 <nop,nop,TS val 230 ecr 120>
++0 > P. 14481:14681(200) ack 1 win 65535 <nop,nop,TS val 230 ecr 120>
++0.010 < . 1:1(0) ack 14681 win 65535 <nop,nop,TS val 130 ecr 230>

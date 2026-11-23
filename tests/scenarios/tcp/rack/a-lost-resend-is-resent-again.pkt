@@ -1,0 +1,31 @@
+// A resend that is lost again is found by RACK on the next report, without the retransmission timer: it is judged by
+// the stamp of its resend (RFC 8985 6.2 step 5; Linux's tcp_mark_skb_lost counts it in TCPLostRetransmit). As in
+// a-loss-in-the-middle-waits-a-quarter-round-trip.pkt, the second segment is resent by the reordering timer at 23 ms:
+// recovery begins with the second lost and the third reported, nothing in flight, and one segment allowed, a window of
+// 0 + 1448. The resend takes 100 of it and a write at the same stamp 100 more. At 30 ms the peer reports the fourth, sent
+// at 23 ms: RACK's segment is the fourth, its round trip 7 ms, and the resend, at the same stamp and below it, is due
+// at 23 + 7 + 0 = 30 ms, the window zero in recovery with no reordering seen. It goes again on that ACK, under the same
+// episode: the ACK delivered 100, nothing is in flight, and PRR's conservative bound allows those 100. Linux finds the
+// lost retransmission the same way and resends it on the same ACK.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.010 < . 1:1(0) ack 101 win 512 <nop,nop,TS val 120 ecr 10,nop,nop,sack 201:301>
++0.003 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 23 ecr 120>
++0 write(4, ..., 100) = 100
++0 > P. 301:401(100) ack 1 win 46336 <nop,nop,TS val 23 ecr 120>
++0.007 < . 1:1(0) ack 101 win 512 <nop,nop,TS val 130 ecr 23,nop,nop,sack 201:401>
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 30 ecr 130>
++0.010 < . 1:1(0) ack 401 win 512 <nop,nop,TS val 140 ecr 30>

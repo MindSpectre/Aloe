@@ -197,3 +197,15 @@ TEST_P(TcpTimestamps, AFullSizedSegmentIsTheMssLessTheOption) {
     EXPECT_EQ(frames[0].tcp->acknowledgement, aloe::wire::TcpSequence{aloe::testing::tcp_peer_isn + 1 + (2 * full)});
     c->consume(c->unread().size());
 }
+
+// The echo's sample, in the timestamp clock's ticks of a millisecond: an echo of the tick the ACK arrives in counts one
+// tick, not zero, as Linux's `tcp_rtt_tsopt_us` counts it; any other delta counts as it is.
+TEST(TcpTimestampsSample, AnEchoOfTheCurrentTickIsOneMillisecond) {
+    aloe::tcp::detail::Timestamps stamps;
+    stamps.offer(true, 1000);
+    const aloe::core::TimePoint now = aloe::core::TimePoint{} + 42500us;
+    stamps.answer(7, now);
+    EXPECT_EQ(stamps.sample(stamps.value(now), now), 1ms);
+    EXPECT_EQ(stamps.sample(stamps.value(now) - 3U, now), 3ms);
+    EXPECT_EQ(stamps.sample(stamps.value(now) + 1U, now), std::nullopt) << "an echo from the future";
+}

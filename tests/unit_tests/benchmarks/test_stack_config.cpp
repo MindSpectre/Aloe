@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <tuple>
 
 #include <gtest/gtest.h>
 #include <level_bricks.hpp>
@@ -45,29 +46,54 @@ TEST(StackConfig, ArpNeverGoesStaleDuringARun) {
     EXPECT_GT(config.arp_expire, config.arp_reachable);
 }
 
+TEST(StackConfig, ALoneOrderIsProbedNoEarlierThanTheRetransmissionTimeout) {
+    const aloe::tcp::TcpConfig config = aloe::benchmarks::stack_tcp_config();
+    EXPECT_EQ(config.tail_probe_ack_delay, std::chrono::milliseconds{500})
+        << "the venue acknowledges an order only with its next tick";
+    EXPECT_GE(config.tail_probe_ack_delay, config.rto_min) << "the probe of a lone order falls at the RTO's moment";
+    EXPECT_NO_THROW(std::ignore = config.validate(1480, std::chrono::milliseconds{1}));
+}
+
 TEST(StackSanity, FailsOnEveryDropAndRefusal) {
     EXPECT_EQ(failure_for({}, {}, {}), "");
     const Counter<TcpCounters> tcp[] = {
-        {&TcpCounters::dropped_bad_header,    "tcp.dropped_bad_header"   },
-        {&TcpCounters::dropped_bad_checksum,  "tcp.dropped_bad_checksum" },
-        {&TcpCounters::dropped_no_connection, "tcp.dropped_no_connection"},
-        {&TcpCounters::dropped_closed,        "tcp.dropped_closed"       },
-        {&TcpCounters::dropped_unexpected,    "tcp.dropped_unexpected"   },
-        {&TcpCounters::dropped_duplicate,     "tcp.dropped_duplicate"    },
-        {&TcpCounters::dropped_out_of_order,  "tcp.dropped_out_of_order" },
-        {&TcpCounters::dropped_out_of_window, "tcp.dropped_out_of_window"},
-        {&TcpCounters::dropped_no_slot,       "tcp.dropped_no_slot"      },
-        {&TcpCounters::dropped_no_node,       "tcp.dropped_no_node"      },
-        {&TcpCounters::dropped_table_full,    "tcp.dropped_table_full"   },
-        {&TcpCounters::send_refused,          "tcp.send_refused"         },
-        {&TcpCounters::commits_refused,       "tcp.commits_refused"      },
-        {&TcpCounters::allocation_failures,   "tcp.allocation_failures"  },
-        {&TcpCounters::retransmits,           "tcp.retransmits"          },
-        {&TcpCounters::out_of_order_held,     "tcp.out_of_order_held"    },
-        {&TcpCounters::out_of_order_released, "tcp.out_of_order_released"},
-        {&TcpCounters::sack_acks_sent,        "tcp.sack_acks_sent"       },
-        {&TcpCounters::duplicate_sacks_sent,  "tcp.duplicate_sacks_sent" },
-        {&TcpCounters::delayed_acks_sent,     "tcp.delayed_acks_sent"    },
+        {&TcpCounters::dropped_bad_header,       "tcp.dropped_bad_header"      },
+        {&TcpCounters::dropped_bad_checksum,     "tcp.dropped_bad_checksum"    },
+        {&TcpCounters::dropped_no_connection,    "tcp.dropped_no_connection"   },
+        {&TcpCounters::dropped_closed,           "tcp.dropped_closed"          },
+        {&TcpCounters::dropped_unexpected,       "tcp.dropped_unexpected"      },
+        {&TcpCounters::dropped_duplicate,        "tcp.dropped_duplicate"       },
+        {&TcpCounters::dropped_out_of_order,     "tcp.dropped_out_of_order"    },
+        {&TcpCounters::dropped_out_of_window,    "tcp.dropped_out_of_window"   },
+        {&TcpCounters::dropped_no_slot,          "tcp.dropped_no_slot"         },
+        {&TcpCounters::dropped_no_node,          "tcp.dropped_no_node"         },
+        {&TcpCounters::dropped_table_full,       "tcp.dropped_table_full"      },
+        {&TcpCounters::send_refused,             "tcp.send_refused"            },
+        {&TcpCounters::commits_refused,          "tcp.commits_refused"         },
+        {&TcpCounters::allocation_failures,      "tcp.allocation_failures"     },
+        {&TcpCounters::retransmits,              "tcp.retransmits"             },
+        {&TcpCounters::fast_retransmits,         "tcp.fast_retransmits"        },
+        {&TcpCounters::retransmits_deferred,     "tcp.retransmits_deferred"    },
+        {&TcpCounters::retransmits_copied,       "tcp.retransmits_copied"      },
+        {&TcpCounters::zero_window_probes,       "tcp.zero_window_probes"      },
+        {&TcpCounters::dropped_paws,             "tcp.dropped_paws"            },
+        {&TcpCounters::out_of_order_held,        "tcp.out_of_order_held"       },
+        {&TcpCounters::out_of_order_released,    "tcp.out_of_order_released"   },
+        {&TcpCounters::sack_acks_sent,           "tcp.sack_acks_sent"          },
+        {&TcpCounters::duplicate_sacks_sent,     "tcp.duplicate_sacks_sent"    },
+        {&TcpCounters::delayed_acks_sent,        "tcp.delayed_acks_sent"       },
+        {&TcpCounters::duplicate_sacks_received, "tcp.duplicate_sacks_received"},
+        {&TcpCounters::rack_marked,              "tcp.rack_marked"             },
+        {&TcpCounters::lost_retransmits,         "tcp.lost_retransmits"        },
+        {&TcpCounters::reorder_timeouts,         "tcp.reorder_timeouts"        },
+        {&TcpCounters::reordering_seen,          "tcp.reordering_seen"         },
+        {&TcpCounters::sack_reneging,            "tcp.sack_reneging"           },
+        {&TcpCounters::tail_probes,              "tcp.tail_probes"             },
+        {&TcpCounters::tail_probes_needless,     "tcp.tail_probes_needless"    },
+        {&TcpCounters::tail_probe_recoveries,    "tcp.tail_probe_recoveries"   },
+        {&TcpCounters::tail_probes_early,        "tcp.tail_probes_early"       },
+        {&TcpCounters::undos_duplicate_sack,     "tcp.undos_duplicate_sack"    },
+        {&TcpCounters::undos_original_ack,       "tcp.undos_original_ack"      },
     };
     for (const auto& [member, name] : tcp) {
         TcpCounters counters;

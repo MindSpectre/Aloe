@@ -93,6 +93,11 @@ nanoseconds, stripped of the warm-up and sorted only after the run.
 - any of TCP's receive-side counts, segments held out of order and released, ACKs sent with SACK blocks or a
   duplicate report, and ACKs the delay timer sent, is not zero: a clean ring never reorders, and the delayed ACK is
   off by default;
+- any of TCP's loss-recovery counts is not zero: duplicate reports received, segments RACK marked lost and resends
+  marked lost again, expiries of the reordering timer, ACKs that showed reordering, reneging, tail probes and their
+  three verdicts (needless, a repaired loss, closed early by a second probe), and undos of either sign. Nothing is lost
+  or reordered on a clean ring, and with one order in flight a probe waits until the retransmission timeout (see "The
+  tail probe's allowance" below), so a probe is a round that stalled that long: a finding, not noise;
 - the venue sees an order for another round or, at levels 0 and 1, one with a bad checksum or out of sequence;
 - a round outlasts the deadline, one second or twice `--gap`, whichever is longer;
 - a stamp pair is missing or inverted, checked per round and per breakdown leg, and the message names the round,
@@ -189,7 +194,11 @@ mask.
   round's payload is the 128-byte order.
 - `--rounds N` and `--warmup N` set the measured rounds and the discarded rounds before them, 100 000 and
   10 000 by default.
-- `--gap NS` pauses that many nanoseconds between rounds, 0 by default. The deadlines grow with it.
+- `--gap NS` pauses that many nanoseconds between rounds, 0 by default. The deadlines grow with it. In the tick
+  round the gap is bounded by the retransmission timeout, about 200 ms: the order waits through it for the next tick,
+  the venue's only ACK of it, and a longer gap draws a tail probe of the order at the RTO's moment, which the venue
+  refuses as out of sequence. The gateway round's gap has no such bound, since the venue acknowledges each order at
+  once and the gap falls after that.
 - `--topology cross|same|both`. `cross`, the default, puts the venue on its own core. `same` runs the venue
   inline on the stack's thread, strictly in turn with the stack, for the floor and level 0; level 1 is a
   `Runtime`, which owns its thread, so it has no same-core configuration, and `--level 1 --topology same` is
@@ -300,6 +309,16 @@ grows with the payload.
   never fires. The venue still skips pure ACKs when it matches an order to its tick, as a defence.
 - **Level 1 is cross-core only.** `--topology same` covers the floor and level 0, because a `Runtime` owns its
   thread and cannot share it with the venue.
+- **The tail probe's allowance.** Every stack the benchmark builds, at both levels and in both topologies, sets
+  `TcpConfig::tail_probe_ack_delay` to 500 ms, the most it allows, where the default is 40 ms (`stack_tcp_config` in
+  `level_bricks.hpp`). The venue acknowledges an order only with its next tick, where a real venue acknowledges at
+  once or within its delayed ACK. With the default a lone order would be probed two round trips and 40 ms after it
+  left, so any `--gap` above about 40 ms in the tick round would draw a probe the strict venue refuses. With 500 ms the
+  probe of a lone order falls at the retransmission timeout's moment, and the tick round's `--gap` is bounded by the
+  RTO, about 200 ms, as it was before the probe existed. The measured path is the same code either way: the probe's
+  deadline is computed and the wheel armed once per order, and the diagnostics of the rerun of 2026-11-21 below
+  measured the branch's head with either value within one 10 ns step: 500 ns at p50 both ways, 740 against 750 ns at
+  p99.
 - **Level 1's listener and its two yields.** Level 1 opens its listener through `Streams::ensure_listener`
   before the runtime starts, because the shard's first step receives the venue's SYN before the accepting task
   has run, and a SYN that finds no listener is reset. A public `Streams::listen` would be the proper door and is
@@ -468,6 +487,295 @@ tail. `compare-benchmark.py` flags six p50 lines between run 1 and run 2, every 
 same-core floor at 1448 and 1460 B. The gap run leaves every p50 at one of its two modes and raises the p99.9 of
 most lines, the cross-core floor at 64 B from 449 to 1799 ns: five idle microseconds between rounds cost the tail.
 
+### Rerun of step 5: 2026-11-21, loss recovery with SACK against `main`, host polaris
+
+**The gate is not met.** The bar is no change beyond run-to-run noise, 10 to 20 ns, at p50 and p99 of the 64-byte
+tick at level 0, cross-core. Step 5 moves that tick from 460 to 500 ns at p50, +40 ns, and from 670 to 740 ns at p99,
++70 ns (medians of three runs a side). Of the 40 ns at p50, 30 are in the `tcp` leg, which acknowledges the previous
+order, and 10 in the application leg, which sends the next. Every level 0 and level 1 tick row moves by 40 to 60 ns at
+p50, and the gateway round at levels 0 and 1 by 10 to 20 ns. No fix was attempted in this step. What was measured of
+the cause, and what was not, is set out below.
+
+**The runs.** Step 5 is the SACK scoreboard, RACK-TLP, one recovery with PRR, and the undo. It was measured against
+`main` at the branch's base on the same machine and cores as the recorded run, kernel 7.2.15:
+
+- Both sides were built with the `release` preset and `-DDO_BENCHMARKS=ON`: `main` at 1aeddb9 in a worktree, and the
+  branch's head, 13cefd6, in place.
+- The head carried this step's benchmark changes (the sanity counters and the probe's allowance above), which touch
+  no stack code.
+- The runs were unprivileged, on 64 free hugepages reserved beforehand, and not on a quiet machine: a browser, two
+  IDEs and a chat client were open, and the CPUs were about 95 % idle.
+- There were three rounds of runs. Each round ran a headline run of `main`, then one of the branch,
+  `--topology both --hop`, then a breakdown run of each in the same order, `--level 0 --breakdown --topology both`.
+  Each run took about three seconds.
+
+Every row below is the median of its three runs. To compare the sides, a short script (not in the repository) wrote,
+for each side, a result file whose every row holds the field-by-field median of that row over the three runs, with
+the first run's `machine` and `run` sections kept. `compare-benchmark.py` then compared `main`'s file with the
+branch's.
+
+The files under `results/`:
+
+- `2026-11-21-1aeddb9-polaris.json` and `2026-11-21-13cefd6-polaris.json` are the first headline run of each side,
+  and `-run2` and `-run3` the next two;
+- `-breakdown`, `-run2-breakdown` and `-run3-breakdown` are the breakdown runs that followed each.
+
+The 64-byte tick at level 0, cross-core, in nanoseconds:
+
+| side            | run 1 p50 | run 2 p50 | run 3 p50 | median p50 | run 1 p99 | run 2 p99 | run 3 p99 | median p99 |
+|-----------------|----------:|----------:|----------:|-----------:|----------:|----------:|----------:|-----------:|
+| `main`, 1aeddb9 |       460 |       470 |       460 |        460 |       670 |       680 |       670 |        670 |
+| step 5, 13cefd6 |       500 |       500 |       500 |        500 |       740 |       780 |       730 |        740 |
+
+Its legs, from the breakdown runs, medians of three:
+
+| side            | receive | ip | tcp | application | tcp-flush | queue-flush | round | tcp p99 | application p99 |
+|-----------------|--------:|---:|----:|------------:|----------:|------------:|------:|--------:|----------------:|
+| `main`, 1aeddb9 |     120 | 50 | 110 |         170 |        10 |          40 |   500 |     170 |             270 |
+| step 5, 13cefd6 |     120 | 50 | 140 |         180 |        10 |          40 |   540 |     250 |             310 |
+
+In the breakdown runs the `tcp` leg moves by 30 to 40 ns at p50 at every payload and in both topologies. The receive,
+ip, tcp-flush and queue-flush legs do not move at p50.
+
+Every row of the headline, medians of three, in nanoseconds:
+
+| round   | level   | topology   | payload | `main` p50 | step 5 p50 |  +/- | `main` p99 | step 5 p99 |  +/- |
+|---------|---------|------------|--------:|-----------:|-----------:|-----:|-----------:|-----------:|-----:|
+| tick    | floor   | cross-core |      64 |        230 |        240 |  +10 |        290 |        280 |  -10 |
+| tick    | floor   | cross-core |     256 |        380 |        380 |    0 |        450 |        460 |  +10 |
+| tick    | floor   | cross-core |    1024 |        980 |        970 |  -10 |       1180 |       1170 |  -10 |
+| tick    | floor   | cross-core |    1448 |       1260 |       1270 |  +10 |       1550 |       1520 |  -30 |
+| tick    | floor   | same-core  |      64 |        100 |        100 |    0 |        140 |        140 |    0 |
+| tick    | floor   | same-core  |     256 |        240 |        250 |  +10 |        280 |        290 |  +10 |
+| tick    | floor   | same-core  |    1024 |        810 |        820 |  +10 |        890 |        920 |  +30 |
+| tick    | floor   | same-core  |    1448 |       1120 |       1120 |    0 |       1210 |       1210 |    0 |
+| tick    | level 0 | cross-core |      64 |        460 |        500 |  +40 |        670 |        740 |  +70 |
+| tick    | level 0 | cross-core |     256 |        630 |        680 |  +50 |        870 |        980 | +110 |
+| tick    | level 0 | cross-core |    1024 |       1300 |       1340 |  +40 |       1640 |       1700 |  +60 |
+| tick    | level 0 | cross-core |    1448 |       1660 |       1720 |  +60 |       2000 |       2120 | +120 |
+| tick    | level 0 | same-core  |      64 |        320 |        380 |  +60 |        550 |        640 |  +90 |
+| tick    | level 0 | same-core  |     256 |        480 |        530 |  +50 |        730 |        840 | +110 |
+| tick    | level 0 | same-core  |    1024 |       1120 |       1170 |  +50 |       1460 |       1500 |  +40 |
+| tick    | level 0 | same-core  |    1448 |       1480 |       1530 |  +50 |       1840 |       1920 |  +80 |
+| tick    | level 1 | cross-core |      64 |        510 |        550 |  +40 |        750 |        880 | +130 |
+| tick    | level 1 | cross-core |     256 |        670 |        730 |  +60 |        970 |       1040 |  +70 |
+| tick    | level 1 | cross-core |    1024 |       1330 |       1380 |  +50 |       1700 |       1820 | +120 |
+| tick    | level 1 | cross-core |    1448 |       1690 |       1750 |  +60 |       2100 |       2220 | +120 |
+| gateway | floor   | cross-core |     128 |         70 |         60 |  -10 |         80 |         80 |    0 |
+| gateway | floor   | same-core  |     128 |         30 |         30 |    0 |         50 |         50 |    0 |
+| gateway | level 0 | cross-core |     128 |        150 |        160 |  +10 |        230 |        250 |  +20 |
+| gateway | level 0 | same-core  |     128 |        110 |        120 |  +10 |        200 |        210 |  +10 |
+| gateway | level 1 | cross-core |     128 |        160 |        180 |  +20 |        280 |        320 |  +40 |
+| hop     | -       | cross-core |       0 |         34 |         34 |    0 |         60 |         54 |   -6 |
+
+**The noise these files show.** `compare-benchmark.py` over a pair of runs of one binary flags 7 to 14 of the
+headline's percentiles and 0 to 8 of the breakdown's (each of the three pairs of each side). Over the two sides'
+medians it flags 26 and 46.
+
+- The floor runs no stack code. It came out within one 10 ns step at p50 on every row, but its tails moved:
+  same-core at 256 and 1024 B, p90 went from 240 to 270 and from 810 to 860 ns, and cross-core at 1448 B, p99 went
+  from 1550 to 1520 ns. A move of 30 to 50 ns in one row's tail is within this machine's noise.
+- The branch's own p99 of the 64-byte tick ran from 730 to 780 ns over its three runs, and `main`'s from 670 to
+  680 ns.
+- The p50 of that tick moved by at most one 10 ns step within either side: 460 to 470 ns and 500 ns.
+
+**Where it comes from: what was measured.** The following runs were made the same day, on the 64-byte tick at
+level 0, cross-core. They are diagnostics, and their files are not kept.
+
+The command for each binary was the default cores and hugepages, plus:
+
+- `--round tick --level 0 --payload 64`;
+- then the same with `--breakdown`.
+
+The binaries ran in turn, three rounds, in four sets. Each set included `main` and the head, which measured 450 to
+460 ns and 500 ns at p50 in every set.
+
+- **By commit.** The bisection built seven of the branch's commits, its feature commits, with the fix commits
+  between them not built on their own. Medians of three, in nanoseconds:
+
+  | build                                         | p50 | p99 | `tcp` leg p50 |
+  |-----------------------------------------------|----:|----:|--------------:|
+  | 1aeddb9, `main`                               | 460 | 650 |           110 |
+  | fbbc164, the scoreboard                       | 460 | 650 |           120 |
+  | e5da258, one recovery with PRR                | 460 | 680 |           120 |
+  | 84ac785, growth only while the window limits  | 460 | 690 |           120 |
+  | b763912, RACK                                 | 480 | 730 |           130 |
+  | f1be798, the tail probe                       | 490 | 760 |           140 |
+  | 1a47e39, the undo                             | 490 | 710 |           140 |
+  | 13cefd6, the head                             | 500 | 740 |           140 |
+  | 13cefd6 with this step's benchmark changes    | 500 | 750 |           140 |
+
+  The p50 rises in 10 to 20 ns steps from RACK on, and the `tcp` leg from the scoreboard on. One binary's p99 moved by
+  up to 60 ns between its runs, so the p99 column does not place the steps. On the measured path the last two rows
+  differ only in the probe's allowance, 40 ms against 500 ms. They are within one 10 ns step of each other at p99
+  and equal at p50.
+- **The brief's four candidates.** Each build below is 13cefd6 with one edit, made for the measurement only and never
+  committed. Medians of p50, in nanoseconds, against the head's 500:
+  - *The arm of the probe's deadline at every data segment.* `Transmitter::arm_after_send` armed the RTO into an empty
+    queue, as `main` does, instead of the probe: 490.
+  - *RACK's update and the probe's branch on the ACK.* Only RACK's part was taken out, by three edits:
+    - in `AckProcessor::acknowledge` the local `sack` was made false at run time (`block.sack.in_use() &&
+      context_.now < core::TimePoint{}`), which skips, for each entry the ACK frees, RACK's advance and the test for
+      reordering;
+    - `rack.on_ack` was removed from `on_ack`, and detection never ran (`detecting = false`);
+    - `rack.sample` was removed from `on_acknowledged`.
+
+    The connection still used SACK everywhere else. This build measured 480 in each of two sets, 20 ns below the
+    head: half of the p50 regression, and the whole of the bar. The probe's branch on the ACK (`on_probe_ack` behind
+    `verdict_open()`, and `probe_schedulable` in `set_timer`) was **not isolated**.
+  - *The two subtractions in `writable()`.* **Not isolated.**
+  - *`WindowUse::on_send`.* The record in `commit`, with the comparison of `recovery.room(...)` with the MSS that feeds
+    it, was removed: 500.
+
+  Two edits outside the brief's list were measured too:
+  - the undo's checks, with `try_undo` replaced by an empty `Undone`: 490;
+  - `[[gnu::always_inline]]` on `AckProcessor::acknowledge`, `acknowledge_data` and `on_acknowledged`, on
+    `Transmitter::acknowledge` and `RetransmissionQueue::acknowledge`, and on `NodePool::release_front`: 490 in each
+    of two sets.
+
+  **No build with several edits together was measured.** Two builds were meant to take all four out together, one of
+  them also forcing the helpers inline. They carried none of the edits: the loop that built them handed the variant
+  names to the patching script as one word, which matched no variant. Both are the head built again: their
+  `on_acknowledged` and `arm_after_send` are the head's, and the two binaries are identical. They measured 500 ns
+  three times; that says nothing about the edits together.
+
+  **The attribution is unresolved.** The edits were measured one at a time. Each gave back one or two 10 ns steps,
+  which is the clock's resolution, and whether those gains add up is unknown.
+- **What grew.** The same-core run has the venue inline and nothing spinning: `--round tick --level 0 --payload 64
+  --topology same --rounds 2000000 --warmup 10000`, under `perf record -e <event> -c <period>`. Counting the main
+  thread's samples times the period, over 2 010 000 rounds, gives these per-round changes:
+  - cycles: +187, from 1334 to 1521 (period 20011);
+  - instructions: +151, from 1334 to 1485 (period 20011);
+  - L1 data misses: +4.2, from 7.0 to 11.2 (`L1-dcache-load-misses`, period 1009);
+  - loads blocked by an older store: +7.3, from 65.7 to 73.0 (`ls_bad_status2.stli_other`, period 1009);
+  - branch misses: +0.3, from 1.0 to 1.3.
+
+  The main thread also runs the venue, the setup and the sort of the samples after the run, which are the same code
+  on both sides. `ControlBlock` grew from 704 to 944 bytes and a queue entry from 88 to 96 (`sizeof`, read from the
+  binaries' debug information).
+
+  A `cycles` profile of the same run, by symbol, puts most of the growth in four places: `AckProcessor::on_ack`,
+  `AckProcessor::acknowledge`, the queue's `acknowledge`, and `NodePool::release_front`, which resets a freed entry by
+  assigning a temporary. Smaller shares fall on `TimerWheel::arm` and `Transmitter::arm_after_send`. Inlining
+  differs between the two builds, so a symbol's share is not like for like. About nine tenths of
+  `AckProcessor::acknowledge`'s samples fall on the reload of the `Freed` result, just after the call to the queue's
+  `acknowledge`, which is not inlined and has just written that result to the stack.
+
+**Which builds the diagnostics ran.** Every diagnostic build of the head was made in the scratch worktree while it
+was checked out at 13cefd6: its reflog shows that checkout from 07:10:46 to 07:22:17 local time, the span of those
+builds. The result files of the head's bisection runs, and of the probe and window builds, record revision 1a47e39.
+The revision is read at configure time (see "The revision" under "Known artefacts"), and no CMake file changed
+between 1a47e39 and 13cefd6, so checking out 13cefd6 did not reconfigure. Their code is 13cefd6's: their
+`on_acknowledged` carries f3ccdb4's floor of one tick on an echo's sample, as the head built in place does, and the
+1a47e39 binary's does not. Those builds, the bisection's included, kept clang-tidy on. The RACK, undo and inline
+builds and the two that carried no edit had it switched off in the worktree's top `CMakeLists.txt`, so that the edits
+compiled. That reconfigured the worktree, so their files record 13cefd6. `-Werror` stayed on, and clang-tidy does not
+change the code generated.
+
+**What is left.** The regression stands at 40 ns at p50 and 70 ns at p99 and is recorded here; no fix was attempted
+in this step. The diagnostics point at the general work every in-order ACK and send now carries, not at one step that
+could be taken out. They do not divide it among the candidates. Two kinds of change could win it back, and both would
+be measured against these files:
+
+- **Local changes**, which leave the order of an acknowledgement's steps as it is:
+  - pass the queue's `Freed`, and the `Cumulative` and `AckInfo` built from it, without a round trip through memory,
+    built in place or with the helpers inlined; the inline build gave back one 10 ns step;
+  - reset a freed entry field by field rather than by assigning a temporary;
+  - keep the fields an ACK and a send touch together in `ControlBlock`.
+- **A short path** for an in-order ACK on an open connection that finds nothing reported, lost or probed, which skips
+  the steps with nothing to do. This changes the order in which an acknowledgement's steps run, which the design
+  sets.
+
+### Rerun after the tick path's cleanup: 2026-11-21, step 5 against `main`, host polaris
+
+**The gate is still not met.** The bar is no change beyond run-to-run noise, 10 to 20 ns, at p50 and p99 of the
+64-byte tick at level 0, cross-core. After the cleanup below, against `main` at the branch's base run alternately with
+it, that tick is 490 ns at p50 against 450 ns, +40 ns, and 730 ns at p99 against 670 ns, +60 ns (medians of three runs
+a side): 20 to 30 ns beyond the bar at p50 and 40 to 50 ns at p99. The `tcp` leg is 140 ns at p50 against 110 ns,
++30 ns, as in the first rerun. Against that rerun the branch's medians are one 10 ns step lower, 500 to 490 ns at p50
+and 740 to 730 ns at p99, and `main`'s, the same code, came out 460 to 450 ns at p50 and 670 ns at p99 both times: the
+gap is the same 40 ns at p50 and 10 ns narrower at p99. The three changes gave back no more than the clock's
+resolution on the gated row.
+
+**What changed.** A review of the whole branch named three pieces of work on the path without loss that the path does
+not need, and the fix wave took them out in one commit, bbcd1dc, without changing the order of an acknowledgement's
+steps:
+
+- RACK's detection computed the reordering window before its walk on every ACK that advanced RACK, and wrote its two
+  counters with zero; on an in-order ACK the walk stops at once, at an empty queue or at the head. The window is now
+  computed only when an entry needs it, and the counters are written only when something was marked.
+- An ACK that moved SND.UNA and left data in flight armed the wheel twice, the RTO as the cumulative part restarted it
+  and the probe in the ACK's last step. The cumulative part now records the RTO's moment only, and the last step arms
+  the wheel once. On this benchmark's loop the queue is empty after each ACK, so this one is off the measured path; it
+  is on every burst's.
+- `commit` read what is in flight and the congestion window three times, and `prepare` twice when the window held a
+  send back. Each now reads them once and reuses them.
+
+No test or script number moved, and a trace of every ACK's timer, every commit's records and every detection, expiry
+and prepare over the TCP unit tests, the scripts and the scenario runner's tests was the same line for line before and
+after. The measured head also carries the fix wave's correction of a tail probe that never left (513b4f1), which adds
+the test of one flag to every ACK of new data.
+
+**The runs.** The machine, cores and kernel of the first rerun:
+
+- `main` at 1aeddb9 in its worktree and the head, bbcd1dc, in place, each reconfigured (`cmake --preset release
+  -DDO_BENCHMARKS=ON`) so that its files record its revision, and built with the `release` preset.
+- Unprivileged, on 64 free hugepages reserved beforehand; a browser, two IDEs and a chat client open, the CPUs about
+  95 % idle, as before.
+- Three rounds, each a headline run of `main`, then one of the head, `--topology both --hop`, then a breakdown run of
+  each in the same order, `--level 0 --breakdown --topology both`. The twelve runs took under a minute.
+- Medians as in the first rerun: for each side a file of the field-by-field median of every row over its three runs,
+  compared with `compare-benchmark.py`.
+
+The files under `results/`:
+
+- `2026-11-21-bbcd1dc-polaris.json`, `-run2` and `-run3` are the head's headline runs, and `-breakdown`,
+  `-run2-breakdown` and `-run3-breakdown` the breakdown runs that followed each;
+- `2026-11-21-1aeddb9-polaris-run4.json`, `-run5` and `-run6`, with `-run4-breakdown`, `-run5-breakdown` and
+  `-run6-breakdown`, are `main`'s runs of this rerun, each made just before the head's of its round. The comparison
+  reads these, not the first rerun's `main` files.
+
+The 64-byte tick at level 0, cross-core, in nanoseconds:
+
+| side              | run 1 p50 | run 2 p50 | run 3 p50 | median p50 | run 1 p99 | run 2 p99 | run 3 p99 | median p99 |
+|-------------------|----------:|----------:|----------:|-----------:|----------:|----------:|----------:|-----------:|
+| `main`, 1aeddb9   |       450 |       450 |       460 |        450 |       670 |       640 |       680 |        670 |
+| cleanup, bbcd1dc  |       490 |       490 |       490 |        490 |       730 |       720 |       740 |        730 |
+
+Its legs, from the breakdown runs, medians of three:
+
+| side              | receive | ip | tcp | application | tcp-flush | queue-flush | round | tcp p99 | application p99 |
+|-------------------|--------:|---:|----:|------------:|----------:|------------:|------:|--------:|----------------:|
+| `main`, 1aeddb9   |     120 | 50 | 110 |         170 |        10 |          40 |   510 |     160 |             270 |
+| cleanup, bbcd1dc  |     110 | 50 | 140 |         180 |        10 |          40 |   530 |     230 |             280 |
+
+The same tick and its `tcp` leg in both reruns, medians of three, in nanoseconds:
+
+| side                         | p50, first | p50, now | p99, first | p99, now | `tcp` p50, first | `tcp` p50, now | `tcp` p99, first | `tcp` p99, now |
+|------------------------------|-----------:|---------:|-----------:|---------:|-----------------:|---------------:|-----------------:|---------------:|
+| `main`, 1aeddb9              |        460 |      450 |        670 |      670 |              110 |            110 |              170 |            160 |
+| step 5, 13cefd6 then bbcd1dc |        500 |      490 |        740 |      730 |              140 |            140 |              250 |            230 |
+
+Over the rest of the headline, every level 0 and level 1 tick row is 30 to 70 ns slower at p50 than `main`'s, where
+the first rerun had 40 to 60, and the gateway round at levels 0 and 1 is 10 to 20 ns slower, as before. Between the two
+reruns `main`'s medians moved by at most 10 ns at p50 on every level 0 and level 1 row, tick and gateway; the head's
+tick rows at levels 0 and 1 are 10 to 30 ns lower at p50 on nine of the twelve, the same on two, and 10 ns higher on
+one. Against `main` the gap narrowed by 10 or 20 ns on six of the eight cross-core tick rows and held on the other two;
+on the four same-core rows it narrowed by 10 ns on one and widened by 10 or 20 ns on three. The floor, which runs no
+stack code, differed between the two binaries by up to 40 ns at p50 on one row (cross-core at 1024 B, 990 against
+950 ns). Nothing here is beyond this machine's run-to-run noise on a single row.
+
+**What is left.** The regression stands at 40 ns at p50 and 60 ns at p99, recorded here. The work the review could name
+as plainly unnecessary is gone, and the gated row moved by one 10 ns step. Where the remaining 40 ns goes is still not
+known: the first rerun's diagnostics, on 13cefd6, stand (per round 151 more instructions, 4.2 more L1 data misses and
+7.3 more loads blocked by an older store; `ControlBlock` from 704 to 944 bytes; taking RACK's per-ACK update out gave
+back 20 ns at p50), and no build with several edits together has been measured, so how the cost divides among the
+scoreboard, RACK, the probe and the undo is unresolved. The proposal stands: an optimization pass of its own, measured
+against these files, with the two kinds of change set out under the first rerun, the local ones (the layout of
+`ControlBlock`, `Freed` and what is built from it passed without a round trip through memory, a freed entry reset field
+by field) and a short path for an in-order ACK, which changes the order of an acknowledgement's steps. The author
+decides on both.
+
 ## Tracking regressions
 
 Every step of phase 2 reruns both baseline commands on the same machine and the same cores, and commits both
@@ -504,12 +812,17 @@ perf record -g -o /tmp/tick-to-trade.perf.data ./build/release-perf/benchmarks/t
 perf report -i /tmp/tick-to-trade.perf.data
 ```
 
-Each step adds a line here, read from its headline file: the date, the revision, the step, and p50 and p99.9 of
-level 0, cross-core, for the tick round at 64 bytes and for the gateway round.
+Each step adds a line here, read from its headline file: the date, the revision, the step, and p50, p99 and p99.9
+of level 0, cross-core, for the tick round at 64 bytes, then p50 and p99.9 for the gateway round. p99 is there
+because the gate reads it.
 
-| Date    | Revision | Step                  | Tick, 64 B, p50 | Tick, 64 B, p99.9 | Gateway, p50 | Gateway, p99.9 |
-|---------|----------|-----------------------|-----------------|-------------------|--------------|----------------|
-| pending | pending  | 1. Baseline benchmark | pending         | pending           | pending      | pending        |
+| Date       | Revision | Step                                                          | Tick, 64 B, p50 | Tick, 64 B, p99 | Tick, 64 B, p99.9 | Gateway, p50 | Gateway, p99.9 |
+|------------|----------|---------------------------------------------------------------|-----------------|-----------------|-------------------|--------------|----------------|
+| pending    | pending  | 1. Baseline benchmark                                         | pending         | pending         | pending           | pending      | pending        |
+| 2026-11-21 | 1aeddb9  | `main` at step 5's base, medians of 3                         | 460             | 670             | 1310              | 150          | 300            |
+| 2026-11-21 | 13cefd6  | 5. Loss recovery with SACK, medians of 3: the gate is not met | 500 (+40)       | 740 (+70)       | 1300              | 160          | 320            |
+| 2026-11-21 | 1aeddb9  | `main` at step 5's base, beside the cleanup, medians of 3     | 450             | 670             | 970               | 150          | 290            |
+| 2026-11-21 | bbcd1dc  | 5. After the tick path's cleanup, medians of 3: not met       | 490 (+40)       | 730 (+60)       | 1250              | 160          | 320            |
  
 Step 3 (reliable send) gates on the 64-byte tick at level 0, cross-core: p50 and p99 within 50 ns of a run of `main`
 at the branch's merge base (`git worktree add ../aloe-base $(git merge-base main HEAD)`, built with the `release`
@@ -534,6 +847,14 @@ send; the offer's compare against the silly-window threshold and the two shifts 
 doubling test in `consume`. The first fix to reach for is the one TLDK and Onload have: recognise an option block that
 is exactly `nop, nop, TS` with one 32-bit compare and read its two values directly, in place of the walk over the
 options every segment takes today.
+
+Step 5 (loss recovery with SACK: the scoreboard, RACK-TLP, one recovery with PRR and the undo) gates the same way, on
+the same bar, against `main` at its base, 1aeddb9. Its rerun was made on hugepages and is recorded under "Rerun of
+step 5" above: the bar is not met, the 64-byte tick at level 0, cross-core, being 40 ns slower at p50 and 70 ns at p99.
+What the diagnostics measured of its cause, what they did not isolate, and the changes that could win it back are
+recorded there. The work a review then found plainly unnecessary on the tick path was taken out, and the rerun after
+it, under "Rerun after the tick path's cleanup", still misses the bar: 40 ns slower at p50 and 60 ns at p99. Winning the
+rest back is an optimization pass of its own.
 
 ## What comes next
 

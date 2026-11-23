@@ -140,6 +140,16 @@ TEST(Harness, ConfiguredAppliesTheReceiveSideLines) {
     EXPECT_EQ(config.tcp.delayed_ack, 40ms);
 }
 
+TEST(Harness, ConfiguredAppliesTheTailProbeAllowance) {
+    const auto script = aloe::scenario::parse_script(
+        "--tcp_tail_probe_ack_delay_ms=500\n0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(script.has_value());
+    EXPECT_EQ(aloe::scenario::configured(HarnessConfig{}, *script).tcp.tail_probe_ack_delay, 500ms);
+    const auto plain = aloe::scenario::parse_script("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(plain.has_value());
+    EXPECT_EQ(aloe::scenario::configured(HarnessConfig{}, *plain).tcp.tail_probe_ack_delay, 40ms) << "untouched";
+}
+
 TEST(Harness, BothPoliciesBuild) {
     aloe::scenario::NoCongestionHarness harness{HarnessConfig{}};
     EXPECT_EQ(harness.tcp().capacity(), aloe::tcp::TcpConfig{}.connections);

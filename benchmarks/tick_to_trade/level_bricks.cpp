@@ -35,7 +35,7 @@ namespace aloe::benchmarks {
                   queue_{device, 0, 512, counters_},
                   ip_{queue_, stack_ip_config(peer_config)},
                   wheel_{std::chrono::milliseconds{1}, core::Clock::now()},
-                  tcp_{ip_, wheel_, {}},
+                  tcp_{ip_, wheel_, stack_tcp_config()},
                   deadline_{peer_config.deadline + state.config.gap},  // the gap is silence by design, not a loss
                   progress_{core::Clock::now()} {
                 if (!arp_on_wire) {

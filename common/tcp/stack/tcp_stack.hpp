@@ -52,7 +52,7 @@ namespace aloe::tcp {
     class Stack {
         static_assert(IsIp<Ip>, "tcp::Stack needs net::Ipv4<Device>, or an IP brick with the same members");
         static_assert(IsCongestionControl<CongestionControl>,
-                      "tcp::Stack needs a congestion control: a State and the reset, window and on_* hooks");
+                      "tcp::Stack needs a congestion control: a State and the reset, window, target and on_* hooks");
         static_assert(net::Ipv4Prebuilt::size + wire::TcpHeader::max_size <= device::packet_headroom,
                       "every frame's headers, with any option block, fit in front of the payload of a packet from "
                       "allocate()");
@@ -246,8 +246,8 @@ namespace aloe::tcp {
             }
         }
 
-        // The handle's verbs: the Receiver's consume, the Transmitter's send side and the Lifecycle's close, abort
-        // and release.
+        // The handle's verbs: the Receiver's consume, the Transmitter's send side and what it holds as in flight, and
+        // the Lifecycle's close, abort and release.
         [[nodiscard]] ConnectionType::View unread(const ControlBlock& block) noexcept {
             return block.receive.view(context_.pool);
         }
@@ -256,6 +256,9 @@ namespace aloe::tcp {
         }
         [[nodiscard]] std::size_t writable(const ControlBlock& block) const noexcept {
             return transmitter_.writable(block);
+        }
+        [[nodiscard]] std::uint32_t in_flight(const ControlBlock& block) const noexcept {
+            return transmitter_.in_flight_bytes(block);
         }
         [[nodiscard]] std::optional<std::span<std::byte>> prepare(ControlBlock& block,
                                                                   const std::size_t count) noexcept {

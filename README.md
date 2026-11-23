@@ -11,9 +11,10 @@ Boost.Beast, for the code that waits.
 The repository contains the device layer with an in-memory backend for tests and
 a DPDK backend, the queue, wheel and work node a loop is built from, the runtime
 that drives them on one thread per queue, IPv4 with ARP and ICMP echo, and a TCP
-whose connections are zero-copy streams: reliable on the send side, holding what
-arrives above a gap as the packets it came in, with SACK, window scaling and
-NewReno, and with senders over it in the runtime. The stack is built in phases:
+whose connections are zero-copy streams: reliable on the send side, recovering
+from loss by RACK-TLP over the peer's SACK blocks, holding what arrives above a
+gap as the packets it came in, with window scaling and NewReno, and with senders
+over it in the runtime. The stack is built in phases:
 shard runtime, minimal TCP, full TCP, TLS, and finally HTTP/1.1 with WebSocket.
 See the [architecture overview](docs/architecture/overview.md) for the design
 and the [roadmap](docs/roadmap.md) for the phases.
@@ -24,16 +25,18 @@ Aloe is pre-v1. The public API may change at any step until it freezes as v1 at
 the end of phase 2, and the stack makes no deployment or latency claim yet.
 
 - **Done:** phase 0, the shard runtime, and phase 1, minimal TCP.
-- **Phase 2, full TCP, steps 1 to 4 landed:** the tick-to-trade benchmark
-  (its first recorded run waits for a quiet machine with hugepages), packet
+- **Phase 2, full TCP, steps 1 to 5 landed:** the tick-to-trade benchmark
+  (a run recorded on hugepages, not yet on a quiet machine), packet
   loan with scripted impairment and a packetdrill-style scenario runner,
   reliable send (RTO, timestamps and PAWS, zero-window probes, fast retransmit
-  and NewReno, bounded recovery) and the receive side (segments held above a
+  and NewReno, bounded recovery), the receive side (segments held above a
   gap without a copy, SACK and duplicate SACK, window scaling, an optional
-  delayed ACK).
-- **Next:** loss recovery with RACK-TLP over SACK, then the lifecycle and
-  client hardening (TIME_WAIT, keepalive, path MTU, RFC 6528 and RFC 5961),
-  where the API freezes. TLS and HTTP/1.1 with WebSocket follow.
+  delayed ACK) and loss recovery with SACK (a scoreboard, RACK-TLP, PRR and
+  the undo), which misses its latency bar: it costs the benchmark's 64-byte
+  tick 40 ns at p50 and 60 ns at p99, as its page records.
+- **Next:** the lifecycle and client hardening (TIME_WAIT, keepalive, path MTU,
+  RFC 6528 and RFC 5961), where the API freezes. TLS and HTTP/1.1 with
+  WebSocket follow.
 
 Until step 6 lands the stack is not hardened against hostile peers.
 
@@ -51,7 +54,7 @@ Until step 6 lands the stack is not hardened against hostile peers.
 | `aloe::runtime`   | `common/runtime/`   | The loop written for you: shards on pinned threads, the scheduler, timer senders, scope and task, the connection senders and the ready-made TCP stack, and the runtime that launches one shard per queue. | [docs/architecture/runtime.md](docs/architecture/runtime.md)     |
 | `aloe::net`       | `common/net/`       | The first protocol brick: IPv4 over a device queue with ARP and ICMP echo, datagrams sorted per transport, checksums by offload or software.                                                              | [docs/architecture/net.md](docs/architecture/net.md)             |
 | `aloe::stream`    | `common/stream/`    | The zero-copy stream contract every protocol layer offers: the concepts, the event and error vocabulary, and the copying `send`.                                                                          | [docs/architecture/stream.md](docs/architecture/stream.md)       |
-| `aloe::tcp`       | `common/tcp/`       | TCP as a brick over the IP brick: the handshake both ways, data held as received packets in order and above a gap, SACK, window scaling, reliable send, NewReno behind a policy, FIN, RST and placement.  | [docs/architecture/tcp.md](docs/architecture/tcp.md)             |
+| `aloe::tcp`       | `common/tcp/`       | TCP as a brick over IP: the handshake both ways, data held as received packets in order and above a gap, SACK, window scaling, reliable send, RACK-TLP, NewReno behind a policy, FIN, RST and placement.  | [docs/architecture/tcp.md](docs/architecture/tcp.md)             |
 
 Fixtures for testing code written over the bricks live apart from the stack, in `fixtures/`
 ([docs/architecture/fixtures.md](docs/architecture/fixtures.md)):

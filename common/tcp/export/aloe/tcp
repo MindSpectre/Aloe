@@ -19,6 +19,8 @@
 #include <detail/lifecycle.hpp>
 #include <detail/loss_recovery.hpp>
 #include <detail/node_pool.hpp>
+#include <detail/rack.hpp>
+#include <detail/rate_reduction.hpp>
 #include <detail/reassembly_queue.hpp>
 #include <detail/receive_queue.hpp>
 #include <detail/receive_window.hpp>
@@ -30,8 +32,10 @@
 #include <detail/send_sequence.hpp>
 #include <detail/sent_segment_pool.hpp>
 #include <detail/stack_context.hpp>
+#include <detail/tail_probe.hpp>
 #include <detail/tcp_timestamps.hpp>
 #include <detail/transmitter.hpp>
+#include <detail/window_use.hpp>
 #include <detail/zero_window_probe.hpp>
 #include <flow_table.hpp>
 #include <newreno.hpp>

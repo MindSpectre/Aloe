@@ -1,0 +1,28 @@
+// Three later segments reported, no reordering seen: the reordering window is zero (RFC 8985 6.2: RACK is as quick as
+// three duplicates were), so the hole is lost as soon as RACK's round trip has passed since it left, and it has. The
+// handshake's ACK 10 ms after the SYN-ACK gives a round trip of 10 ms; the four segments share the stamp 10 ms. The ACK
+// at 20 ms reports the last three: RACK's segment is the fourth, its round trip 10 ms, and the first is due at
+// 10 + 10 + 0 = 20 ms, now. It is resent on that ACK, with no timer: of 400 outstanding 300 are reported and 100 lost,
+// so nothing is in flight; the target is max(400 / 2, 2 * 1448) = 2896, RecoverFS 400 - 300 + 300 = 400, and PRR's
+// conservative bound allows the 300 the ACK delivered. Linux marks it on the same ACK: its tcp_rack_reo_wnd is zero
+// once sacked_out reaches tp->reordering, three.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 110 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 100) = 100
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 101:201(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 201:301(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0 write(4, ..., 100) = 100
++0 > P. 301:401(100) ack 1 win 46336 <nop,nop,TS val 10 ecr 110>
++0.010 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 120 ecr 10,nop,nop,sack 101:401>
++0 > P. 1:101(100) ack 1 win 46336 <nop,nop,TS val 20 ecr 120>
++0.010 < . 1:1(0) ack 401 win 512 <nop,nop,TS val 130 ecr 20>

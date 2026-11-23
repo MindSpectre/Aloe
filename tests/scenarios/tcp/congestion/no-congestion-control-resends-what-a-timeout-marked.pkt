@@ -1,0 +1,28 @@
+// Without congestion control nothing holds back what a timeout marked: three segments of 988, all lost. The expiry
+// at +0.2 marks all three lost and resends the head, its one segment. The policy has no window, so the next ACK of
+// any kind, here a duplicate a tenth of a second later, runs the resend pass and the other two leave at once. The
+// ACK of all three ends the loss state. Under NewReno the same two wait for the window, which slow start opens
+// (congestion/timeout-restarts-at-one.pkt). Linux has no such policy: its window after a timeout is one segment
+// whatever the congestion control (tcp_enter_loss).
+--congestion=none
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1000,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 2964) = 2964
++0 > P. 1:989(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 989:1977(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 1977:2965(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0.2 > P. 1:989(988) ack 1 win 65535 <nop,nop,TS val 200 ecr 100>
++0.1 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 200>
++0 > P. 989:1977(988) ack 1 win 65535 <nop,nop,TS val 300 ecr 100>
++0 > P. 1977:2965(988) ack 1 win 65535 <nop,nop,TS val 300 ecr 100>
++0 < . 1:1(0) ack 2965 win 65535 <nop,nop,TS val 100 ecr 300>
++2 close(4) = 0
++0 > F. 2965:2965(0) ack 1 win 65535 <nop,nop,TS val 2300 ecr 100>
++0 < . 1:1(0) ack 2966 win 65535 <nop,nop,TS val 100 ecr 2300>

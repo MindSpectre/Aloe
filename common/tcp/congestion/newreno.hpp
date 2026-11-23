@@ -8,7 +8,9 @@
 
 namespace aloe::tcp {
 
-    /// RFC 5681 slow start and congestion avoidance, RFC 6582 recovery, RFC 6928's initial window.
+    /// RFC 5681 slow start and congestion avoidance, while the window is in use, its target on congestion and RFC
+    /// 6928's initial window. The window while a loss is repaired is not kept here: the connection's rate reduction
+    /// regulates it down to the target (RFC 9937), where RFC 6582 inflated and deflated it.
     struct NewReno {
         struct State {
             std::uint32_t cwnd     = 0;
@@ -33,7 +35,16 @@ namespace aloe::tcp {
             return state.cwnd;
         }
 
+        [[nodiscard]] static constexpr std::uint32_t target(const State& state) noexcept {
+            return state.ssthresh;
+        }
+
+        /// Slow start below the target, congestion avoidance at or above it, and nothing while the window is not in
+        /// use (`in_use`): a flow the application limits keeps the window it has.
         static constexpr void on_ack(State& state, const AckInfo& info) noexcept {
+            if (!in_use(state, info)) {
+                return;
+            }
             if (state.cwnd < state.ssthresh) {
                 state.cwnd = add(state.cwnd, std::min<std::uint32_t>(info.acked, info.mss));
                 return;
@@ -45,34 +56,23 @@ namespace aloe::tcp {
             }
         }
 
-        static constexpr void on_loss(State& state, const std::uint32_t flight, const std::uint16_t mss) noexcept {
+        /// RFC 5681 3.1, equation 4: the target is half of the flight, two segments at the least. Linux's reno halves
+        /// the window (`tcp_reno_ssthresh`); the RFC is definite. The window is left as it is.
+        static constexpr void
+        on_congestion(State& state, const std::uint32_t flight, const std::uint16_t mss) noexcept {
             state.ssthresh    = std::max<std::uint32_t>(flight / 2, 2U * mss);
-            state.cwnd        = add(state.ssthresh, 3U * mss);
             state.acked_bytes = 0;
         }
 
-        static constexpr void on_dupack(State& state, const std::uint16_t mss) noexcept {
-            state.cwnd = add(state.cwnd, mss);
-        }
-
-        static constexpr void
-        on_partial_ack(State& state, const std::uint32_t acked, const std::uint16_t mss) noexcept {
-            state.cwnd = state.cwnd > acked ? state.cwnd - acked : 0;
-            if (acked >= mss) {
-                state.cwnd = add(state.cwnd, mss);
-            }
-            state.cwnd = std::max<std::uint32_t>(state.cwnd, mss);
-        }
-
-        static constexpr void
-        on_recovery_end(State& state, const std::uint32_t flight, const std::uint16_t mss) noexcept {
-            state.cwnd        = std::min(state.ssthresh, add(std::max<std::uint32_t>(flight, mss), mss));
+        static constexpr void on_recovery_end(State& state) noexcept {
+            state.cwnd        = state.ssthresh;
             state.acked_bytes = 0;
         }
 
-        static constexpr void on_timeout(State& state, const std::uint32_t flight, const std::uint16_t mss) noexcept {
-            state.ssthresh    = std::max<std::uint32_t>(flight / 2, 2U * mss);
-            state.cwnd        = mss;
+        /// Linux's `tcp_enter_loss`: what is in flight after the timeout's marking, plus one segment.
+        static constexpr void
+        on_timeout(State& state, const std::uint32_t in_flight, const std::uint16_t mss) noexcept {
+            state.cwnd        = add(in_flight, mss);
             state.acked_bytes = 0;
         }
 
@@ -82,7 +82,22 @@ namespace aloe::tcp {
             state.acked_bytes = 0;
         }
 
+        /// The larger of each pair, the window it has and the one it had, the target it has and the one it had, as
+        /// Linux's `tcp_undo_cwnd_reduction` and `tcp_reno_undo_cwnd` restore them.
+        static constexpr void on_undo(State& state, const State& prior) noexcept {
+            state.cwnd     = std::max(state.cwnd, prior.cwnd);
+            state.ssthresh = std::max(state.ssthresh, prior.ssthresh);
+        }
+
     private:
+        /// Linux's `tcp_is_cwnd_limited`, which `tcp_reno_cong_avoid` asks before it grows anything: the window limited
+        /// the last send of the round, or, in slow start, it is less than twice the most in flight in that round, no
+        /// further than slow start overshoots anyway.
+        [[nodiscard]] static constexpr bool in_use(const State& state, const AckInfo& info) noexcept {
+            return info.window_limited ||
+                   (state.cwnd < state.ssthresh && state.cwnd < 2 * std::uint64_t{info.largest_flight});
+        }
+
         [[nodiscard]] static constexpr std::uint32_t add(const std::uint32_t a, const std::uint32_t b) noexcept {
             return b > std::numeric_limits<std::uint32_t>::max() - a ? std::numeric_limits<std::uint32_t>::max()
                                                                      : a + b;

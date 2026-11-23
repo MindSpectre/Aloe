@@ -1,0 +1,43 @@
+// The partial-ACK script, then what the full ACK leaves: RFC 9937's completion, the window at the target. Recovery
+// began with 4940 outstanding, so the target is max(4940 / 2, 2 * 988) = 2470, and a write after the full ACK, with
+// nothing in flight, accepts 2470: two segments of 988 and one of 494. The window stands at the threshold, so their
+// ACK finds congestion avoidance: a whole window of 2470 acknowledged adds one segment, and the next write accepts
+// 3458. Linux leaves recovery the same way, with the window at its threshold (tcp_end_cwnd_reduction); its reno sets
+// the threshold to half of its window, five segments, where RFC 5681 halves the flight.
+--congestion=newreno
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1000,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 4940) = 4940
++0 > P. 1:989(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 989:1977(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 1977:2965(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 2965:3953(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 3953:4941(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > P. 1:989(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 989 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > P. 989:1977(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 4941 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 9880) = 2470
++0 > P. 4941:5929(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 5929:6917(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 6917:7411(494) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 7411 win 65535 <nop,nop,TS val 100 ecr 0>
++0 write(4, ..., 9880) = 3458
++0 > P. 7411:8399(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 8399:9387(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 9387:10375(988) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 > P. 10375:10869(494) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 10869 win 65535 <nop,nop,TS val 100 ecr 0>
++2 close(4) = 0
++0 > F. 10869:10869(0) ack 1 win 65535 <nop,nop,TS val 2000 ecr 100>
++0 < . 1:1(0) ack 10870 win 65535 <nop,nop,TS val 100 ecr 2000>
