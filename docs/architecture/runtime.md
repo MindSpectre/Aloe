@@ -39,8 +39,8 @@ per packet.
   the node is still the caller's to free or reuse. A node is never posted to an inbox nobody will read.
   The ordinary `Inbox::push`, and so the scheduler's cross-shard `schedule()`, keeps its contract and takes
   no lock.
-- **ARP sink.** `set_arp_sink({object, learn})` registers, at setup and teardown, where a resolution learned
-  by another shard goes; `deliver_arp(address, mac)` hands it over on the owning thread with the current
+- **ARP sink.** `set_arp_sink({object, learn})` registers, at setup and teardown, where a resolution another
+  shard reported goes; `deliver_arp(address, mac)` hands it over on the owning thread with the current
   stamp. The sink names only `wire` values, no device and no `net` type. A default sink discards.
 - **`aloe::runtime::TaskScope`** -- the per-shard counting scope, shaped like the standard's
   `counting_scope`: `spawn`, `request_stop`, `join`, with no atomics because one thread uses it. With
@@ -118,21 +118,23 @@ per packet.
   through to the TCP brick unchanged: `TcpStack<Device, tcp::NoCongestionControl>` runs every shard without one
   (see the [TCP page](tcp.md#congestion-control)). The members are declared IP, TCP, Streams, so
   they are destroyed in the reverse order, and the destructor removes the ARP sink before any of them goes.
-  On a device with more than one queue it copies the IP config and sets `accept_unsolicited_replies`, so
-  queue 0 learns the replies its siblings solicited. `forwards_dropped()` counts the forwards that could
-  not be allocated and `forwards_rejected()` those a finished sibling refused.
+  On a device with more than one queue it copies the IP config and sets `report_unsolicited_replies`, so
+  queue 0 reports, without storing them, the replies its siblings solicited. `forwards_dropped()` counts the
+  forwards that could not be allocated and `forwards_rejected()` those a finished sibling refused.
 - **Its tick.** `on_receive(burst)` runs IP then TCP at the context's stamp, then one forwarding pass over
   `ip.resolved()`. `on_tick(now)` runs an empty TCP `process`, which publishes retry hints, then the wake
   pass. `on_flush(now)` runs the wake pass again, for the events timers and tasks raised, then TCP's
   `flush`. A program that wants another composition writes its own `IsStack` over the same bricks.
 - **ARP forwarding.** Each resolution in `ip.resolved()` goes to every sibling once, after the `process`
-  that reported it; an empty tick forwards nothing. The sibling applies it through its ARP sink, which calls
-  `ip.learn(address, mac, now)` on its own thread and reports nothing, so shards never echo each other. One
-  forward is one `detail::ArpForwardWork` node per sibling, allocated with `std::nothrow` on that cold path
-  and posted with `post_control`. An accepted node runs once on the target, delivers through `deliver_arp`
-  and frees itself; a rejected node, whose target has already finished, is freed by the sender at once and
-  counted in `forwards_rejected()`; a node that cannot be allocated is counted in `forwards_dropped()`, and
-  the sibling resolves the address itself when it needs it.
+  that reported it; an empty tick forwards nothing, and with the IP brick's learning off, the default, nothing is
+  ever reported. The sibling applies it through its ARP sink, which calls `ip.apply_resolution(address, mac, now)`
+  on its own thread: an entry the sibling holds is filled or updated, its life extended only when it answers the
+  sibling's own request, and nothing is created, so a reply is used only by a shard that asked. It reports nothing,
+  so shards never echo each other. One forward is one `detail::ArpForwardWork` node per sibling, allocated with
+  `std::nothrow` on that cold path and posted with `post_control`. An accepted node runs once on the target,
+  delivers through `deliver_arp` and frees itself; a rejected node, whose target has already finished, is freed by
+  the sender at once and counted in `forwards_rejected()`; a node that cannot be allocated is counted in
+  `forwards_dropped()`, and the sibling resolves the address itself when it needs it.
 
 ## Usage
 
@@ -330,7 +332,10 @@ timers, tasks and the scheduler's `schedule()` never take it.
 it. Either the target accepts the node and runs it, and the run frees it, or the target has closed admission,
 `post_control` returns false, and the sender frees it on the spot. No node is posted to an inbox nobody will
 read, and stop racing a burst of forwards leaks nothing. The allocation is `std::nothrow` because it runs
-inside `on_receive`, which must not throw; a failed one costs the sibling one ARP round trip later.
+inside `on_receive`, which must not throw; a failed one costs the sibling one ARP round trip later. Nothing bounds
+the forwards: each reported frame costs one allocation and one control post per sibling, so with learning on over
+several queues a flood of ARP replies, to us about addresses queue 0 does not hold or about ones it does, is a flood
+of forwards and of allocations on queue 0's shard.
 
 **Logging behind an alias.** Shards log only on cold paths, through [`log`](log.md)'s quill alias: a shard
 starting and draining, a task failing, a hook or pin failing. Nothing logs inside a tick.

@@ -153,7 +153,10 @@ shell.
 
 The TCP suite needs DPDK's tap driver, which every Aloe build links, and root. It creates the interface `aloe-tcp`, puts
 the kernel at 10.78.0.1/24 and Aloe at 10.78.0.2/24, and gives the kernel end its address itself, as
-`ip addr add 10.78.0.1/24 dev aloe-tcp` and `ip link set aloe-tcp up` would. Port 7007 carries an echo in four
+`ip addr add 10.78.0.1/24 dev aloe-tcp` and `ip link set aloe-tcp up` would. Aloe's IP brick runs with ARP learning
+on, since the tap's MAC is new on every run, and the fixture resolves the kernel's address once before any case
+connects, as a deployment that learns resolves a peer it knows: a learning brick takes no MAC from the kernel's own
+request. The suite has not run since that change; the run waits for a machine with root. Port 7007 carries an echo in four
 scenarios: a kernel client against the brick and against the runtime, and the brick and the runtime as clients of a
 kernel listener. `TcpTapLoss` repeats the four with 50 000 bytes under loss in both directions:
 `tc qdisc replace dev aloe-tcp root netem loss 5%` makes the kernel lose 5% of what it sends the stack, and skips the
@@ -192,23 +195,40 @@ traffic. Hence the port above 1024; a stricter firewall needs the interface in a
 
 `examples/tcp_echo` and `examples/tcp_echo_tasks` are the same echo as programs: the first a hand-written loop
 over the bricks on one queue, the second tasks over the runtime on every queue the port opens. Both listen or
-connect, run until interrupted or until the client's one exchange ends, and print their counters:
+connect, run until interrupted or until the client's one exchange ends, and print their counters.
+`examples/ping_responder` answers ARP and ping until interrupted:
 
 ```bash
-sudo ./build/debug/examples/tcp_echo/Aloe.Examples.TcpEcho net_tap0 10.78.0.2/24 --listen 7 -- --vdev=net_tap0,iface=aloe0
+sudo ./build/debug/examples/tcp_echo/Aloe.Examples.TcpEcho net_tap0 10.78.0.2/24 --listen 7 --learn-arp \
+    -- --vdev=net_tap0,iface=aloe0
 sudo ip addr add 10.78.0.1/24 dev aloe0 && sudo ip link set aloe0 up      # in another shell, once it runs
 nc 10.78.0.2 7                                                            # type a line, get it back
 
 sudo socat TCP-LISTEN:7007,reuseaddr,fork EXEC:cat &                     # a kernel echo server, listening first
 sudo ./build/debug/examples/tcp_echo_tasks/Aloe.Examples.TcpEchoTasks net_tap0 10.78.0.2/24 --connect 10.78.0.1:7007 \
-    -- --vdev=net_tap0,iface=aloe0
+    --learn-arp -- --vdev=net_tap0,iface=aloe0
 sudo ip addr add 10.78.0.1/24 dev aloe0 && sudo ip link set aloe0 up      # in another shell, once it runs
+
+sudo ./build/debug/examples/ping_responder/Aloe.Examples.PingResponder net_tap0 10.77.0.2/24 --learn-arp \
+    -- --vdev=net_tap0,iface=aloe0
+sudo ip addr add 10.77.0.1/24 dev aloe0 && sudo ip link set aloe0 up && ping 10.77.0.2   # in another shell
 ```
 
-The tap interface exists only while the program runs, so address it after the program has started. The
-client's SYN waits for ARP until the kernel end answers, so the kernel's listener must already be there, on
-a port the host firewall opens (above 1024 under Fedora's defaults). Add a gateway after the address to reach hosts off
-the subnet, and replace `net_tap0` and the `--vdev` argument with a card's PCI address to run on hardware.
+The three take the port and `<address>/<prefix>`, then an optional gateway; the two echoes then take
+`--listen <port>` or `--connect <host>:<port>`; and all three take `--static <address>=<mac>`, as often as needed, and
+`--learn-arp` before `--` and the EAL's arguments. The IP brick knows its neighbours from the `--static` entries alone
+unless `--learn-arp` lets it resolve them on the wire; a tap interface's MAC is new on every run, so every tap line
+above learns it. The tap interface exists only while the program runs, so address it after the program has started.
+The client's SYN waits for ARP until the kernel end answers, so the kernel's listener must already be there, on a port
+the host firewall opens (above 1024 under Fedora's defaults). Add a gateway after the address to reach hosts off the
+subnet, with a `--static` entry for it or with `--learn-arp`: without learning a gateway with no entry is refused at
+start, and a peer outside the table cannot be reached. To run on hardware, replace `net_tap0` and the `--vdev` argument
+with a card's PCI address and name the router:
+
+```bash
+sudo ./build/debug/examples/ping_responder/Aloe.Examples.PingResponder 0000:03:00.0 192.168.1.50/24 192.168.1.1 \
+    --static 192.168.1.1=00:11:22:33:44:55 -- -l 0 --file-prefix ping
+```
 
 ## Benchmarks and hugepages
 

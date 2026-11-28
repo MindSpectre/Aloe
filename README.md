@@ -34,17 +34,25 @@ the end of phase 2, and the stack makes no deployment or latency claim yet.
   delayed ACK) and loss recovery with SACK (a scoreboard, RACK-TLP, PRR and
   the undo), which misses its latency bar: it costs the benchmark's 64-byte
   tick 40 ns at p50 and 60 ns at p99, as its page records.
-- **Next:** the lifecycle and client hardening (TIME_WAIT, keepalive, path MTU,
-  RFC 6528 and RFC 5961), where the API freezes. TLS and HTTP/1.1 with
-  WebSocket follow.
+- **Step 6, its first part landed:** the hardening (keyed initial sequence
+  numbers, RFC 5961's checks with limited challenge ACKs, the edge cases of the
+  handshake and the window) and ARP from a static table by default.
+- **Next:** the rest of step 6, the life cycle (TIME_WAIT, keepalive, the
+  FIN-WAIT-2 timer), ICMP and path MTU, and the phase's close, where the API
+  freezes. TLS and HTTP/1.1 with WebSocket follow.
 
-Until step 6 lands the stack is not hardened against hostile peers.
+The stack is hardened against an attacker off the path: its initial sequence
+numbers cannot be predicted, a forged RST, SYN or old ACK moves counters and
+nothing else, and by default no ARP frame changes what it knows of its
+neighbours. It is not yet hardened as a server: SYN cookies and a keyed
+flow-table hash come after phase 2. TIME_WAIT and ICMP come with the next parts
+of step 6.
 
 ## Modules
 
 | Namespace         | Directory           | Description                                                                                                                                                                                               | Docs                                                             |
 |-------------------|---------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------|
-| `aloe::core`      | `common/core/`      | The small things every module links, with no dependencies: the version, the clock (a calibrated TSC clock by default), discarding values, a fallback, and the const and static guards.                    | [docs/architecture/core.md](docs/architecture/core.md)           |
+| `aloe::core`      | `common/core/`      | The small things every module links, with no dependencies: the version, the clock (a calibrated TSC clock by default), SipHash-2-4 and random bytes, discarding values, a fallback, and the guards.       | [docs/architecture/core.md](docs/architecture/core.md)           |
 | `aloe::execution` | `common/execution/` | The one header that names the execution facilities (stdexec), linked on demand.                                                                                                                           | [docs/architecture/execution.md](docs/architecture/execution.md) |
 | `aloe::log`       | `common/log/`       | Named loggers over quill, linked on demand.                                                                                                                                                               | [docs/architecture/log.md](docs/architecture/log.md)             |
 | `aloe::wire`      | `common/wire/`      | Addresses, headers and checksums grouped by protocol (Ethernet, IPv4, ARP, ICMP, TCP): values and formats, no state.                                                                                      | [docs/architecture/wire.md](docs/architecture/wire.md)           |
@@ -52,9 +60,9 @@ Until step 6 lands the stack is not hardened against hostile peers.
 | `aloe::ethdev`    | `devices/ethdev/`   | The DPDK device backend.                                                                                                                                                                                  | [docs/architecture/device.md](docs/architecture/device.md)       |
 | `aloe::loop`      | `common/loop/`      | The bricks a loop is built from: a device queue with its transmit ring, the timer wheel, the work node with the run queue and the inbox, and the counters.                                                | [docs/architecture/loop.md](docs/architecture/loop.md)           |
 | `aloe::runtime`   | `common/runtime/`   | The loop written for you: shards on pinned threads, the scheduler, timer senders, scope and task, the connection senders and the ready-made TCP stack, and the runtime that launches one shard per queue. | [docs/architecture/runtime.md](docs/architecture/runtime.md)     |
-| `aloe::net`       | `common/net/`       | The first protocol brick: IPv4 over a device queue with ARP and ICMP echo, datagrams sorted per transport, checksums by offload or software.                                                              | [docs/architecture/net.md](docs/architecture/net.md)             |
+| `aloe::net`       | `common/net/`       | The first protocol brick: IPv4 over a device queue with ICMP echo, neighbours from a static table or ARP, datagrams sorted per transport, checksums.                                                      | [docs/architecture/net.md](docs/architecture/net.md)             |
 | `aloe::stream`    | `common/stream/`    | The zero-copy stream contract every protocol layer offers: the concepts, the event and error vocabulary, and the copying `send`.                                                                          | [docs/architecture/stream.md](docs/architecture/stream.md)       |
-| `aloe::tcp`       | `common/tcp/`       | TCP as a brick over IP: the handshake both ways, data held as received packets in order and above a gap, SACK, window scaling, reliable send, RACK-TLP, NewReno behind a policy, FIN, RST and placement.  | [docs/architecture/tcp.md](docs/architecture/tcp.md)             |
+| `aloe::tcp`       | `common/tcp/`       | TCP as a brick over IP: the handshake both ways, data held as received packets, SACK, window scaling, reliable send, RACK-TLP, NewReno, RFC 5961, FIN, RST and placement.                                 | [docs/architecture/tcp.md](docs/architecture/tcp.md)             |
 
 Fixtures for testing code written over the bricks live apart from the stack, in `fixtures/`
 ([docs/architecture/fixtures.md](docs/architecture/fixtures.md)):
