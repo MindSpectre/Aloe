@@ -1,0 +1,25 @@
+// RFC 5961 4.2: a SYN on an established connection draws a challenge ACK wherever its sequence number lies, and the
+// connection goes on. A SYN inside the window at 0 ms, the same at 100 ms and one past the edge at 500 ms draw a
+// challenge at 0 and at 500 ms, and none at 100 ms, within the 500 ms of the connection's limiter: an answer at 100 ms
+// would stand where the line at 500 ms expects one, early. The challenges are the connection's pure ACK with the edge
+// restated, 1 + 65535 less RCV.NXT 1, 65535 to this peer, which offers no window scaling, and carry TS val 0 and 500:
+// the stack's clock in milliseconds from its SYN-ACK. The data after them is taken, and its ACK states 65535 less
+// the 100 bytes unread. Linux does the same (tcp_validate_incoming's syn_challenge); its windows depend on its buffers.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < S 1001:1001(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0.1 < S 1001:1001(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0.4 < S 70001:70001(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1 win 65535 <nop,nop,TS val 500 ecr 100>
+
++0 < P. 1:101(100) ack 1 win 65535 <nop,nop,TS val 100 ecr 500>
++0 > . 1:1(0) ack 101 win 65435 <nop,nop,TS val 500 ecr 100>
++0 read(4, ..., 100) = 100

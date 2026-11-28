@@ -12,11 +12,12 @@
 #include <gtest/gtest.h>
 #include <tcp_fixture.hpp>
 
-// RFC 5961 sections 3 and 7, as Linux's `tcp_validate_incoming`, `tcp_reset_check`, `tcp_send_challenge_ack` and
+// RFC 5961 sections 3, 4 and 7, as Linux's `tcp_validate_incoming`, `tcp_reset_check`, `tcp_send_challenge_ack` and
 // `tcp_oow_rate_limited` apply them: a RST resets only at RCV.NXT, at RCV.NXT - 1 once the peer's FIN was taken, or at
 // the end of what is held above a gap on a connection that uses SACK; any other RST inside the window draws a challenge
-// ACK, and one outside it is dropped in silence. Every challenge, and the ACK for a refused segment that occupies no
-// sequence space, goes through one limiter per connection: one answer per `challenge_ack_interval`, 500 ms.
+// ACK, and one outside it is dropped in silence. A SYN on an established connection draws a challenge ACK wherever it
+// lies and whether or not it passed PAWS. Every challenge, and the ACK for a refused segment that occupies no sequence
+// space, goes through one limiter per connection: one answer per `challenge_ack_interval`, 500 ms.
 namespace {
 
     using namespace std::chrono_literals;
@@ -62,6 +63,17 @@ namespace {
         EXPECT_EQ(frame.tcp->sequence, sequence);
         EXPECT_EQ(frame.tcp->acknowledgement, acknowledgement);
         EXPECT_EQ(frame.l4.size(), frame.tcp->data_offset) << "no payload";
+    }
+
+    /// The TSecr a frame carries; zero without the option.
+    [[nodiscard]] std::uint32_t ts_echo_of(const ParsedFrame& frame) {
+        const auto options = aloe::wire::TcpOptions::parse(aloe::frames::tcp_options_of(frame));
+        return options && options->timestamp_echo ? *options->timestamp_echo : 0;
+    }
+
+    /// The peer's SYN at `sequence`, with no ACK, as a peer that restarted sends it; the peer's state unchanged.
+    [[nodiscard]] std::vector<std::byte> syn_at(const TcpPeer& peer, const TcpSequence sequence) {
+        return peer.segment(TcpFlags{TcpFlag::Syn}, {}, sequence, TcpSequence{}, true);
     }
 
     using AfterFinCase = std::tuple<EmulatedOffloads, State>;
@@ -385,32 +397,195 @@ TEST_P(TcpChallenge, TheNextConnectionOnTheSlotStartsClean) {
 }
 
 TEST_P(TcpChallenge, TheResetPositionsHoldAcrossTheTopOfTheSequenceSpace) {
-    // 0x200 bytes from 0xffffff01: RCV.NXT wraps to 0x101.
+    // 0xfe bytes from 0xffffff01: RCV.NXT stands at 0xffffffff, and one past it is 0.
     TcpPeer peer{aloe::testing::peer_spec(), TcpSequence{0xffffff00U}};
     auto* c = open_passive(peer);
     ASSERT_NE(c, nullptr);
-    receive(peer.data(payload(0x200)));
+    receive(peer.data(payload(0xfe)));
     std::ignore            = collect();
     const TcpSequence next = peer.snd_nxt();
-    ASSERT_EQ(next.value, 0x101U);
+    ASSERT_EQ(next.value, 0xffffffffU);
     receive(rst_at(peer, next + 1U));
     const auto frames = collect();
-    ASSERT_EQ(frames.size(), 1U) << "challenged";
+    ASSERT_EQ(frames.size(), 1U) << "challenged at 0";
     expect_pure_ack(frames[0], c->committed(), next);
     receive(rst_at(peer, next));
     EXPECT_EQ(c->state(), State::Closed);
     EXPECT_TRUE(c->events().reset());
     while (poll().has_value()) {}
 
+    // 0xfe bytes and a FIN: RCV.NXT wraps to 0, and the RST one back after the FIN stands at 0xffffffff.
     TcpPeer other{aloe::testing::peer_spec(aloe::testing::tcp_peer_port + 1), TcpSequence{0xffffff00U}};
     auto* d = open_passive(other);
     ASSERT_NE(d, nullptr);
-    receive(other.data(payload(0x200)));
+    receive(other.data(payload(0xfe)));
     receive(other.fin());
     std::ignore = collect();
     ASSERT_EQ(d->state(), State::CloseWait);
+    ASSERT_EQ(other.snd_nxt().value, 0U);
     receive(rst_at(other, back(other.snd_nxt(), 1)));
     EXPECT_EQ(d->state(), State::Closed);
     EXPECT_TRUE(d->events().reset());
-    EXPECT_EQ(tcp_->counters().connections_reset, 2U);
+    while (poll().has_value()) {}
+
+    // Two ranges held above a gap on a connection that uses SACK, RCV.NXT at 0xffffff01: [0xffffff41, 0xffffff61) and
+    // [0xffffffc1, 0x41). The higher ends across zero, at a number below the lower's end: its end resets, the lower's
+    // is challenged.
+    TcpPeer sack{aloe::testing::peer_spec(aloe::testing::tcp_peer_port + 2), TcpSequence{0xffffff00U}};
+    sack.set_sack_permitted(true);
+    auto* e = open_passive(sack);
+    ASSERT_NE(e, nullptr);
+    ASSERT_TRUE(e->sack());
+    receive(
+        sack.segment(TcpFlags{TcpFlag::Psh, TcpFlag::Ack}, payload(0x20), TcpSequence{0xffffff41U}, sack.rcv_nxt()));
+    receive(
+        sack.segment(TcpFlags{TcpFlag::Psh, TcpFlag::Ack}, payload(0x80), TcpSequence{0xffffffc1U}, sack.rcv_nxt()));
+    ASSERT_EQ(e->out_of_order_segments(), 2U);
+    std::ignore = collect();
+    receive(rst_at(sack, TcpSequence{0xffffff61U}));
+    EXPECT_EQ(e->state(), State::Established) << "the lower range's end";
+    const auto challenge = collect();
+    ASSERT_EQ(challenge.size(), 1U) << "challenged";
+    expect_pure_ack(challenge[0], e->committed(), sack.snd_nxt());
+    receive(rst_at(sack, TcpSequence{0x41U}));
+    EXPECT_EQ(e->state(), State::Closed);
+    EXPECT_TRUE(e->events().reset());
+    EXPECT_EQ(tcp_->counters().connections_reset, 3U);
+}
+
+TEST_P(TcpChallenge, APawsAnswerGoesThroughTheLimitUnlessTheSegmentCarriesData) {
+    peer_.set_timestamps(100);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence next = peer_.snd_nxt();
+    peer_.set_timestamps(50);  // older than TS.Recent: every segment below fails PAWS
+    const auto old_ack = peer_.segment(TcpFlags{TcpFlag::Ack}, {}, next, c->committed());
+    receive(old_ack);
+    EXPECT_EQ(collect().size(), 1U) << "the first answer of the interval";
+    advance(100ms);
+    receive(old_ack);
+    EXPECT_TRUE(collect().empty()) << "an empty segment's answer, 100 ms after the first";
+    EXPECT_EQ(tcp_->counters().acks_rate_limited, 1U);
+    const auto old_data = peer_.segment(TcpFlags{TcpFlag::Psh, TcpFlag::Ack}, payload(10), next, c->committed());
+    receive(old_data);
+    receive(old_data);
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 2U) << "data that fails PAWS is answered every time, twice in one tick too";
+    for (const ParsedFrame& frame : frames) {
+        expect_pure_ack(frame, c->committed(), next);
+    }
+    EXPECT_EQ(tcp_->counters().dropped_paws, 4U);
+    EXPECT_EQ(tcp_->counters().acks_rate_limited, 1U);
+    EXPECT_EQ(c->unread().size(), 0U);
+}
+
+TEST_P(TcpChallenge, ASynInsideTheWindowIsChallenged) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence next = peer_.snd_nxt();
+    TcpCounters expected   = tcp_->counters();
+    receive(syn_at(peer_, next + 10U));
+    EXPECT_EQ(c->state(), State::Established);
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "one challenge";
+    expect_pure_ack(frames[0], c->committed(), next);
+    expected.segments_received      += 1;
+    expected.dropped_syn_challenged += 1;
+    expected.challenge_acks_sent    += 1;
+    expected.pure_acks_sent         += 1;
+    EXPECT_EQ(tcp_->counters(), expected) << "counted in dropped_syn_challenged alone, not in dropped_unexpected";
+}
+
+TEST_P(TcpChallenge, ASynOutsideTheWindowIsChallenged) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence next        = peer_.snd_nxt();
+    const TcpSequence edge        = next + c->receive_window();
+    // Before RCV.NXT, then past the edge, past the interval so the limiter lets the second go.
+    const TcpSequence positions[] = {back(next, 100), edge + 100U};
+    for (std::size_t round = 0; round < 2; ++round) {
+        SCOPED_TRACE(::testing::Message() << "round " << round);
+        if (round > 0) {
+            advance(500ms);
+        }
+        TcpCounters expected = tcp_->counters();
+        receive(syn_at(peer_, positions[round]));
+        EXPECT_EQ(c->state(), State::Established);
+        const auto frames = collect();
+        ASSERT_EQ(frames.size(), 1U) << "challenged";
+        expect_pure_ack(frames[0], c->committed(), next);
+        expected.segments_received      += 1;
+        expected.dropped_syn_challenged += 1;
+        expected.challenge_acks_sent    += 1;
+        expected.pure_acks_sent         += 1;
+        EXPECT_EQ(tcp_->counters(), expected) << "counted in dropped_syn_challenged alone, wherever it lies";
+    }
+}
+
+TEST_P(TcpChallenge, ASynThatFailsPawsIsChallenged) {
+    peer_.set_timestamps(100);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence next = peer_.snd_nxt();
+    peer_.set_timestamps(50);  // older than TS.Recent
+    receive(syn_at(peer_, next + 10U));
+    EXPECT_EQ(c->state(), State::Established);
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "challenged";
+    expect_pure_ack(frames[0], c->committed(), next);
+    EXPECT_EQ(tcp_->counters().dropped_syn_challenged, 1U);
+    EXPECT_EQ(tcp_->counters().challenge_acks_sent, 1U);
+    EXPECT_EQ(tcp_->counters().dropped_paws, 0U);
+}
+
+TEST_P(TcpChallenge, AChallengedSynLeavesTsRecentAlone) {
+    peer_.set_timestamps(100);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence next = peer_.snd_nxt();
+    peer_.set_timestamps(200);  // newer, at RCV.NXT, which is Last.ACK.sent: a segment that passed would take it
+    receive(syn_at(peer_, next));
+    auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "challenged";
+    EXPECT_EQ(ts_echo_of(frames[0]), 100U) << "the challenge echoes TS.Recent as it stood";
+    ASSERT_EQ(c->send(payload(1)), 1U);
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(ts_echo_of(frames[0]), 100U) << "the stack's next segment: the SYN never wrote TS.Recent";
+}
+
+TEST_P(TcpChallenge, ASynAckOnAnEstablishedConnectionIsChallenged) {
+    auto* c = open_active(peer_);
+    ASSERT_NE(c, nullptr);
+    TcpCounters expected = tcp_->counters();
+    // The peer's SYN-ACK again, as when our ACK of it was lost: the challenge is that ACK.
+    receive(peer_.segment(TcpFlags{TcpFlag::Syn, TcpFlag::Ack}, {}, peer_.iss(), c->committed(), true));
+    EXPECT_EQ(c->state(), State::Established);
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "one challenge";
+    expect_pure_ack(frames[0], c->committed(), peer_.snd_nxt());
+    expected.segments_received      += 1;
+    expected.dropped_syn_challenged += 1;
+    expected.challenge_acks_sent    += 1;
+    expected.pure_acks_sent         += 1;
+    EXPECT_EQ(tcp_->counters(), expected) << "counted in dropped_syn_challenged alone, not in dropped_duplicate";
+}
+
+TEST_P(TcpChallenge, ASynThatOverlapsRcvNxtIsChallengedAndNothingIsTaken) {
+    peer_.set_sack_permitted(true);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(c->sack());
+    const TcpSequence next = peer_.snd_nxt();
+    // The SYN five numbers back with 10 bytes: the trim takes its SYN and the four bytes RCV.NXT passed, and the rule
+    // reads the flag as the segment arrived.
+    receive(peer_.segment(TcpFlags{TcpFlag::Syn, TcpFlag::Ack}, payload(10), back(next, 5), c->committed()));
+    EXPECT_EQ(c->state(), State::Established);
+    EXPECT_EQ(c->unread().size(), 0U) << "a SYN's payload is never taken";
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "challenged";
+    expect_pure_ack(frames[0], c->committed(), next);
+    EXPECT_EQ(frames[0].tcp->data_offset, 20U) << "no duplicate reported: no SACK option";
+    EXPECT_EQ(tcp_->counters().dropped_syn_challenged, 1U);
+    EXPECT_EQ(tcp_->counters().challenge_acks_sent, 1U);
 }

@@ -1,0 +1,20 @@
+// The peer's SYN again in SYN-RECEIVED, at its first number with no ACK, draws the SYN-ACK again from its entry,
+// through the connection's limiter (500 ms): the copies at 0, 100 and 500 ms draw it at 0 and at 500 ms, and not at
+// 100 ms, within 500 ms of the first resend. The first SYN-ACK's own send does not stamp the limiter, so the copy at 0
+// ms is answered at once; an answer at 100 ms would stand where the line at 500 ms expects one, early. The resends
+// carry TS val 0 and 500, the stack's clock in milliseconds from its first SYN-ACK. Linux limits the same resend
+// through its request's own stamp (tcp_check_req, tcp_oow_rate_limited), and also restarts the SYN-ACK's timer, which
+// this script does not reach.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0.1 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0.4 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 500 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 500>
++0 accept(3, ..., ...) = 4
