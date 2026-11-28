@@ -4,9 +4,9 @@
 // window, each ACK stating 2897 less its acknowledgement. The 1000 bytes are never sent again: the write 300 ms later,
 // past the RTO of 200 ms the handshake's zero round trip leaves, goes out as the next segment, and the read finds the
 // 2896 bytes and not the 100. That read empties every slot: 2897 + 2896 is 2896 past the edge and the window on offer is
-// zero, so the update states 2896. Linux at this commit drops such a segment whole, its ACK with it, since its receive
-// queue is not empty (tcp_sequence), and answers it with a duplicate ACK through its limiter; RFC 9293 3.10.7.4 asks for
-// the ACK to be read.
+// zero, so the update states 2896. Linux at this commit drops such a segment whole, its ACK with it, unless its receive
+// queue is empty (tcp_sequence), which here it is not, and answers it at once with a duplicate ACK, since its limiter
+// spares a data segment without a SYN (tcp_oow_rate_limited); RFC 9293 3.10.7.4 asks for the ACK to be read.
 --tcp_receive_segments=4
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 bind(3, ..., ...) = 0

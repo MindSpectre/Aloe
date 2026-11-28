@@ -1412,14 +1412,22 @@ namespace aloe::tcp::detail {
 
         /**
          * The RTO ran out: one retry. First the user timeout, counted from the head's first transmission on a
-         * synchronized connection, and then the cap, `retries` in the handshake and `data_retries` after it, may give
-         * the connection up instead. Else the expiry marks what it holds lost (`mark_timeout`), puts a synchronized
-         * connection in the loss state (`LossRecovery::on_timeout`), where the policy's window restarts at what is in
-         * flight after the marking plus one segment, and resends the head, one segment and no more, as Linux's
-         * `tcp_retransmit_timer` does; the other entries marked leave by the resend pass as ACKs open the window. The
-         * handshake's expiry is not the policy's concern: it takes its first window at Established. Each expiry
-         * doubles the RTO up to `rto_max` and re-arms. A resend deferred or refused counts as the retry all the same:
-         * a deferred one, marked lost, leaves at the flush (`flush_deferred`), and the next expiry tries again. A
+         * synchronized connection, and then the cap may give the connection up instead: `retries` in the handshake and
+         * `data_retries` after it, against the expiries since the last ACK of new data (`retransmit_count`). On a
+         * synchronized connection whose peer's window is zero the expiry counts with the zero-window probes instead,
+         * as an unanswered one (`ZeroWindowProbe::unanswered`), which every acceptable ACK clears
+         * (`AckProcessor::update_probing`): the connection stays open while the peer answers and ends after
+         * `data_retries` such expiries in a row with no acceptable ACK between them, and the retry count stands where
+         * it stood, so they bring it no nearer to the cap once the window opens. A run's first expiry, which may set
+         * the policy's target again, is the first since the last ACK of new data, and at a closed window the first
+         * since the last acceptable ACK. Unless given up, the expiry marks what it holds lost (`mark_timeout`), puts a
+         * synchronized connection in the loss state (`LossRecovery::on_timeout`), where the policy's window restarts at
+         * what is in flight after the marking plus one segment, and resends the head, one segment and no more, as
+         * Linux's `tcp_retransmit_timer` does, at a closed window too; the other entries marked leave by the resend
+         * pass as ACKs open the window. The handshake's expiry is not the policy's concern: it takes its first window
+         * at Established. Each expiry doubles the RTO up to `rto_max` and re-arms, at a closed window too. A resend
+         * deferred or refused counts as the retry all the same: a deferred one, marked lost, leaves at the flush
+         * (`flush_deferred`), and the next expiry tries again. A
          * first send, of a SYN, SYN-ACK or FIN the device refused before, that finds no next hop arms the ARP poll
          * instead (`transmit_entry`), and the expiry leaves the timer to it: nothing left, so no backoff; the poll arms
          * the RTO once the send leaves, or gives the connection up as `Unresolved`. An expiry whose resend sends the
@@ -1438,10 +1446,27 @@ namespace aloe::tcp::detail {
                 return TimerExpiry::UserTimedOut;
             }
             const bool handshake = handshaking(block);
-            if (block.retransmit_count >= (handshake ? context_.config.retries : context_.config.data_retries)) {
-                return TimerExpiry::TimedOut;
+            bool first           = false;  // the run's first expiry, which may set the policy's target again
+            if (!handshake && block.send.wnd == 0) {
+                // RFC 9293's MUST-37 (RFC 1122 4.2.2.17): the resends are the zero-window probes, as Linux's
+                // `tcp_retransmit_timer` puts it, "our retransmits become zero probes", counted with them and cleared
+                // by every acceptable ACK. Linux bounds this branch by time instead, `tcp_rtx_probe0_timed_out`: twice
+                // `rto_max`, 240 seconds, since the last ACK it accepted and since the resends began. The count is
+                // used here so that one rule covers a closed window with data in flight and without.
+                if (!block.probe.unanswered(context_.config.data_retries)) {
+                    return TimerExpiry::TimedOut;
+                }
+                // The first since the last acceptable ACK, so each expiry the peer answers is a run's first. Linux's
+                // `tcp_enter_loss` reads `icsk_retransmits`, which this branch never moves: it sets the target again
+                // at every expiry here, answered or not, unless an expiry at an open window came since the last ACK
+                // of new data, and then at none.
+                first = block.probe.out() == 1;
+            } else {
+                if (block.retransmit_count >= (handshake ? context_.config.retries : context_.config.data_retries)) {
+                    return TimerExpiry::TimedOut;
+                }
+                first = ++block.retransmit_count == 1;
             }
-            ++block.retransmit_count;
             const std::size_t writable_before = writable(block);
             mark_timeout(block);
             if (!handshake) {
@@ -1450,7 +1475,7 @@ namespace aloe::tcp::detail {
                                           block.send.flight(),
                                           in_flight_bytes(block),
                                           block.mss(),
-                                          block.retransmit_count == 1,
+                                          first,
                                           earlier_resends(block));
             }
             if (block.probe_state.in_flight()) {

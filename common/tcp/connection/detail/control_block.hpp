@@ -206,8 +206,10 @@ namespace aloe::tcp::detail {
         TimerNode timer;
         TimerKind timer_kind = TimerKind::None;  ///< What `timer` does when it fires.
         core::TimePoint rto_at{};                ///< The moment the RTO would fire, set wherever it is armed.
-        std::uint8_t retransmit_count  = 0;      ///< Expiries since the last ACK of new data, deferred and refused too.
-        std::uint16_t unresolved_polls = 0;      ///< Polls since the last send that left; the config bounds them.
+        /// Expiries since the last ACK of new data, deferred and refused too, but those at the peer's closed window on
+        /// a synchronized connection, which `probe` counts.
+        std::uint8_t retransmit_count  = 0;
+        std::uint16_t unresolved_polls = 0;  ///< Polls since the last send that left; the config bounds them.
         /// The delayed ACK's wheel timer: armed only while an ACK of in-order data waits for `delayed_ack`.
         TimerNode ack_timer;
     };

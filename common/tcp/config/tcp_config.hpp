@@ -69,8 +69,9 @@ namespace aloe::tcp {
         core::Duration rto_min        = std::chrono::milliseconds{200};  ///< Linux's TCP_RTO_MIN.
         core::Duration rto_max        = std::chrono::seconds{120};       ///< Linux's TCP_RTO_MAX.
         std::uint8_t retries          = 5;  ///< SYN and SYN-ACK retransmits before TimedOut.
-        std::uint8_t data_retries =
-            15;  ///< Data and FIN retransmits, and unanswered zero-window probes, before TimedOut.
+        /// Data and FIN retransmits since the last ACK of new data, or unanswered zero-window probes and resends into
+        /// the peer's closed window since the last acceptable ACK, before TimedOut.
+        std::uint8_t data_retries     = 15;
         core::Duration user_timeout =
             core::Duration::zero();  ///< RFC 5482: unacknowledged this long ends the connection; zero is off.
         bool timestamps     = true;  ///< Offer and use RFC 7323 timestamps.

@@ -1,0 +1,38 @@
+// Five resends into the peer's closed window, each answered by an ACK at SND.UNA that keeps the window at zero, do not
+// end the connection although data_retries is 3 (RFC 9293's MUST-37): an expiry at a zero window counts with the
+// zero-window probes, which every acceptable ACK clears, and not towards the cap. The resends keep the backoff: at
+// +0.2, then +0.4, +0.8, +1.6 and +3.2 after the one before, each with the clock's value then; under the cap the fourth
+// expiry, at 3.0 s, would have ended the connection. A second after the fifth the peer acknowledges the data and opens
+// its window, and the next write goes out at once. Linux does not count these resends against tcp_retries2 either, and
+// bounds them by time instead: 240 s since the last ACK it accepted and since the resends began
+// (tcp_rtx_probe0_timed_out). The peer offers no SACK-permitted, so the RTO is the first resend, with no tail probe
+// before it.
+--tcp_data_retries=3
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 10) = 10
++0 > P. 1:11(10) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 0 <nop,nop,TS val 100 ecr 0>
+
++0.2 > P. 1:11(10) ack 1 win 65535 <nop,nop,TS val 200 ecr 100>
++0 < . 1:1(0) ack 1 win 0 <nop,nop,TS val 100 ecr 200>
++0.4 > P. 1:11(10) ack 1 win 65535 <nop,nop,TS val 600 ecr 100>
++0 < . 1:1(0) ack 1 win 0 <nop,nop,TS val 100 ecr 600>
++0.8 > P. 1:11(10) ack 1 win 65535 <nop,nop,TS val 1400 ecr 100>
++0 < . 1:1(0) ack 1 win 0 <nop,nop,TS val 100 ecr 1400>
++1.6 > P. 1:11(10) ack 1 win 65535 <nop,nop,TS val 3000 ecr 100>
++0 < . 1:1(0) ack 1 win 0 <nop,nop,TS val 100 ecr 3000>
++3.2 > P. 1:11(10) ack 1 win 65535 <nop,nop,TS val 6200 ecr 100>
++0 < . 1:1(0) ack 1 win 0 <nop,nop,TS val 100 ecr 6200>
+
++1 < . 1:1(0) ack 11 win 65535 <nop,nop,TS val 100 ecr 6200>
++0 write(4, ..., 10) = 10
++0 > P. 11:21(10) ack 1 win 65535 <nop,nop,TS val 7200 ecr 100>
++0 < . 1:1(0) ack 21 win 65535 <nop,nop,TS val 100 ecr 7200>
