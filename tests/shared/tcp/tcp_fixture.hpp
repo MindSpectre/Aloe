@@ -338,9 +338,10 @@ namespace aloe::testing {
                        protected detail::FabricPair,
                        protected TcpHarness<fabric::Port> {
     protected:
-        TcpFixture()
+        /// `ip_config` lets a derived fixture build the IP brick another way: its static table, or no gateway.
+        explicit TcpFixture(const net::Ipv4Config& ip_config = stack_config())
             : FabricPair{GetParam()},
-              TcpHarness{fabric, harness, port} {
+              TcpHarness{fabric, harness, port, {}, ip_config} {
         }
 
         [[nodiscard]] static bool offloads() {

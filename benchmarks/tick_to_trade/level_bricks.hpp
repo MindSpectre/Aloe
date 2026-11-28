@@ -11,11 +11,21 @@
 
 namespace aloe::benchmarks {
 
-    /// The IP brick's configuration at every level: the stack's address, and an ARP cache whose entries outlive any
-    /// run, so no refresh request lands on the hot path.
-    [[nodiscard]] inline net::Ipv4Config stack_ip_config(const PeerConfig& peer) noexcept {
+    /**
+     * The IP brick's configuration at every level: the stack's address and the venue. Without `arp_on_wire` the venue
+     * is a static entry and learning stays off, the default, so nothing is resolved and nothing ages. With it learning
+     * is on and the venue is resolved on the wire, into entries that outlive any run, so no refresh request lands on
+     * the hot path.
+     */
+    [[nodiscard]] inline net::Ipv4Config stack_ip_config(const PeerConfig& peer, const bool arp_on_wire) {
+        if (!arp_on_wire) {
+            return {.address    = peer.stack_ip,
+                    .prefix     = 24,
+                    .static_arp = {{.address = peer.peer_ip, .mac = peer.peer_mac}}};
+        }
         return {.address       = peer.stack_ip,
                 .prefix        = 24,
+                .arp_learning  = true,
                 .arp_reachable = std::chrono::hours{24},
                 .arp_expire    = std::chrono::hours{48}};
     }

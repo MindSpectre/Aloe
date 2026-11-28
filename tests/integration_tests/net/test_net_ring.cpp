@@ -37,7 +37,7 @@ namespace {
         aloe::loop::ShardQueueCounters counters_;
         aloe::loop::ShardQueue<aloe::ethdev::Port> queue_{port_, 0, 16, counters_};
         Ipv4 ip_{
-            queue_, {.address = stack_ip, .prefix = 24}
+            queue_, {.address = stack_ip, .prefix = 24, .arp_learning = true}
         };
         aloe::core::TimePoint now_{};
         std::vector<Packet> burst_ = std::vector<Packet>(64);
@@ -116,7 +116,7 @@ TEST_F(NetRing, AnEchoRequestIsAnsweredOnRealMbufs) {
 TEST_F(NetRing, ASentSegmentComesBackThroughTheRingIntoTheUdpList) {
     // A second brick on the same queue plays the peer: our own address as a source would be martian.
     Ipv4 peer{
-        queue_, {.address = peer_ip, .prefix = 24}
+        queue_, {.address = peer_ip, .prefix = 24, .arp_learning = true}
     };
     peer.learn(stack_ip, port_.mac(), now_);
     auto packet = peer.allocate();

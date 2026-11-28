@@ -90,6 +90,10 @@ namespace aloe::tcp {
         std::uint64_t dropped_no_slot       = 0;
         std::uint64_t dropped_no_node       = 0;
         std::uint64_t dropped_table_full    = 0;
+        /// SYNs to a listener whose source has no next hop (`net::Ipv4::next_hop`): off the subnet with no gateway, or,
+        /// with the IP brick's learning off, a neighbour outside its static table. Dropped before they take a slot,
+        /// and answered with nothing, since nothing could reach the source.
+        std::uint64_t dropped_no_route      = 0;
         std::uint64_t dropped_paws = 0;  ///< Segments whose timestamp was older than TS.Recent; acknowledged, not kept.
         /// RSTs inside the window at none of the positions that reset (RFC 5961 3.2): each drew a challenge ACK, or
         /// was held back by the limiter.

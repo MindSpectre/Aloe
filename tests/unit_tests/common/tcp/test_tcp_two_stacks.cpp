@@ -56,7 +56,7 @@ namespace {
             : queue{
                   port, 0, 64, counters
         },
-              ip{queue, {.address = address, .prefix = 24}}, tcp{ip, wheel, config} {
+              ip{queue, {.address = address, .prefix = 24, .arp_learning = true}}, tcp{ip, wheel, config} {
         }
 
         aloe::loop::ShardQueueCounters counters;

@@ -237,6 +237,12 @@ namespace aloe::tcp::detail {
         /// A SYN to a listener. The checks that refuse it come first, before the retransmission-queue node and the slot
         /// are looked at, so a refused SYN takes neither.
         void passive_open(Datagram& datagram, const Segment& segment) noexcept {
+            // The route question first: a SYN whose source has no next hop is answered with nothing, since no SYN-ACK
+            // and no RST could reach it, and takes no slot that would wait out the retry schedule.
+            if (!context_.ip.next_hop(datagram.source)) {
+                ++context_.counters.dropped_no_route;
+                return;
+            }
             // The MSS floor: a peer whose MSS, stated or assumed, is below `min_peer_mss` is answered with RFC 793's
             // reset for a segment with no connection, a RST with ACK acknowledging the SYN, not limited as no RST is.
             // Where this departs from Linux, which raises an MSS below its floor, `tcp_min_snd_mss`, to the floor and

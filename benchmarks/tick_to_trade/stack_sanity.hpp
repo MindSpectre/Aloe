@@ -36,6 +36,11 @@ namespace aloe::benchmarks {
         expect_zero(tcp.dropped_no_slot, "tcp.dropped_no_slot");
         expect_zero(tcp.dropped_no_node, "tcp.dropped_no_node");
         expect_zero(tcp.dropped_table_full, "tcp.dropped_table_full");
+        expect_zero(tcp.dropped_no_route, "tcp.dropped_no_route");
+        expect_zero(tcp.dropped_reset_challenged, "tcp.dropped_reset_challenged");
+        expect_zero(tcp.dropped_syn_challenged, "tcp.dropped_syn_challenged");
+        expect_zero(tcp.dropped_old_ack, "tcp.dropped_old_ack");
+        expect_zero(tcp.handshakes_refused_mss, "tcp.handshakes_refused_mss");
         expect_zero(tcp.send_refused, "tcp.send_refused");
         expect_zero(tcp.commits_refused, "tcp.commits_refused");
         expect_zero(tcp.allocation_failures, "tcp.allocation_failures");
@@ -70,6 +75,7 @@ namespace aloe::benchmarks {
         expect_zero(ip.dropped_ethertype, "ip.dropped_ethertype");
         expect_zero(ip.dropped_arp_malformed, "ip.dropped_arp_malformed");
         expect_zero(ip.dropped_arp_conflict, "ip.dropped_arp_conflict");
+        expect_zero(ip.dropped_arp_static_conflict, "ip.dropped_arp_static_conflict");
         expect_zero(ip.dropped_bad_header, "ip.dropped_bad_header");
         expect_zero(ip.dropped_bad_checksum, "ip.dropped_bad_checksum");
         expect_zero(ip.dropped_fragment, "ip.dropped_fragment");

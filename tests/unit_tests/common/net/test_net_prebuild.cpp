@@ -105,7 +105,7 @@ TEST_P(NetPrebuild, PrebuildFailsUnresolvedWithOneRequestAndNoRoute) {
     EXPECT_EQ(ip_.counters().send_unresolved, 1U);
     EXPECT_EQ(ip_.counters().arp_requests_sent, 1U);
     Ipv4 no_gateway{
-        queue_, {.address = aloe::testing::stack_ip, .prefix = 24}
+        queue_, {.address = aloe::testing::stack_ip, .prefix = 24, .arp_learning = true}
     };
     const auto no_route = no_gateway.prebuild(aloe::testing::far_ip, Ipv4Protocol::Tcp, now_);
     ASSERT_FALSE(no_route.has_value());

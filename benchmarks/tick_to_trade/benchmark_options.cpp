@@ -88,7 +88,7 @@ namespace aloe::benchmarks {
                "  --peer-core N|none            the peer's core, not the stack's (3)\n"
                "  --breakdown                   phase stamps at level 0\n"
                "  --hop                         measure the cache-line hop between the two cores\n"
-               "  --arp-on-wire                 resolve the peer by ARP instead of seeding the cache\n"
+               "  --arp-on-wire                 resolve the peer by ARP instead of a static entry\n"
                "  --hugepages N                 2 MB pages the run needs free (64)\n"
                "  --keep-hugepages              leave pages this process reserved for the next run\n"
                "  --out FILE                    the result file (tick-to-trade-<timestamp>.json beside the binary)\n"

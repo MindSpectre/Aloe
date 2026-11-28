@@ -40,7 +40,7 @@ namespace aloe::tcp {
         TableFull,    ///< No free connection slot, or no retransmission-queue node for the SYN.
         NoPort,       ///< The ephemeral range has no free port that lands on this queue.
         Unplaceable,  ///< The card hashes addresses only, or steers nothing, and this is not the queue it picks.
-        NoRoute,      ///< Off the subnet with no gateway.
+        NoRoute,      ///< No next hop: off the subnet with no gateway, or, with learning off, outside the static table.
     };
 
     enum class ListenError : std::uint8_t {

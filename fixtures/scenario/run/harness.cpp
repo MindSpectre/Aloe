@@ -39,6 +39,7 @@ namespace aloe::scenario {
           ip_{queue_,
               net::Ipv4Config{.address       = config.stack_address,
                               .prefix        = config.prefix,
+                              .arp_learning  = true,
                               .arp_reachable = config.arp_lifetime,
                               .arp_expire    = 2 * config.arp_lifetime}},
           wheel_{config.resolution, core::TimePoint{}}, tcp_{ip_, wheel_, config.tcp}, burst_(burst_size) {

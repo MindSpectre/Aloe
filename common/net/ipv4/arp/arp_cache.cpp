@@ -1,5 +1,6 @@
 #include "arp_cache.hpp"
 
+#include <algorithm>
 #include <bit>
 #include <stdexcept>
 #include <utility>
@@ -13,6 +14,9 @@ namespace aloe::net {
         constexpr unsigned address_bits      = 32;
 
         const ArpCacheConfig& validated(const ArpCacheConfig& config) {
+            if (!config.learning) {
+                return config;  // the learned table's settings are never read
+            }
             if (config.capacity < ArpCache::probe_window || !std::has_single_bit(config.capacity)) {
                 throw std::invalid_argument{"ArpCacheConfig::capacity must be a power of two of at least 8"};
             }
@@ -34,10 +38,16 @@ namespace aloe::net {
 
     }  // namespace
 
-    ArpCache::ArpCache(const ArpCacheConfig& config)
+    ArpCache::ArpCache(const ArpCacheConfig& config, std::vector<ArpResolution> static_entries)
         : config_{validated(config)},
-          slots_(config.capacity),
-          shift_{address_bits - static_cast<unsigned>(std::countr_zero(config.capacity))} {
+          static_{std::move(static_entries)},
+          slots_(config.learning ? config.capacity : 0),
+          shift_{config.learning ? address_bits - static_cast<unsigned>(std::countr_zero(config.capacity)) : 0} {
+    }
+
+    const ArpResolution* ArpCache::find_static(const wire::Ipv4Address address) const noexcept {
+        const auto found = std::ranges::find(static_, address, &ArpResolution::address);
+        return found != static_.end() ? &*found : nullptr;
     }
 
     std::size_t ArpCache::home(const wire::Ipv4Address address) const noexcept {
@@ -45,6 +55,9 @@ namespace aloe::net {
     }
 
     const ArpCache::Entry* ArpCache::find(const wire::Ipv4Address address) const noexcept {
+        if (slots_.empty()) {
+            return nullptr;  // learning off: no learned table
+        }
         const std::size_t mask  = slots_.size() - 1;
         const std::size_t start = home(address);
         for (std::size_t probe = 0; probe < probe_window; ++probe) {
@@ -128,6 +141,14 @@ namespace aloe::net {
     }
 
     ArpCache::Lookup ArpCache::lookup(const wire::Ipv4Address address, const core::TimePoint now) noexcept {
+        if (const ArpResolution* known = find_static(address); known != nullptr) {
+            return {.mac = known->mac, .send_request = false, .permanent = true};
+        }
+        if (!config_.learning) {
+            // Nothing is resolved on the wire unless the configuration switches learning on: where this departs from
+            // RFC 1122 2.3.2, whose host resolves its neighbours with ARP.
+            return {};
+        }
         Entry* entry = find(address);
         if (entry == nullptr) {
             entry = &insert(address, now);
@@ -151,6 +172,9 @@ namespace aloe::net {
 
     void
     ArpCache::learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
+        if (!config_.learning || is_static(address)) {
+            return;  // nothing is kept but the static table, which nothing changes
+        }
         Entry* entry = find(address);
         if (entry == nullptr) {
             entry = &insert(address, now);
@@ -174,6 +198,10 @@ namespace aloe::net {
 
     bool ArpCache::contains(const wire::Ipv4Address address) const noexcept {
         return find(address) != nullptr;
+    }
+
+    bool ArpCache::is_static(const wire::Ipv4Address address) const noexcept {
+        return find_static(address) != nullptr;
     }
 
 }  // namespace aloe::net

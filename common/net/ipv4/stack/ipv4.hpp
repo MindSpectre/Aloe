@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <aloe/core>
 #include <aloe/device>
 #include <aloe/loop>
@@ -31,8 +32,10 @@ namespace aloe::net {
      * One object per shard, between `loop::ShardQueue` and the transports. `process` consumes a burst and
      * leaves every slot empty; `received` and `resolved` are the lists the caller drains until the next
      * `process`; `send` prepends the headers and fills the checksums by the device's offload or in software.
-     * ARP is private: `send` fails `Unresolved` while a request is out, `resolved` reports what was
-     * learned, `learn` and `resolve` seed the cache. Every member runs on the owning thread. Nothing here
+     * ARP is private: the neighbours in `Ipv4Config::static_arp` resolve with no frame, and nothing else does
+     * unless `Ipv4Config::arp_learning` is on; then `send` fails `Unresolved` while a request is out, `resolved`
+     * reports what was learned, `learn` and `resolve` seed the cache. With learning off a next hop outside the
+     * static table is `NoRoute`. Every member runs on the owning thread. Nothing here
      * is synchronised, blocks, throws after construction, logs, reads a clock, or allocates after
      * construction except packets.
      */
@@ -111,7 +114,8 @@ namespace aloe::net {
          *
          * Routes and looks the hop up as `send` does, counting `send_no_route` and `send_unresolved` and sending the
          * ARP request when the cache asks. `valid_until` is the end of the entry's reachable time while it is fresh, a
-         * request interval from `now` while it is stale, and never for a broadcast or multicast destination.
+         * request interval from `now` while it is stale, and never for a broadcast or multicast destination or a
+         * static next hop.
          */
         [[nodiscard]] std::expected<Ipv4Prebuilt, SendError> prebuild(const wire::Ipv4Address destination,
                                                                       const wire::Ipv4Protocol protocol,
@@ -119,7 +123,8 @@ namespace aloe::net {
             return output_.prebuild(destination, protocol, now);
         }
 
-        /// Moves when a cached MAC changes or goes: an `Ipv4Prebuilt` of an older generation may name a stale next hop.
+        /// Moves when a learned MAC changes or goes: an `Ipv4Prebuilt` of an older generation may name a stale next
+        /// hop. The static table never moves it, and with learning off nothing does.
         [[nodiscard]] std::uint64_t generation() const noexcept {
             return arp_.generation();
         }
@@ -139,13 +144,14 @@ namespace aloe::net {
         }
 
         /// The next hop's MAC from the cache, or nothing with a request on its way: how a program pre-resolves its
-        /// router.
+        /// router. With learning off, the static table's answer alone, and never a request.
         [[nodiscard]] std::optional<wire::MacAddress> resolve(const wire::Ipv4Address hop,
                                                               const core::TimePoint now) noexcept {
             return arp_.resolve(hop, now);
         }
 
-        /// A static entry, or a resolution another shard learned. Appends nothing to `resolved()`.
+        /// A seed of the learned table, or a resolution another shard learned: nothing with learning off or for a
+        /// static address. Appends nothing to `resolved()`.
         void learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
             arp_.learn(address, mac, now);
         }
@@ -161,13 +167,14 @@ namespace aloe::net {
 
         /**
          * @brief Where a unicast datagram to `destination` would be sent: the destination itself on the
-         * subnet, the gateway off it, or nothing when there is none.
+         * subnet, the gateway off it, or nothing when there is none, or, with learning off, when that hop has no
+         * static entry.
          *
          * A route question with no side effect: no ARP lookup, no request, no counter. `send` decides
          * the same way. Broadcast and multicast destinations are not routed and answer with themselves.
          */
         [[nodiscard]] std::optional<wire::Ipv4Address> next_hop(const wire::Ipv4Address destination) const noexcept {
-            return routing_.next_hop(destination);
+            return output_.next_hop(destination);
         }
 
         [[nodiscard]] wire::Ipv4Address address() const noexcept {
@@ -228,7 +235,26 @@ namespace aloe::net {
                     throw std::invalid_argument{"Ipv4Config::gateway must be another unicast host"};
                 }
             }
-            return config;  // the ARP capacity and durations are ArpCache's to check
+            const std::span<const ArpResolution> table{config.static_arp};
+            for (std::size_t index = 0; index < table.size(); ++index) {
+                const auto& [address, mac] = table[index];
+                if (!subnet.contains(address) || !unicast_host(address, subnet) || address == config.address) {
+                    throw std::invalid_argument{
+                        "Ipv4Config::static_arp: every address must be another unicast host on the subnet"};
+                }
+                if (mac == wire::MacAddress{} || mac.is_multicast()) {
+                    throw std::invalid_argument{"Ipv4Config::static_arp: every MAC must be unicast and not zero"};
+                }
+                const std::span<const ArpResolution> earlier = table.first(index);
+                if (std::ranges::find(earlier, address, &ArpResolution::address) != earlier.end()) {
+                    throw std::invalid_argument{"Ipv4Config::static_arp lists an address twice"};
+                }
+            }
+            if (!config.arp_learning && config.gateway.has_value() &&
+                std::ranges::find(table, *config.gateway, &ArpResolution::address) == table.end()) {
+                throw std::invalid_argument{"Ipv4Config::gateway needs a static_arp entry while arp_learning is off"};
+            }
+            return config;  // the ARP capacity and durations are ArpCache's to check, with learning on
         }
 
         loop::ShardQueue<Device>& queue_;

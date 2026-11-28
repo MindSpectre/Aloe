@@ -98,7 +98,7 @@ namespace {
             aloe::loop::ShardQueueCounters shard_counters;
             aloe::loop::ShardQueue<aloe::ethdev::Port> queue{port, 0, 64, shard_counters};
             aloe::net::Ipv4<aloe::ethdev::Port> ip{
-                queue, {.address = stack_ip, .prefix = 24}
+                queue, {.address = stack_ip, .prefix = 24, .arp_learning = true}
             };
             std::vector<aloe::ethdev::Packet> burst(64);
             while (!stop.stop_requested()) {

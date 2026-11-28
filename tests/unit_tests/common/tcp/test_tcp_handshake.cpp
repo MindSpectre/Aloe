@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <aloe/frames>
+#include <aloe/net>
 #include <aloe/tcp>
 #include <aloe/wire>
 #include <chrono>
@@ -142,6 +143,51 @@ namespace {
 
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpHandshakeOptions,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+
+    constexpr aloe::wire::Ipv4Address outside_the_table{10, 0, 0, 77};  ///< On the subnet, in no static entry.
+
+    /// A stack whose IP brick has learning off and a static entry for the harness alone: the default a deployment
+    /// gets, where a neighbour outside the table has no next hop.
+    class TcpHandshakeStatic : public aloe::testing::TcpFixture {
+    protected:
+        TcpHandshakeStatic()
+            : TcpFixture{
+                  aloe::net::Ipv4Config{
+                                        .address    = aloe::testing::stack_ip,
+                                        .prefix     = 24,
+                                        .static_arp = {{.address = aloe::testing::harness_ip, .mac = aloe::testing::harness_mac}}}
+        } {
+        }
+
+        /// A peer at the neighbour's address outside the table; its frames still come from the harness's port.
+        [[nodiscard]] static aloe::frames::TcpPeer stranger(const std::uint16_t port = aloe::testing::tcp_peer_port) {
+            aloe::frames::TcpSpec spec = aloe::testing::peer_spec(port);
+            spec.source                = outside_the_table;
+            return aloe::frames::TcpPeer{std::move(spec), TcpSequence{aloe::testing::tcp_peer_isn}};
+        }
+    };
+
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpHandshakeStatic,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+
+    /// A stack whose IP brick resolves on the wire and has no gateway: a source off the subnet has no next hop.
+    class TcpHandshakeNoGateway : public aloe::testing::TcpFixture {
+    protected:
+        TcpHandshakeNoGateway()
+            : TcpFixture{
+                  aloe::net::Ipv4Config{.address = aloe::testing::stack_ip, .prefix = 24, .arp_learning = true}
+        } {
+        }
+    };
+
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpHandshakeNoGateway,
                              ::testing::Values(aloe::fabric::EmulatedOffloads::None,
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
@@ -895,7 +941,7 @@ TEST_P(TcpHandshake, AbortInSynSentSendsNoReset) {
 
 TEST_P(TcpHandshake, NoRouteTakesNoSlot) {
     Ipv4 bare{
-        queue_, {.address = aloe::testing::stack_ip, .prefix = 24}
+        queue_, {.address = aloe::testing::stack_ip, .prefix = 24, .arp_learning = true}
     };
     Tcp tcp{bare, wheel_, {.connections = 1}};
     const auto failed = tcp.connect({.address = aloe::testing::far_ip, .port = 7}, now_);
@@ -908,6 +954,71 @@ TEST_P(TcpHandshake, NoRouteTakesNoSlot) {
     EXPECT_EQ((*ok)->index(), 0U);
     (*ok)->release();
     std::ignore = collect();
+}
+
+TEST_P(TcpHandshakeStatic, ConnectToANeighbourOutsideTheTableIsNoRouteWithNoSlot) {
+    const auto failed = tcp_->connect({.address = outside_the_table, .port = 7}, now_);
+    ASSERT_FALSE(failed.has_value());
+    EXPECT_EQ(failed.error(), aloe::tcp::ConnectError::NoRoute);
+    EXPECT_EQ(tcp_->table_size(), 0U);
+    EXPECT_EQ(wheel_.pending(), 0U) << "nothing armed: no ARP poll waits for it";
+    EXPECT_TRUE(collect().empty()) << "no ARP request and no SYN";
+    EXPECT_EQ(ip_.counters().arp_requests_sent, 0U);
+
+    const auto ok = tcp_->connect({.address = aloe::testing::harness_ip, .port = 7}, now_);
+    ASSERT_TRUE(ok.has_value()) << "the harness is in the table";
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_TRUE(aloe::testing::is_flags(frames[0], TcpFlags{TcpFlag::Syn})) << "the SYN leaves at once";
+    EXPECT_EQ(frames[0].ethernet.destination, aloe::testing::harness_mac);
+}
+
+TEST_P(TcpHandshakeStatic, ASynFromANeighbourOutsideTheTableTakesNoSlot) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    aloe::frames::TcpPeer peer = stranger();
+    TcpCounters expected       = tcp_->counters();
+    receive(peer.syn());
+    EXPECT_TRUE(collect().empty()) << "no SYN-ACK can reach it";
+    EXPECT_EQ(tcp_->table_size(), 0U);
+    EXPECT_EQ(wheel_.pending(), 0U);
+    expected.segments_received += 1;
+    expected.dropped_no_route  += 1;
+    EXPECT_EQ(tcp_->counters(), expected) << "one drop counter, and no refused send";
+
+    // The route question comes before the MSS floor: a SYN that cannot be answered draws no RST either.
+    aloe::frames::TcpPeer small = stranger(41000);
+    small.spec().mss            = 40;
+    receive(small.syn());
+    EXPECT_TRUE(collect().empty());
+    expected.segments_received += 1;
+    expected.dropped_no_route  += 1;
+    EXPECT_EQ(tcp_->counters(), expected) << "not refused for its MSS";
+    EXPECT_EQ(ip_.counters().send_no_route, 0U) << "the IP brick was never asked to send";
+}
+
+TEST_P(TcpHandshakeStatic, AStraySegmentFromANeighbourOutsideTheTableDrawsNoReset) {
+    aloe::frames::TcpPeer peer = stranger();
+    receive(peer.segment(TcpFlags{TcpFlag::Ack}, {}, TcpSequence{1001U}, TcpSequence{777U}));  // nobody listens on 7
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(tcp_->counters().dropped_no_connection, 1U);
+    EXPECT_EQ(tcp_->counters().resets_sent, 0U);
+    EXPECT_EQ(tcp_->counters().send_refused, 0U) << "the reset was never tried";
+    EXPECT_EQ(ip_.counters().send_no_route, 0U);
+}
+
+TEST_P(TcpHandshakeNoGateway, ASynFromOffTheSubnetWithNoGatewayTakesNoSlot) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    aloe::frames::TcpSpec spec = aloe::testing::peer_spec();
+    spec.source                = aloe::testing::far_ip;
+    aloe::frames::TcpPeer far{std::move(spec), TcpSequence{5000U}};
+    TcpCounters expected = tcp_->counters();
+    receive(far.syn());
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(tcp_->table_size(), 0U) << "no slot held for the retry schedule of a SYN-ACK that cannot leave";
+    EXPECT_EQ(wheel_.pending(), 0U);
+    expected.segments_received += 1;
+    expected.dropped_no_route  += 1;
+    EXPECT_EQ(tcp_->counters(), expected);
 }
 
 TEST_P(TcpHandshake, TableFullAndUnlisten) {

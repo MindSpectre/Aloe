@@ -535,10 +535,15 @@ namespace aloe::tcp::detail {
         }
 
         /// RFC 793's reset for a segment with no connection: with ACK, sequence at its acknowledgement;
-        /// without, sequence zero and acknowledgement past everything it occupied.
+        /// without, sequence zero and acknowledgement past everything it occupied. Nothing to a source with no next
+        /// hop, and nothing counted: the segment was counted under its own drop reason, and a refused send would only
+        /// count again what nobody can reach.
         void reply_reset(const wire::Ipv4Address source,
                          const wire::TcpHeader& header,
                          const std::uint32_t length) noexcept {
+            if (!context_.ip.next_hop(source)) {
+                return;
+            }
             OutgoingSegment reply{
                 .header =
                     wire::TcpHeader{.source_port = header.destination_port, .destination_port = header.source_port}

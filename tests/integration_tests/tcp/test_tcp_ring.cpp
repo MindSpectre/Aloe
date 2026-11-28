@@ -48,7 +48,7 @@ namespace {
         aloe::loop::ShardQueueCounters counters_;
         aloe::loop::ShardQueue<aloe::ethdev::Port> queue_{port_, 0, 16, counters_};
         Ipv4 ip_{
-            queue_, {.address = stack_ip, .prefix = 24}
+            queue_, {.address = stack_ip, .prefix = 24, .arp_learning = true}
         };
         aloe::loop::TimerWheel wheel_{1ms, TimePoint{}};
         Tcp tcp_{ip_, wheel_, {}};

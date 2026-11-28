@@ -471,7 +471,7 @@ namespace {
             aloe::loop::ShardQueueCounters shard_counters;
             aloe::loop::ShardQueue<Device> queue{port, 0, 64, shard_counters};
             Ipv4 ip{
-                queue, {.address = stack_ip, .prefix = 24}
+                queue, {.address = stack_ip, .prefix = 24, .arp_learning = true}
             };
             aloe::loop::TimerWheel wheel{1ms, aloe::core::Clock::now()};
             Tcp tcp{ip, wheel, {}};
@@ -904,7 +904,7 @@ namespace {
         RuntimeT<Device> runtime{
             {.shard = {}, .threads = {}, .thread_hook = aloe::ethdev::register_thread},
             device,
-            aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24},
+            aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24, .arp_learning = true},
             aloe::tcp::TcpConfig{}
         };
         runtime.start();
@@ -938,7 +938,7 @@ namespace {
         RuntimeT<Device> runtime{
             {.shard = {}, .threads = {}, .thread_hook = aloe::ethdev::register_thread},
             device,
-            aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24},
+            aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24, .arp_learning = true},
             aloe::tcp::TcpConfig{}
         };
         runtime.start();
@@ -1072,8 +1072,8 @@ namespace {
             : queue_{
                   port, 0, 64, shard_counters_
         },
-              ip_{queue_, {.address = stack_ip, .prefix = 24}}, wheel_{1ms, aloe::core::Clock::now()},
-              tcp_{ip_, wheel_, {}}, burst_(Port::max_burst) {
+              ip_{queue_, {.address = stack_ip, .prefix = 24, .arp_learning = true}},
+              wheel_{1ms, aloe::core::Clock::now()}, tcp_{ip_, wheel_, {}}, burst_(Port::max_burst) {
             if (listen) {
                 EXPECT_TRUE(tcp_.listen(echo_port).has_value()) << "the stack's listen on " << echo_port;
             } else {
@@ -1529,8 +1529,8 @@ namespace {
             : queue_{
                   device, 0, 64, shard_counters_
         },
-              ip_{queue_, {.address = stack_ip, .prefix = 24}}, wheel_{1ms, aloe::core::Clock::now()},
-              tcp_{ip_, wheel_, {}}, burst_(Port::max_burst) {
+              ip_{queue_, {.address = stack_ip, .prefix = 24, .arp_learning = true}},
+              wheel_{1ms, aloe::core::Clock::now()}, tcp_{ip_, wheel_, {}}, burst_(Port::max_burst) {
             EXPECT_TRUE(tcp_.listen(echo_port).has_value()) << "the stack's listen on " << echo_port;
         }
 

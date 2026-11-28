@@ -8,6 +8,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Net
         test_net_icmp.cpp
         test_net_send.cpp
         test_net_prebuild.cpp
+        test_net_static.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Net
         PRIVATE

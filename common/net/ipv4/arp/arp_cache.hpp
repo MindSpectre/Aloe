@@ -8,6 +8,8 @@
 #include <optional>
 #include <vector>
 
+#include <arp_resolution.hpp>
+
 namespace aloe::net {
 
     struct ArpCacheConfig {
@@ -15,12 +17,22 @@ namespace aloe::net {
         core::Duration reachable = std::chrono::seconds{60};   ///< A confirmed MAC is used without a refresh this long.
         core::Duration expire    = std::chrono::seconds{120};  ///< After this, the address is unresolved again.
         core::Duration request_interval = std::chrono::seconds{1};  ///< At most one request per entry per interval.
+        /// Resolve on the wire and keep what is learned. Off, the learned table is neither allocated nor read, the
+        /// settings above are not checked, and only the static entries resolve. The brick passes
+        /// `Ipv4Config::arp_learning`, which is off by default there.
+        bool learning                   = true;
     };
 
     /**
-     * @brief The per-shard table of IPv4 address to MAC, aged lazily against the stamp the caller passes.
+     * @brief The per-shard table of IPv4 address to MAC: the static entries, then what is learned on the wire, aged
+     * lazily against the stamp the caller passes.
      *
-     * A fixed table: open addressing with linear probing bounded to `probe_window` slots from a
+     * The static entries come from the configuration and are frozen for the cache's life: an array searched first, in
+     * a row, since a handful of addresses are compared faster than any table is hashed. A static entry answers every
+     * lookup with its MAC, asks for no request, never ages and never moves the generation; `learn` leaves it alone.
+     * With learning off nothing else is kept: a lookup of any other address answers nothing and asks for no request.
+     *
+     * The learned table is fixed: open addressing with linear probing bounded to `probe_window` slots from a
      * multiplicative hash of the address. A slot is free or occupied and never goes back to free, so
      * probe chains stay intact without tombstones. A new entry takes the first free slot in its
      * window, else the first expired one, else an incomplete one whose request is at least
@@ -39,41 +51,50 @@ namespace aloe::net {
         static constexpr std::size_t probe_window = 8;
 
         struct Lookup {
-            std::optional<wire::MacAddress> mac = std::nullopt;  ///< Present while the entry is reachable or stale.
+            std::optional<wire::MacAddress> mac = std::nullopt;  ///< Present for a static, reachable or stale entry.
             bool send_request                   = false;         ///< A request is due now; its stamp has been recorded.
+            bool permanent = false;  ///< A static entry: it never ages, and a template built from it never goes stale.
 
             friend constexpr bool operator==(const Lookup&, const Lookup&) noexcept = default;
         };
 
-        /// Throws std::invalid_argument for a capacity that is not a power of two of at least `probe_window`,
-        /// a non-positive duration, or `reachable` not below `expire`.
-        explicit ArpCache(const ArpCacheConfig& config);
+        /// With learning on, throws std::invalid_argument for a capacity that is not a power of two of at least
+        /// `probe_window`, a non-positive duration, or `reachable` not below `expire`. `static_entries` are taken as
+        /// the brick validated them (`Ipv4Config::static_arp`): unicast neighbours, each listed once, at unicast MACs.
+        explicit ArpCache(const ArpCacheConfig& config, std::vector<ArpResolution> static_entries = {});
         ArpCache(const ArpCache&)            = delete;
         ArpCache& operator=(const ArpCache&) = delete;
         ArpCache(ArpCache&&)                 = delete;
         ArpCache& operator=(ArpCache&&)      = delete;
         ~ArpCache()                          = default;
 
-        /// Inserts an incomplete entry for an absent address.
+        /// A static entry's MAC, permanent; with learning off nothing else. With learning on, inserts an incomplete
+        /// entry for an absent address.
         [[nodiscard]] Lookup lookup(wire::Ipv4Address address, core::TimePoint now) noexcept;
-        /// Sets the entry reachable at `now`, inserting it if absent.
+        /// Sets the learned entry reachable at `now`, inserting it if absent; nothing with learning off or for a static
+        /// address.
         void learn(wire::Ipv4Address address, wire::MacAddress mac, core::TimePoint now) noexcept;
-        /// Any entry for the address, incomplete or expired included.
+        /// Any learned entry for the address, incomplete or expired included; a static one is not counted.
         [[nodiscard]] bool contains(wire::Ipv4Address address) const noexcept;
-        /// The confirmation stamp of a reachable entry, expired or not; nothing for an absent or incomplete one.
+        /// The confirmation stamp of a reachable learned entry, expired or not; nothing for an absent, incomplete or
+        /// static one.
         [[nodiscard]] std::optional<core::TimePoint> confirmed(wire::Ipv4Address address) const noexcept;
+        /// Whether the address has a static entry.
+        [[nodiscard]] bool is_static(wire::Ipv4Address address) const noexcept;
 
-        /// Starts at zero; moves by one whenever an entry's MAC changes or goes: a `learn` of an address whose entry
-        /// was not reachable or held another MAC, a `lookup` that finds a reachable entry expired, and an insert that
-        /// evicts a reachable entry, expired or not.
+        /// Starts at zero; moves by one whenever a learned entry's MAC changes or goes: a `learn` of an address whose
+        /// entry was not reachable or held another MAC, a `lookup` that finds a reachable entry expired, and an insert
+        /// that evicts a reachable entry, expired or not. The static entries never move it.
         [[nodiscard]] std::uint64_t generation() const noexcept {
             return generation_;
         }
 
+        /// The learned entries held.
         [[nodiscard]] std::size_t size() const noexcept {
             return occupied_;
         }
 
+        /// The learned table's slots: none with learning off.
         [[nodiscard]] std::size_t capacity() const noexcept {
             return slots_.size();
         }
@@ -93,6 +114,7 @@ namespace aloe::net {
             std::optional<core::TimePoint> requested = std::nullopt;  ///< The last request; none yet when absent.
         };
 
+        [[nodiscard]] const ArpResolution* find_static(wire::Ipv4Address address) const noexcept;
         [[nodiscard]] std::size_t home(wire::Ipv4Address address) const noexcept;
         [[nodiscard]] const Entry* find(wire::Ipv4Address address) const noexcept;
         [[nodiscard]] Entry* find(wire::Ipv4Address address) noexcept;
@@ -104,7 +126,8 @@ namespace aloe::net {
         [[nodiscard]] bool request_due(Entry& entry, core::TimePoint now) const noexcept;
 
         ArpCacheConfig config_;
-        std::vector<Entry> slots_;
+        std::vector<ArpResolution> static_;  ///< Sized and filled at construction, never changed after.
+        std::vector<Entry> slots_;           ///< Empty with learning off.
         unsigned shift_;  ///< 32 minus log2(capacity): the high bits of the hash product pick the home slot.
         std::size_t occupied_     = 0;
         std::uint64_t generation_ = 0;

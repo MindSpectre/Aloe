@@ -36,14 +36,25 @@ namespace {
 
 }  // namespace
 
+// The venue's entry becomes static at both levels, and --arp-on-wire switches learning on with the lifetimes that keep
+// a refresh out of a measured run (the design, "Who changes, mechanically").
 TEST(StackConfig, ArpNeverGoesStaleDuringARun) {
     const aloe::benchmarks::PeerConfig peer{};
-    const aloe::net::Ipv4Config config = aloe::benchmarks::stack_ip_config(peer);
-    EXPECT_EQ(config.address, peer.stack_ip);
-    EXPECT_EQ(config.prefix, 24U);
-    EXPECT_GE(config.arp_reachable, std::chrono::hours{24})
+    const aloe::net::Ipv4Config fixed = aloe::benchmarks::stack_ip_config(peer, false);
+    EXPECT_EQ(fixed.address, peer.stack_ip);
+    EXPECT_EQ(fixed.prefix, 24U);
+    EXPECT_FALSE(fixed.arp_learning) << "nothing is resolved, so nothing ages";
+    ASSERT_EQ(fixed.static_arp.size(), 1U);
+    EXPECT_EQ(fixed.static_arp[0], (aloe::net::ArpResolution{.address = peer.peer_ip, .mac = peer.peer_mac}));
+
+    const aloe::net::Ipv4Config on_wire = aloe::benchmarks::stack_ip_config(peer, true);
+    EXPECT_EQ(on_wire.address, peer.stack_ip);
+    EXPECT_EQ(on_wire.prefix, 24U);
+    EXPECT_TRUE(on_wire.arp_learning);
+    EXPECT_TRUE(on_wire.static_arp.empty()) << "the venue is resolved on the wire";
+    EXPECT_GE(on_wire.arp_reachable, std::chrono::hours{24})
         << "a gapped run can last minutes; no refresh on the hot path";
-    EXPECT_GT(config.arp_expire, config.arp_reachable);
+    EXPECT_GT(on_wire.arp_expire, on_wire.arp_reachable);
 }
 
 TEST(StackConfig, ALoneOrderIsProbedNoEarlierThanTheRetransmissionTimeout) {
@@ -68,6 +79,11 @@ TEST(StackSanity, FailsOnEveryDropAndRefusal) {
         {&TcpCounters::dropped_no_slot,          "tcp.dropped_no_slot"         },
         {&TcpCounters::dropped_no_node,          "tcp.dropped_no_node"         },
         {&TcpCounters::dropped_table_full,       "tcp.dropped_table_full"      },
+        {&TcpCounters::dropped_no_route,         "tcp.dropped_no_route"        },
+        {&TcpCounters::dropped_reset_challenged, "tcp.dropped_reset_challenged"},
+        {&TcpCounters::dropped_syn_challenged,   "tcp.dropped_syn_challenged"  },
+        {&TcpCounters::dropped_old_ack,          "tcp.dropped_old_ack"         },
+        {&TcpCounters::handshakes_refused_mss,   "tcp.handshakes_refused_mss"  },
         {&TcpCounters::send_refused,             "tcp.send_refused"            },
         {&TcpCounters::commits_refused,          "tcp.commits_refused"         },
         {&TcpCounters::allocation_failures,      "tcp.allocation_failures"     },
@@ -101,22 +117,23 @@ TEST(StackSanity, FailsOnEveryDropAndRefusal) {
         EXPECT_NE(failure_for(counters, {}, {}).find(std::string{name} + "=1"), std::string::npos) << name;
     }
     const Counter<IpCounters> ip[] = {
-        {&IpCounters::transmit_refused,      "ip.transmit_refused"     },
-        {&IpCounters::dropped_short,         "ip.dropped_short"        },
-        {&IpCounters::dropped_not_for_us,    "ip.dropped_not_for_us"   },
-        {&IpCounters::dropped_ethertype,     "ip.dropped_ethertype"    },
-        {&IpCounters::dropped_arp_malformed, "ip.dropped_arp_malformed"},
-        {&IpCounters::dropped_arp_conflict,  "ip.dropped_arp_conflict" },
-        {&IpCounters::dropped_bad_header,    "ip.dropped_bad_header"   },
-        {&IpCounters::dropped_bad_checksum,  "ip.dropped_bad_checksum" },
-        {&IpCounters::dropped_fragment,      "ip.dropped_fragment"     },
-        {&IpCounters::dropped_protocol,      "ip.dropped_protocol"     },
-        {&IpCounters::dropped_icmp,          "ip.dropped_icmp"         },
-        {&IpCounters::dropped_martian,       "ip.dropped_martian"      },
-        {&IpCounters::dropped_tcp_broadcast, "ip.dropped_tcp_broadcast"},
-        {&IpCounters::send_no_route,         "ip.send_no_route"        },
-        {&IpCounters::send_oversized,        "ip.send_oversized"       },
-        {&IpCounters::send_refused,          "ip.send_refused"         },
+        {&IpCounters::transmit_refused,            "ip.transmit_refused"           },
+        {&IpCounters::dropped_short,               "ip.dropped_short"              },
+        {&IpCounters::dropped_not_for_us,          "ip.dropped_not_for_us"         },
+        {&IpCounters::dropped_ethertype,           "ip.dropped_ethertype"          },
+        {&IpCounters::dropped_arp_malformed,       "ip.dropped_arp_malformed"      },
+        {&IpCounters::dropped_arp_conflict,        "ip.dropped_arp_conflict"       },
+        {&IpCounters::dropped_arp_static_conflict, "ip.dropped_arp_static_conflict"},
+        {&IpCounters::dropped_bad_header,          "ip.dropped_bad_header"         },
+        {&IpCounters::dropped_bad_checksum,        "ip.dropped_bad_checksum"       },
+        {&IpCounters::dropped_fragment,            "ip.dropped_fragment"           },
+        {&IpCounters::dropped_protocol,            "ip.dropped_protocol"           },
+        {&IpCounters::dropped_icmp,                "ip.dropped_icmp"               },
+        {&IpCounters::dropped_martian,             "ip.dropped_martian"            },
+        {&IpCounters::dropped_tcp_broadcast,       "ip.dropped_tcp_broadcast"      },
+        {&IpCounters::send_no_route,               "ip.send_no_route"              },
+        {&IpCounters::send_oversized,              "ip.send_oversized"             },
+        {&IpCounters::send_refused,                "ip.send_refused"               },
     };
     for (const auto& [member, name] : ip) {
         IpCounters counters;

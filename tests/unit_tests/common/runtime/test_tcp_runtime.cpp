@@ -203,7 +203,7 @@ TEST_F(TcpRuntime, ZeroWindowReopeningIsAdvertisedInTheSameTick) {
                                               0,
                                               aloe::net::Ipv4Config{
                                                   .address = {10, 0, 0, 3},
-                                                    .prefix = 24
+                                                    .prefix = 24, .arp_learning = true
     },
                                               aloe::tcp::TcpConfig{.receive_segments = 1, .receive_window = 1460});
     tiny.stack().ip().learn(aloe::testing::harness_ip, aloe::testing::harness_mac, start);
@@ -260,7 +260,8 @@ TEST_F(TcpRuntime, ArpForwardedOnceToSiblings) {
     constexpr aloe::wire::MacAddress pair_mac{0x02, 0, 0, 0, 0, 0x44};
     constexpr aloe::wire::Ipv4Address pair_ip{10, 0, 0, 4};
     aloe::fabric::Port& pair = fabric_.add_port({.mac = pair_mac, .queues = 2, .pool_size = 128});
-    const aloe::net::Ipv4Config config{.address = pair_ip, .prefix = 24, .gateway = aloe::testing::gateway_ip};
+    const aloe::net::Ipv4Config config{
+        .address = pair_ip, .prefix = 24, .gateway = aloe::testing::gateway_ip, .arp_learning = true};
     Shard& first  = add_shard(pair, 0, config, aloe::tcp::TcpConfig{});
     Shard& second = add_shard(pair, 1, config, aloe::tcp::TcpConfig{});
     const std::array<aloe::runtime::ShardContext*, 1> for_first{&second.context()};

@@ -1,13 +1,17 @@
 // Answers ARP and ping on one queue of a DPDK port with a hand-written loop over the bricks, until interrupted.
 //
-//     ping_responder <port> <address>/<prefix> [<gateway>] [-- <EAL arguments...>]
+//     ping_responder <port> <address>/<prefix> [<gateway>] [--static <address>=<mac>]... [--learn-arp]
+//                    [-- <EAL arguments...>]
 //
-//     sudo ping_responder net_tap0 10.77.0.2/24 -- --vdev=net_tap0,iface=aloe0
+//     sudo ping_responder net_tap0 10.77.0.2/24 --learn-arp -- --vdev=net_tap0,iface=aloe0
 //         then, in another shell: ip addr add 10.77.0.1/24 dev aloe0 && ip link set aloe0 up && ping 10.77.0.2
-//     ping_responder 0000:03:00.0 192.168.1.50/24 192.168.1.1 -- -l 0 --file-prefix ping    # a real card
+//     ping_responder 0000:03:00.0 192.168.1.50/24 192.168.1.1 --static 192.168.1.1=00:11:22:33:44:55
+//         -- -l 0 --file-prefix ping    # a real card, its router known from the static table
 //
-// No runtime and no thread but this one: the loop is the one docs/architecture/net.md leads with. With a
-// gateway given, its MAC is asked for at start, so the first off-subnet send would find it.
+// No runtime and no thread but this one: the loop is the one docs/architecture/net.md leads with. The brick knows
+// its neighbours from `--static` alone unless `--learn-arp` lets it resolve them on the wire, as a tap interface,
+// whose MAC is new on every run, needs; without learning a gateway needs a static entry. With a gateway given and
+// learning on, its MAC is asked for at start, so the first off-subnet send would find it.
 
 #include <aloe/core>
 #include <aloe/ethdev>
@@ -43,6 +47,22 @@ namespace {
         std::vector<std::string> eal;
     };
 
+    /// `--static`'s value, `<address>=<mac>`: a neighbour the brick knows without ARP.
+    [[nodiscard]] std::optional<aloe::net::ArpResolution> parse_static(const std::string_view text) {
+        const std::size_t equals = text.find('=');
+        if (equals == std::string_view::npos) {
+            return std::nullopt;
+        }
+        const auto address = aloe::wire::Ipv4Address::parse(text.substr(0, equals));
+        const auto mac     = aloe::wire::MacAddress::parse(text.substr(equals + 1));
+        if (!address || !mac) {
+            return std::nullopt;
+        }
+        return aloe::net::ArpResolution{.address = *address, .mac = *mac};
+    }
+
+    /// The arguments in their order: the port and the address, a gateway when the next one is not an option, then
+    /// `--static` and `--learn-arp` until `--`. Anything out of place is a usage error.
     [[nodiscard]] std::optional<Arguments> parse(const std::span<char*> argv) {
         if (argv.size() < 3) {
             return std::nullopt;
@@ -66,13 +86,29 @@ namespace {
         arguments.config.prefix  = static_cast<std::uint8_t>(prefix);
 
         std::size_t next = 3;
-        if (next < argv.size() && std::string_view{argv[next]} != "--") {
+        if (next < argv.size() && !std::string_view{argv[next]}.starts_with("--")) {
             const auto gateway = aloe::wire::Ipv4Address::parse(argv[next]);
             if (!gateway) {
                 return std::nullopt;
             }
             arguments.config.gateway = *gateway;
             ++next;
+        }
+        while (next < argv.size() && std::string_view{argv[next]} != "--") {
+            const std::string_view option{argv[next]};
+            if (option == "--static" && next + 1 < argv.size()) {
+                const auto entry = parse_static(argv[next + 1]);
+                if (!entry) {
+                    return std::nullopt;
+                }
+                arguments.config.static_arp.push_back(*entry);
+                next += 2;
+            } else if (option == "--learn-arp" && !arguments.config.arp_learning) {
+                arguments.config.arp_learning = true;  // once: a second is a usage error
+                ++next;
+            } else {
+                return std::nullopt;
+            }
         }
         arguments.eal.emplace_back("ping_responder");
         if (next < argv.size()) {
@@ -94,7 +130,9 @@ namespace {
 int main(int argc, char** argv) {
     const auto arguments = parse(std::span<char*>{argv, static_cast<std::size_t>(argc)});
     if (!arguments) {
-        std::println(stderr, "usage: ping_responder <port> <address>/<prefix> [<gateway>] [-- <EAL arguments...>]");
+        std::println(stderr,
+                     "usage: ping_responder <port> <address>/<prefix> [<gateway>] [--static <address>=<mac>]... "
+                     "[--learn-arp] [-- <EAL arguments...>]");
         return EXIT_FAILURE;
     }
     std::signal(SIGINT, on_signal);

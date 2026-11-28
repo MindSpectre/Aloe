@@ -2,16 +2,18 @@
 // per queue, one task per connection. Compare with examples/tcp_echo for the loop it wraps.
 //
 //     tcp_echo_tasks <port> <address>/<prefix> [<gateway>] (--listen <port> | --connect <host>:<port>)
-//                    [-- <EAL arguments...>]
+//                    [--static <address>=<mac>]... [--learn-arp] [-- <EAL arguments...>]
 //
-//     sudo tcp_echo_tasks net_tap0 10.78.0.2/24 --listen 7 -- --vdev=net_tap0,iface=aloe0
+//     sudo tcp_echo_tasks net_tap0 10.78.0.2/24 --listen 7 --learn-arp -- --vdev=net_tap0,iface=aloe0
 //         then: ip addr add 10.78.0.1/24 dev aloe0 && ip link set aloe0 up && nc 10.78.0.2 7
-//     sudo tcp_echo_tasks net_tap0 10.78.0.2/24 --connect 10.78.0.1:7 -- --vdev=net_tap0,iface=aloe0
+//     sudo tcp_echo_tasks net_tap0 10.78.0.2/24 --connect 10.78.0.1:7 --learn-arp -- --vdev=net_tap0,iface=aloe0
 //         with a kernel echo server and the interface set up as for tcp_echo: sends a line, prints the echo, closes.
 //
-// The port opens with one queue, as `ethdev::PortConfig` does by default; a program that opens more gets a shard
-// on each, and `runtime::TcpStack` then lets the IP brick learn unsolicited ARP replies so queue 0 can forward
-// what its siblings asked for. The client runs on shard 0, whose queue a card with steering off delivers to.
+// The neighbours are tcp_echo's: `--static` alone, unless `--learn-arp` resolves them on the wire, as the tap lines
+// must. The port opens with one queue, as `ethdev::PortConfig` does by default; a program that opens more gets a
+// shard on each, and with learning on `runtime::TcpStack` then lets the IP brick learn unsolicited ARP replies so
+// queue 0 can forward what its siblings asked for. The client runs on shard 0, whose queue a card with steering off
+// delivers to.
 
 #include <aloe/ethdev>
 #include <aloe/net>
@@ -53,8 +55,8 @@ namespace {
         std::vector<std::string> eal;
     };
 
-    // `parse_port` and `parse` are tcp_echo's, with this program's name in the EAL arguments: each example reads
-    // on its own.
+    // `parse_port`, `parse_static` and `parse` are tcp_echo's, with this program's name in the EAL arguments: each
+    // example reads on its own.
 
     [[nodiscard]] std::optional<std::uint16_t> parse_port(const std::string_view text) {
         unsigned value = 0;
@@ -65,8 +67,24 @@ namespace {
         return static_cast<std::uint16_t>(value);
     }
 
+    /// `--static`'s value, `<address>=<mac>`: a neighbour the brick knows without ARP.
+    [[nodiscard]] std::optional<aloe::net::ArpResolution> parse_static(const std::string_view text) {
+        const std::size_t equals = text.find('=');
+        if (equals == std::string_view::npos) {
+            return std::nullopt;
+        }
+        const auto address = aloe::wire::Ipv4Address::parse(text.substr(0, equals));
+        const auto mac     = aloe::wire::MacAddress::parse(text.substr(equals + 1));
+        if (!address || !mac) {
+            return std::nullopt;
+        }
+        return aloe::net::ArpResolution{.address = *address, .mac = *mac};
+    }
+
+    /// The arguments in their order: the port and the address, a gateway when the next one is not an option, the role
+    /// and its target, then `--static` and `--learn-arp` until `--`. Anything out of place is a usage error.
     [[nodiscard]] std::optional<Arguments> parse(const std::span<char*> argv) {
-        if (argv.size() < 4) {
+        if (argv.size() < 3) {
             return std::nullopt;
         }
         Arguments arguments;
@@ -86,7 +104,7 @@ namespace {
         arguments.ip.address = *address;
         arguments.ip.prefix  = static_cast<std::uint8_t>(prefix);
         std::size_t next     = 3;
-        if (!std::string_view{argv[next]}.starts_with("--")) {
+        if (next < argv.size() && !std::string_view{argv[next]}.starts_with("--")) {
             const auto gateway = aloe::wire::Ipv4Address::parse(argv[next]);
             if (!gateway) {
                 return std::nullopt;
@@ -119,6 +137,22 @@ namespace {
             return std::nullopt;
         }
         next += 2;
+        while (next < argv.size() && std::string_view{argv[next]} != "--") {
+            const std::string_view option{argv[next]};
+            if (option == "--static" && next + 1 < argv.size()) {
+                const auto entry = parse_static(argv[next + 1]);
+                if (!entry) {
+                    return std::nullopt;
+                }
+                arguments.ip.static_arp.push_back(*entry);
+                next += 2;
+            } else if (option == "--learn-arp" && !arguments.ip.arp_learning) {
+                arguments.ip.arp_learning = true;  // once: a second is a usage error
+                ++next;
+            } else {
+                return std::nullopt;
+            }
+        }
         arguments.eal.emplace_back("tcp_echo_tasks");
         if (next < argv.size()) {
             if (std::string_view{argv[next]} != "--") {
@@ -210,7 +244,7 @@ int main(int argc, char** argv) {
     if (!arguments) {
         std::println(stderr,
                      "usage: tcp_echo_tasks <port> <address>/<prefix> [<gateway>] (--listen <port> | --connect "
-                     "<host>:<port>) [-- <EAL arguments...>]");
+                     "<host>:<port>) [--static <address>=<mac>]... [--learn-arp] [-- <EAL arguments...>]");
         return EXIT_FAILURE;
     }
     const sigset_t signals = block_termination_signals();

@@ -29,9 +29,10 @@ namespace aloe::testing {
     inline constexpr wire::Ipv4Address gateway_ip{10, 0, 0, 254};
     inline constexpr wire::Ipv4Address far_ip{192, 168, 7, 7};  ///< Off the subnet: reached through the gateway.
 
-    /// The brick's config in the fixture: a /24 with a gateway.
+    /// The brick's config in the fixture: a /24 with a gateway, resolving its neighbours on the wire, so a test seeds
+    /// them with `learn` or answers the brick's requests.
     [[nodiscard]] inline net::Ipv4Config stack_config() {
-        return {.address = stack_ip, .prefix = 24, .gateway = gateway_ip};
+        return {.address = stack_ip, .prefix = 24, .gateway = gateway_ip, .arp_learning = true};
     }
 
     /// The parameter's name inside a test's name.
@@ -113,12 +114,21 @@ namespace aloe::testing {
 
         static constexpr std::size_t ring_capacity = 16;
 
+        NetFixture()
+            : NetFixture{stack_config()} {
+        }
+
+        /// The brick built with `config` instead of `stack_config()`.
+        explicit NetFixture(const net::Ipv4Config& config)
+            : ip_{queue_, config} {
+        }
+
         fabric::Fabric fabric_;
         fabric::Port& harness_ = fabric_.add_port({.mac = harness_mac, .pool_size = 64, .offloads = GetParam()});
         fabric::Port& port_    = fabric_.add_port({.mac = stack_mac, .pool_size = 64, .offloads = GetParam()});
         loop::ShardQueueCounters counters_;
         loop::ShardQueue<fabric::Port> queue_{port_, 0, ring_capacity, counters_};
-        Ipv4 ip_{queue_, stack_config()};
+        Ipv4 ip_;
         TimePoint now_{};
         std::vector<Packet> burst_ = std::vector<Packet>(64);
         std::size_t last_burst_ = 0;  ///< How many packets the last `inject`, `local` or `process_pending` handed over.

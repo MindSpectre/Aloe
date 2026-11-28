@@ -284,13 +284,15 @@ TEST_P(NetReceive, ABadConfigThrows) {
                      queue_, {.address = stack_ip, .burst_capacity = 0}
     }),
                  std::invalid_argument);
+    // The learned table's settings are read, and refused, only with learning on (the design's configuration table:
+    // "read only with learning on", refused "as today, with learning on").
     EXPECT_THROW((Ipv4{
-                     queue_, {.address = stack_ip, .arp_capacity = 100}
+                     queue_, {.address = stack_ip, .arp_learning = true, .arp_capacity = 100}
     }),
                  std::invalid_argument)
         << "ArpCache's check reaches the caller";
     EXPECT_THROW((Ipv4{
-                     queue_, {.address = stack_ip, .arp_reachable = 2min, .arp_expire = 1min}
+                     queue_, {.address = stack_ip, .arp_learning = true, .arp_reachable = 2min, .arp_expire = 1min}
     }),
                  std::invalid_argument);
     EXPECT_NO_THROW((Ipv4{

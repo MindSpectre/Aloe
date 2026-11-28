@@ -143,12 +143,16 @@ TEST(TcpSteering, AllConnectionsStayOnTheirShard) {
         .shard = {.idle = aloe::runtime::IdlePolicy::Yield, .yield_after = 10}
     };
     Runtime server{
-        config, server_port, aloe::net::Ipv4Config{.address = server_ip, .prefix = 24},
-          aloe::tcp::TcpConfig{}
+        config,
+        server_port,
+        aloe::net::Ipv4Config{.address = server_ip, .prefix = 24, .arp_learning = true},
+        aloe::tcp::TcpConfig{}
     };
     Runtime client_runtime{
-        config, client_port, aloe::net::Ipv4Config{.address = client_ip, .prefix = 24},
-          aloe::tcp::TcpConfig{}
+        config,
+        client_port,
+        aloe::net::Ipv4Config{.address = client_ip, .prefix = 24, .arp_learning = true},
+        aloe::tcp::TcpConfig{}
     };
     for (std::uint16_t index = 0; index < queues; ++index) {
         server.shard(index).stack().ip().learn(client_ip, client_mac, aloe::core::Clock::now());
@@ -194,7 +198,7 @@ TEST(TcpSteering, GatewayKnownOnlyByQueueZero) {
     Runtime server{
         config,
         server_port,
-        aloe::net::Ipv4Config{.address = server_ip, .prefix = 24, .gateway = gateway_ip},
+        aloe::net::Ipv4Config{.address = server_ip, .prefix = 24, .gateway = gateway_ip, .arp_learning = true},
         aloe::tcp::TcpConfig{}
     };
     // The gateway, scripted on this thread: answers the ARP request (which lands on queue 0 of the server, being
@@ -271,8 +275,10 @@ TEST(TcpSteering, StopRacesArpForward) {
             .shard = {.idle = aloe::runtime::IdlePolicy::Yield, .yield_after = 1}
         };
         Runtime server{
-            config, server_port, aloe::net::Ipv4Config{.address = server_ip, .prefix = 24},
-              aloe::tcp::TcpConfig{}
+            config,
+            server_port,
+            aloe::net::Ipv4Config{.address = server_ip, .prefix = 24, .arp_learning = true},
+            aloe::tcp::TcpConfig{}
         };
         server.start();
         std::jthread replies{[&] {
