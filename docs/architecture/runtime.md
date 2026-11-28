@@ -204,7 +204,11 @@ aloe::runtime::task<void> serve(Stack::StreamsType* streams, aloe::runtime::Sche
 
 aloe::runtime::Runtime<aloe::ethdev::Port, Stack> runtime{
     {.shard = {}, .threads = {}, .thread_hook = aloe::ethdev::register_thread}, port,
-    aloe::net::Ipv4Config{.address = {10, 0, 0, 2}, .prefix = 24, .gateway = aloe::wire::Ipv4Address{10, 0, 0, 1}},
+    aloe::net::Ipv4Config{.address    = {10, 0, 0, 2},
+                          .prefix     = 24,
+                          .gateway    = aloe::wire::Ipv4Address{10, 0, 0, 1},
+                          // the router, known without ARP: learning stays off, the default
+                          .static_arp = {{.address = {10, 0, 0, 1}, .mac = router_mac}}},
     aloe::tcp::TcpConfig{}};
 runtime.start();
 for (std::uint16_t index = 0; index < runtime.shard_count(); ++index) {

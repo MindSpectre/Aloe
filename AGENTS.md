@@ -10,10 +10,11 @@ foundation (`core`, with `execution` and `log` beside it), the protocol formats
 (`wire`), the device layer (the packet and device concepts and the DPDK backend `ethdev`), the
 fixtures (`fabric`, an in-memory device backend, `frames`, for tests, and `scenario`, a runner for
 packetdrill-style scripts), the loop bricks (`loop`), the shard runtime (`runtime`), the IP base
-(`net`: Ethernet, ARP, IPv4 and ICMP echo, the first protocol brick), the stream contract (`stream`) and
-TCP (`tcp`), reliable on the send side and recovering from loss by RACK-TLP over the peer's SACK blocks, with PRR
-and the undo, holding what arrives above a gap as packets on the receive side, with SACK, window scaling and an
-optional delayed ACK, and with its senders in the runtime. The stack is built in phases: shard runtime, minimal TCP,
+(`net`: Ethernet, ARP, IPv4 and ICMP echo, the first protocol brick, with neighbours from a static table unless
+learning is switched on), the stream contract (`stream`) and TCP (`tcp`), reliable on the send side and recovering
+from loss by RACK-TLP over the peer's SACK blocks, with PRR and the undo, holding what arrives above a gap as packets
+on the receive side, with SACK, window scaling and an optional delayed ACK, hardened by keyed initial sequence numbers
+and RFC 5961's checks, and with its senders in the runtime. The stack is built in phases: shard runtime, minimal TCP,
 full TCP, TLS, HTTP/1.1 with WebSocket.
 
 ## Build and test
@@ -440,8 +441,8 @@ basenames are unique across modules: `packet.hpp` is the concept,
   (`Aloe.Tests.Unit.Core.Hash`); there is no `tests/unit_tests/common/core/CMakeLists.txt`, while `tcp` and `net` have
   CMake files of their own.
 - `Aloe.Tests.Integration.Benchmarks.Levels` fails about once in fifteen runs on a loaded machine, in
-  `Levels.RuntimeTickCrossCore` or `RuntimeTickFullSegment` with `pure_acks_seen` 1 where 0 is expected
-  (`test_levels.cpp:192`): the runtime's tick round sends one bare ACK when the shard thread is starved. Under asan,
+  `Levels.RuntimeTickCrossCore` or `RuntimeTickFullSegment` with `pure_acks_seen` 1 where 0 is expected: the
+  runtime's tick round sends one bare ACK when the shard thread is starved. Under asan,
   side by side, it failed 11 times in 150 on `main` at 7dae733 and 14 on the hardening's branch; a change that leaves
   the runtime's tick alone does not cause it, so re-run the test before suspecting the change.
 

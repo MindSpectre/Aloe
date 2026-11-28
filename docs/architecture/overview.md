@@ -64,7 +64,7 @@ aloe::loop::ShardQueue<aloe::ethdev::Port> queue{port, 0, 512, counters};
 aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, Clock::now()};
 Ip ip{queue, ip_config};                                              // IPv4 with its ARP and ICMP echo
 Tcp tcp{ip, wheel, config};                                           // depends on the layer below, on nothing above
-Tcp::ConnectionType* session = tcp.connect(exchange, Clock::now()).value();  // the SYN is queued, or waits for ARP
+Tcp::ConnectionType* session = tcp.connect(exchange, Clock::now()).value();  // queued; with learning, may wait for ARP
 
 for (;;) {
     const auto now      = Clock::now();

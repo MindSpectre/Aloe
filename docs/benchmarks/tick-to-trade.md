@@ -978,8 +978,8 @@ of that configuration alone. The step's later parts gate against the same files.
 
 ## What comes next
 
-The second part adds loads on the critical shard, venue responses landing inside the window, idle connections,
-a burst ahead of the tick, a publishing stream and ARP refreshes, and `--isolate`, which moves them to a second
-shard on a core of its own. Loaded against clean is what co-location costs the tail and isolated against clean
-what a second shard recovers; the remainder, less the hop, is the most a shard spanning two cores could win, and
-those numbers decide whether one is built.
+The second part adds loads on the critical shard, venue responses landing inside the window, idle connections, a burst
+ahead of the tick, a publishing stream and, under `--arp-on-wire`, where the venue is learned rather than static, ARP
+refreshes, and `--isolate`, which moves them to a second shard on a core of its own. Loaded against clean is what
+co-location costs the tail and isolated against clean what a second shard recovers; the remainder, less the hop, is the
+most a shard spanning two cores could win, and those numbers decide whether one is built.

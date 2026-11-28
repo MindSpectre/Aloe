@@ -127,16 +127,16 @@ does; the scenario scripts are Aloe's own. The steps, in order:
    sent or was sent long ago is challenged and its segment dropped whole, and every such answer is limited per
    connection to one in 500 ms. The edge cases the phase 1 reviews left open are closed: a RST for a bad ACK in
    SYN-RECEIVED, a peer whose MSS is below a floor of 48 refused, the acknowledgement of a segment the window refuses
-   read, a bare FIN taken at a closed window, and resends into the peer's closed window that no longer end a
-   connection the peer still answers. In place of ARP-reply rate limiting, which would protect no entry in use, the IP
-   brick knows its neighbours from a static table that nothing changes, and resolves nothing on the wire unless the
-   configuration switches learning on; a learned table is fixed, no frame creates an entry in it, no address takes
-   another's place, and every entry expires. On the tick-to-trade benchmark the 64-byte tick at level 0, cross-core,
-   kept its p50 against `main` at the step's base, 490 ns both; its p99 came out 50 ns higher in the headline runs and
-   level in the breakdown and single-configuration runs, as its page records. The tap suite's run waits for a machine
-   with root. Three pull requests remain: the life cycle (TIME_WAIT, what `release()` means during a close, the
-   FIN-WAIT-2 timer, keepalive), ICMP with path MTU, and the phase's close. The public API freezes as v1 at the end of
-   this step.
+   read, a bare FIN taken at a closed window, and resends into the peer's closed window that no longer end a connection
+   the peer still answers. In place of ARP-reply rate limiting, which would protect no entry in use, the IP brick knows
+   its neighbours from a static table that nothing changes, and resolves nothing on the wire unless the configuration
+   switches learning on; a learned table is fixed, no frame creates an entry in it, no address takes another's place,
+   and every entry expires. On the tick-to-trade benchmark the 64-byte tick at level 0, cross-core, kept its p50 against
+   `main` at the step's base, 490 ns both; its p99 came out 50 ns higher in the headline runs and level in the breakdown
+   and single-configuration runs, as its page records. The net and TCP tap suites both changed, and their runs wait for
+   a machine with root. Three pull requests remain: the life cycle (TIME_WAIT, what `release()` means during a close,
+   the FIN-WAIT-2 timer, keepalive), ICMP with path MTU, and the phase's close. The public API freezes as v1 at the end
+   of this step.
 
 Left for after this phase, because a client does not need them yet: CUBIC and pacing, since orders are small;
 SYN cookies and a keyed flow-table hash, which defend a server that accepts connections from strangers.

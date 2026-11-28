@@ -233,7 +233,7 @@ sudo ./build/debug/examples/tcp_echo/Aloe.Examples.TcpEcho net_tap0 10.78.0.2/24
 ip addr add 10.78.0.1/24 dev aloe0 && ip link set aloe0 up && nc 10.78.0.2 7     # in another shell, as root
 
 sudo ./build/debug/examples/tcp_echo_tasks/Aloe.Examples.TcpEchoTasks net_tap0 10.78.0.2/24 --connect 10.78.0.1:7007 \
-    --learn-arp -- --vdev=net_tap0,iface=aloe0                                     # against a kernel echo server on port 7007
+    --learn-arp -- --vdev=net_tap0,iface=aloe0                # against a kernel echo server on port 7007
 ```
 
 The brick knows its neighbours from the `--static` entries alone unless `--learn-arp` lets it resolve them on the
@@ -427,7 +427,7 @@ cannot run. Every shard gets the same config.
 | `unresolved_retry`                  | 10 ms        | The poll interval while a SYN, SYN-ACK or FIN waits for ARP; not a try.                                                                                              | not positive                                                                                                          |
 | `unresolved_polls`                  | 300          | Polls before `Unresolved`: 3 s by default, the bound Linux's three ARP probes give.                                                                                  | zero                                                                                                                  |
 | `challenge_ack_interval`            | 500 ms       | The least time between two answers through the limiter, per connection; zero sends every one. Linux's `tcp_invalid_ratelimit`.                                       | negative                                                                                                              |
-| `min_peer_mss`                      | 48           | The least MSS a peer may state, or 536 assumed without the option: below it a handshake is refused, passive or active.                                               | below 48, or above the stack's MSS                                                                                    |
+| `min_peer_mss`                      | 48           | The least MSS a peer may have, its option's value or 536 without one: below it a handshake is refused, passive or active.                                            | below 48, or above the stack's MSS                                                                                    |
 
 The constructor also refuses an MTU that leaves no room for a TCP header. The bounds on `rto_initial`, `rto_max` and
 `user_timeout` keep every deadline within a quarter of `core::Duration`'s range, so no arithmetic on the timer path can
@@ -685,8 +685,8 @@ answered in the SYN-ACK only when the peer's SYN offered them, and on when both 
 of a connection that negotiated them carries `nop, nop, TS`, 12 bytes, the alignment Linux uses; the SYN and SYN-ACK
 carry it beside the other options, in the layout the note on the handshake's options gives. The value is the
 milliseconds of the stack's stamp plus an offset from the keyed hash of the connection's flow (see the next note), so
-one flow keeps one offset, and its timestamps stay monotonic across its connections, for as long as the stack lives.
-The echo is `TS.Recent`, kept by RFC 7323's rule: a segment replaces it when its value is not older and it starts at or
+one flow keeps one offset, and its timestamps stay monotonic across its connections, for as long as the stack lives. The
+echo is `TS.Recent`, kept by RFC 7323's rule: a segment replaces it when its value is not older and it starts at or
 before `Last.ACK.sent`, the acknowledgement the connection last sent, which the connection tracks as Linux tracks
 `rcv_wup`, and only once it has passed every check up to the bounds on its ACK, as Linux's `tcp_ack` replaces
 `ts_recent` after its tests for an ACK too old and of unsent data: a forged segment inside the window that could set
@@ -694,11 +694,10 @@ before `Last.ACK.sent`, the acknowledgement the connection last sent, which the 
 `tcp_validate_incoming`: a segment other than a RST whose value is older than `TS.Recent`, in the option's signed 32-bit
 arithmetic, is dropped, answered at once and counted as `dropped_paws`, unless `TS.Recent` is older than 24 days; the
 answer goes through the limiter when the segment occupies no sequence space or carries a SYN, and a SYN that fails PAWS
-past `SynReceived` is challenged and counted as a SYN (see the note on the first checks). A
-segment without the option on a connection that negotiated it is accepted, as Linux accepts it, where RFC 7323 would
-have it dropped. `mss()` is the payload a segment carries, the negotiated MSS less the option, 1448 at an MSS of 1460,
-while the SYN's MSS option keeps the full value as RFC 6691 prescribes: with timestamps a 1460-byte payload no longer
-fits a 1500-byte MTU.
+past `SynReceived` is challenged and counted as a SYN (see the note on the first checks). A segment without the option
+on a connection that negotiated it is accepted, as Linux accepts it, where RFC 7323 would have it dropped. `mss()` is
+the payload a segment carries, the negotiated MSS less the option, 1448 at an MSS of 1460, while the SYN's MSS option
+keeps the full value as RFC 6691 prescribes: with timestamps a 1460-byte payload no longer fits a 1500-byte MTU.
 
 **Initial sequence numbers from a keyed hash.** A connection's initial sequence number and its timestamp offset come
 from one SipHash-2-4 (`core::siphash24`) of its flow, the local address, the remote address, the local port and the
@@ -1047,10 +1046,10 @@ rest back.
 
 The first checks add little to that path: an in-order segment makes the comparison that tells *no room* from in order,
 which the edge test already makes, and its RST and SYN tests are flag tests; an in-order ACK adds one addition, to the
-sum of SND.UNA's advances, since the bound on an old ACK is read only for an ACK below SND.UNA; a send adds nothing;
-and the limiter is read only by the answers to a segment that failed a check. Measured against `main` at its base, the
+sum of SND.UNA's advances, since the bound on an old ACK is read only for an ACK below SND.UNA; a send adds nothing; and
+the limiter is read only by the answers to a segment that failed a check. Measured against `main` at its base, the
 64-byte tick at level 0, cross-core, is 490 ns at p50 on both sides; at p99 the headline runs gave 770 against 720 ns,
-which neither the breakdown runs, where the `tcp` leg is 140 ns on both sides, nor runs of that configuration alone
+which neither the breakdown runs, where the `tcp` leg is 240 against 250 ns at p99, nor runs of that configuration alone
 showed. The benchmark page records the runs.
 
 **A silent peer holds what the caps allow.** A peer that never acknowledges keeps a connection's entries, and
@@ -1138,11 +1137,10 @@ the reconstructed edge left by up to a unit.
 inside the window goes on through the first checks. A RST on it is challenged unless it stands at one of the positions
 that reset, and a SYN is challenged; its ACK field must pass the bound on old ACKs, and then it and the window are
 processed like any other, so a hole in one direction does not stall the other. Its payload goes on a second chain of the
-shard's
-held-segment nodes, the reassembly queue, sorted by sequence, each node the packet with the offset, length and first
-sequence of what is kept, counted in `out_of_order_held`. Three rules keep the ranges disjoint without a copy, the first
-two Linux's (`tcp_data_queue_ofo`): a newcomer that held data covers entirely is a duplicate, dropped and counted in
-`dropped_duplicate`; a held node the newcomer covers entirely is released and the newcomer takes its place; where the
+shard's held-segment nodes, the reassembly queue, sorted by sequence, each node the packet with the offset, length and
+first sequence of what is kept, counted in `out_of_order_held`. Three rules keep the ranges disjoint without a copy, the
+first two Linux's (`tcp_data_queue_ofo`): a newcomer that held data covers entirely is a duplicate, dropped and counted
+in `dropped_duplicate`; a held node the newcomer covers entirely is released and the newcomer takes its place; where the
 two overlap in part the held bytes win, and the newcomer loses its front up to the end of the node before it and its
 tail from the start of the node after it, by moving its offset, its length and its first sequence. A segment at or past
 the end of the chain's last node, the run after a loss, is appended without a walk, as Linux keeps `ooo_last_skb`; any
@@ -1358,8 +1356,9 @@ it, is refused as out of the window and its answer limited, where Linux accepts 
 brick makes no deployment or latency claim yet: the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a
 recorded baseline; its reruns for loss recovery with SACK found the 64-byte tick 40 ns slower at p50 than before it,
 after the cleanup of the tick path too, as the note on what an in-order ACK and a send cost says, and winning that back
-is work of its own; its rerun for the first checks found the p50 unchanged; its reruns with reliable send and with the
-receive side alone are owed, as its page says.
+is work of its own; its rerun for the first checks found the p50 unchanged and the p99 50 ns higher in the headline runs
+only, not in its breakdown or single-configuration runs, for a cause not yet found; its reruns with reliable send and
+with the receive side alone are owed, as its page says.
 
 **What hardening is left.** The brick is hardened against a peer off the path: its initial sequence numbers and
 timestamp offsets cannot be predicted, a RST resets only at an exact position, a SYN never ends a synchronized

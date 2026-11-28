@@ -20,15 +20,15 @@ written from the RFCs and from what Aloe does, and its opening comment says wher
   script's `tolerance` when it sets one; the `TcpConfig` fields its `--tcp_*` lines set (`ScriptTcpOptions`);
   and the policies it runs under (`CongestionChoice`: `NewReno`, `None` or `Both`). `parse_script` returns
   `std::expected<Script, ParseError>`; a `ParseError` carries the line, the column and what was wrong.
-- **`aloe::scenario::Harness`**, **`HarnessConfig`** -- a fabric with the stack's port and the peer's port, and
-  the bricks over queue 0 of the stack's port, `ShardQueue`, `Ipv4`, `TimerWheel` and `tcp::Stack`, with the IP
-  brick's ARP learning on and both MACs learned. The defaults put the stack at 10.0.0.2 with port 8080 for `bind` and the peer at 10.0.0.1 with
-  port 40000 and the initial sequence number 1000000; they give the fabric no checksum offloads (`offloads`
-  picks `EmulatedOffloads::None` or `Checksums`), the wheel a resolution of one millisecond, TCP its default
-  `TcpConfig`, which `configured(config, script)` overrides with the script's `--tcp_*` lines, and ARP a
-  lifetime of an hour (`arp_lifetime` is `arp_reachable`; `arp_expire` is twice it).
-  `inject`, `step`, `flush` and `collect` are the parts the runner composes; a `Collected` is one frame the
-  peer's port received, parsed, with a verdict on each checksum the stack wrote.
+- **`aloe::scenario::Harness`**, **`HarnessConfig`** -- a fabric with the stack's port and the peer's port, and the
+  bricks over queue 0 of the stack's port, `ShardQueue`, `Ipv4`, `TimerWheel` and `tcp::Stack`, with the IP brick's ARP
+  learning on and both MACs learned. The defaults put the stack at 10.0.0.2 with port 8080 for `bind` and the peer at
+  10.0.0.1 with port 40000 and the initial sequence number 1000000; they give the fabric no checksum offloads
+  (`offloads` picks `EmulatedOffloads::None` or `Checksums`), the wheel a resolution of one millisecond, TCP its default
+  `TcpConfig`, which `configured(config, script)` overrides with the script's `--tcp_*` lines, and ARP a lifetime of an
+  hour (`arp_lifetime` is `arp_reachable`; `arp_expire` is twice it). `inject`, `step`, `flush` and `collect` are the
+  parts the runner composes; a `Collected` is one frame the peer's port received, parsed, with a verdict on each
+  checksum the stack wrote.
 - **`aloe::scenario::Runner`**, **`RunnerConfig`**, **`Failure`**, **`format(failure, path)`** -- `Harness` and
   `Runner` run the brick under `tcp::NewReno`; `NoCongestionHarness` and `NoCongestionRunner` are the same
   classes over `tcp::NoCongestionControl` (`BasicHarness` and `BasicRunner` are the templates). The scripts
@@ -89,10 +89,11 @@ the column, for anything outside it:
 - **Option lines** before the first event, each at most once: `--tolerance_usecs=n`; `--tcp_rto_min_ms`,
   `--tcp_rto_max_ms`, `--tcp_rto_initial_ms`, `--tcp_user_timeout_ms` (milliseconds), `--tcp_retries`,
   `--tcp_data_retries`, `--tcp_retransmit_defers` (0 to 255), `--tcp_send_segments`, `--tcp_timestamps=0|1`,
-  `--tcp_receive_segments`, `--tcp_receive_window`, `--tcp_sack=0|1`, `--tcp_window_scaling=0|1`, `--tcp_delayed_ack_ms`,
-  `--tcp_tail_probe_ack_delay_ms`, `--tcp_challenge_ack_interval_ms` and `--tcp_min_peer_mss`, which set the harness's
-  `TcpConfig` for that script (`configured(config, script)` applies them); and `--congestion=newreno|none|both`, the policies the script runs under (`both` when absent). Any
-  other name is a parse error, and so is an option line after the first event, so the dialect grows deliberately.
+  `--tcp_receive_segments`, `--tcp_receive_window`, `--tcp_sack=0|1`, `--tcp_window_scaling=0|1`,
+  `--tcp_delayed_ack_ms`, `--tcp_tail_probe_ack_delay_ms`, `--tcp_challenge_ack_interval_ms` and `--tcp_min_peer_mss`,
+  which set the harness's `TcpConfig` for that script (`configured(config, script)` applies them); and
+  `--congestion=newreno|none|both`, the policies the script runs under (`both` when absent). Any other name is a parse
+  error, and so is an option line after the first event, so the dialect grows deliberately.
 - **Backtick lines** are a parse error: the runner has no shell, and what a corpus script sets that way is the
   harness's configuration.
 - **Event times.** `+t` after the previous event, `t` since the script's start, a window `t1~t2` or `+a~+b`, and
@@ -404,8 +405,9 @@ to the probe for several segments and to RACK's reordering timer, where Aloe add
 no second tail probe while the first one's verdict is open, so the second of two lone segments lost in a row waits for
 its RTO, where Aloe probes it once the first probe is acknowledged; probes a zero window only while it holds unsent
 data; raises a peer's MSS below its floor where Aloe refuses the open; drops whole a segment refused for the window, its
-ACK with it, where Aloe reads the ACK; and bounds its resends into a closed window by time where Aloe counts them. The TCP page's [note on departures](tcp.md#where-the-brick-departs-from-the-rfcs-and-from-linux) lists where the
-brick departs from the RFCs and from Linux.
+ACK with it, where Aloe reads the ACK; and bounds its resends into a closed window by time where Aloe counts them. The
+TCP page's [note on departures](tcp.md#where-the-brick-departs-from-the-rfcs-and-from-linux) lists where the brick
+departs from the RFCs and from Linux.
 
 ## Design notes
 

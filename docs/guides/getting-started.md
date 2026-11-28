@@ -148,17 +148,20 @@ sudo ./build/debug/tests/manual_tests/tcp/Aloe.Tests.Manual.Tcp.Tap          # t
 ```
 
 The net test gives the tap's kernel end an address itself and pings through the kernel's own stack, so it
-needs `CAP_NET_RAW` as well. `examples/ping_responder` is the same loop as a program you can `ping` from a
-shell.
+needs `CAP_NET_RAW` as well. Its IP brick runs with ARP learning on, as the TCP suite's does. `examples/ping_responder`
+is the same loop as a program you can `ping` from a shell.
+
+The net and TCP suites both changed when ARP became static by default and learning a switch, and neither has run since:
+their runs, `sudo ./build/debug/tests/manual_tests/net/Aloe.Tests.Manual.Net.Tap` and
+`sudo ./build/debug/tests/manual_tests/tcp/Aloe.Tests.Manual.Tcp.Tap`, wait for a machine with root.
 
 The TCP suite needs DPDK's tap driver, which every Aloe build links, and root. It creates the interface `aloe-tcp`, puts
 the kernel at 10.78.0.1/24 and Aloe at 10.78.0.2/24, and gives the kernel end its address itself, as
-`ip addr add 10.78.0.1/24 dev aloe-tcp` and `ip link set aloe-tcp up` would. Aloe's IP brick runs with ARP learning
-on, since the tap's MAC is new on every run, and the fixture resolves the kernel's address once before any case
-connects, as a deployment that learns resolves a peer it knows: a learning brick takes no MAC from the kernel's own
-request. The suite has not run since that change; the run waits for a machine with root. Port 7007 carries an echo in four
-scenarios: a kernel client against the brick and against the runtime, and the brick and the runtime as clients of a
-kernel listener. `TcpTapLoss` repeats the four with 50 000 bytes under loss in both directions:
+`ip addr add 10.78.0.1/24 dev aloe-tcp` and `ip link set aloe-tcp up` would. Aloe's IP brick runs with ARP learning on,
+since the tap's MAC is new on every run, and the fixture resolves the kernel's address once before any case connects, as
+a deployment that learns resolves a peer it knows: a learning brick takes no MAC from the kernel's own request. Port
+7007 carries an echo in four scenarios: a kernel client against the brick and against the runtime, and the brick and the
+runtime as clients of a kernel listener. `TcpTapLoss` repeats the four with 50 000 bytes under loss in both directions:
 `tc qdisc replace dev aloe-tcp root netem loss 5%` makes the kernel lose 5% of what it sends the stack, and skips the
 cases when `tc` or `sch_netem` is missing, while a wrapper device frees every tenth frame the stack sends; each case
 needs at least one retransmission on the stack's side and a clean close, and prints how far the kernel's `RetransSegs`
