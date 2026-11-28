@@ -28,10 +28,12 @@ namespace aloe::tcp::detail {
 
     /**
      * @brief What a datagram does to a connection: the header and checksum, the lookup, the handshake, RFC 9293's
-     * order on a synchronized connection (PAWS, the sequence check, RST, ACK, payload, FIN), the hold of a segment
-     * above a gap and the join when it fills, and `consume`. It owns no state; it drives the block's receive side and
-     * reassembly queue, hands an acceptable ACK to the AckProcessor, leaves every change of the connection's state to
-     * the Lifecycle and sends through the Transmitter, in place, as each step of the procedure asks.
+     * order on a synchronized connection (PAWS, the sequence check, RST, ACK, payload, FIN) with RFC 5961's positions
+     * for a RST and its challenge ACKs, the answers that go through the connection's limiter, the hold of a segment
+     * above a gap and the join when it fills, and `consume`. It owns no state; it drives the block's receive side,
+     * reassembly queue and limiter, hands an acceptable ACK to the AckProcessor, leaves every change of the
+     * connection's state to the Lifecycle and sends through the Transmitter, in place, as each step of the procedure
+     * asks.
      */
     template <typename Ip, typename CongestionControl>
     class Receiver {
@@ -154,7 +156,8 @@ namespace aloe::tcp::detail {
     private:
         /// What the sequence check made of a segment.
         enum class Sequenced : std::uint8_t {
-            Refused,   ///< Dropped, counted and answered: it goes no further.
+            Refused,   ///< It goes no further: dropped, counted and answered (`answer_refused`), a RST in silence;
+                       ///< or a RST one back after the peer's FIN, which reset the connection.
             InOrder,   ///< At RCV.NXT, trimmed to it, or occupying no sequence space inside the window.
             AboveGap,  ///< Payload or a FIN above RCV.NXT, inside the window.
         };
@@ -296,19 +299,20 @@ namespace aloe::tcp::detail {
         /// A segment on a synchronized connection, in RFC 9293's order; each step may end it.
         void receive_synchronized(ControlBlock& block, Datagram& datagram, Segment segment) noexcept {
             const bool rst         = segment.header.flags.has(wire::TcpFlag::Rst);
-            const Sequence arrived = segment.header.sequence;  // SEG.SEQ before any trim, for the TS.Recent rule
+            const Sequence arrived = segment.header.sequence;  // SEG.SEQ before any trim: TS.Recent, a RST's place
             if (segment.payload_length > 0) {
                 block.sack.forget_duplicate();  // a duplicate not yet reported is not reported late (`tcp_data_queue`)
             }
 
             // 0. PAWS (RFC 7323), before the sequence check as Linux's tcp_validate_incoming: a timestamp older than
-            // TS.Recent is an old duplicate, acknowledged at once and dropped, with what of it RCV.NXT passed reported
-            // as a duplicate (`tcp_send_dupack`). A RST is exempt; a segment without the option goes on, as Linux lets
-            // it.
+            // TS.Recent is an old duplicate, dropped and answered (`answer_refused`, through the limiter when it
+            // occupies no sequence space), with what of it RCV.NXT passed reported as a duplicate (`tcp_send_dupack`).
+            // A RST is exempt; a segment without the option goes on, as Linux lets it. An old pure ACK that fails PAWS
+            // draws no answer at all in Linux (`tcp_disordered_ack_check`); here its answer is limited like any other.
             if (block.timestamps.rejects(segment.ts_value, rst, context_.now)) {
                 ++context_.counters.dropped_paws;
                 report_old_duplicate(block, segment);
-                ack_now(block, Edge::Restate);
+                answer_refused(block, segment);
                 return;
             }
 
@@ -317,13 +321,22 @@ namespace aloe::tcp::detail {
             if (sequenced == Sequenced::Refused) {
                 return;
             }
-            block.timestamps.update(segment.ts_value, arrived, context_.now);  // acceptable, trimmed or not
 
-            // 2. RST, and a SYN, which a synchronized connection does not take.
+            // 2. RST (RFC 5961 3.2): it resets only at one of the exact positions, read from SEG.SEQ as it arrived,
+            // before any trim (`resets_at`); any other RST that passed the sequence check is dropped and challenged.
+            // Before TS.Recent moves, as Linux's tcp_validate_incoming discards it before tcp_replace_ts_recent.
             if (rst) {
-                lifecycle_.peer_reset(block);
+                if (resets_at(block, arrived)) {
+                    lifecycle_.peer_reset(block);
+                    return;
+                }
+                ++context_.counters.dropped_reset_challenged;
+                challenge(block);
                 return;
             }
+            block.timestamps.update(segment.ts_value, arrived, context_.now);  // acceptable, trimmed or not
+
+            // A SYN, which a synchronized connection does not take.
             if (segment.header.flags.has(wire::TcpFlag::Syn)) {
                 ++context_.counters.dropped_unexpected;  // a SYN inside the window of a synchronized connection
                 return;
@@ -357,11 +370,12 @@ namespace aloe::tcp::detail {
 
         /**
          * The sequence check against `[rcv_nxt, offered edge)`. A segment entirely before RCV.NXT or past the edge is
-         * dropped with an immediate ACK that restates the edge, unless it is a RST; the payload of one before RCV.NXT
-         * is reported as a duplicate. One that overlaps RCV.NXT loses its old prefix, a SYN with it, and reports the
-         * prefix's payload as a duplicate; a RST reports nothing. One whose payload or FIN starts above RCV.NXT inside
-         * the window is above a gap; a segment that occupies no sequence space never is. A duplicate SYN in SynReceived
-         * gets the SYN-ACK again, from its entry.
+         * dropped and answered with an ACK that restates the edge (`answer_refused`), unless it is a RST, which is
+         * dropped in silence except at RCV.NXT - 1 after the peer's FIN, where it resets; the payload of one before
+         * RCV.NXT is reported as a duplicate. One that overlaps RCV.NXT loses its old prefix, a SYN with it, and
+         * reports the prefix's payload as a duplicate; a RST reports nothing. One whose payload or FIN starts above
+         * RCV.NXT inside the window is above a gap; a segment that occupies no sequence space never is. A duplicate SYN
+         * in SynReceived gets the SYN-ACK again, from its entry.
          */
         [[nodiscard]] Sequenced accept_sequence(ControlBlock& block, Segment& segment) noexcept {
             wire::TcpHeader& header    = segment.header;
@@ -371,10 +385,16 @@ namespace aloe::tcp::detail {
             const std::uint32_t window = block.window.window(next);
             const Sequence sequence    = header.sequence;
             const Sequence end         = sequence + segment.length();
-            const auto drop            = [this, &block, rst](std::uint64_t& counter) {
+            const auto drop            = [this, &block, &segment, rst, sequence](std::uint64_t& counter) {
+                if (rst && one_back_after_fin(block, sequence)) {
+                    lifecycle_.peer_reset(block);  // the one position outside the window that resets
+                    return Sequenced::Refused;
+                }
                 ++counter;
+                // Any other RST outside the window goes in silence (RFC 5961 3.2), below RCV.NXT too, where Linux,
+                // whose left edge is the last ACK it sent (`rcv_wup`), challenges one between that and RCV.NXT.
                 if (!rst) {
-                    ack_now(block, Edge::Restate);
+                    answer_refused(block, segment);
                 }
                 return Sequenced::Refused;
             };
@@ -690,6 +710,74 @@ namespace aloe::tcp::detail {
             }
             const Sequence end = first + segment.payload_length;
             block.sack.duplicate(first, end.before(next) ? end : next);
+        }
+
+        /**
+         * Whether a RST at `sequence`, its SEG.SEQ as it arrived, resets the connection: RFC 5961 3.2's RCV.NXT, and
+         * Linux's two further positions (`tcp_validate_incoming`): RCV.NXT - 1 once the peer's FIN was taken
+         * (`one_back_after_fin`), and the end of what is held above a gap on a connection that uses SACK (`held_end`),
+         * where a peer whose data was lost resets from its SND.NXT.
+         */
+        [[nodiscard]] static bool resets_at(const ControlBlock& block, const Sequence sequence) noexcept {
+            if (sequence == block.receive.next() || one_back_after_fin(block, sequence)) {
+                return true;
+            }
+            const std::optional<Sequence> held = held_end(block);
+            return held.has_value() && sequence == *held;
+        }
+
+        /// RCV.NXT - 1 in CloseWait, Closing or LastAck: macOS resets with the number of the FIN it sent before, which
+        /// RCV.NXT has passed. In or out of the window, as Linux's `tcp_reset_check`.
+        [[nodiscard]] static bool one_back_after_fin(const ControlBlock& block, const Sequence sequence) noexcept {
+            const bool fin_taken =
+                block.state == State::CloseWait || block.state == State::Closing || block.state == State::LastAck;
+            return fin_taken && sequence + 1U == block.receive.next();
+        }
+
+        /// The end of the highest range held above a gap, a remembered FIN's number included, on a connection that
+        /// uses SACK: the highest end its blocks report, as Linux reads its highest SACK block. A FIN takes no node, so
+        /// one at or past the highest node's end is the higher. Nothing without SACK or with nothing held.
+        [[nodiscard]] static std::optional<Sequence> held_end(const ControlBlock& block) noexcept {
+            if (!block.sack.in_use()) {
+                return std::nullopt;
+            }
+            std::optional<Sequence> end{};
+            if (const std::optional<wire::TcpSackBlock> highest = block.reassembly.highest()) {
+                end = highest->end;
+            }
+            if (const std::optional<Sequence> fin = block.reassembly.fin(); fin && (!end || !fin->before(*end))) {
+                end = *fin + 1U;
+            }
+            return end;
+        }
+
+        /// A challenge ACK (RFC 5961): the connection's pure ACK with the edge restated, through the limiter.
+        void challenge(ControlBlock& block) noexcept {
+            if (answer_through_limiter(block)) {
+                ++context_.counters.challenge_acks_sent;
+            }
+        }
+
+        /// The ACK that answers a refused segment: through the limiter when the segment occupies no sequence space or
+        /// carries a SYN (Linux's `tcp_oow_rate_limited`), at once otherwise.
+        void answer_refused(ControlBlock& block, const Segment& segment) noexcept {
+            if (segment.length() != 0 && !segment.header.flags.has(wire::TcpFlag::Syn)) {
+                ack_now(block, Edge::Restate);  // data or a FIN sent again is not part of an ACK loop: never limited
+                return;
+            }
+            std::ignore = answer_through_limiter(block);
+        }
+
+        /// The pure ACK with the edge restated, as `ack_now` sends it, when the connection's limiter allows one at the
+        /// context's stamp; counted as held back otherwise. True when it was sent or left for the flush: a refused send
+        /// keeps the stamp.
+        [[nodiscard]] bool answer_through_limiter(ControlBlock& block) noexcept {
+            if (!block.answers.allow(context_.now, context_.config.challenge_ack_interval)) {
+                ++context_.counters.acks_rate_limited;
+                return false;
+            }
+            ack_now(block, Edge::Restate);
+            return true;
         }
 
         /// In-order data is acknowledged as the policy said: at once, by the flush, or when the delay runs out. A

@@ -636,6 +636,12 @@ TEST_P(TcpHandshake, ConfigValidation) {
     EXPECT_EQ(wheel_.pending(), 0U) << "construction arms nothing";
 }
 
+TEST_P(TcpHandshake, ANegativeIntervalIsRefused) {
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.challenge_ack_interval = -1ms}}), std::invalid_argument);
+    EXPECT_NO_THROW((std::ignore = Tcp{ip_, wheel_, {.challenge_ack_interval = 0ms}})) << "zero sends every answer";
+    EXPECT_EQ(aloe::tcp::TcpConfig{}.challenge_ack_interval, 500ms) << "Linux's tcp_invalid_ratelimit";
+}
+
 TEST_P(TcpHandshake, ANegativeOrOverlongProbeAllowanceIsRefused) {
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.tail_probe_ack_delay = -1ms}}), std::invalid_argument);
     EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.tail_probe_ack_delay = 501ms}}), std::invalid_argument);

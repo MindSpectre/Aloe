@@ -1,0 +1,20 @@
+// Challenge ACKs go through one limiter per connection (RFC 5961 section 7, as Linux's __tcp_oow_rate_limited with
+// tcp_invalid_ratelimit at 500 ms): three RSTs inside the window at 0, 100 and 500 ms draw a challenge at 0 and at
+// 500 ms, and none at 100 ms, which is within 500 ms of the first answer. An answer at 100 ms would stand where the
+// last line expects the one at 500 ms, early. The challenges restate the SYN-ACK's edge, 1 + 65535 less RCV.NXT 1,
+// 65535 to this peer, which offers no window scaling, and carry TS val 0 and 500: the stack's clock in milliseconds
+// from its SYN-ACK. Linux does the same; its windows depend on its buffers.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < R 101:101(0) win 65535
++0 > . 1:1(0) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0.1 < R 101:101(0) win 65535
++0.4 < R 101:101(0) win 65535
++0 > . 1:1(0) ack 1 win 65535 <nop,nop,TS val 500 ecr 100>

@@ -85,6 +85,11 @@ namespace aloe::tcp {
         core::Duration unresolved_retry = std::chrono::milliseconds{10};  ///< A SYN waiting for ARP; not a try.
         std::uint16_t unresolved_polls  = 300;  ///< Polls before Unresolved: 3 s by default, Linux's ARP bound.
 
+        /// The least time between two answers that go through the limiter, per connection (RFC 5961 section 7):
+        /// challenge ACKs, and the ACK for a refused segment that occupies no sequence space or carries a SYN. Zero
+        /// sends every one. Linux's `tcp_invalid_ratelimit`.
+        core::Duration challenge_ack_interval = std::chrono::milliseconds{500};
+
         /// Throws std::invalid_argument naming the first rule broken; `max_l4_size` is the IP brick's and `resolution`
         /// the timer wheel's. Returns the config, so a constructor validates it before sizing anything from it.
         [[nodiscard]] const TcpConfig& validate(const std::uint16_t max_l4_size,
@@ -142,6 +147,9 @@ namespace aloe::tcp {
             }
             if (unresolved_polls == 0) {
                 throw std::invalid_argument{"TcpConfig: unresolved_polls must be positive"};
+            }
+            if (challenge_ack_interval < core::Duration::zero()) {
+                throw std::invalid_argument{"TcpConfig: challenge_ack_interval must not be negative"};
             }
             // Bounds the longest handshake delay, rto_initial * 2^retries, and the whole schedule, rto_initial *
             // (2^(retries+1) - 1), to a quarter of core::Duration's range, so no deadline now + delay can overflow;

@@ -32,6 +32,7 @@ add_unit_test(${UNIT_TESTING_TARGET}.Tcp
         test_tcp_rack.cpp
         test_tcp_tail_probe.cpp
         test_tcp_undo.cpp
+        test_tcp_challenge.cpp
 )
 target_link_libraries(${UNIT_TESTING_TARGET}.Tcp
         PRIVATE

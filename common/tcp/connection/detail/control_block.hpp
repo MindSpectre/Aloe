@@ -11,6 +11,7 @@
 #include <optional>
 
 #include <detail/ack_policy.hpp>
+#include <detail/answer_limiter.hpp>
 #include <detail/connection_list.hpp>
 #include <detail/frame_template.hpp>
 #include <detail/loss_recovery.hpp>
@@ -151,6 +152,7 @@ namespace aloe::tcp::detail {
             timestamps       = {};
             window_use       = {};
             sack             = {};
+            answers          = {};
             timer_kind       = TimerKind::None;
             rto_at           = {};
             retransmit_count = 0;
@@ -197,6 +199,7 @@ namespace aloe::tcp::detail {
         WindowUse window_use{};  ///< Written by each send of new data, read once by an ACK of new data.
         // Behind the parts an in-order segment touches.
         SackBlocks sack{};
+        AnswerLimiter answers{};  ///< Read and written only by the answers to an unacceptable segment.
 
         // The connection's wheel timer: the RTO, the reordering timer, the tail probe, the ARP poll or the zero-window
         // probe.

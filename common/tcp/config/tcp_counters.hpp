@@ -11,6 +11,12 @@ namespace aloe::tcp {
         std::uint64_t pure_acks_sent        = 0;
         std::uint64_t control_segments_sent = 0;  ///< SYN, SYN-ACK, FIN, first sends and retransmits alike.
         std::uint64_t resets_sent           = 0;
+        /// Challenge ACKs the limiter let go (RFC 5961): sent at once, or left for the flush when the device refused
+        /// them. Each is also one of `pure_acks_sent` once it leaves.
+        std::uint64_t challenge_acks_sent   = 0;
+        /// Answers the limiter held back: challenge ACKs, and ACKs for a refused segment that occupies no sequence
+        /// space or carries a SYN.
+        std::uint64_t acks_rate_limited     = 0;
         /// Resends at an expiry of the retransmission timer, of any kept segment, SYN, SYN-ACK, data and FIN: one per
         /// expiry, whether the resend left, waited or was refused.
         std::uint64_t retransmits           = 0;
@@ -78,6 +84,9 @@ namespace aloe::tcp {
         std::uint64_t dropped_no_node       = 0;
         std::uint64_t dropped_table_full    = 0;
         std::uint64_t dropped_paws = 0;  ///< Segments whose timestamp was older than TS.Recent; acknowledged, not kept.
+        /// RSTs inside the window at none of the positions that reset (RFC 5961 3.2): each drew a challenge ACK, or
+        /// was held back by the limiter.
+        std::uint64_t dropped_reset_challenged = 0;
 
         std::uint64_t send_refused        = 0;
         std::uint64_t send_unresolved     = 0;

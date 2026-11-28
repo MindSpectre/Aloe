@@ -149,6 +149,9 @@ namespace aloe::scenario {
         if (options.tail_probe_ack_delay) {
             tcp.tail_probe_ack_delay = *options.tail_probe_ack_delay;
         }
+        if (options.challenge_ack_interval) {
+            tcp.challenge_ack_interval = *options.challenge_ack_interval;
+        }
         return base;
     }
 
