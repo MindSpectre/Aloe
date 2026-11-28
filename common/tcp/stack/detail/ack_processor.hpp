@@ -540,9 +540,9 @@ namespace aloe::tcp::detail {
                     cumulative.reordering =
                         cumulative.reordering || (!resent && highest && entry.first.before(*highest));
                 });
-            block.send.acknowledged += static_cast<std::uint32_t>(ack - block.send.una);  // Linux's bytes_acked
-            block.send.una           = ack;
-            cumulative.rtt           = on_acknowledged(block, cumulative.freed, echo);
+            block.send.count_acked(static_cast<std::uint32_t>(ack - block.send.una));  // Linux's bytes_acked
+            block.send.una = ack;
+            cumulative.rtt = on_acknowledged(block, cumulative.freed, echo);
             return cumulative;
         }
 

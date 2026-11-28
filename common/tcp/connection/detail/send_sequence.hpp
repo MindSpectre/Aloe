@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <aloe/wire>
 #include <cstdint>
+#include <limits>
 
 #include <tcp_config.hpp>
 
@@ -19,19 +20,27 @@ namespace aloe::tcp::detail {
         std::uint32_t wnd = 0;    ///< SND.WND: the peer's window, from `una`.
         wire::TcpSequence wl1{};  ///< SND.WL1: the sequence of the segment that last updated `wnd`.
         wire::TcpSequence wl2{};  ///< SND.WL2: its acknowledgement.
-        std::uint16_t peer_mss     = default_peer_mss;
+        std::uint16_t peer_mss    = default_peer_mss;
         /// The peer's window scale, zero unless both ends offered the option; at most 14.
-        std::uint8_t peer_shift    = 0;
-        bool fin_sent              = false;  ///< The FIN took its number, `nxt - 1`; its entry carries it.
-        std::uint32_t max_wnd      = 0;      ///< The largest window the peer ever offered.
-        std::uint64_t acknowledged = 0;      ///< The sum of SND.UNA's advances since the connection became Established.
+        std::uint8_t peer_shift   = 0;
+        bool fin_sent             = false;  ///< The FIN took its number, `nxt - 1`; its entry carries it.
+        std::uint32_t max_wnd     = 0;      ///< The largest window the peer ever offered.
+        /// The sum of SND.UNA's advances since the connection became Established, Linux's `bytes_acked`, stopping at
+        /// the top of 32 bits: only its minimum with `max_wnd`, which is below 2^30, is read, so nothing is lost.
+        std::uint32_t bytes_acked = 0;
 
         /// RFC 5961 5.2's lower bound as Linux computes it: SND.UNA less the smaller of the largest window the peer
         /// ever offered and what it has acknowledged. An ACK before it is too old to be the peer's.
         [[nodiscard]] wire::TcpSequence ack_floor() const noexcept {
             // At most `max_wnd`, so the difference fits the sequence space.
-            const auto span = static_cast<std::uint32_t>(std::min<std::uint64_t>(max_wnd, acknowledged));
-            return wire::TcpSequence{una.value - span};
+            return wire::TcpSequence{una.value - std::min(max_wnd, bytes_acked)};
+        }
+
+        /// Adds an advance of SND.UNA to `bytes_acked`, saturating where Linux's 64-bit `bytes_acked` grows on: its
+        /// `tcp_ack` reads only the sum's minimum with `max_window` too, so the two bounds agree.
+        void count_acked(const std::uint32_t advance) noexcept {
+            constexpr std::uint32_t largest = std::numeric_limits<std::uint32_t>::max();
+            bytes_acked                     = advance > largest - bytes_acked ? largest : bytes_acked + advance;
         }
 
         /// Numbers the SYN: `iss` is unacknowledged and the SYN takes it.

@@ -391,7 +391,7 @@ and in the loss state; and `recoveries` counts the episodes entered by either de
 |             | `dropped_paws`               | Segments whose timestamp is older than `TS.Recent`, never kept: answered at once, through the limiter when empty or a SYN; a SYN past `SynReceived` counts as challenged instead.                           |
 |             | `dropped_reset_challenged`   | RSTs inside the window at none of the positions that reset (RFC 5961 3.2); each challenged.                                                                                                                 |
 |             | `dropped_syn_challenged`     | SYNs on a connection past `SynReceived` (RFC 5961 4.2), wherever their sequence number lay and whether or not they passed PAWS; each challenged.                                                            |
-|             | `dropped_old_ack`            | Segments whose ACK was below `snd_una - min(max_wnd, acknowledged)` (RFC 5961 5.2), dropped whole, payload and FIN included, and challenged.                                                                |
+|             | `dropped_old_ack`            | Segments whose ACK was below `snd_una - min(max_wnd, bytes_acked)` (RFC 5961 5.2), dropped whole, payload and FIN included, and challenged.                                                                 |
 | Send        | `send_refused`               | Segments IP, the queue or a pool refused, a FIN that found no queue node included; the numbers stay as they were.                                                                                           |
 |             | `send_unresolved`            | Segments that waited for ARP, a rebuild of the frame template that found no next hop included.                                                                                                              |
 |             | `commits_refused`            | Commits after the connection left `Established` and `CloseWait`, or whose count the windows no longer cover; the prepared packet is dropped.                                                                |
@@ -744,9 +744,9 @@ order of Linux's `tcp_validate_incoming` followed by `tcp_ack`, which is RFC 596
    `handshakes_failed`, as Linux's request does; a SYN with ACK at the first SYN's number that carries payload or a FIN
    loses its SYN to the trim and goes on as the handshake's ACK, as `tcp_check_req` and RFC 9293 3.10.7.4 take it.
 5. ACK. A segment without the flag is dropped. With SND.UNA as the segment finds it, an ACK above SND.NXT, of what
-   was never sent, is counted in `dropped_unexpected`, and one below `SND.UNA - min(max_wnd, acknowledged)` in
+   was never sent, is counted in `dropped_unexpected`, and one below `SND.UNA - min(max_wnd, bytes_acked)` in
    `dropped_old_ack` (RFC 5961 5.2, in the form of Linux's `tcp_ack`); either drops the whole segment, payload and FIN
-   included, and is challenged. `max_wnd` is the largest window the peer offered, and `acknowledged` the sum of
+   included, and is challenged. `max_wnd` is the largest window the peer offered, and `bytes_acked` the sum of
    SND.UNA's advances since `Established`, where it is set to zero, so until the peer has acknowledged something every
    ACK below SND.UNA is too old, the SYN's own number included. The bound is read only for an ACK below SND.UNA. A
    forged data or FIN segment is therefore refused unless its acknowledgement also falls in that range, and a segment

@@ -429,7 +429,7 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - A RST resets only at RCV.NXT, at RCV.NXT - 1 after the peer's FIN, or, with SACK, at the end of the highest range
   held; anywhere else in the window it draws a challenge and counts `dropped_reset_challenged`. A test of a reset sends
   it at the peer's `snd_nxt()`, as `frames::TcpPeer::rst()` does.
-- An ACK below `SND.UNA - min(max_wnd, acknowledged)` drops its whole segment, payload and FIN included, and draws a
+- An ACK below `SND.UNA - min(max_wnd, bytes_acked)` drops its whole segment, payload and FIN included, and draws a
   challenge (`dropped_old_ack`). The sum starts at zero at Established, so right after a handshake every ACK below
   SND.UNA is too old; a test that injects data with an old ACK keeps it within what the peer has acknowledged since.
 - Only an answer to the brick's own ARP request extends a learned entry's life: a frame nobody asked for, or a

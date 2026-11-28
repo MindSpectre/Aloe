@@ -900,6 +900,22 @@ TEST_P(TcpChallenge, ASegmentAboveAGapWithAnAckBelowTheBoundIsNotHeldAndARstAtIt
     EXPECT_EQ(tcp_->counters().connections_reset, 0U);
 }
 
+TEST(TcpSendSequence, TheSumOfAdvancesStopsAtTheTopOf32Bits) {
+    aloe::tcp::detail::SendSequence send;
+    send.una     = TcpSequence{1000U};
+    send.max_wnd = 65535U << 14U;  // the largest window a peer can offer, below 2^30
+    send.count_acked(100U);
+    EXPECT_EQ(send.ack_floor(), TcpSequence{900U}) << "below the largest window the sum is the bound";
+    send.count_acked(0xffffff00U);
+    EXPECT_EQ(send.bytes_acked, 0xffffff64U);
+    send.count_acked(0x100U);
+    EXPECT_EQ(send.bytes_acked, 0xffffffffU) << "stopped at the top, not wrapped to 0x64";
+    send.count_acked(1U);
+    EXPECT_EQ(send.bytes_acked, 0xffffffffU);
+    EXPECT_EQ(send.ack_floor(), TcpSequence{1000U - (65535U << 14U)})
+        << "the largest window is the bound: nothing lost";
+}
+
 TEST_P(TcpChallenge, TheBlocksOfAnAckBelowTheBoundMarkNothing) {
     peer_.set_sack_permitted(true);
     auto* c = open_passive(peer_);

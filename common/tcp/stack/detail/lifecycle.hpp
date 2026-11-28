@@ -311,7 +311,7 @@ namespace aloe::tcp::detail {
             block.state = State::Established;
             transmitter_.reserve_fin_node(block);
             block.recovery.establish(block.mss());
-            block.send.acknowledged = 0;
+            block.send.bytes_acked = 0;
         }
 
         void free_slot(ControlBlock& block) noexcept {
