@@ -68,7 +68,8 @@ namespace aloe::tcp {
         using EventType      = ConnectionEvent<Ip, CongestionControl>;
         using Sequence       = wire::TcpSequence;
 
-        /// Validates and throws std::invalid_argument; allocates everything; sends nothing.
+        /// Validates and throws std::invalid_argument; draws the key of its initial sequence numbers, and throws
+        /// std::system_error when the kernel gives no random bytes; allocates everything; sends nothing.
         Stack(Ip& ip, loop::TimerWheel& wheel, const TcpConfig& config)
             : context_{ip,
                        config.validate(ip.max_l4_size(), wheel.resolution()),
@@ -213,7 +214,7 @@ namespace aloe::tcp {
             return transmitter_.nodes_available();
         }
 
-        /// For tests: the next connection opened takes this initial sequence number instead of a drawn one.
+        /// For tests: the next connection opened takes this initial sequence number instead of its flow's.
         void force_next_isn(const wire::TcpSequence isn) noexcept {
             lifecycle_.force_next_isn(isn);
         }

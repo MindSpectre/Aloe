@@ -23,7 +23,7 @@
 namespace aloe::tcp::detail {
 
     /**
-     * @brief A connection's life: the slot taken and bound, the handshake's numbers drawn, every change of state
+     * @brief A connection's life: the slot taken and bound, the handshake's numbers computed, every change of state
      * from the open to `Closed`, the events raised, the end of a connection whose timer gave up, `close`, `abort`
      * and `release`. It owns the connection table, the ISN generator and the event list, and calls down into the
      * Transmitter. No other part writes a connection's state: the Receiver says what arrived and the Lifecycle
@@ -37,10 +37,12 @@ namespace aloe::tcp::detail {
         using Transmitter  = detail::Transmitter<Ip, CongestionControl>;
         using Sequence     = wire::TcpSequence;
 
+        /// Draws the ISN generator's key: throws `std::system_error` when the kernel gives no random bytes.
         Lifecycle(Context& context, Transmitter& transmitter)
             : context_{context},
               transmitter_{transmitter},
-              table_{context.config, context.ip.queue().steering()} {
+              table_{context.config, context.ip.queue().steering()},
+              isn_{IsnGenerator::draw_key()} {
         }
 
         // The directory.
@@ -66,7 +68,7 @@ namespace aloe::tcp::detail {
             return table_;
         }
 
-        /// For tests: the next connection opened takes this initial sequence number instead of a drawn one.
+        /// For tests: the next connection opened takes this initial sequence number instead of its flow's.
         void force_next_isn(const Sequence isn) noexcept {
             isn_.force(isn);
         }
@@ -369,15 +371,16 @@ namespace aloe::tcp::detail {
             block.indexed = true;
         }
 
-        /// Numbers the connection's SYN from a fresh ISN and starts its sender from scratch: RFC 6582's `recover` just
-        /// below the ISN, no round-trip sample, the initial RTO and no retry; makes the timestamps and SACK-permitted
-        /// offers.
+        /// Numbers the connection's SYN from its flow's ISN at the context's stamp and starts its sender from scratch:
+        /// RFC 6582's `recover` just below the ISN, no round-trip sample, the initial RTO and no retry; makes the
+        /// timestamps and SACK-permitted offers, the timestamps with the flow's offset. The caller bound the endpoints.
         void open(ControlBlock& block) noexcept {
-            block.send.open(isn_.next());
+            const IsnGenerator::Numbers numbers = isn_.numbers(block.local, block.remote, context_.now);
+            block.send.open(numbers.isn);
             block.recovery.open(block.send.iss);
             block.rtt.reset(context_.config.rto_initial);
             // The SYN or SYN-ACK offers; the peer decides.
-            block.timestamps.offer(context_.config.timestamps, isn_.offset());
+            block.timestamps.offer(context_.config.timestamps, numbers.timestamp_offset);
             block.sack.offer(context_.config.sack);
             block.retransmit_count = 0;
         }
@@ -416,7 +419,7 @@ namespace aloe::tcp::detail {
         Transmitter& transmitter_;
         ConnectionTable table_;
         EventList events_ = {};
-        IsnGenerator isn_{};
+        IsnGenerator isn_;
     };
 
 }  // namespace aloe::tcp::detail

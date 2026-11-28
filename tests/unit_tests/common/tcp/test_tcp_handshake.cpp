@@ -233,6 +233,23 @@ TEST_P(TcpHandshake, ActiveOpen) {
     EXPECT_FALSE(poll().has_value());
 }
 
+TEST_P(TcpHandshake, TwoConnectionsOfOneStackStartAtUnrelatedNumbers) {
+    const auto first =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port}, now_);
+    ASSERT_TRUE(first.has_value());
+    const auto second =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port + 1}, now_);
+    ASSERT_TRUE(second.has_value());
+    const auto syns = collect();
+    ASSERT_EQ(syns.size(), 2U);
+    ASSERT_TRUE(aloe::testing::is_flags(syns[0], {TcpFlag::Syn}));
+    ASSERT_TRUE(aloe::testing::is_flags(syns[1], {TcpFlag::Syn}));
+    EXPECT_NE(syns[0].tcp->destination_port, syns[1].tcp->destination_port);
+    EXPECT_NE(syns[0].tcp->sequence, syns[1].tcp->sequence);
+    // Both SYNs leave at one stamp, so their TS vals differ by their offsets alone.
+    EXPECT_NE(ts_value_of(syns[0]), ts_value_of(syns[1]));
+}
+
 TEST_P(TcpHandshake, DuplicateSyn) {
     ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
     receive(peer_.syn());
