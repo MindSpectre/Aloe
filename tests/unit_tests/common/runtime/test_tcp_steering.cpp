@@ -188,7 +188,7 @@ TEST(TcpSteering, AllConnectionsStayOnTheirShard) {
     EXPECT_EQ(client_runtime.shard(0).stack().tcp().counters().dropped_no_connection, 0U);
 }
 
-TEST(TcpSteering, GatewayKnownOnlyByQueueZero) {
+TEST(TcpSteering, GatewayReplyOnQueueZeroReachesTheShardThatAsked) {
     aloe::fabric::Fabric fabric;
     auto& server_port  = fabric.add_port({.mac = server_mac, .queues = queues, .pool_size = 256});
     auto& gateway_port = fabric.add_port({.mac = gateway_mac, .queues = 1, .pool_size = 128, .queue_depth = 4096});

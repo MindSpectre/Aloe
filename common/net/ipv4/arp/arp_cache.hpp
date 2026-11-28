@@ -64,8 +64,9 @@ namespace aloe::net {
      * `lookup` returns the MAC while the confirmation is younger than `expire`, asks for a request
      * once it is `reachable` old, and asks for one for an incomplete or absent address, at most one
      * per `request_interval` per entry. Only an answer to such a request, or a `seed`, confirms an entry: a frame
-     * nobody asked for may give a resolved entry another MAC, but never extends its life, so an entry the brick does
-     * not use expires `expire` after the last answer to its own request, whatever frames name it.
+     * nobody asked for may give a resolved entry another MAC, but never extends its life. A request stays outstanding
+     * until a frame about its address comes, however late, so an entry whose own refresh request went unanswered can be
+     * confirmed by a later frame, once per such request.
      */
     class ArpCache {
     public:

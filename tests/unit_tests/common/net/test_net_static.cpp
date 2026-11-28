@@ -260,6 +260,47 @@ TEST_P(NetStatic, WithLearningOffAReplyTeachesNothing) {
     EXPECT_EQ(sent.error(), SendError::NoRoute);
 }
 
+// What a default multi-queue deployment runs: `runtime::TcpStack` sets the reporting switch on every multi-queue
+// device, whatever the learning setting, and with learning off a reply nobody asked for is neither reported nor stored.
+TEST_P(NetStatic, WithLearningOffTheReportingSwitchReportsNothing) {
+    aloe::net::Ipv4Config config      = static_config();
+    config.report_unsolicited_replies = true;
+    Ipv4 reporting{queue_, config};  // over the same queue: the fixture's brick stays idle meanwhile
+    inject_into(
+        reporting,
+        aloe::frames::arp_frame(aloe::frames::arp_reply(stranger_mac, stranger, stack_mac, stack_ip), stack_mac));
+    EXPECT_TRUE(reporting.resolved().empty()) << "nothing for the loop to forward";
+    EXPECT_EQ(reporting.counters().resolutions, 0U);
+    EXPECT_EQ(reporting.counters().dropped_arp_unsolicited, 1U);
+    EXPECT_EQ(reporting.counters().arp_replies_received, 1U);
+    EXPECT_EQ(reporting.generation(), 0U) << "nothing stored";
+}
+
+// Issue #23: a storm of distinct unresolved destinations, more than the learned table holds, cannot push a static
+// neighbour out, since the static table is searched first and is no part of the learned one.
+TEST_P(NetStatic, AStormOfUnresolvedDestinationsDoesNotEvictAStaticNeighbour) {
+    aloe::net::Ipv4Config config = static_config(true);
+    config.arp_capacity          = 8;
+    Ipv4 learning{queue_, config};  // over the same queue: the fixture's brick stays idle meanwhile
+    for (std::uint8_t index = 0; index < 16; ++index) {
+        const auto sent =
+            learning.send(udp_segment(), udp_to({10, 0, 0, static_cast<std::uint8_t>(100 + index)}), now_);
+        ASSERT_FALSE(sent.has_value());
+        EXPECT_EQ(sent.error(), SendError::Unresolved);
+    }
+    ASSERT_EQ(learning.counters().arp_requests_sent, 8U) << "one per slot of the learned table";
+    ASSERT_EQ(learning.counters().arp_table_full, 8U) << "the other eight found it full";
+    std::ignore = received_by(harness_);  // the requests, broadcast
+    std::ignore = received_by(gateway_);
+
+    ASSERT_TRUE(learning.send(udp_segment(), udp_to(harness_ip), now_).has_value());
+    const auto frames = received_by(harness_);
+    ASSERT_EQ(frames.size(), 1U) << "the datagram, and no request before it";
+    EXPECT_EQ(frames[0].ethernet.destination, harness_mac);
+    EXPECT_EQ(learning.counters().arp_requests_sent, 8U);
+    EXPECT_EQ(learning.counters().arp_table_full, 8U);
+}
+
 TEST_P(NetStatic, WithLearningOffARequestForOurAddressIsAnswered) {
     // A stranger's address at the harness's MAC, so the answer lands where it can be read.
     inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, stranger, stack_ip), broadcast));

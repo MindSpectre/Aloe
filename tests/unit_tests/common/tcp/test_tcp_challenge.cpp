@@ -900,6 +900,34 @@ TEST_P(TcpChallenge, ASegmentAboveAGapWithAnAckBelowTheBoundIsNotHeldAndARstAtIt
     EXPECT_EQ(tcp_->counters().connections_reset, 0U);
 }
 
+TEST_P(TcpChallenge, ABareFinAboveAGapWithAnAckBelowTheBoundIsNotRememberedAndARstPastItIsChallenged) {
+    peer_.set_sack_permitted(true);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(c->sack());
+    const TcpSequence next = peer_.snd_nxt();
+    // Remembered, its number would end what is held, and a RST one past it would reset: the ACK's check comes first.
+    receive(peer_.segment(TcpFlags{TcpFlag::Fin, TcpFlag::Ack}, {}, next + 1000U, back(c->acknowledged(), 1)));
+    EXPECT_EQ(tcp_->counters().dropped_old_ack, 1U);
+    auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "challenged";
+    expect_pure_ack(frames[0], c->committed(), next);
+    EXPECT_EQ(frames[0].tcp->data_offset, 20U) << "no block reported";
+    advance(500ms);  // past the interval, so the limiter lets the next challenge go
+    receive(rst_at(peer_, next + 1001U));
+    EXPECT_EQ(c->state(), State::Established);
+    EXPECT_FALSE(c->events().reset());
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "challenged, as a RST at no exact position";
+    expect_pure_ack(frames[0], c->committed(), next);
+    EXPECT_EQ(tcp_->counters().dropped_reset_challenged, 1U);
+    EXPECT_EQ(tcp_->counters().challenge_acks_sent, 2U);
+    EXPECT_EQ(tcp_->counters().connections_reset, 0U);
+    receive(peer_.segment(TcpFlags{TcpFlag::Psh, TcpFlag::Ack}, payload(1000), next, peer_.rcv_nxt()));
+    EXPECT_EQ(c->unread().size(), 1000U) << "the gap filled";
+    EXPECT_FALSE(c->peer_closed()) << "and no FIN was remembered behind it";
+}
+
 TEST(TcpSendSequence, TheSumOfAdvancesStopsAtTheTopOf32Bits) {
     aloe::tcp::detail::SendSequence send;
     send.una     = TcpSequence{1000U};

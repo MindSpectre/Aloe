@@ -242,11 +242,12 @@ The operating rule: a static entry does not follow a MAC that changes, so it is 
 1. *An entry changes only through a frame about its own address.* A reply, or a request, whose sender is an address
    the table holds fills that entry in or gives it another MAC. It extends the entry's life only when it answers a
    request the brick itself has outstanding for that address, the incomplete entry's or a stale entry's refresh: a
-   frame nobody asked for never moves the confirmation stamp, so an entry the brick does not use expires `arp_expire`
-   after the last answer to its own request, whatever frames say. A frame about an address the table does not hold
-   changes nothing and creates no entry. Only the brick's own lookup, which a send, a `prebuild` or a `resolve` makes,
-   and the program's `learn` create one. The cost: the first segment to a host on the subnet that asked for our address
-   waits for an ARP exchange of our own, where a host that learns from requests already has its MAC.
+   frame nobody asked for never extends a life. A request stays outstanding until a frame about its address comes,
+   however late, so an entry whose own refresh request went unanswered can be confirmed by a later frame, once per such
+   request. A frame about an address the table does not hold changes nothing and creates no entry. Only the brick's own
+   lookup, which a send, a `prebuild` or a `resolve` makes, and the program's `learn` create one. The cost: the first
+   segment to a host on the subnet that asked for our address waits for an ARP exchange of our own, where a host that
+   learns from requests already has its MAC.
 2. *No address ever takes another's place.* Any free slot serves any address, and a resolved entry leaves the table
    only by expiring. While `arp_capacity` entries are held, a new address may take the slot of an incomplete entry
    whose last request is at least `arp_request_interval` old, or failing that of an expired entry; with neither it is

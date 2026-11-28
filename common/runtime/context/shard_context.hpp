@@ -61,7 +61,8 @@ namespace aloe::runtime {
             ShardContext* previous_;
         };
 
-        /// A cold-path sink for ARP resolutions learned by another shard; the stack above registers it.
+        /// A cold-path sink for the ARP resolutions another shard's IP brick reported; the stack above registers it and
+        /// applies each to its own brick.
         struct ArpSink {
             void* object                                                                        = nullptr;
             void (*learn)(void*, wire::Ipv4Address, wire::MacAddress, core::TimePoint) noexcept = nullptr;
