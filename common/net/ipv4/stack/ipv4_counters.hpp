@@ -12,7 +12,7 @@ namespace aloe::net {
         std::uint64_t datagrams_received          = 0;  ///< Valid IPv4 for us, whatever the protocol.
         std::uint64_t delivered_tcp               = 0;
         std::uint64_t delivered_udp               = 0;
-        std::uint64_t resolutions                 = 0;  ///< Mappings learned from ARP frames.
+        std::uint64_t resolutions                 = 0;  ///< Mappings from ARP frames reported in `resolved()`.
         /// A lookup or a seed of a new address that found the learned table full: nothing was stored, no request left,
         /// and a send to the address fails `Unresolved`.
         std::uint64_t arp_table_full              = 0;

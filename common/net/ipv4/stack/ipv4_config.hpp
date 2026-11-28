@@ -30,9 +30,9 @@ namespace aloe::net {
         core::Duration arp_reachable        = std::chrono::seconds{60};
         core::Duration arp_expire           = std::chrono::seconds{120};
         core::Duration arp_request_interval = std::chrono::seconds{1};
-        /// A multi-queue device's shards share one address, so the shard whose queue receives a reply a sibling
-        /// solicited learns it in order to forward it. Off by default (RFC 826 merge rule); with learning on only.
-        bool accept_unsolicited_replies     = false;
+        /// With learning on: a reply addressed to us about an address this brick does not hold is reported in
+        /// `resolved()` and not stored, so that a loop can forward it to the shard that asked.
+        bool report_unsolicited_replies     = false;
     };
 
     struct SendRequest {

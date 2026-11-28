@@ -17,8 +17,9 @@
 //
 // The echo's copy from the received packet into the prepared one is the application's operation: a program
 // producing new messages encodes them straight into `prepare` and never copies. A multi-queue program over the
-// bricks sets `net::Ipv4Config::accept_unsolicited_replies`, since every queue shares the address; this one runs
-// on one queue and leaves it off.
+// bricks sets `net::Ipv4Config::report_unsolicited_replies`, since every queue shares the address, and hands what
+// each brick's `resolved()` reports to the other bricks' `apply_resolution`; this one runs on one queue and leaves
+// it off.
 
 #include <algorithm>
 #include <aloe/core>

@@ -35,8 +35,10 @@ namespace aloe::net {
      * ARP is private: the neighbours in `Ipv4Config::static_arp` resolve with no frame, and nothing else does
      * unless `Ipv4Config::arp_learning` is on; then `send` fails `Unresolved` while a request is out or the learned
      * table is full, `resolved` reports what frames taught the entries the table holds, `learn` and `resolve` seed
-     * the cache, and no frame creates an entry. With learning off a next hop outside the
-     * static table is `NoRoute`. Every member runs on the owning thread. Nothing here
+     * the cache, and no frame creates an entry. On a multi-queue device `Ipv4Config::report_unsolicited_replies` also
+     * reports, without storing, a reply to us about an address the table does not hold, and `apply_resolution` takes
+     * what a sibling shard reported as a frame's mapping, used only by a shard that asked. With learning off a next hop
+     * outside the static table is `NoRoute`. Every member runs on the owning thread. Nothing here
      * is synchronised, blocks, throws after construction, logs, reads a clock, or allocates after
      * construction except packets.
      */
@@ -86,7 +88,8 @@ namespace aloe::net {
             return input_.received(protocol);
         }
 
-        /// The mappings ARP frames gave entries the table holds in the last `process`, until the next one.
+        /// The mappings ARP frames gave entries the table holds in the last `process`, until the next one, and with
+        /// `Ipv4Config::report_unsolicited_replies` the replies to us about addresses it does not hold, not stored.
         [[nodiscard]] std::span<const ArpResolution> resolved() const noexcept {
             return arp_.resolved();
         }
@@ -151,11 +154,20 @@ namespace aloe::net {
             return arp_.resolve(hop, now);
         }
 
-        /// A seed of the learned table, or a resolution another shard learned: creates the entry when absent, and does
-        /// nothing with learning off or for a static address; a full table refuses a new address and counts
-        /// `arp_table_full`. Appends nothing to `resolved()`.
+        /// The program's seed of the learned table: creates the entry when absent, and does nothing with learning off
+        /// or for a static address; a full table refuses a new address and counts `arp_table_full`. Appends nothing to
+        /// `resolved()`. A resolution another shard reported goes to `apply_resolution`, which creates nothing.
         void learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
             arp_.learn(address, mac, now);
+        }
+
+        /// A resolution another shard reported: fills, refreshes or changes an entry this brick holds, and otherwise
+        /// does nothing. Reports nothing in `resolved()`, so shards never echo each other. As for a frame's mapping, it
+        /// extends the entry's life only when it answers a request this brick has outstanding (`ArpCache::update`).
+        void apply_resolution(const wire::Ipv4Address address,
+                              const wire::MacAddress mac,
+                              const core::TimePoint now) noexcept {
+            arp_.apply_resolution(address, mac, now);
         }
 
         /// The shard queue the brick was built over: a transport reads its index, steering, ring and device there.

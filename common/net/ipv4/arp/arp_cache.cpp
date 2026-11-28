@@ -22,13 +22,16 @@ namespace aloe::net {
             if (config.reachable <= core::Duration::zero() || config.request_interval <= core::Duration::zero()) {
                 throw std::invalid_argument{"ArpCacheConfig durations must be positive"};
             }
-            // A stamp plus a lifetime (`Output::prebuild`'s `valid_until`) cannot overflow, as TcpConfig bounds its
-            // own.
+            // A stamp plus a lifetime, or plus the request interval (`Output::prebuild`'s `valid_until`), cannot
+            // overflow, as TcpConfig bounds its own.
             if (config.reachable > core::Duration::max() / 4) {
                 throw std::invalid_argument{"ArpCacheConfig::reachable must fit a quarter of core::Duration"};
             }
             if (config.expire > core::Duration::max() / 4) {
                 throw std::invalid_argument{"ArpCacheConfig::expire must fit a quarter of core::Duration"};
+            }
+            if (config.request_interval > core::Duration::max() / 4) {
+                throw std::invalid_argument{"ArpCacheConfig::request_interval must fit a quarter of core::Duration"};
             }
             if (config.reachable >= config.expire) {
                 throw std::invalid_argument{"ArpCacheConfig::reachable must be below expire"};
@@ -211,8 +214,11 @@ namespace aloe::net {
         // refresh a stale entry's lookup asked for. A frame nobody asked for may give a resolved entry another MAC,
         // but never moves its confirmation, so frames that keep naming an address cannot keep it in the table. Linux's
         // `arp_process` (net_ipv4_arp.c:933-945) lets a request or a broadcast reply assert nothing either: it updates
-        // the entry NUD_STALE, and `__neigh_update` moves `confirmed` only for a connected state. Here the test is
-        // narrower than Linux's unicast reply: whether the brick asked.
+        // the entry NUD_STALE, and `__neigh_update` moves `confirmed` only for a connected state. The test here is
+        // whether the brick asked, not which frame answered, so it departs from Linux's unicast reply both ways. It is
+        // narrower in when: a unicast reply nobody asked for confirms nothing here, where Linux takes it as
+        // reachable. It is wider in which frame: while a request is outstanding a request or a broadcast reply
+        // confirms too, which Linux leaves stale (net_ipv4_arp.c:938-943).
         if (entry->state == State::Incomplete || entry->requested.has_value()) {
             confirm(*entry, mac, now);
         } else if (entry->mac != mac) {

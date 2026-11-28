@@ -255,8 +255,59 @@ TEST_F(TcpRuntime, TimerEventRunsOnNextEmptyStepAndSurvivesAReceive) {
     EXPECT_EQ(shard_.stack().tcp().table_size(), 0U) << "the failed open released its slot";
 }
 
+// Derived again by the design's "Several queues", where it stored the reply on queue 0 and on every sibling: "a sibling
+// hands a forwarded resolution to a new call of the IP brick, which fills or updates an entry it holds and otherwise
+// does nothing ... So a reply is used only by a shard that asked." A third shard, which does not ask, shows the last.
 TEST_F(TcpRuntime, ArpForwardedOnceToSiblings) {
-    // Two shards over a two-queue port, bound as siblings by hand and ticked from this thread.
+    // Three shards over a three-queue port, bound as siblings by hand and ticked from this thread.
+    constexpr aloe::wire::MacAddress pair_mac{0x02, 0, 0, 0, 0, 0x44};
+    constexpr aloe::wire::Ipv4Address pair_ip{10, 0, 0, 4};
+    aloe::fabric::Port& pair = fabric_.add_port({.mac = pair_mac, .queues = 3, .pool_size = 128});
+    const aloe::net::Ipv4Config config{
+        .address = pair_ip, .prefix = 24, .gateway = aloe::testing::gateway_ip, .arp_learning = true};
+    Shard& first  = add_shard(pair, 0, config, aloe::tcp::TcpConfig{});
+    Shard& second = add_shard(pair, 1, config, aloe::tcp::TcpConfig{});
+    Shard& third  = add_shard(pair, 2, config, aloe::tcp::TcpConfig{});
+    const std::array<aloe::runtime::ShardContext*, 2> for_first{&second.context(), &third.context()};
+    const std::array<aloe::runtime::ShardContext*, 2> for_second{&first.context(), &third.context()};
+    const std::array<aloe::runtime::ShardContext*, 2> for_third{&first.context(), &second.context()};
+    first.context().set_siblings(for_first);
+    second.context().set_siblings(for_second);
+    third.context().set_siblings(for_third);
+    EXPECT_FALSE(second.stack().ip().resolve(aloe::testing::gateway_ip, now_).has_value());
+    EXPECT_EQ(second.stack().ip().counters().arp_requests_sent, 1U) << "the second shard asks";
+    inject(aloe::frames::arp_frame(
+        aloe::frames::arp_reply(aloe::testing::gateway_mac, aloe::testing::gateway_ip, pair_mac, pair_ip),
+        pair_mac));  // ARP: queue 0
+    std::ignore = first.step(now_ += 1ms);
+    EXPECT_EQ(first.stack().ip().counters().resolutions, 1U) << "queue 0 reports the reply";
+    EXPECT_FALSE(second.context().inbox().empty()) << "one forward posted to each sibling";
+    EXPECT_FALSE(third.context().inbox().empty());
+    std::ignore = first.step(now_ += 1ms);  // an empty tick forwards nothing again
+    std::ignore = second.step(now_);
+    std::ignore = third.step(now_);
+    EXPECT_EQ(second.context().counters().inbox_received, 1U) << "forwarded once";
+    EXPECT_EQ(third.context().counters().inbox_received, 1U);
+    EXPECT_EQ(second.stack().ip().resolve(aloe::testing::gateway_ip, now_), aloe::testing::gateway_mac)
+        << "the shard that asked resolves through the forward";
+    EXPECT_EQ(second.stack().ip().counters().arp_requests_sent, 1U) << "with no request since its own";
+    EXPECT_FALSE(first.stack().ip().resolve(aloe::testing::gateway_ip, now_).has_value())
+        << "queue 0, which did not ask, stored nothing";
+    EXPECT_EQ(first.stack().ip().counters().arp_requests_sent, 1U) << "so its lookup asks";
+    EXPECT_FALSE(third.stack().ip().resolve(aloe::testing::gateway_ip, now_).has_value())
+        << "a shard that did not ask stored nothing";
+    EXPECT_EQ(third.stack().ip().counters().arp_requests_sent, 1U);
+    std::ignore = second.step(now_ += 1ms);
+    std::ignore = third.step(now_);
+    EXPECT_TRUE(first.context().inbox().empty()) << "a forwarded resolution is not reported again";
+    EXPECT_EQ(first.stack().forwards_dropped() + second.stack().forwards_dropped() + third.stack().forwards_dropped(),
+              0U);
+}
+
+// A forwarded resolution takes the design's rule 1 for a frame, "It extends the entry's life only when it answers a
+// request the brick itself has outstanding for that address", so frames that keep naming an address on queue 0 cannot
+// keep a sibling's unused entry in its table.
+TEST_F(TcpRuntime, FramesNamedAtQueueZeroDoNotKeepASiblingsUnusedEntriesAlive) {
     constexpr aloe::wire::MacAddress pair_mac{0x02, 0, 0, 0, 0, 0x44};
     constexpr aloe::wire::Ipv4Address pair_ip{10, 0, 0, 4};
     aloe::fabric::Port& pair = fabric_.add_port({.mac = pair_mac, .queues = 2, .pool_size = 128});
@@ -268,19 +319,29 @@ TEST_F(TcpRuntime, ArpForwardedOnceToSiblings) {
     const std::array<aloe::runtime::ShardContext*, 1> for_second{&first.context()};
     first.context().set_siblings(for_first);
     second.context().set_siblings(for_second);
-    inject(aloe::frames::arp_frame(
-        aloe::frames::arp_reply(aloe::testing::gateway_mac, aloe::testing::gateway_ip, pair_mac, pair_ip),
-        pair_mac));  // ARP: queue 0
-    std::ignore = first.step(now_ += 1ms);
-    EXPECT_EQ(first.stack().ip().counters().resolutions, 1U);
-    EXPECT_FALSE(second.context().inbox().empty()) << "one forward posted";
-    std::ignore = first.step(now_ += 1ms);  // an empty tick forwards nothing again
-    std::ignore = second.step(now_);
-    EXPECT_EQ(second.context().counters().inbox_received, 1U) << "forwarded once";
-    EXPECT_EQ(second.stack().ip().resolve(aloe::testing::gateway_ip, now_), aloe::testing::gateway_mac)
-        << "learned without asking";
-    EXPECT_EQ(second.stack().ip().counters().arp_requests_sent, 0U);
-    std::ignore = second.step(now_ += 1ms);
-    EXPECT_TRUE(first.context().inbox().empty()) << "learn does not echo the resolution back";
-    EXPECT_EQ(first.stack().forwards_dropped() + second.stack().forwards_dropped(), 0U);
+    const std::vector<std::byte> reply = aloe::frames::arp_frame(
+        aloe::frames::arp_reply(aloe::testing::gateway_mac, aloe::testing::gateway_ip, pair_mac, pair_ip), pair_mac);
+    const auto deliver_at = [&](const TimePoint at) {
+        now_ = at;
+        inject(reply);  // ARP: queue 0, which forwards it
+        std::ignore = first.step(now_);
+        std::ignore = second.step(now_);
+    };
+
+    EXPECT_FALSE(second.stack().ip().resolve(aloe::testing::gateway_ip, now_).has_value());
+    const TimePoint resolved_at = now_ + 1ms;
+    deliver_at(resolved_at);
+    ASSERT_EQ(second.stack().ip().resolve(aloe::testing::gateway_ip, now_), aloe::testing::gateway_mac)
+        << "resolved by the answer to its own request";
+
+    for (int round = 1; round <= 11; ++round) {  // every 10 s up to 110 s, and the entry is not used again
+        deliver_at(resolved_at + round * 10s);
+    }
+    EXPECT_EQ(second.context().counters().inbox_received, 12U) << "every frame was forwarded and applied";
+    EXPECT_EQ(first.stack().ip().counters().resolutions, 12U);
+
+    now_ = resolved_at + 120s;
+    EXPECT_FALSE(second.stack().ip().resolve(aloe::testing::gateway_ip, now_).has_value())
+        << "expired 120 s after the answer to its own request";
+    EXPECT_EQ(second.stack().ip().counters().arp_requests_sent, 2U) << "so it asks again";
 }

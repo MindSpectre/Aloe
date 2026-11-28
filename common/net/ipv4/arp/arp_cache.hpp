@@ -19,7 +19,8 @@ namespace aloe::net {
         core::Duration reachable        = std::chrono::seconds{60};
         /// After this, the address is unresolved again; at most a quarter of `core::Duration`.
         core::Duration expire           = std::chrono::seconds{120};
-        core::Duration request_interval = std::chrono::seconds{1};  ///< At most one request per entry per interval.
+        /// At most one request per entry per interval; at most a quarter of `core::Duration`.
+        core::Duration request_interval = std::chrono::seconds{1};
         /// Resolve on the wire and keep what is learned. Off, the learned table is neither allocated nor read, the
         /// settings above are not checked, and only the static entries resolve. The brick passes
         /// `Ipv4Config::arp_learning`; both are off by default.
@@ -89,7 +90,7 @@ namespace aloe::net {
         };
 
         /// With learning on, throws std::invalid_argument for a capacity that is zero or above 2^30, a non-positive
-        /// duration, `reachable` or `expire` above a quarter of `core::Duration`, or `reachable` not below `expire`.
+        /// duration, a duration above a quarter of `core::Duration`, or `reachable` not below `expire`.
         /// `static_entries` are taken as the brick validated them
         /// (`Ipv4Config::static_arp`): unicast neighbours, each listed once, at unicast MACs.
         explicit ArpCache(const ArpCacheConfig& config, std::vector<ArpResolution> static_entries = {});

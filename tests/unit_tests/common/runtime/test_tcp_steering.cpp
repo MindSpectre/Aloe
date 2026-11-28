@@ -22,7 +22,8 @@
 
 // Four shards of TcpStack serve the task echo; a client runtime opens connections to them; every reply is
 // stamped with the serving shard, which must be the queue the card's hash selects. Then a connect through a
-// gateway only shard 0 can learn, and stop racing the ARP forwards. The tsan preset exists for this file.
+// gateway whose ARP reply only shard 0 receives, and stop racing the ARP forwards. The tsan preset exists for
+// this file.
 namespace {
 
     using namespace std::chrono_literals;
@@ -254,16 +255,23 @@ TEST(TcpSteering, GatewayKnownOnlyByQueueZero) {
     gateway.join();
     EXPECT_TRUE(connected.load());
     EXPECT_GE(server.shard(queues - 1).stack().tcp().counters().send_unresolved, 1U) << "the first SYN waited for ARP";
-    EXPECT_EQ(server.shard(0).stack().ip().counters().resolutions, 1U) << "queue 0 learned the gateway from the wire";
+    EXPECT_EQ(server.shard(0).stack().ip().counters().resolutions, 1U) << "queue 0 reported the gateway's reply";
     EXPECT_GE(server.counters(queues - 1).inbox_received, 3U)
-        << "shard 3 learned the gateway from shard 0: its spawn, its stop and at least one forward";
+        << "shard 3 heard the reply from shard 0: its spawn, its stop and at least one forward";
+    // Derived again by the design's "Several queues", where queue 0 and every sibling stored the reply: "So a reply is
+    // used only by a shard that asked." A learned MAC moves the generation once, so it reads what each table holds.
+    EXPECT_EQ(server.shard(queues - 1).stack().ip().generation(), 1U) << "the shard that asked resolved the gateway";
+    EXPECT_EQ(server.shard(0).stack().ip().generation(), 0U) << "queue 0, which did not ask, stored nothing";
+    for (std::uint16_t index = 1; index < queues - 1; ++index) {
+        EXPECT_EQ(server.shard(index).stack().ip().generation(), 0U) << "shard " << index << " did not ask";
+    }
 }
 
 TEST(TcpSteering, StopRacesArpForward) {
-    // Shard 0 receives every ARP reply; with four queues it learns them unsolicited and forwards each resolution
-    // to the three siblings while the stop closes them. Every forward is accepted and run by a sibling, rejected
-    // and freed by shard 0, or never allocated and counted: the counters on both sides account for every one,
-    // ASan sees no leak and TSan no race between post_control and the final drain.
+    // Shard 0 receives every ARP reply; with four queues it reports them unsolicited, without storing them, and
+    // forwards each resolution to the three siblings while the stop closes them. Every forward is accepted and run by a
+    // sibling, rejected and freed by shard 0, or never allocated and counted: the counters on both sides account for
+    // every one, ASan sees no leak and TSan no race between post_control and the final drain.
     std::uint64_t attempted      = 0;
     std::uint64_t accepted       = 0;
     std::uint64_t total_rejected = 0;

@@ -399,10 +399,15 @@ TEST(ArpCache, ABadConfigThrows) {
     constexpr aloe::core::Duration quarter = aloe::core::Duration::max() / 4;
     const std::string reachable =
         refusal({.reachable = quarter + 1ns, .expire = aloe::core::Duration::max() / 2, .learning = true});
-    const std::string expire = refusal({.expire = quarter + 1ns, .learning = true});
+    const std::string expire   = refusal({.expire = quarter + 1ns, .learning = true});
+    // `Output::prebuild` adds the request interval to a stale entry's stamp.
+    const std::string interval = refusal({.request_interval = quarter + 1ns, .learning = true});
     EXPECT_NE(reachable.find("quarter"), std::string::npos) << reachable;
     EXPECT_NE(expire.find("quarter"), std::string::npos) << expire;
+    EXPECT_NE(interval.find("quarter"), std::string::npos) << interval;
     EXPECT_NE(reachable, expire);
+    EXPECT_NE(interval, reachable);
+    EXPECT_NE(interval, expire);
     EXPECT_NO_THROW((ArpCache{
         ArpCacheConfig{.reachable = std::chrono::hours{24}, .expire = std::chrono::hours{48}, .learning = true}
     }))

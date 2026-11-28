@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -27,7 +28,9 @@ namespace aloe::net::detail {
      * `transmit_built`, and the brick's other parts ask it for a MAC or hand it an ARP frame. A frame never changes a
      * static entry, and with learning off no frame teaches anything and no request leaves; a request for our address
      * is answered in every case. With learning on a frame updates an entry the table holds and creates none
-     * (`ArpCache::update`): only a lookup and the program's seed create one.
+     * (`ArpCache::update`): only a lookup and the program's seed create one. With `report_unsolicited_replies` a reply
+     * to us about an address the table does not hold is reported and not stored, for a sibling shard that asked; a
+     * resolution a sibling reported is applied as a frame's mapping is.
      */
     template <device::IsDevice Device>
     class Arp {
@@ -105,11 +108,14 @@ namespace aloe::net::detail {
                 return;
             }
             if (!cache_.contains(arp->sender_ip)) {
-                // Never asked: nothing on the segment fills the cache, unless a sibling shard asked for our address,
-                // whose reply this shard stores so the loop can forward it.
-                if (config_.arp_learning && config_.accept_unsolicited_replies && arp->target_ip == config_.address &&
+                // This shard never asked, and nothing on the segment fills its cache. A sibling shard may have: the
+                // shards of a multi-queue device share our address and every ARP frame lands on queue 0, so with the
+                // switch on a reply addressed to us is reported for the loop to forward, and still not stored. Linux's
+                // `arp_process` drops it too unless `arp_accept` is set, and then creates the entry; Linux keeps one
+                // table per device and has no sibling to tell.
+                if (config_.arp_learning && config_.report_unsolicited_replies && arp->target_ip == config_.address &&
                     plausible_sender(*arp)) {
-                    record(cache_.seed(arp->sender_ip, arp->sender_mac, now), *arp);
+                    report(arp->sender_ip, arp->sender_mac);
                 } else {
                     ++counters_.dropped_arp_unsolicited;
                 }
@@ -145,13 +151,21 @@ namespace aloe::net::detail {
             return config_.arp_learning || cache_.is_static(hop);
         }
 
-        /// A seed of the learned table, or a resolution another shard learned: creates the entry when absent, and does
-        /// nothing with learning off or for a static address; a full table refuses it, counted. Appends nothing to
-        /// `resolved()`.
+        /// The program's seed of the learned table: creates the entry when absent, and does nothing with learning off
+        /// or for a static address; a full table refuses it, counted. Appends nothing to `resolved()`.
         void learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
             if (cache_.seed(address, mac, now) == ArpCache::Taught::Full) {
                 ++counters_.arp_table_full;
             }
+        }
+
+        /// A resolution another shard reported, taken as a frame's mapping is (`ArpCache::update`): it fills, refreshes
+        /// or changes the entry the table holds, extending its life only when it answers this brick's own request, and
+        /// creates none. Reports and counts nothing: the shard whose queue received the frame did.
+        void apply_resolution(const wire::Ipv4Address address,
+                              const wire::MacAddress mac,
+                              const core::TimePoint now) noexcept {
+            std::ignore = cache_.update(address, mac, now);
         }
 
         /// The stamp a reachable or stale entry was last confirmed at (`ArpCache::confirmed`).
@@ -164,7 +178,8 @@ namespace aloe::net::detail {
             return cache_.generation();
         }
 
-        /// The mappings learned from the wire since `clear_resolved`.
+        /// The mappings reported since `clear_resolved`: those frames gave entries the table holds, and with
+        /// `report_unsolicited_replies` the replies to us about addresses it does not hold, which were not stored.
         [[nodiscard]] std::span<const ArpResolution> resolved() const noexcept {
             return resolved_;
         }
@@ -198,25 +213,23 @@ namespace aloe::net::detail {
             return true;
         }
 
-        /// The frame's sender mapping, for the entry the table holds: filled, refreshed or changed, and reported. A
-        /// frame creates no entry, and extends an entry's life only when it answers the brick's own request.
+        /**
+         * The frame's sender mapping, for the entry the table holds: filled, refreshed or changed. A frame creates no
+         * entry, and extends an entry's life only when it answers the brick's own request. A mapping the entry took is
+         * reported, the same MAC included and whether or not it answered this shard's request, so a sibling shard that
+         * asked hears the answer. Anything else stored nothing and is not reported: an address the table does not
+         * hold, a static one, or learning off.
+         */
         void update_sender(const wire::ArpPacket& arp, const core::TimePoint now) noexcept {
-            record(cache_.update(arp.sender_ip, arp.sender_mac, now), arp);
+            if (cache_.update(arp.sender_ip, arp.sender_mac, now) == ArpCache::Taught::Updated) {
+                report(arp.sender_ip, arp.sender_mac);
+            }
         }
 
-        /**
-         * What the frame's sender mapping did to the table: a mapping an entry the table holds took is reported in
-         * `resolved()`, the same MAC included and whether or not it answered this shard's request, so a sibling shard
-         * that asked hears the answer; a seed the full table refused is counted. Anything else stored nothing: an
-         * address the table does not hold, a static one, or learning off.
-         */
-        void record(const ArpCache::Taught taught, const wire::ArpPacket& arp) noexcept {
-            if (taught == ArpCache::Taught::Updated || taught == ArpCache::Taught::Created) {
-                resolved_.push_back(ArpResolution{.address = arp.sender_ip, .mac = arp.sender_mac});
-                ++counters_.resolutions;
-            } else if (taught == ArpCache::Taught::Full) {
-                ++counters_.arp_table_full;
-            }
+        /// Appends the mapping to `resolved()` for the loop to forward, and counts it.
+        void report(const wire::Ipv4Address address, const wire::MacAddress mac) noexcept {
+            resolved_.push_back(ArpResolution{.address = address, .mac = mac});
+            ++counters_.resolutions;
         }
 
         /// A request for `target`: broadcast for an unresolved entry, unicast to `known` for a stale one.

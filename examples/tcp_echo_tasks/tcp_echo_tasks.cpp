@@ -11,9 +11,9 @@
 //
 // The neighbours are tcp_echo's: `--static` alone, unless `--learn-arp` resolves them on the wire, as the tap lines
 // must. The port opens with one queue, as `ethdev::PortConfig` does by default; a program that opens more gets a
-// shard on each, and with learning on `runtime::TcpStack` then lets the IP brick learn unsolicited ARP replies so
-// queue 0 can forward what its siblings asked for. The client runs on shard 0, whose queue a card with steering off
-// delivers to.
+// shard on each, and with learning on `runtime::TcpStack` then has the IP brick report unsolicited ARP replies so
+// queue 0 can forward the answers to what its siblings asked for. The client runs on shard 0, whose queue a card
+// with steering off delivers to.
 
 #include <aloe/ethdev>
 #include <aloe/net>
