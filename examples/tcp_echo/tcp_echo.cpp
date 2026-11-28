@@ -37,6 +37,7 @@
 #include <optional>
 #include <print>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -63,6 +64,10 @@ namespace {
         std::optional<aloe::tcp::Endpoint> connect;
         std::vector<std::string> eal;
     };
+
+    constexpr std::string_view usage = "usage: tcp_echo <port> <address>/<prefix> [<gateway>] "
+                                       "(--listen <port> | --connect <host>:<port>) [--static <address>=<mac>]... "
+                                       "[--learn-arp] [-- <EAL arguments...>]";
 
     [[nodiscard]] std::optional<std::uint16_t> parse_port(const std::string_view text) {
         unsigned value = 0;
@@ -213,10 +218,7 @@ namespace {
 int main(int argc, char** argv) {
     const auto arguments = parse(std::span<char*>{argv, static_cast<std::size_t>(argc)});
     if (!arguments) {
-        std::println(
-            stderr,
-            "usage: tcp_echo <port> <address>/<prefix> [<gateway>] (--listen <port> | --connect <host>:<port>) "
-            "[--static <address>=<mac>]... [--learn-arp] [-- <EAL arguments...>]");
+        std::println(stderr, "{}", usage);
         return EXIT_FAILURE;
     }
     std::signal(SIGINT, on_signal);
@@ -229,7 +231,16 @@ int main(int argc, char** argv) {
     };
     aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<Port> queue{port, 0, 512, counters};
-    Ipv4 ip{queue, arguments->ip};
+    // The brick checks what the arguments configured: a refusal, a gateway with neither a static entry nor
+    // learning for instance, is a usage error.
+    std::optional<Ipv4> brick;
+    try {
+        brick.emplace(queue, arguments->ip);
+    } catch (const std::invalid_argument& error) {
+        std::println(stderr, "{}\n{}", error.what(), usage);
+        return EXIT_FAILURE;
+    }
+    Ipv4& ip = *brick;
     aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, aloe::core::Clock::now()};
     Tcp tcp{ip, wheel, {}};
     std::vector<Port::Packet> burst(64);
@@ -307,7 +318,8 @@ int main(int argc, char** argv) {
 
     const aloe::tcp::TcpCounters& c = tcp.counters();
     std::println("{} segments in, {} data out, {} pure ACKs, {} control, {} resets; {} accepted, {} opened, {} closed, "
-                 "{} reset, {} timed out; dropped: {} no connection, {} checksum, {} window, {} resources",
+                 "{} reset, {} timed out; dropped: {} no connection, {} no route, {} checksum, {} window, "
+                 "{} resources",
                  c.segments_received,
                  c.data_segments_sent,
                  c.pure_acks_sent,
@@ -319,6 +331,7 @@ int main(int argc, char** argv) {
                  c.connections_reset,
                  c.connections_timed_out,
                  c.dropped_no_connection,
+                 c.dropped_no_route,
                  c.dropped_bad_checksum,
                  c.dropped_out_of_window + c.dropped_out_of_order + c.dropped_duplicate,
                  c.dropped_no_slot + c.dropped_no_node + c.dropped_table_full + c.allocation_failures);

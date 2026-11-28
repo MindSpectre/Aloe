@@ -26,6 +26,7 @@
 #include <optional>
 #include <print>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -46,6 +47,9 @@ namespace {
         aloe::net::Ipv4Config config;
         std::vector<std::string> eal;
     };
+
+    constexpr std::string_view usage = "usage: ping_responder <port> <address>/<prefix> [<gateway>] "
+                                       "[--static <address>=<mac>]... [--learn-arp] [-- <EAL arguments...>]";
 
     /// `--static`'s value, `<address>=<mac>`: a neighbour the brick knows without ARP.
     [[nodiscard]] std::optional<aloe::net::ArpResolution> parse_static(const std::string_view text) {
@@ -130,9 +134,7 @@ namespace {
 int main(int argc, char** argv) {
     const auto arguments = parse(std::span<char*>{argv, static_cast<std::size_t>(argc)});
     if (!arguments) {
-        std::println(stderr,
-                     "usage: ping_responder <port> <address>/<prefix> [<gateway>] [--static <address>=<mac>]... "
-                     "[--learn-arp] [-- <EAL arguments...>]");
+        std::println(stderr, "{}", usage);
         return EXIT_FAILURE;
     }
     std::signal(SIGINT, on_signal);
@@ -145,7 +147,16 @@ int main(int argc, char** argv) {
     };
     aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<aloe::ethdev::Port> queue{port, 0, 64, counters};
-    aloe::net::Ipv4<aloe::ethdev::Port> ip{queue, arguments->config};
+    // The brick checks what the arguments configured: a refusal, a gateway with neither a static entry nor
+    // learning for instance, is a usage error.
+    std::optional<aloe::net::Ipv4<aloe::ethdev::Port>> brick;
+    try {
+        brick.emplace(queue, arguments->config);
+    } catch (const std::invalid_argument& error) {
+        std::println(stderr, "{}\n{}", error.what(), usage);
+        return EXIT_FAILURE;
+    }
+    aloe::net::Ipv4<aloe::ethdev::Port>& ip = *brick;
     std::vector<aloe::ethdev::Packet> burst(64);
     std::println("{} ({}) MAC {}: answering ARP and ping for {}/{}; interrupt to stop",
                  arguments->port,
@@ -154,7 +165,8 @@ int main(int argc, char** argv) {
                  ip.address(),
                  ip.prefix());
     if (ip.gateway()) {
-        std::ignore = ip.resolve(*ip.gateway(), aloe::core::Clock::now());  // the request leaves now
+        // With learning on the request leaves now; a static gateway is known already and asks for none.
+        std::ignore = ip.resolve(*ip.gateway(), aloe::core::Clock::now());
         std::ignore = queue.flush();
     }
 
@@ -170,8 +182,9 @@ int main(int argc, char** argv) {
     queue.discard();
 
     const aloe::net::Ipv4Counters& c = ip.counters();
+    // A frame that contradicts a static entry is how a router whose MAC changed shows: it is counted on its own.
     std::println("{} frames: {} ARP requests answered, {} echoes answered, {} resolutions; dropped: {} not for us, "
-                 "{} other ethertypes, {} bad checksums, {} other",
+                 "{} other ethertypes, {} bad checksums, {} contradicting a static entry, {} other",
                  c.frames,
                  c.arp_replies_sent,
                  c.echo_replies_sent,
@@ -179,6 +192,7 @@ int main(int argc, char** argv) {
                  c.dropped_not_for_us,
                  c.dropped_ethertype,
                  c.dropped_bad_checksum,
+                 c.dropped_arp_static_conflict,
                  c.dropped_short + c.dropped_arp_malformed + c.dropped_arp_conflict + c.dropped_arp_unsolicited +
                      c.dropped_bad_header + c.dropped_fragment + c.dropped_protocol + c.dropped_icmp +
                      c.dropped_martian + c.dropped_tcp_broadcast);

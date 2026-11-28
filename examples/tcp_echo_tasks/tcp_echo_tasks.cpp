@@ -32,6 +32,7 @@
 #include <optional>
 #include <print>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -54,6 +55,10 @@ namespace {
         std::optional<aloe::tcp::Endpoint> connect;
         std::vector<std::string> eal;
     };
+
+    constexpr std::string_view usage = "usage: tcp_echo_tasks <port> <address>/<prefix> [<gateway>] "
+                                       "(--listen <port> | --connect <host>:<port>) [--static <address>=<mac>]... "
+                                       "[--learn-arp] [-- <EAL arguments...>]";
 
     // `parse_port`, `parse_static` and `parse` are tcp_echo's, with this program's name in the EAL arguments: each
     // example reads on its own.
@@ -242,20 +247,26 @@ namespace {
 int main(int argc, char** argv) {
     const auto arguments = parse(std::span<char*>{argv, static_cast<std::size_t>(argc)});
     if (!arguments) {
-        std::println(stderr,
-                     "usage: tcp_echo_tasks <port> <address>/<prefix> [<gateway>] (--listen <port> | --connect "
-                     "<host>:<port>) [--static <address>=<mac>]... [--learn-arp] [-- <EAL arguments...>]");
+        std::println(stderr, "{}", usage);
         return EXIT_FAILURE;
     }
     const sigset_t signals = block_termination_signals();
     aloe::ethdev::Eal eal{arguments->eal};
     Port port{{.name = arguments->port}};
-    Runtime runtime{
-        {.shard = {}, .threads = {}, .thread_hook = aloe::ethdev::register_thread},
-        port,
-        arguments->ip,
-        aloe::tcp::TcpConfig{}
-    };
+    // Every shard's brick checks what the arguments configured: a refusal, a gateway with neither a static entry nor
+    // learning for instance, is a usage error.
+    std::optional<Runtime> built;
+    try {
+        built.emplace(
+            aloe::runtime::RuntimeConfig{.shard = {}, .threads = {}, .thread_hook = aloe::ethdev::register_thread},
+            port,
+            arguments->ip,
+            aloe::tcp::TcpConfig{});
+    } catch (const std::invalid_argument& error) {
+        std::println(stderr, "{}\n{}", error.what(), usage);
+        return EXIT_FAILURE;
+    }
+    Runtime& runtime = *built;
     runtime.start();
     if (arguments->listen) {
         for (std::uint16_t index = 0; index < runtime.shard_count(); ++index) {
@@ -270,7 +281,7 @@ int main(int argc, char** argv) {
         runtime.spawn(0, client(&runtime.shard(0).stack().streams(), *arguments->connect, &done));
         constexpr timespec poll_interval{.tv_sec = 0, .tv_nsec = 1'000'000};
         while (!done.load() && sigtimedwait(&signals, nullptr, &poll_interval) < 0) {
-            // an unanswered ARP keeps the SYN waiting without a time-out: an interrupt ends the wait
+            // with learning on, an unanswered ARP keeps the SYN waiting without a time-out: an interrupt ends the wait
         }
     }
     runtime.stop();
@@ -280,7 +291,8 @@ int main(int argc, char** argv) {
         Stack& stack                           = runtime.shard(index).stack();
         const aloe::tcp::TcpCounters& counters = stack.tcp().counters();
         std::println("shard {}: {} accepted, {} opened, {} closed, {} reset, {} timed out, {} data segments, "
-                     "{} pure ACKs, {} dropped without a connection; ARP forwards: {} dropped, {} rejected",
+                     "{} pure ACKs, {} dropped without a connection, {} without a route; ARP forwards: {} dropped, "
+                     "{} rejected",
                      index,
                      counters.connections_accepted,
                      counters.connections_opened,
@@ -290,6 +302,7 @@ int main(int argc, char** argv) {
                      counters.data_segments_sent,
                      counters.pure_acks_sent,
                      counters.dropped_no_connection,
+                     counters.dropped_no_route,
                      stack.forwards_dropped(),
                      stack.forwards_rejected());
     }

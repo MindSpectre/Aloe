@@ -172,7 +172,7 @@ namespace aloe::net::detail {
         /// with learning off a unicast hop the static table does not hold is nowhere.
         [[nodiscard]] std::optional<wire::Ipv4Address> next_hop(const wire::Ipv4Address destination) const noexcept {
             const std::optional<wire::Ipv4Address> hop = routing_.next_hop(destination);
-            if (!hop || routing_.is_broadcast(*hop) || hop->is_multicast() || arp_.reachable(*hop)) {
+            if (!hop || routing_.is_broadcast(*hop) || hop->is_multicast() || arp_.may_reach(*hop)) {
                 return hop;
             }
             return std::nullopt;

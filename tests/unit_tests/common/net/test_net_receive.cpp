@@ -256,8 +256,11 @@ TEST_P(NetReceive, AnAddressThatIsNotAUnicastHostThrows) {
 }
 
 TEST_P(NetReceive, AGatewayThatIsNotAUnicastNeighbourThrows) {
+    // Learning on: with it off, a gateway with no static entry is refused whatever it is (the design's new refusal),
+    // so these rows would pass without the rule they name; and a static entry would not do, since one for our own
+    // address is refused by the static table's rule instead.
     const auto config = [](const aloe::wire::Ipv4Address gateway) {
-        return aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24, .gateway = gateway};
+        return aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24, .gateway = gateway, .arp_learning = true};
     };
     EXPECT_THROW((Ipv4{queue_, config(stack_ip)}), std::invalid_argument) << "ourselves";
     EXPECT_THROW((Ipv4{queue_, config({10, 0, 0, 0})}), std::invalid_argument) << "the network";
@@ -271,10 +274,12 @@ TEST_P(NetReceive, ABadConfigThrows) {
                      queue_, {.address = stack_ip, .prefix = 33}
     }),
                  std::invalid_argument);
-    EXPECT_THROW((Ipv4{
-                     queue_, {.address = stack_ip, .prefix = 24, .gateway = aloe::testing::far_ip}
+    // Learning on, as above: with it off, the refusal of a gateway with no static entry would pass this row alone.
+    EXPECT_THROW(
+        (Ipv4{
+            queue_, {.address = stack_ip, .prefix = 24, .gateway = aloe::testing::far_ip, .arp_learning = true}
     }),
-                 std::invalid_argument)
+        std::invalid_argument)
         << "the gateway must be on the subnet";
     EXPECT_THROW((Ipv4{
                      queue_, {.address = stack_ip, .ttl = 0}

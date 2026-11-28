@@ -19,8 +19,9 @@ namespace aloe::testing {
         return counters.dropped_bad_header + counters.dropped_bad_checksum + counters.dropped_no_connection +
                counters.dropped_closed + counters.dropped_unexpected + counters.dropped_duplicate +
                counters.dropped_out_of_order + counters.dropped_out_of_window + counters.dropped_no_slot +
-               counters.dropped_no_node + counters.dropped_table_full + counters.dropped_paws +
-               counters.dropped_reset_challenged + counters.dropped_syn_challenged + counters.dropped_old_ack;
+               counters.dropped_no_node + counters.dropped_table_full + counters.dropped_no_route +
+               counters.dropped_paws + counters.dropped_reset_challenged + counters.dropped_syn_challenged +
+               counters.dropped_old_ack;
     }
 
     /// The brick under the recording policy: an unbounded window, so no rate reduction holds a resend back, and the

@@ -130,9 +130,9 @@ namespace aloe::net::detail {
             return lookup(hop, now).mac;
         }
 
-        /// Whether a frame may go to `hop` at all: with learning on any neighbour may be resolved, with it off only a
-        /// static one.
-        [[nodiscard]] bool reachable(const wire::Ipv4Address hop) const noexcept {
+        /// ARP's half of the route question: whether a frame may go to the unicast `hop` at all. With learning on any
+        /// neighbour may be resolved, with it off only a static one.
+        [[nodiscard]] bool may_reach(const wire::Ipv4Address hop) const noexcept {
             return config_.arp_learning || cache_.is_static(hop);
         }
 
