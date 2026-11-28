@@ -901,11 +901,12 @@ instruction level and named the control block's layout as the plausible cause: t
 `std::uint64_t`, had taken `SendSequence` from 32 to 40 bytes and its alignment from 4 to 8. The sum is now
 `bytes_acked`, a `std::uint32_t` that stops at the top of 32 bits, which leaves `SendSequence` at 36 bytes and an
 alignment of 4. The control block did not change with it: the member after `SendSequence` is 8-byte aligned, so it and
-every member behind it sit where they sat in the first rerun, 8 bytes further along than on `main`; over the
-benchmark's DPDK port the block is 968 bytes in both reruns and 944 on `main`. On the tick's path the change puts a
-saturating 32-bit addition where a 64-bit one was; the minimum in the bound on an old ACK is read only for an ACK below
-SND.UNA. The other commits between 72df4da and the measured head, 8c5ee5b, change what the IP brick's seed answers, the
-TCP stack's constructor, tests and comments, none of them on the tick's path.
+every member behind it sit where they sat in the first rerun. Against `main` that is 8 bytes further along as far as
+the SACK blocks, and 24 bytes for what stands behind the answer limiter that follows them, the two timers among it;
+over the benchmark's DPDK port the block is 968 bytes in both reruns and 944 on `main`. On the tick's path the change
+puts a saturating 32-bit addition where a 64-bit one was; the minimum in the bound on an old ACK is read only for an
+ACK below SND.UNA. The other commits between 72df4da and the measured head, 8c5ee5b, change what the IP brick's seed
+answers, the TCP stack's constructor, tests and comments, none of them on the tick's path.
 
 **What this does and does not establish.** The first rerun's rise at p99 is not reproduced: here the gated tick's p99
 runs from 710 to 760 ns over the branch's three runs and over `main`'s alike, and no run of either side has the raised

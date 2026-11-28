@@ -13,7 +13,8 @@
 //
 // The brick knows its neighbours from `--static` alone unless `--learn-arp` lets it resolve them on the wire: a tap
 // interface's MAC is new on every run, so the tap lines learn it. Without learning a gateway needs a static entry,
-// and a peer outside the table is unreachable: `--connect` fails with no route, and its SYN is dropped.
+// and a peer outside the table is unreachable: `--connect` fails with no route, and its SYN is dropped. With neither
+// a `--static` entry nor `--learn-arp` the TCP brick refuses the IP brick, and the program prints why and ends.
 //
 // The echo's copy from the received packet into the prepared one is the application's operation: a program
 // producing new messages encodes them straight into `prepare` and never copies. A multi-queue program over the

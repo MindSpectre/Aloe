@@ -114,7 +114,9 @@ per packet.
   stream owner composed for one shard, with the tick glue; it models `IsStack` with both hooks. It is constructed
   by the shard from the context, the queue, a `net::Ipv4Config` and a `tcp::TcpConfig`, and names its parts `Ip`
   (`net::Ipv4<Device>`), `Tcp` (`tcp::Stack<Ip, CongestionControl>`), `StreamsType` (`Streams<Tcp>`) and
-  `StreamType` (`Stream<Tcp>`); `ip()`, `tcp()` and `streams()` reach them. The congestion control passes
+  `StreamType` (`Stream<Tcp>`); `ip()`, `tcp()` and `streams()` reach them. Its constructor passes on what either
+  brick's refuses with `std::invalid_argument`, the IP brick's configuration or the TCP brick's IP brick that can
+  resolve no neighbour, so `Runtime`'s constructor throws it before any thread starts. The congestion control passes
   through to the TCP brick unchanged: `TcpStack<Device, tcp::NoCongestionControl>` runs every shard without one
   (see the [TCP page](tcp.md#congestion-control)). The members are declared IP, TCP, Streams, so
   they are destroyed in the reverse order, and the destructor removes the ARP sink before any of them goes.

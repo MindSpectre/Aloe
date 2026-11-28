@@ -48,7 +48,7 @@ TEST_P(TcpTemplate, AStaleEntryIsRefreshedOnceAndTheFrameStillGoes) {
 TEST_P(TcpTemplate, ARebuildThatFindsNoNextHopRefusesTheCommitAndRecovers) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
-    advance(121s);  // past arp_expire: the entry is gone
+    advance(121s);  // past arp_expire: the entry keeps its slot and resolves nothing until it is confirmed again
     const auto room = c->prepare(10);
     ASSERT_TRUE(room.has_value());
     EXPECT_FALSE(c->commit(10));

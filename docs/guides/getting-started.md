@@ -225,8 +225,10 @@ above learns it. The tap interface exists only while the program runs, so addres
 The client's SYN waits for ARP until the kernel end answers, so the kernel's listener must already be there, on a port
 the host firewall opens (above 1024 under Fedora's defaults). Add a gateway after the address to reach hosts off the
 subnet, with a `--static` entry for it or with `--learn-arp`: without learning a gateway with no entry is refused at
-start, and a peer outside the table cannot be reached. To run on hardware, replace `net_tap0` and the `--vdev` argument
-with a card's PCI address and name the router:
+start, and a peer outside the table cannot be reached. With neither a `--static` entry nor `--learn-arp` the two echoes
+refuse to start, since the TCP brick refuses an IP brick that can resolve no neighbour; the ping responder starts either
+way and answers what it is asked. To run on hardware, replace `net_tap0` and the `--vdev` argument with a card's PCI
+address and name the router:
 
 ```bash
 sudo ./build/debug/examples/ping_responder/Aloe.Examples.PingResponder 0000:03:00.0 192.168.1.50/24 192.168.1.1 \
