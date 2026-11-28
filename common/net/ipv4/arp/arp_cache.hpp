@@ -14,9 +14,11 @@
 namespace aloe::net {
 
     struct ArpCacheConfig {
-        std::size_t capacity     = 256;  ///< The learned entries held at most: positive, and at most 2^30.
-        core::Duration reachable = std::chrono::seconds{60};   ///< A confirmed MAC is used without a refresh this long.
-        core::Duration expire    = std::chrono::seconds{120};  ///< After this, the address is unresolved again.
+        std::size_t capacity            = 256;  ///< The learned entries held at most: positive, and at most 2^30.
+        /// A confirmed MAC is used without a refresh this long; at most a quarter of `core::Duration`.
+        core::Duration reachable        = std::chrono::seconds{60};
+        /// After this, the address is unresolved again; at most a quarter of `core::Duration`.
+        core::Duration expire           = std::chrono::seconds{120};
         core::Duration request_interval = std::chrono::seconds{1};  ///< At most one request per entry per interval.
         /// Resolve on the wire and keep what is learned. Off, the learned table is neither allocated nor read, the
         /// settings above are not checked, and only the static entries resolve. The brick passes
@@ -53,14 +55,16 @@ namespace aloe::net {
      * full and any free slot serves any address. Only the brick's own `lookup` and the program's `seed` create an
      * entry; a frame calls `update`, which changes an entry the table holds and creates none. No address takes
      * another's place: a new one takes a free slot while fewer than `capacity` entries are held, and then only the
-     * slot of an expired entry or of an incomplete one whose last request is at least `request_interval` old. A
+     * slot of an incomplete one whose last request is at least `request_interval` old, else of an expired entry. A
      * resolved entry that has not expired is never removed; with no such slot the table refuses the address. One
      * thread uses a cache; nothing in it is synchronised, and nothing allocates after construction.
      *
      * An entry is incomplete (asked about, not answered) or reachable (confirmed at some stamp).
      * `lookup` returns the MAC while the confirmation is younger than `expire`, asks for a request
      * once it is `reachable` old, and asks for one for an incomplete or absent address, at most one
-     * per `request_interval` per entry.
+     * per `request_interval` per entry. Only an answer to such a request, or a `seed`, confirms an entry: a frame
+     * nobody asked for may give a resolved entry another MAC, but never extends its life, so an entry the brick does
+     * not use expires `expire` after the last answer to its own request, whatever frames name it.
      */
     class ArpCache {
     public:
@@ -75,7 +79,7 @@ namespace aloe::net {
 
         /// What a frame's or the program's mapping did to the table.
         enum class Taught : std::uint8_t {
-            Updated,   ///< A learned entry was filled, refreshed or given another MAC.
+            Updated,   ///< A learned entry was filled, refreshed or given another MAC, or named with the MAC it has.
             Created,   ///< `seed` made a new entry.
             Unknown,   ///< `update`: the table holds no entry for the address; nothing was stored.
             Static,    ///< The address is static and the MAC agrees; nothing changed.
@@ -85,7 +89,8 @@ namespace aloe::net {
         };
 
         /// With learning on, throws std::invalid_argument for a capacity that is zero or above 2^30, a non-positive
-        /// duration, or `reachable` not below `expire`. `static_entries` are taken as the brick validated them
+        /// duration, `reachable` or `expire` above a quarter of `core::Duration`, or `reachable` not below `expire`.
+        /// `static_entries` are taken as the brick validated them
         /// (`Ipv4Config::static_arp`): unicast neighbours, each listed once, at unicast MACs.
         explicit ArpCache(const ArpCacheConfig& config, std::vector<ArpResolution> static_entries = {});
         ArpCache(const ArpCache&)            = delete;
@@ -97,9 +102,13 @@ namespace aloe::net {
         /// A static entry's MAC, permanent; with learning off nothing else. With learning on, inserts an incomplete
         /// entry for an absent address, or answers `full` and asks for no request when the table has no slot for it.
         [[nodiscard]] Lookup lookup(wire::Ipv4Address address, core::TimePoint now) noexcept;
-        /// A frame's mapping: fills, refreshes or changes the entry the table holds for `address`, and creates none.
+        /// A frame's mapping: fills, refreshes or changes the entry the table holds for `address`, and creates none. It
+        /// confirms the entry at `now` only when it answers a request the brick has outstanding for the address, the
+        /// incomplete entry's or a stale one's refresh; otherwise it gives a resolved entry another MAC, or changes
+        /// nothing, and leaves its confirmation where it was.
         [[nodiscard]] Taught update(wire::Ipv4Address address, wire::MacAddress mac, core::TimePoint now) noexcept;
-        /// The program's mapping: as `update`, and creates the entry when the table does not hold it.
+        /// The program's mapping: confirms the entry the table holds for `address` at `now` with `mac`, whatever it
+        /// was, and creates the entry when the table does not hold it.
         [[nodiscard]] Taught seed(wire::Ipv4Address address, wire::MacAddress mac, core::TimePoint now) noexcept;
         /// Any learned entry for the address, incomplete or expired included; a static one is not counted.
         [[nodiscard]] bool contains(wire::Ipv4Address address) const noexcept;
@@ -110,9 +119,8 @@ namespace aloe::net {
         [[nodiscard]] bool is_static(wire::Ipv4Address address) const noexcept;
 
         /// Starts at zero; moves by one whenever a learned entry's MAC changes or goes: an `update` or `seed` that
-        /// confirms an entry that was not reachable or held another MAC, a `lookup` that finds a reachable entry
-        /// expired, and a new address that takes the slot of an expired reachable entry. The static entries never move
-        /// it.
+        /// fills an incomplete entry or gives an entry another MAC, a `lookup` that finds a reachable entry expired,
+        /// and a new address that takes the slot of an expired reachable entry. The static entries never move it.
         [[nodiscard]] std::uint64_t generation() const noexcept {
             return generation_;
         }
@@ -151,8 +159,13 @@ namespace aloe::net {
         [[nodiscard]] Entry* insert(wire::Ipv4Address address, core::TimePoint now) noexcept;
         /// Empties `slot` and moves the entries behind it back along their probe chains, so no chain has a gap.
         void remove(std::size_t slot) noexcept;
-        /// Reachable and expired, or incomplete with no request younger than `request_interval`: its slot may be taken.
-        [[nodiscard]] bool reusable(const Entry& entry, core::TimePoint now) const noexcept;
+        /// Incomplete, with no request younger than `request_interval`: no reply is coming, and its slot may be taken.
+        [[nodiscard]] bool lapsed(const Entry& entry, core::TimePoint now) const noexcept;
+        /// Reachable, and confirmed at least `expire` ago: its slot may be taken, and its MAC goes with it.
+        [[nodiscard]] bool expired(const Entry& entry, core::TimePoint now) const noexcept;
+        /// `Static` or `Conflict` for a static address, `Off` with learning off: the learned table may not take the
+        /// mapping. Nothing when it may.
+        [[nodiscard]] std::optional<Taught> kept_out(wire::Ipv4Address address, wire::MacAddress mac) const noexcept;
         /// True, and records the stamp, when the entry's last request is absent or at least an interval old.
         [[nodiscard]] bool request_due(Entry& entry, core::TimePoint now) const noexcept;
         /// Sets the entry reachable at `now` with `mac`, moving the generation when its MAC appears or changes.

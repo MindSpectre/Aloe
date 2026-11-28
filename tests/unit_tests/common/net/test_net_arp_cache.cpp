@@ -1,9 +1,11 @@
 #include <aloe/net>
 #include <aloe/wire>
+#include <bit>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 #include <vector>
 
@@ -54,6 +56,26 @@ namespace {
             }
         }
         return found;
+    }
+
+    /// The slots of `small`'s table: the next power of two at or above twice its capacity.
+    constexpr std::size_t small_slots = std::bit_ceil(2 * small.capacity);
+
+    /// An address of 10.1.0.0/16, apart from `peer`, every `host` and `skip` others, whose home in `small`'s table is
+    /// `slot`, taken modulo the slots.
+    [[nodiscard]] aloe::wire::Ipv4Address homed_at(const std::size_t slot, std::size_t skip = 0) {
+        for (std::uint32_t low = 1; low < 0x10000U; ++low) {
+            const auto address = aloe::wire::Ipv4Address::from_uint32(0x0a010000U | low);
+            if (aloe::net::detail::arp_home_slot(address, small_slots) != slot % small_slots) {
+                continue;
+            }
+            if (skip == 0) {
+                return address;
+            }
+            --skip;
+        }
+        ADD_FAILURE() << "no address of 10.1.0.0/16 is homed at slot " << slot;
+        return {};
     }
 
 }  // namespace
@@ -205,26 +227,114 @@ TEST(ArpCache, AResolvedEntryIsNeverRemovedBeforeItExpires) {
     EXPECT_EQ(cache.size(), held);
 }
 
-TEST(ArpCache, RemovingAnEntryKeepsTheChainsOfTheOthers) {
+TEST(ArpCache, AFullTableGivesUpAWaitingSlotBeforeAnExpiredOne) {
     aloe::net::ArpCache cache{small};
-    // Five addresses on one chain, the second of them confirmed earliest so it alone expires, and three others.
-    const std::vector<aloe::wire::Ipv4Address> chain = sharing_one_home(6);
-    ASSERT_EQ(chain.size(), 6);
-    std::vector<aloe::wire::Ipv4Address> others{chain[0], chain[2], chain[3], chain[4], host(1), host(2), host(3)};
-    ASSERT_EQ(cache.seed(chain[0], peer_mac, at(10s)), Taught::Created);
-    ASSERT_EQ(cache.seed(chain[1], other_mac, at(0s)), Taught::Created);
-    for (std::size_t index = 1; index < others.size(); ++index) {
-        ASSERT_EQ(cache.seed(others[index], peer_mac, at(10s)), Taught::Created);
+    // Seven resolved at homes 0 to 6, ahead of the waiting one at home 15 in slot order.
+    for (std::size_t slot = 0; slot < held - 1; ++slot) {
+        ASSERT_EQ(cache.seed(homed_at(slot), peer_mac, at(0s)), Taught::Created);
+    }
+    const aloe::wire::Ipv4Address waiting = homed_at(small_slots - 1);
+    ASSERT_EQ(cache.lookup(waiting, at(119s)), (Lookup{.mac = std::nullopt, .send_request = true}));
+    const std::uint64_t before = cache.generation();
+
+    // At 120 s the seven have expired and the request has lapsed: the slot that holds no MAC goes.
+    EXPECT_EQ(cache.lookup(peer, at(120s)), (Lookup{.mac = std::nullopt, .send_request = true}));
+    EXPECT_FALSE(cache.contains(waiting));
+    for (std::size_t slot = 0; slot < held - 1; ++slot) {
+        EXPECT_TRUE(cache.contains(homed_at(slot)));
+    }
+    EXPECT_EQ(cache.generation(), before) << "no MAC went";
+}
+
+// The design's rule 1, as amended: "It extends the entry's life only when it answers a request the brick itself has
+// outstanding for that address: a frame nobody asked for never moves the confirmation stamp".
+TEST(ArpCache, AFrameNobodyAskedForDoesNotExtendAnEntrysLife) {
+    aloe::net::ArpCache cache{small};
+    std::ignore = cache.lookup(peer, at(0s));
+    ASSERT_EQ(cache.update(peer, peer_mac, at(0s)), Taught::Updated);  // the answer to the brick's request
+    EXPECT_EQ(cache.update(peer, peer_mac, at(100s)), Taught::Updated) << "still reported";
+    EXPECT_EQ(cache.confirmed(peer), at(0s));
+    EXPECT_EQ(cache.lookup(peer, at(120s)), (Lookup{.mac = std::nullopt, .send_request = true}))
+        << "expired, as if no frame had named it";
+}
+
+TEST(ArpCache, AnAnswerToOurRefreshExtendsIt) {
+    aloe::net::ArpCache cache{small};
+    std::ignore = cache.seed(peer, peer_mac, at(0s));
+    ASSERT_EQ(cache.lookup(peer, at(61s)), (Lookup{.mac = peer_mac, .send_request = true})) << "the refresh";
+    EXPECT_EQ(cache.update(peer, peer_mac, at(61s + 500ms)), Taught::Updated);
+    EXPECT_EQ(cache.confirmed(peer), at(61s + 500ms));
+    EXPECT_EQ(cache.lookup(peer, at(100s)), (Lookup{.mac = peer_mac, .send_request = false})) << "fresh again";
+    EXPECT_EQ(cache.lookup(peer, at(150s)).mac, peer_mac) << "past the first confirmation's expiry";
+}
+
+TEST(ArpCache, AFrameNobodyAskedForCanChangeTheMacAndNotTheStamp) {
+    aloe::net::ArpCache cache{small};
+    std::ignore                = cache.seed(peer, peer_mac, at(0s));
+    const std::uint64_t before = cache.generation();
+    EXPECT_EQ(cache.update(peer, other_mac, at(30s)), Taught::Updated);
+    EXPECT_EQ(cache.generation(), before + 1) << "the MAC changed";
+    EXPECT_EQ(cache.confirmed(peer), at(0s));
+    EXPECT_EQ(cache.lookup(peer, at(31s)), (Lookup{.mac = other_mac, .send_request = false}));
+    EXPECT_EQ(cache.lookup(peer, at(120s)), (Lookup{.mac = std::nullopt, .send_request = true}));
+}
+
+TEST(ArpCache, ATableNamedByFramesStillFreesItsSlots) {
+    aloe::net::ArpCache cache{small};
+    for (std::uint8_t index = 0; index < held; ++index) {
+        ASSERT_EQ(cache.seed(host(index), peer_mac, at(0s)), Taught::Created);
+    }
+    // Whoever keeps naming every held address, every 10 s, without the brick asking.
+    for (auto stamp = 10s; stamp <= 120s; stamp += 10s) {
+        for (std::uint8_t index = 0; index < held; ++index) {
+            ASSERT_EQ(cache.update(host(index), peer_mac, at(stamp)), Taught::Updated);
+        }
+    }
+    EXPECT_EQ(cache.lookup(peer, at(120s)), (Lookup{.mac = std::nullopt, .send_request = true}))
+        << "the entries expired all the same, so a new neighbour finds a slot";
+    EXPECT_TRUE(cache.contains(peer));
+    EXPECT_EQ(cache.size(), held);
+}
+
+TEST(ArpCache, RemovingAnEntryKeepsTheChainsOfTheOthers) {
+    // In `small`'s 16 slots, from home slot 13, so the chain wraps past the last slot. Seeded in this order:
+    //   13: `first`,   home 13
+    //   14: `lapsing`, home 13, confirmed earliest, so it alone has expired at 120 s
+    //   15: `settled`, home 15, at its home: it must stay, since its probe starts there
+    //    0: `behind`,  home 13, three past its home: it must move back into the hole
+    //    1: `next`,    home 14, pushed past `settled` and `behind`: it must move back to slot 0
+    // and three more at their own homes, 5, 6 and 7. Slot 2 ends the chain; the newcomer's home, 9, is free, so its
+    // insert fills nothing the removal left. A removal that only freed slot 14 would cut the chain from 13 there, and
+    // `behind` and `next` would be lost; one that moved every entry back would put `settled` before its home, where its
+    // probe never looks.
+    constexpr std::size_t home            = 13;
+    const aloe::wire::Ipv4Address first   = homed_at(home);
+    const aloe::wire::Ipv4Address lapsing = homed_at(home, 1);
+    const aloe::wire::Ipv4Address settled = homed_at(home + 2);
+    const aloe::wire::Ipv4Address behind  = homed_at(home, 2);
+    const aloe::wire::Ipv4Address next    = homed_at(home + 1);
+    const std::vector<aloe::wire::Ipv4Address> kept{
+        first, settled, behind, next, homed_at(home + 8), homed_at(home + 9), homed_at(home + 10)};
+    const aloe::wire::Ipv4Address newcomer = homed_at(home + 12);
+
+    aloe::net::ArpCache cache{small};
+    ASSERT_EQ(cache.seed(first, peer_mac, at(10s)), Taught::Created);
+    ASSERT_EQ(cache.seed(lapsing, other_mac, at(0s)), Taught::Created);
+    for (std::size_t index = 1; index < kept.size(); ++index) {
+        ASSERT_EQ(cache.seed(kept[index], peer_mac, at(10s)), Taught::Created);
     }
     ASSERT_EQ(cache.size(), held);
 
-    // At 120 s only the second of the chain has expired: the sixth address of the chain takes its slot.
-    EXPECT_EQ(cache.lookup(chain[5], at(120s)), (Lookup{.mac = std::nullopt, .send_request = true}));
-    EXPECT_FALSE(cache.contains(chain[1]));
-    EXPECT_TRUE(cache.contains(chain[5]));
+    EXPECT_EQ(cache.lookup(newcomer, at(120s)), (Lookup{.mac = std::nullopt, .send_request = true}));
+    EXPECT_FALSE(cache.contains(lapsing));
+    EXPECT_TRUE(cache.contains(newcomer));
     EXPECT_EQ(cache.size(), held);
-    for (const aloe::wire::Ipv4Address address : others) {
-        EXPECT_EQ(cache.lookup(address, at(121s)).mac, peer_mac) << "every other address is still found";
+    EXPECT_EQ(cache.confirmed(first), at(10s)) << "the chain's first entry";
+    EXPECT_EQ(cache.confirmed(behind), at(10s)) << "the entry behind the hole whose home is before it";
+    EXPECT_EQ(cache.confirmed(settled), at(10s)) << "the entry behind the hole that sits at its own home";
+    EXPECT_EQ(cache.confirmed(next), at(10s)) << "the neighbour whose home follows the chain's";
+    for (std::size_t index = 4; index < kept.size(); ++index) {
+        EXPECT_EQ(cache.confirmed(kept[index]), at(10s)) << "an entry away from the chain";
     }
 }
 
@@ -277,6 +387,26 @@ TEST(ArpCache, ABadConfigThrows) {
     }),
                  std::invalid_argument)
         << "reachable must be below expire";
+    // A stamp plus a lifetime must not overflow: each lifetime fits a quarter of core::Duration, with its own refusal.
+    const auto refusal = [](const ArpCacheConfig& config) {
+        try {
+            const ArpCache cache{config};
+        } catch (const std::invalid_argument& error) {
+            return std::string{error.what()};
+        }
+        return std::string{};
+    };
+    constexpr aloe::core::Duration quarter = aloe::core::Duration::max() / 4;
+    const std::string reachable =
+        refusal({.reachable = quarter + 1ns, .expire = aloe::core::Duration::max() / 2, .learning = true});
+    const std::string expire = refusal({.expire = quarter + 1ns, .learning = true});
+    EXPECT_NE(reachable.find("quarter"), std::string::npos) << reachable;
+    EXPECT_NE(expire.find("quarter"), std::string::npos) << expire;
+    EXPECT_NE(reachable, expire);
+    EXPECT_NO_THROW((ArpCache{
+        ArpCacheConfig{.reachable = std::chrono::hours{24}, .expire = std::chrono::hours{48}, .learning = true}
+    }))
+        << "the benchmark's lifetimes";
     EXPECT_NO_THROW((ArpCache{
         ArpCacheConfig{.capacity = 100, .learning = true}
     }))
@@ -305,7 +435,7 @@ TEST(ArpCache, TheGenerationMovesWhenAMacChangesOrGoes) {
     std::ignore = cache.seed(peer, peer_mac, at(0s));
     EXPECT_EQ(cache.generation(), 1U) << "a MAC appeared";
     std::ignore = cache.update(peer, peer_mac, at(30s));
-    EXPECT_EQ(cache.generation(), 1U) << "a refresh of the same MAC changes nothing";
+    EXPECT_EQ(cache.generation(), 1U) << "a frame naming the same MAC changes nothing";
     std::ignore = cache.update(peer, other_mac, at(31s));
     EXPECT_EQ(cache.generation(), 2U) << "a new MAC";
     EXPECT_EQ(cache.lookup(peer, at(200s)), (Lookup{.mac = std::nullopt, .send_request = true}));

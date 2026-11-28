@@ -111,15 +111,29 @@ TEST_P(NetArp, ARequestFromAGroupMacIsNeitherAnsweredNorLearned) {
     EXPECT_TRUE(burst_empty());
 }
 
-TEST_P(NetArp, ARequestForAnotherHostRefreshesAnEntryWeHold) {
-    ip_.learn(harness_ip, stranger_mac, now_);  // a stale MAC
+// Derived again by the design's rule 1, as amended: "It extends the entry's life only when it answers a request the
+// brick itself has outstanding for that address: a frame nobody asked for never moves the confirmation stamp". The
+// frame is reported and gives the entry its MAC; the entry still expires 120 s after the seed.
+TEST_P(NetArp, ARequestForAnotherHostChangesTheMacOfAnEntryWeHoldAndNotItsLife) {
+    const TimePoint seeded = now_;
+    ip_.learn(harness_ip, stranger_mac, seeded);  // a stale MAC
+    now_ += 100s;
     inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, harness_ip, {10, 0, 0, 9}), broadcast));
 
     EXPECT_TRUE(harness_received().empty());
     ASSERT_EQ(ip_.resolved().size(), 1);
     EXPECT_EQ(ip_.resolved()[0], (aloe::net::ArpResolution{.address = harness_ip, .mac = harness_mac}));
     EXPECT_EQ(ip_.resolve(harness_ip, now_), harness_mac);
-    EXPECT_TRUE(harness_received().empty()) << "no request for what is known";
+    auto frames = harness_received();
+    ASSERT_EQ(frames.size(), 1) << "stale since the seed, so the lookup asks for a refresh";
+    EXPECT_EQ(aloe::frames::parse_frame(frames[0]).value().ethernet.destination, harness_mac)
+        << "unicast, to the MAC the frame gave it";
+
+    now_ = seeded + 120s;
+    EXPECT_FALSE(ip_.resolve(harness_ip, now_).has_value()) << "expired: the frame did not extend its life";
+    frames = harness_received();
+    ASSERT_EQ(frames.size(), 1);
+    EXPECT_EQ(aloe::frames::parse_frame(frames[0]).value().ethernet.destination, broadcast);
 }
 
 TEST_P(NetArp, ResolveSendsOneBroadcastRequestPerInterval) {
@@ -270,7 +284,9 @@ TEST_P(NetArp, AStaleEntryRefreshesByUnicastWhileStillInUse) {
     EXPECT_EQ(aloe::frames::parse_frame(frames[0]).value().ethernet.destination, broadcast) << "back to broadcast";
 }
 
-TEST_P(NetArp, ARefreshLearnedFromTheWireIsReportedAgain) {
+// Renamed by the design's rule 1, as amended: a frame nobody asked for "never moves the confirmation stamp", so this
+// one refreshes nothing; it is reported all the same, since a sibling shard may be the one that asked.
+TEST_P(NetArp, AFrameAboutAnEntryWeHoldIsReportedEvenWhenItChangesNothing) {
     ip_.learn(harness_ip, harness_mac, now_);  // seeded: no event
     inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, harness_ip, stack_ip), broadcast));
     EXPECT_EQ(ip_.resolved().size(), 1) << "every mapping from the wire is reported, so other shards stay fresh";

@@ -73,7 +73,7 @@ namespace aloe::net::detail {
                 const bool known     = from_static_neighbour(*arp, now);
                 if (arp->target_ip != config_.address) {
                     // Someone else's business; `process` releases it. RFC 826's merge rule: an entry we hold is
-                    // refreshed, a new one is never created from a request not meant for us.
+                    // updated, a new one is never created from a request not meant for us.
                     if (plausible && !known) {
                         update_sender(*arp, now);
                     }
@@ -199,15 +199,16 @@ namespace aloe::net::detail {
         }
 
         /// The frame's sender mapping, for the entry the table holds: filled, refreshed or changed, and reported. A
-        /// frame creates no entry.
+        /// frame creates no entry, and extends an entry's life only when it answers the brick's own request.
         void update_sender(const wire::ArpPacket& arp, const core::TimePoint now) noexcept {
             record(cache_.update(arp.sender_ip, arp.sender_mac, now), arp);
         }
 
         /**
-         * What the frame's sender mapping did to the table: a mapping an entry took is reported in `resolved()`, a
-         * refresh with the same MAC included, so the shards that forward it stay fresh; a seed the full table refused
-         * is counted. Anything else stored nothing: an address the table does not hold, a static one, or learning off.
+         * What the frame's sender mapping did to the table: a mapping an entry the table holds took is reported in
+         * `resolved()`, the same MAC included and whether or not it answered this shard's request, so a sibling shard
+         * that asked hears the answer; a seed the full table refused is counted. Anything else stored nothing: an
+         * address the table does not hold, a static one, or learning off.
          */
         void record(const ArpCache::Taught taught, const wire::ArpPacket& arp) noexcept {
             if (taught == ArpCache::Taught::Updated || taught == ArpCache::Taught::Created) {

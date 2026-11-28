@@ -2038,7 +2038,9 @@ TEST_F(TcpTapReceive, UnderNetemLossTheKernelRecoversFromTheBlocks) {
     EXPECT_GT(side.counters().sack_acks_sent, 0U) << "the stack sent no ACK with SACK blocks under 2% loss";
     EXPECT_GT(retrans, 0U) << "the kernel's tcpi_total_retrans under 2% loss";
     // A lost retransmission or a lost tail costs the kernel a timeout whatever the receiver does, hence a share.
-    // `tcpi_total_rto` also counts a SYN's timeout, a SYN or an ARP exchange that netem lost; the quarter covers it.
+    // `tcpi_total_rto` also counts a SYN's timeout, when netem lost the kernel's SYN; the quarter covers it. No ARP
+    // exchange delays the SYN-ACK: the side resolved the kernel's address before the kernel connected
+    // (`resolve_kernel`).
     EXPECT_LE(4U * rto, retrans) << "the kernel's tcpi_total_rto " << rto << " is more than a quarter of its "
                                  << "tcpi_total_retrans " << retrans << ": it waited out its timer, not the blocks";
 }
