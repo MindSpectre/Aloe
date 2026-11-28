@@ -78,9 +78,10 @@ namespace aloe::tcp::detail {
             return edge_;
         }
 
-        /// `edge - next`.
+        /// `edge - next`, or zero when `next` passed the edge: a FIN's number takes no slot, so the peer's FIN may be
+        /// taken one past it, until the segment that acknowledges it states the edge from there.
         [[nodiscard]] std::uint32_t window(const wire::TcpSequence next) const noexcept {
-            return static_cast<std::uint32_t>(edge_ - next);
+            return edge_.after(next) ? static_cast<std::uint32_t>(edge_ - next) : 0U;
         }
 
         /// What a SYN-ACK states: the field unscaled, `min(budget, 65535)`. A SYN-ACK sent again may follow an ACK
@@ -139,13 +140,14 @@ namespace aloe::tcp::detail {
             return std::int64_t{candidate - edge_} >= std::int64_t{threshold_};
         }
 
-        /// The field that states `target`, rounded up to the unit, and the edge the peer reconstructs from it.
+        /// The field that states `target`, rounded up to the unit, and the edge the peer reconstructs from it: a field
+        /// of zero and the edge at `next` when `next` passed `target`, as a FIN taken one past the edge leaves it.
         [[nodiscard]] Offer state(const wire::TcpSequence next, const wire::TcpSequence target) const noexcept {
-            const std::uint8_t bits     = shift();
-            const auto distance         = static_cast<std::uint64_t>(target - next);
-            const std::uint64_t unit    = std::uint64_t{1} << bits;
-            const std::uint64_t rounded = std::min<std::uint64_t>(unscaled_max, (distance + unit - 1) >> bits);
-            const auto field            = static_cast<std::uint16_t>(rounded);
+            const std::uint8_t bits      = shift();
+            const std::uint64_t distance = target.after(next) ? static_cast<std::uint64_t>(target - next) : 0U;
+            const std::uint64_t unit     = std::uint64_t{1} << bits;
+            const std::uint64_t rounded  = std::min<std::uint64_t>(unscaled_max, (distance + unit - 1) >> bits);
+            const auto field             = static_cast<std::uint16_t>(rounded);
             return Offer{.field = field, .edge = next + static_cast<std::uint32_t>(rounded << bits)};
         }
 

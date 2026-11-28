@@ -10,6 +10,7 @@ namespace {
 
     using namespace std::chrono_literals;
     using TcpTemplate = aloe::testing::TcpFixture;
+    using Taught      = aloe::net::ArpCache::Taught;
 
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpTemplate,
@@ -24,7 +25,7 @@ namespace {
 TEST_P(TcpTemplate, TheFrameFollowsALearnedMacChange) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
-    ip_.learn(aloe::testing::harness_ip, aloe::testing::gateway_mac, now_);
+    ASSERT_EQ(ip_.learn(aloe::testing::harness_ip, aloe::testing::gateway_mac, now_), Taught::Updated);
     ASSERT_EQ(c->send(aloe::frames::pattern(10)), 10U);
     const auto& node    = tcp_->sent_segment(*c, 0);
     const auto ethernet = aloe::wire::EthernetHeader::parse(node.packet.data());  // reading a lent packet is allowed
@@ -47,7 +48,7 @@ TEST_P(TcpTemplate, AStaleEntryIsRefreshedOnceAndTheFrameStillGoes) {
 TEST_P(TcpTemplate, ARebuildThatFindsNoNextHopRefusesTheCommitAndRecovers) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
-    advance(121s);  // past arp_expire: the entry is gone
+    advance(121s);  // past arp_expire: the entry keeps its slot and resolves nothing until it is confirmed again
     const auto room = c->prepare(10);
     ASSERT_TRUE(room.has_value());
     EXPECT_FALSE(c->commit(10));
@@ -55,7 +56,8 @@ TEST_P(TcpTemplate, ARebuildThatFindsNoNextHopRefusesTheCommitAndRecovers) {
     EXPECT_EQ(c->queued_segments(), 0U);
     tcp_->process({}, now_);
     EXPECT_TRUE(poll()->events.writable()) << "the retry hint";
-    ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_);
+    ASSERT_EQ(ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_), Taught::Updated)
+        << "the expired entry the rebuild asked about";
     ASSERT_EQ(c->send(aloe::frames::pattern(10)), 10U);
     EXPECT_EQ(collect().back().ethernet.destination, aloe::testing::harness_mac);
 }

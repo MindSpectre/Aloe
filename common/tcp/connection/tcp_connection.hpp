@@ -235,7 +235,8 @@ namespace aloe::tcp {
         [[nodiscard]] core::Duration rto() const noexcept {
             return block_.rtt.rto();
         }
-        /// Expiries of the retransmission timer since the last ACK of new data, a resend deferred or refused included.
+        /// Expiries of the retransmission timer since the last ACK of new data, a resend deferred or refused included;
+        /// those that found the peer's window zero after the handshake count with the zero-window probes instead.
         [[nodiscard]] std::uint8_t retransmit_count() const noexcept {
             return block_.retransmit_count;
         }

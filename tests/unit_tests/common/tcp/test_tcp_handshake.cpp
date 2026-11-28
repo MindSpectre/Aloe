@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <aloe/frames>
+#include <aloe/net>
 #include <aloe/tcp>
 #include <aloe/wire>
 #include <chrono>
@@ -8,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -18,6 +20,7 @@
 namespace {
 
     using namespace std::chrono_literals;
+    using aloe::tcp::TcpCounters;
     using aloe::wire::TcpFlag;
     using aloe::wire::TcpFlags;
     using aloe::wire::TcpSequence;
@@ -73,6 +76,14 @@ namespace {
             parts.push_back(aloe::frames::window_scale_option(*shift));
         }
         return aloe::frames::joined(parts);
+    }
+
+    /// `frame` is RFC 793's reset for a segment that carried an acknowledgement: `<SEQ=SEG.ACK><CTL=RST>`, no ACK bit.
+    void expect_reset_at(const aloe::frames::ParsedFrame& frame, const TcpSequence sequence) {
+        ASSERT_TRUE(frame.tcp.has_value());
+        EXPECT_EQ(frame.tcp->flags, TcpFlags{TcpFlag::Rst});
+        EXPECT_EQ(frame.tcp->sequence, sequence) << "at the segment's acknowledgement";
+        EXPECT_EQ(frame.l4.size(), frame.tcp->data_offset) << "no payload";
     }
 
     /// The TSval a frame carries; zero without the option.
@@ -133,6 +144,51 @@ namespace {
 
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpHandshakeOptions,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+
+    constexpr aloe::wire::Ipv4Address outside_the_table{10, 0, 0, 77};  ///< On the subnet, in no static entry.
+
+    /// A stack whose IP brick has learning off and a static entry for the harness alone: the default a deployment
+    /// gets, where a neighbour outside the table has no next hop.
+    class TcpHandshakeStatic : public aloe::testing::TcpFixture {
+    protected:
+        TcpHandshakeStatic()
+            : TcpFixture{
+                  aloe::net::Ipv4Config{
+                                        .address    = aloe::testing::stack_ip,
+                                        .prefix     = 24,
+                                        .static_arp = {{.address = aloe::testing::harness_ip, .mac = aloe::testing::harness_mac}}}
+        } {
+        }
+
+        /// A peer at the neighbour's address outside the table; its frames still come from the harness's port.
+        [[nodiscard]] static aloe::frames::TcpPeer stranger(const std::uint16_t port = aloe::testing::tcp_peer_port) {
+            aloe::frames::TcpSpec spec = aloe::testing::peer_spec(port);
+            spec.source                = outside_the_table;
+            return aloe::frames::TcpPeer{std::move(spec), TcpSequence{aloe::testing::tcp_peer_isn}};
+        }
+    };
+
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpHandshakeStatic,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+
+    /// A stack whose IP brick resolves on the wire and has no gateway: a source off the subnet has no next hop.
+    class TcpHandshakeNoGateway : public aloe::testing::TcpFixture {
+    protected:
+        TcpHandshakeNoGateway()
+            : TcpFixture{
+                  aloe::net::Ipv4Config{.address = aloe::testing::stack_ip, .prefix = 24, .arp_learning = true}
+        } {
+        }
+    };
+
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpHandshakeNoGateway,
                              ::testing::Values(aloe::fabric::EmulatedOffloads::None,
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
@@ -233,6 +289,23 @@ TEST_P(TcpHandshake, ActiveOpen) {
     EXPECT_FALSE(poll().has_value());
 }
 
+TEST_P(TcpHandshake, TwoConnectionsOfOneStackStartAtUnrelatedNumbers) {
+    const auto first =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port}, now_);
+    ASSERT_TRUE(first.has_value());
+    const auto second =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port + 1}, now_);
+    ASSERT_TRUE(second.has_value());
+    const auto syns = collect();
+    ASSERT_EQ(syns.size(), 2U);
+    ASSERT_TRUE(aloe::testing::is_flags(syns[0], {TcpFlag::Syn}));
+    ASSERT_TRUE(aloe::testing::is_flags(syns[1], {TcpFlag::Syn}));
+    EXPECT_NE(syns[0].tcp->destination_port, syns[1].tcp->destination_port);
+    EXPECT_NE(syns[0].tcp->sequence, syns[1].tcp->sequence);
+    // Both SYNs leave at one stamp, so their TS vals differ by their offsets alone.
+    EXPECT_NE(ts_value_of(syns[0]), ts_value_of(syns[1]));
+}
+
 TEST_P(TcpHandshake, DuplicateSyn) {
     ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
     receive(peer_.syn());
@@ -248,6 +321,379 @@ TEST_P(TcpHandshake, DuplicateSyn) {
     EXPECT_EQ(tcp_->counters().control_segments_sent, 2U);
     EXPECT_EQ(tcp_->counters().dropped_table_full, 0U);
     EXPECT_FALSE(poll().has_value());
+}
+
+TEST_P(TcpHandshake, ADuplicateSynInSynReceivedGetsTheSynAckThroughTheLimit) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto first = collect();
+    ASSERT_EQ(first.size(), 1U);
+    const auto again = peer_.segment(TcpFlags{TcpFlag::Syn}, {}, peer_.iss(), TcpSequence{}, true);
+    receive(again);
+    auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "the second: the SYN-ACK's own send did not stamp the limiter";
+    EXPECT_TRUE(aloe::testing::is_flags(frames[0], {TcpFlag::Syn, TcpFlag::Ack}));
+    EXPECT_EQ(frames[0].tcp->sequence, first[0].tcp->sequence) << "from its entry";
+    advance(100ms);
+    receive(again);
+    EXPECT_TRUE(collect().empty()) << "the third, 100 ms after the second's SYN-ACK";
+    advance(400ms);
+    receive(again);
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "the fourth, 500 ms after it";
+    EXPECT_TRUE(aloe::testing::is_flags(frames[0], {TcpFlag::Syn, TcpFlag::Ack}));
+    EXPECT_EQ(frames[0].tcp->sequence, first[0].tcp->sequence);
+    EXPECT_EQ(tcp_->counters().acks_rate_limited, 1U);
+    EXPECT_EQ(tcp_->counters().control_segments_sent, 3U);
+    EXPECT_EQ(tcp_->table_size(), 1U);
+    EXPECT_EQ(tcp_->connection(0).state(), aloe::tcp::State::SynReceived);
+}
+
+TEST_P(TcpHandshake, ASynAtItsFirstNumberWithPayloadInSynReceivedGetsTheSynAckAgain) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto first = collect();
+    ASSERT_EQ(first.size(), 1U);
+    // The SYN again with ten bytes: it passes the sequence check once trimmed, and is the duplicate all the same.
+    receive(peer_.segment(TcpFlags{TcpFlag::Syn}, aloe::frames::pattern(10), peer_.iss(), TcpSequence{}, true));
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_TRUE(aloe::testing::is_flags(frames[0], {TcpFlag::Syn, TcpFlag::Ack}));
+    EXPECT_EQ(frames[0].tcp->sequence, first[0].tcp->sequence) << "from its entry";
+    EXPECT_EQ(frames[0].tcp->acknowledgement, peer_.iss() + 1U) << "its payload is not taken";
+    EXPECT_EQ(tcp_->table_size(), 1U);
+    EXPECT_EQ(tcp_->connection(0).state(), aloe::tcp::State::SynReceived);
+    EXPECT_EQ(tcp_->counters().handshakes_failed, 0U);
+}
+
+TEST_P(TcpHandshake, ASynWithAnAcceptableAckAtItsFirstNumberCompletesTheOpen) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto syn_ack = collect();
+    ASSERT_EQ(syn_ack.size(), 1U);
+    peer_.see(syn_ack[0]);
+    // RFC 9293 3.10.7.4 trims the SYN, which lies before RCV.NXT, as Linux's tcp_check_req clears it at `rcv_isn`: the
+    // rest is the handshake's ACK with ten bytes.
+    receive(peer_.segment(
+        TcpFlags{TcpFlag::Syn, TcpFlag::Ack}, aloe::frames::pattern(10), peer_.iss(), peer_.rcv_nxt(), true));
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.accepted());
+    const auto& c = *event->connection;
+    EXPECT_EQ(c.state(), aloe::tcp::State::Established);
+    EXPECT_EQ(c.unread().size(), 10U) << "the payload is taken";
+    const auto frames = collect();
+    EXPECT_TRUE(std::ranges::none_of(frames, [](const aloe::frames::ParsedFrame& frame) {
+        return frame.tcp && frame.tcp->flags.has(TcpFlag::Rst);
+    })) << "no reset";
+    EXPECT_EQ(tcp_->counters().resets_sent, 0U);
+    EXPECT_EQ(tcp_->counters().handshakes_failed, 0U);
+    EXPECT_EQ(tcp_->counters().connections_accepted, 1U);
+    EXPECT_EQ(tcp_->table_size(), 1U);
+}
+
+TEST_P(TcpHandshake, ASynThatFailsPawsInSynReceivedIsAnsweredThroughTheLimit) {
+    peer_.set_timestamps(100);
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto syn_ack = collect();
+    ASSERT_EQ(syn_ack.size(), 1U);
+    peer_.set_timestamps(50);  // older than TS.Recent, which the SYN set
+    // The peer's SYN again at its first number, which would draw the SYN-ACK again had it passed PAWS.
+    const auto old = peer_.segment(TcpFlags{TcpFlag::Syn}, {}, peer_.iss(), TcpSequence{}, true);
+    receive(old);
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->flags, TcpFlags{TcpFlag::Ack}) << "a pure ACK, not the SYN-ACK";
+    EXPECT_EQ(frames[0].tcp->sequence, syn_ack[0].tcp->sequence + 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, peer_.iss() + 1U);
+    advance(100ms);
+    receive(old);
+    EXPECT_TRUE(collect().empty()) << "100 ms after the first answer";
+    EXPECT_EQ(tcp_->counters().dropped_paws, 2U);
+    EXPECT_EQ(tcp_->counters().acks_rate_limited, 1U);
+    EXPECT_EQ(tcp_->counters().dropped_syn_challenged, 0U);
+    EXPECT_EQ(tcp_->counters().challenge_acks_sent, 0U);
+    EXPECT_EQ(tcp_->table_size(), 1U) << "the half-open slot stays";
+    EXPECT_EQ(tcp_->connection(0).state(), aloe::tcp::State::SynReceived);
+}
+
+TEST_P(TcpHandshake, ASynAtANewNumberInSynReceivedResetsTheHalfOpenConnection) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    ASSERT_EQ(collect().size(), 1U);
+    const TcpSequence irs = peer_.iss();
+    const auto fresh      = peer_.segment(TcpFlags{TcpFlag::Syn}, {}, irs + 1000U, TcpSequence{}, true);
+    receive(fresh);
+    auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->flags, (TcpFlags{TcpFlag::Rst, TcpFlag::Ack}))
+        << "RFC 793's reset for a segment with no ACK";
+    EXPECT_EQ(frames[0].tcp->sequence, TcpSequence{});
+    EXPECT_EQ(frames[0].tcp->acknowledgement, irs + 1001U) << "past the SYN";
+    EXPECT_EQ(tcp_->counters().handshakes_failed, 1U);
+    EXPECT_EQ(tcp_->counters().resets_sent, 1U);
+    EXPECT_EQ(tcp_->counters().dropped_syn_challenged, 0U);
+    EXPECT_EQ(tcp_->counters().connections_reset, 0U);
+    EXPECT_EQ(tcp_->table_size(), 0U) << "the half-open slot was freed";
+    EXPECT_EQ(wheel_.pending(), 0U) << "the SYN-ACK's timer went with it";
+    EXPECT_FALSE(poll().has_value()) << "nobody owned it: no event";
+    receive(fresh);  // the peer's next try opens afresh
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_TRUE(aloe::testing::is_flags(frames[0], {TcpFlag::Syn, TcpFlag::Ack}));
+    EXPECT_EQ(frames[0].tcp->acknowledgement, irs + 1001U);
+    EXPECT_EQ(tcp_->table_size(), 1U);
+}
+
+TEST_P(TcpHandshake, ASynOutsideTheWindowInSynReceivedIsAnsweredThroughTheLimit) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto syn_ack = collect();
+    ASSERT_EQ(syn_ack.size(), 1U);
+    const TcpSequence irs = peer_.iss();
+    const auto old = peer_.segment(TcpFlags{TcpFlag::Syn}, {}, TcpSequence{irs.value - 1000U}, TcpSequence{}, true);
+    receive(old);
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->flags, TcpFlags{TcpFlag::Ack}) << "a pure ACK, not the SYN-ACK";
+    EXPECT_EQ(frames[0].tcp->sequence, syn_ack[0].tcp->sequence + 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, irs + 1U);
+    advance(100ms);
+    receive(old);
+    EXPECT_TRUE(collect().empty()) << "100 ms after the first answer";
+    EXPECT_EQ(tcp_->counters().acks_rate_limited, 1U);
+    EXPECT_EQ(tcp_->counters().dropped_duplicate, 2U) << "counted as the sequence check says";
+    EXPECT_EQ(tcp_->counters().dropped_syn_challenged, 0U);
+    EXPECT_EQ(tcp_->table_size(), 1U) << "the half-open slot stays";
+    EXPECT_EQ(tcp_->connection(0).state(), aloe::tcp::State::SynReceived);
+    EXPECT_EQ(tcp_->counters().handshakes_failed, 0U);
+}
+
+TEST_P(TcpHandshake, ARstInSynReceivedResetsOnlyAtRcvNxt) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto syn_ack = collect();
+    ASSERT_EQ(syn_ack.size(), 1U);
+    const TcpSequence irs        = peer_.iss();
+    const TcpSequence acceptable = syn_ack[0].tcp->sequence + 1U;
+    receive(peer_.segment(TcpFlags{TcpFlag::Rst, TcpFlag::Ack}, {}, irs + 2U, acceptable));
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "challenged";
+    EXPECT_EQ(frames[0].tcp->flags, TcpFlags{TcpFlag::Ack});
+    EXPECT_EQ(frames[0].tcp->sequence, acceptable);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, irs + 1U);
+    EXPECT_EQ(tcp_->counters().dropped_reset_challenged, 1U);
+    EXPECT_EQ(tcp_->table_size(), 1U) << "the half-open slot stays";
+    EXPECT_EQ(tcp_->connection(0).state(), aloe::tcp::State::SynReceived);
+    receive(peer_.segment(TcpFlags{TcpFlag::Rst, TcpFlag::Ack}, {}, irs + 1U, acceptable));
+    EXPECT_TRUE(collect().empty()) << "freed in silence";
+    EXPECT_EQ(tcp_->counters().handshakes_failed, 1U);
+    EXPECT_EQ(tcp_->counters().connections_reset, 0U);
+    EXPECT_EQ(tcp_->table_size(), 0U);
+    EXPECT_FALSE(poll().has_value()) << "nobody owned it: no event";
+}
+
+TEST_P(TcpHandshake, ABadAckInSynReceivedIsResetAndTheSlotStays) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto syn_ack = collect();
+    ASSERT_EQ(syn_ack.size(), 1U);
+    const TcpSequence iss = syn_ack[0].tcp->sequence;
+    TcpCounters expected  = tcp_->counters();
+    receive(peer_.segment(TcpFlags{TcpFlag::Ack}, {}, peer_.snd_nxt(), iss + 2U));
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    expect_reset_at(frames[0], iss + 2U);
+    expected.segments_received  += 1;
+    expected.dropped_unexpected += 1;
+    expected.resets_sent        += 1;
+    EXPECT_EQ(tcp_->counters(), expected);
+    EXPECT_EQ(tcp_->table_size(), 1U) << "the half-open slot stays";
+    EXPECT_EQ(tcp_->connection(0).state(), aloe::tcp::State::SynReceived);
+    EXPECT_EQ(wheel_.pending(), 1U) << "the SYN-ACK's timer runs on";
+    peer_.see(syn_ack[0]);
+    receive(peer_.ack());
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value() && event->events.accepted()) << "the right ACK completes the handshake";
+    EXPECT_EQ(event->connection->state(), aloe::tcp::State::Established);
+}
+
+TEST_P(TcpHandshake, ABadAckInSynReceivedIsResetWhateverItsSequence) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto syn_ack = collect();
+    ASSERT_EQ(syn_ack.size(), 1U);
+    const TcpSequence iss = syn_ack[0].tcp->sequence;
+    const TcpSequence irs = peer_.iss();
+    // Before RCV.NXT, and far past the edge: the ACK is checked before the window, so neither is answered as refused.
+    for (const TcpSequence sequence : {TcpSequence{irs.value - 1000U}, irs + 1000000U}) {
+        SCOPED_TRACE(::testing::Message() << "at " << sequence.value);
+        TcpCounters expected = tcp_->counters();
+        receive(peer_.segment(TcpFlags{TcpFlag::Ack}, {}, sequence, iss + 2U));
+        const auto frames = collect();
+        ASSERT_EQ(frames.size(), 1U);
+        expect_reset_at(frames[0], iss + 2U);
+        expected.segments_received  += 1;
+        expected.dropped_unexpected += 1;
+        expected.resets_sent        += 1;
+        EXPECT_EQ(tcp_->counters(), expected) << "not counted as out of the window, and not limited";
+        EXPECT_EQ(tcp_->table_size(), 1U) << "the half-open slot stays";
+        EXPECT_EQ(tcp_->connection(0).state(), aloe::tcp::State::SynReceived);
+    }
+}
+
+TEST_P(TcpHandshake, ASynWithABadAckAtTheFirstSynsNumberInSynReceivedIsReset) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto syn_ack = collect();
+    ASSERT_EQ(syn_ack.size(), 1U);
+    const TcpSequence iss = syn_ack[0].tcp->sequence;
+    TcpCounters expected  = tcp_->counters();
+    // At the first SYN's number with ACK set: the bad ACK is met before the SYN is trimmed or resent for.
+    receive(peer_.segment(TcpFlags{TcpFlag::Syn, TcpFlag::Ack}, {}, peer_.iss(), iss + 2U, true));
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "the RST, and no SYN-ACK again";
+    expect_reset_at(frames[0], iss + 2U);
+    expected.segments_received  += 1;
+    expected.dropped_unexpected += 1;
+    expected.resets_sent        += 1;
+    EXPECT_EQ(tcp_->counters(), expected);
+    EXPECT_EQ(tcp_->table_size(), 1U) << "the half-open slot stays";
+    EXPECT_EQ(tcp_->connection(0).state(), aloe::tcp::State::SynReceived);
+    EXPECT_FALSE(poll().has_value()) << "no handshake completed";
+}
+
+TEST_P(TcpHandshake, ARstWithABadAckInSynReceivedIsChallengedAndNotReset) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    receive(peer_.syn());
+    const auto syn_ack = collect();
+    ASSERT_EQ(syn_ack.size(), 1U);
+    const TcpSequence iss = syn_ack[0].tcp->sequence;
+    const TcpSequence irs = peer_.iss();
+    // A RST is exempt from the check of the ACK: one inside the window at no exact position is challenged.
+    receive(peer_.segment(TcpFlags{TcpFlag::Rst, TcpFlag::Ack}, {}, irs + 2U, iss + 2U));
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "challenged";
+    EXPECT_EQ(frames[0].tcp->flags, TcpFlags{TcpFlag::Ack}) << "no RST";
+    EXPECT_EQ(frames[0].tcp->sequence, iss + 1U);
+    EXPECT_EQ(frames[0].tcp->acknowledgement, irs + 1U);
+    EXPECT_EQ(tcp_->counters().dropped_reset_challenged, 1U);
+    EXPECT_EQ(tcp_->counters().challenge_acks_sent, 1U);
+    EXPECT_EQ(tcp_->counters().dropped_unexpected, 0U);
+    EXPECT_EQ(tcp_->counters().resets_sent, 0U);
+    EXPECT_EQ(tcp_->table_size(), 1U) << "the half-open slot stays";
+    EXPECT_EQ(tcp_->connection(0).state(), aloe::tcp::State::SynReceived);
+}
+
+TEST_P(TcpHandshake, ASynWhoseMssIsBelowTheFloorIsRefused) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    std::uint16_t peer_port = 41000;
+    for (const std::uint16_t mss : {std::uint16_t{47}, std::uint16_t{1}, std::uint16_t{0}}) {
+        SCOPED_TRACE(::testing::Message() << "MSS " << mss);
+        aloe::frames::TcpPeer peer{aloe::testing::peer_spec(peer_port++), TcpSequence{aloe::testing::tcp_peer_isn}};
+        peer.spec().mss      = mss;  // a stated zero too
+        TcpCounters expected = tcp_->counters();
+        receive(peer.syn());
+        const auto frames = collect();
+        ASSERT_EQ(frames.size(), 1U);
+        EXPECT_EQ(frames[0].tcp->flags, (TcpFlags{TcpFlag::Rst, TcpFlag::Ack}))
+            << "RFC 793's reset for a segment with no connection";
+        EXPECT_EQ(frames[0].tcp->sequence, TcpSequence{});
+        EXPECT_EQ(frames[0].tcp->acknowledgement, peer.iss() + 1U) << "past the SYN";
+        EXPECT_EQ(frames[0].tcp->destination_port, peer.spec().source_port);
+        EXPECT_EQ(tcp_->table_size(), 0U) << "no slot";
+        expected.segments_received      += 1;
+        expected.handshakes_refused_mss += 1;
+        expected.resets_sent            += 1;
+        EXPECT_EQ(tcp_->counters(), expected) << "no node, no slot, no drop counter";
+    }
+    EXPECT_EQ(wheel_.pending(), 0U) << "no SYN-ACK and so no timer";
+    EXPECT_FALSE(poll().has_value());
+}
+
+TEST_P(TcpHandshake, ASynAtTheFloorIsAccepted) {
+    peer_.spec().mss = 48;
+    peer_.set_timestamps(100);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->mss(), 36U) << "48 less the timestamp option";
+    EXPECT_EQ(c->receive_budget(), 9216U) << "512 * 36 / 2: no budget of zero";
+    EXPECT_EQ(tcp_->counters().handshakes_refused_mss, 0U);
+}
+
+TEST_P(TcpHandshake, ASynWithoutAnMssOptionIsFiveThirtySix) {
+    // Above a floor of 600 the assumed 536 is refused as a stated one would be.
+    configure_tcp({.min_peer_mss = 600});
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    aloe::frames::TcpPeer bare{aloe::testing::peer_spec(41000), TcpSequence{aloe::testing::tcp_peer_isn}};
+    bare.spec().mss = std::nullopt;
+    receive(bare.syn());
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->flags, (TcpFlags{TcpFlag::Rst, TcpFlag::Ack}));
+    EXPECT_EQ(frames[0].tcp->acknowledgement, bare.iss() + 1U);
+    EXPECT_EQ(tcp_->table_size(), 0U);
+    EXPECT_EQ(tcp_->counters().handshakes_refused_mss, 1U);
+
+    // At the default floor of 48 it is accepted, and the connection's segments are RFC 1122's 536 bytes.
+    configure_tcp({});
+    peer_.spec().mss = std::nullopt;
+    auto* c          = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->mss(), aloe::tcp::default_peer_mss);
+    EXPECT_EQ(tcp_->counters().handshakes_refused_mss, 0U);
+}
+
+TEST_P(TcpHandshake, ASynAckWhoseMssIsBelowTheFloorRefusesTheOpen) {
+    const auto connected =
+        tcp_->connect({.address = aloe::testing::harness_ip, .port = aloe::testing::tcp_peer_port}, now_);
+    ASSERT_TRUE(connected.has_value());
+    auto& c        = **connected;
+    const auto syn = collect();
+    ASSERT_EQ(syn.size(), 1U);
+    peer_.spec().mss = 40;
+    receive(peer_.syn_ack(syn[0]));
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "the RST, and no ACK of the SYN-ACK";
+    expect_reset_at(frames[0], syn[0].tcp->sequence + 1U);  // the SYN-ACK's acknowledgement number
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_EQ(event->connection, &c);
+    EXPECT_EQ(event->events, aloe::stream::Events{aloe::stream::Event::Reset}) << "an open refused, never connected";
+    EXPECT_EQ(c.state(), aloe::tcp::State::Closed);
+    EXPECT_FALSE(c.sack()) << "the offer was never taken up";
+    EXPECT_EQ(tcp_->counters().handshakes_refused_mss, 1U);
+    EXPECT_EQ(tcp_->counters().connections_reset, 0U) << "it counts RSTs received";
+    EXPECT_EQ(tcp_->counters().connections_opened, 0U);
+    EXPECT_EQ(tcp_->counters().resets_sent, 1U);
+    EXPECT_EQ(wheel_.pending(), 0U) << "the SYN's timer went with the open";
+    EXPECT_EQ(tcp_->table_size(), 1U) << "a refused active open keeps its slot until release";
+    c.release();
+    EXPECT_EQ(tcp_->table_size(), 0U);
+    EXPECT_TRUE(collect().empty()) << "release of a closed connection sends nothing";
+}
+
+TEST_P(TcpHandshake, ASynWithPayloadIsCountedAndItsPayloadNotAcknowledged) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    const TcpSequence irs = peer_.iss();
+    receive(peer_.segment(TcpFlags{TcpFlag::Syn}, aloe::frames::pattern(10), irs, TcpSequence{}, true));
+    const auto syn_ack = collect();
+    ASSERT_EQ(syn_ack.size(), 1U);
+    ASSERT_TRUE(aloe::testing::is_flags(syn_ack[0], {TcpFlag::Syn, TcpFlag::Ack}));
+    EXPECT_EQ(syn_ack[0].tcp->acknowledgement, irs + 1U) << "the SYN's number alone";
+    EXPECT_EQ(tcp_->counters().syn_payload_discarded, 1U);
+    EXPECT_EQ(tcp_->table_size(), 1U);
+    peer_.see(syn_ack[0]);
+    receive(peer_.segment(TcpFlags{TcpFlag::Ack}, {}, irs + 1U, peer_.rcv_nxt()));
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value() && event->events.accepted());
+    EXPECT_EQ(event->connection->unread().size(), 0U) << "nothing of the SYN's payload was held";
+
+    aloe::frames::TcpPeer plain{aloe::testing::peer_spec(41000), TcpSequence{aloe::testing::tcp_peer_isn}};
+    receive(plain.syn());
+    ASSERT_EQ(collect().size(), 1U);
+    EXPECT_EQ(tcp_->counters().syn_payload_discarded, 1U) << "a SYN without payload is not counted";
 }
 
 TEST_P(TcpHandshake, RefusedOpen) {
@@ -496,7 +942,7 @@ TEST_P(TcpHandshake, AbortInSynSentSendsNoReset) {
 
 TEST_P(TcpHandshake, NoRouteTakesNoSlot) {
     Ipv4 bare{
-        queue_, {.address = aloe::testing::stack_ip, .prefix = 24}
+        queue_, {.address = aloe::testing::stack_ip, .prefix = 24, .arp_learning = true}
     };
     Tcp tcp{bare, wheel_, {.connections = 1}};
     const auto failed = tcp.connect({.address = aloe::testing::far_ip, .port = 7}, now_);
@@ -509,6 +955,71 @@ TEST_P(TcpHandshake, NoRouteTakesNoSlot) {
     EXPECT_EQ((*ok)->index(), 0U);
     (*ok)->release();
     std::ignore = collect();
+}
+
+TEST_P(TcpHandshakeStatic, ConnectToANeighbourOutsideTheTableIsNoRouteWithNoSlot) {
+    const auto failed = tcp_->connect({.address = outside_the_table, .port = 7}, now_);
+    ASSERT_FALSE(failed.has_value());
+    EXPECT_EQ(failed.error(), aloe::tcp::ConnectError::NoRoute);
+    EXPECT_EQ(tcp_->table_size(), 0U);
+    EXPECT_EQ(wheel_.pending(), 0U) << "nothing armed: no ARP poll waits for it";
+    EXPECT_TRUE(collect().empty()) << "no ARP request and no SYN";
+    EXPECT_EQ(ip_.counters().arp_requests_sent, 0U);
+
+    const auto ok = tcp_->connect({.address = aloe::testing::harness_ip, .port = 7}, now_);
+    ASSERT_TRUE(ok.has_value()) << "the harness is in the table";
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_TRUE(aloe::testing::is_flags(frames[0], TcpFlags{TcpFlag::Syn})) << "the SYN leaves at once";
+    EXPECT_EQ(frames[0].ethernet.destination, aloe::testing::harness_mac);
+}
+
+TEST_P(TcpHandshakeStatic, ASynFromANeighbourOutsideTheTableTakesNoSlot) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    aloe::frames::TcpPeer peer = stranger();
+    TcpCounters expected       = tcp_->counters();
+    receive(peer.syn());
+    EXPECT_TRUE(collect().empty()) << "no SYN-ACK can reach it";
+    EXPECT_EQ(tcp_->table_size(), 0U);
+    EXPECT_EQ(wheel_.pending(), 0U);
+    expected.segments_received += 1;
+    expected.dropped_no_route  += 1;
+    EXPECT_EQ(tcp_->counters(), expected) << "one drop counter, and no refused send";
+
+    // The route question comes before the MSS floor: a SYN that cannot be answered draws no RST either.
+    aloe::frames::TcpPeer small = stranger(41000);
+    small.spec().mss            = 40;
+    receive(small.syn());
+    EXPECT_TRUE(collect().empty());
+    expected.segments_received += 1;
+    expected.dropped_no_route  += 1;
+    EXPECT_EQ(tcp_->counters(), expected) << "not refused for its MSS";
+    EXPECT_EQ(ip_.counters().send_no_route, 0U) << "the IP brick was never asked to send";
+}
+
+TEST_P(TcpHandshakeStatic, AStraySegmentFromANeighbourOutsideTheTableDrawsNoReset) {
+    aloe::frames::TcpPeer peer = stranger();
+    receive(peer.segment(TcpFlags{TcpFlag::Ack}, {}, TcpSequence{1001U}, TcpSequence{777U}));  // nobody listens on 7
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(tcp_->counters().dropped_no_connection, 1U);
+    EXPECT_EQ(tcp_->counters().resets_sent, 0U);
+    EXPECT_EQ(tcp_->counters().send_refused, 0U) << "the reset was never tried";
+    EXPECT_EQ(ip_.counters().send_no_route, 0U);
+}
+
+TEST_P(TcpHandshakeNoGateway, ASynFromOffTheSubnetWithNoGatewayTakesNoSlot) {
+    ASSERT_TRUE(tcp_->listen(aloe::testing::tcp_listen_port).has_value());
+    aloe::frames::TcpSpec spec = aloe::testing::peer_spec();
+    spec.source                = aloe::testing::far_ip;
+    aloe::frames::TcpPeer far{std::move(spec), TcpSequence{5000U}};
+    TcpCounters expected = tcp_->counters();
+    receive(far.syn());
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(tcp_->table_size(), 0U) << "no slot held for the retry schedule of a SYN-ACK that cannot leave";
+    EXPECT_EQ(wheel_.pending(), 0U);
+    expected.segments_received += 1;
+    expected.dropped_no_route  += 1;
+    EXPECT_EQ(tcp_->counters(), expected);
 }
 
 TEST_P(TcpHandshake, TableFullAndUnlisten) {
@@ -617,6 +1128,47 @@ TEST_P(TcpHandshake, ConfigValidation) {
     EXPECT_EQ(capped.mss(), aloe::testing::tcp_fabric_mss);
     EXPECT_EQ(capped.capacity(), 1024U);
     EXPECT_EQ(wheel_.pending(), 0U) << "construction arms nothing";
+}
+
+TEST_P(TcpHandshake, AStackOverABrickThatResolvesNoNeighbourIsRefused) {
+    // Learning off and an empty static table: every SYN would be dropped as having no next hop and every connect would
+    // find no route, so the stack refuses to start and says what to do.
+    const aloe::net::Ipv4Config config{.address = aloe::testing::stack_ip, .prefix = 24};
+    Ipv4 bare{queue_, config};  // over the fixture's queue: its own brick stays idle meanwhile
+    ASSERT_FALSE(bare.resolves_neighbours());
+    std::string message;
+    try {
+        const Tcp refused{bare, wheel_, {}};
+    } catch (const std::invalid_argument& error) {
+        message = error.what();
+    }
+    ASSERT_FALSE(message.empty()) << "the stack was built";
+    EXPECT_NE(message.find("Ipv4Config::static_arp"), std::string::npos) << message;
+    EXPECT_NE(message.find("arp_learning"), std::string::npos) << message;
+}
+
+TEST_P(TcpHandshake, AStackOverABrickWithOneStaticNeighbourAndLearningOffIsBuilt) {
+    aloe::net::Ipv4Config config{.address = aloe::testing::stack_ip, .prefix = 24};
+    config.static_arp.push_back({.address = aloe::testing::harness_ip, .mac = aloe::testing::harness_mac});
+    Ipv4 one{queue_, config};  // over the fixture's queue: its own brick stays idle meanwhile
+    ASSERT_TRUE(one.resolves_neighbours());
+    EXPECT_NO_THROW((std::ignore = Tcp{one, wheel_, {}}));
+}
+
+TEST_P(TcpHandshake, TheFloorsBoundsAreValidated) {
+    constexpr std::uint16_t stack_mss = aloe::testing::tcp_fabric_mss;
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.min_peer_mss = 47}}), std::invalid_argument);
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.min_peer_mss = stack_mss + 1U}}), std::invalid_argument)
+        << "above the stack's own MSS";
+    EXPECT_NO_THROW((std::ignore = Tcp{ip_, wheel_, {.min_peer_mss = 48}}));
+    EXPECT_NO_THROW((std::ignore = Tcp{ip_, wheel_, {.min_peer_mss = stack_mss}}));
+    EXPECT_EQ(aloe::tcp::TcpConfig{}.min_peer_mss, 48U) << "Linux's tcp_min_snd_mss";
+}
+
+TEST_P(TcpHandshake, ANegativeIntervalIsRefused) {
+    EXPECT_THROW((std::ignore = Tcp{ip_, wheel_, {.challenge_ack_interval = -1ms}}), std::invalid_argument);
+    EXPECT_NO_THROW((std::ignore = Tcp{ip_, wheel_, {.challenge_ack_interval = 0ms}})) << "zero sends every answer";
+    EXPECT_EQ(aloe::tcp::TcpConfig{}.challenge_ack_interval, 500ms) << "Linux's tcp_invalid_ratelimit";
 }
 
 TEST_P(TcpHandshake, ANegativeOrOverlongProbeAllowanceIsRefused) {
@@ -817,8 +1369,10 @@ TEST_P(TcpHandshake, ASynAckSentAgainAfterARestatingAckNeverMovesTheEdgeLeft) {
         EXPECT_EQ(tcp_->connection(slot).receive_window(), 65536U);
     };
 
-    // The SYN again: the SYN-ACK from its entry.
+    // The SYN again: the SYN-ACK from its entry. Half a second after the restating ACK, which stamped the limiter the
+    // resend goes through: the design's step 4 sends "the SYN-ACK from its entry, as today, now through the limiter".
     restated(peer_, 0);
+    advance(500ms);
     aloe::frames::TcpPeer again{aloe::testing::peer_spec(), TcpSequence{aloe::testing::tcp_peer_isn}};
     again.set_window_scale(7);
     receive(again.syn());
@@ -828,7 +1382,7 @@ TEST_P(TcpHandshake, ASynAckSentAgainAfterARestatingAckNeverMovesTheEdgeLeft) {
     EXPECT_EQ(frames[0].tcp->window, 65535U) << "the handshake's field, unscaled";
     EXPECT_EQ(tcp_->connection(0).receive_window(), 65536U) << "the edge did not move left";
 
-    // The SYN-ACK's timer, on a second connection that did not see its SYN again.
+    // The SYN-ACK's timer, on a second connection that did not see its SYN again: due at 1.5 s, the first's at 1 s.
     aloe::frames::TcpPeer timed{aloe::testing::peer_spec(40001), TcpSequence{aloe::testing::tcp_peer_isn}};
     restated(timed, 1);
     advance(1s);

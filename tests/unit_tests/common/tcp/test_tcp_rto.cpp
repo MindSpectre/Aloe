@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <aloe/core>
 #include <aloe/frames>
 #include <aloe/tcp>
 #include <aloe/wire>
@@ -9,12 +11,65 @@
 #include <tcp_fixture.hpp>
 
 // The retransmission timer: RFC 6298's estimator with Linux's floor and ceiling, Karn's rule, the backoff, the retry
-// caps and the user timeout. A handshake with a zero round trip leaves the RTO at rto_min, 200 ms.
+// caps and the user timeout; then its expiries into the peer's closed window, which count with the zero-window probes
+// and not towards data_retries, so a connection whose peer answers every resend stays open (RFC 9293's MUST-37). A
+// handshake with a zero round trip leaves the RTO at rto_min, 200 ms.
 namespace {
 
     using namespace std::chrono_literals;
     using TcpRto     = aloe::testing::TcpFixture;
     using TcpRtoHeld = aloe::testing::TcpHeldFixture;
+
+    /**
+     * A connection whose peer closed its window on 100 bytes in flight: the ACK that closes it acknowledges nothing new
+     * and states a zero window. The peer offers no SACK-permitted, so no tail probe comes before the RTO. Under a
+     * ceiling of one second a run of many expiries stays short: they come 200 ms, 400 ms and 800 ms apart, then every
+     * second.
+     */
+    class TcpRtoClosedWindow : public aloe::testing::TcpFixture {
+    protected:
+        static constexpr std::uint8_t data_retries    = aloe::tcp::TcpConfig{}.data_retries;
+        static constexpr aloe::core::Duration ceiling = std::chrono::seconds{1};
+
+        Connection* c_                 = nullptr;
+        aloe::core::Duration interval_ = std::chrono::milliseconds{200};  ///< To the next expiry: the RTO now.
+
+        /// The stack under `config`, the connection open and the 100 bytes sent, the peer's window open.
+        void open_sent(const aloe::tcp::TcpConfig& config) {
+            configure_tcp(config);
+            c_ = open_passive(peer_);
+            ASSERT_NE(c_, nullptr);
+            ASSERT_EQ(c_->send(aloe::frames::pattern(100)), 100U);
+            ASSERT_EQ(collect().size(), 1U);
+        }
+
+        /// The peer closes its window on the data in flight: an ACK at SND.UNA that states a zero window.
+        void close_window() {
+            peer_.set_window(0);
+            receive(peer_.ack());
+            ASSERT_EQ(c_->writable(), 0U);
+            ASSERT_FALSE(c_->probing()) << "data in flight: the RTO's, not the probes'";
+        }
+
+        /// `open_sent`, then `close_window`.
+        void open_closed(const aloe::tcp::TcpConfig& config) {
+            ASSERT_NO_FATAL_FAILURE(open_sent(config));
+            close_window();
+        }
+
+        /// The next expiry, one interval on, at most one interval per step (the wheel fires a re-armed timer once per
+        /// advance), and the resend it sends; the interval doubles up to the ceiling.
+        void expire() {
+            advance(interval_);
+            interval_ = std::min<aloe::core::Duration>(interval_ * 2, ceiling);
+            ASSERT_EQ(collect().size(), 1U) << "the head again";
+        }
+
+        /// The peer answers the last resend: an ACK at SND.UNA with its window still zero.
+        void answer() {
+            receive(peer_.ack());
+        }
+    };
 
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpRto,
@@ -23,6 +78,11 @@ namespace {
                              aloe::testing::offloads_name);
     INSTANTIATE_TEST_SUITE_P(Offloads,
                              TcpRtoHeld,
+                             ::testing::Values(aloe::fabric::EmulatedOffloads::None,
+                                               aloe::fabric::EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpRtoClosedWindow,
                              ::testing::Values(aloe::fabric::EmulatedOffloads::None,
                                                aloe::fabric::EmulatedOffloads::Checksums),
                              aloe::testing::offloads_name);
@@ -291,4 +351,175 @@ TEST_P(TcpRtoHeld, AResendThatFindsNoNextHopWaitsForTheNextExpiryNotTheNextFlush
     EXPECT_EQ(tcp_->counters().send_unresolved, unresolved) << "off the deferred list: the timer tries again";
     EXPECT_EQ(c->queued_segments(), 1U);
     EXPECT_EQ(wheel_.pending(), 1U);
+}
+
+TEST_P(TcpRtoClosedWindow, AnsweredResendsIntoAZeroWindowKeepTheConnection) {
+    open_closed({.rto_max = ceiling});
+    ASSERT_FALSE(HasFatalFailure());
+    const int expiries = data_retries + 5;
+    for (int expiry = 0; expiry < expiries; ++expiry) {
+        expire();
+        ASSERT_FALSE(HasFatalFailure()) << "expiry " << expiry + 1;
+        answer();
+    }
+    EXPECT_EQ(c_->state(), aloe::tcp::State::Established) << "the peer answered every resend";
+    EXPECT_EQ(c_->retransmit_count(), 0U) << "an expiry at a closed window is counted with the probes";
+    EXPECT_EQ(tcp_->counters().retransmits, static_cast<std::uint64_t>(expiries));
+    EXPECT_EQ(tcp_->counters().connections_timed_out, 0U);
+}
+
+TEST_P(TcpRtoClosedWindow, UnansweredResendsIntoAZeroWindowEndIt) {
+    open_closed({.rto_max = ceiling});
+    ASSERT_FALSE(HasFatalFailure());
+    for (int expiry = 0; expiry < data_retries; ++expiry) {
+        expire();
+        ASSERT_FALSE(HasFatalFailure()) << "expiry " << expiry + 1;
+    }
+    EXPECT_EQ(c_->state(), aloe::tcp::State::Established);
+    EXPECT_EQ(tcp_->counters().retransmits, data_retries);
+    advance(interval_);
+    EXPECT_TRUE(collect().empty()) << "the expiry after data_retries unanswered resends sends nothing";
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.timed_out());
+    EXPECT_EQ(c_->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(tcp_->counters().connections_timed_out, 1U);
+    EXPECT_EQ(tcp_->counters().connections_user_timed_out, 0U);
+}
+
+TEST_P(TcpRtoClosedWindow, OneAnswerStartsTheCountAgain) {
+    open_closed({.rto_max = ceiling});
+    ASSERT_FALSE(HasFatalFailure());
+    for (int expiry = 0; expiry < data_retries - 1; ++expiry) {
+        expire();
+        ASSERT_FALSE(HasFatalFailure()) << "expiry " << expiry + 1;
+    }
+    answer();
+    for (int expiry = 0; expiry < data_retries - 1; ++expiry) {
+        expire();
+        ASSERT_FALSE(HasFatalFailure()) << "expiry " << expiry + 1 << " after the answer";
+    }
+    EXPECT_EQ(c_->state(), aloe::tcp::State::Established)
+        << "2 * (data_retries - 1) unanswered resends, but no more than data_retries - 1 in a row";
+    EXPECT_EQ(tcp_->counters().retransmits, 2U * (data_retries - 1U));
+    EXPECT_EQ(tcp_->counters().connections_timed_out, 0U);
+}
+
+TEST_P(TcpRtoClosedWindow, TheUserTimeoutEndsItAllTheSame) {
+    open_closed({.user_timeout = std::chrono::seconds{2}});
+    ASSERT_FALSE(HasFatalFailure());
+    for (int expiry = 0; expiry < 3; ++expiry) {  // at 200 ms, 600 ms and 1400 ms
+        expire();
+        ASSERT_FALSE(HasFatalFailure()) << "expiry " << expiry + 1;
+        answer();
+    }
+    advance(599ms);
+    EXPECT_EQ(c_->state(), aloe::tcp::State::Established) << "the next RTO, due at 3 s, is clamped to 2 s";
+    advance(1ms);
+    EXPECT_TRUE(collect().empty()) << "no resend at the deadline";
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.timed_out()) << "2 s after the head's first send, every resend answered";
+    EXPECT_EQ(c_->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(tcp_->counters().connections_user_timed_out, 1U);
+    EXPECT_EQ(tcp_->counters().connections_timed_out, 1U);
+}
+
+TEST_P(TcpRtoClosedWindow, AfterTheWindowOpensTheCapStartsFromNothing) {
+    open_closed({.rto_max = ceiling});
+    ASSERT_FALSE(HasFatalFailure());
+    for (int expiry = 0; expiry < 20; ++expiry) {
+        expire();
+        ASSERT_FALSE(HasFatalFailure()) << "expiry " << expiry + 1;
+        answer();
+    }
+    peer_.set_window(65535);
+    receive(peer_.ack());  // the window opens, nothing new acknowledged
+    EXPECT_TRUE(collect().empty()) << "the head left at the last expiry";
+    EXPECT_EQ(c_->retransmit_count(), 0U) << "the 20 expiries at the closed window left the cap's count alone";
+    for (int expiry = 0; expiry < data_retries; ++expiry) {
+        expire();
+        ASSERT_FALSE(HasFatalFailure()) << "expiry " << expiry + 1 << " at the open window";
+        EXPECT_EQ(c_->state(), aloe::tcp::State::Established);
+    }
+    EXPECT_EQ(c_->retransmit_count(), data_retries);
+    advance(interval_);
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.timed_out()) << "data_retries unanswered expiries at the open window";
+    EXPECT_EQ(c_->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(tcp_->counters().retransmits, 20U + data_retries);
+    EXPECT_EQ(tcp_->counters().connections_timed_out, 1U);
+}
+
+TEST_P(TcpRtoClosedWindow, ThroughAClosedWindowTheCapStandsWhereItStood) {
+    constexpr std::uint8_t open_expiries = 3;
+    ASSERT_NO_FATAL_FAILURE(open_sent({.rto_max = ceiling}));
+    for (int expiry = 0; expiry < open_expiries; ++expiry) {  // at 200, 600 and 1400 ms, the window open
+        expire();
+        ASSERT_FALSE(HasFatalFailure()) << "expiry " << expiry + 1 << " at the open window";
+    }
+    ASSERT_EQ(c_->retransmit_count(), open_expiries);
+    ASSERT_NO_FATAL_FAILURE(close_window());
+    for (int expiry = 0; expiry < 5; ++expiry) {
+        expire();
+        ASSERT_FALSE(HasFatalFailure()) << "expiry " << expiry + 1 << " at the closed window";
+        answer();
+        EXPECT_EQ(c_->retransmit_count(), open_expiries) << "the closed window's expiries leave the count alone";
+    }
+    peer_.set_window(65535);
+    receive(peer_.ack());  // the window opens, nothing new acknowledged
+    EXPECT_TRUE(collect().empty());
+    EXPECT_EQ(c_->retransmit_count(), open_expiries);
+    for (int expiry = 0; expiry < data_retries - open_expiries; ++expiry) {
+        expire();
+        ASSERT_FALSE(HasFatalFailure()) << "expiry " << expiry + 1 << " after the window opened";
+        EXPECT_EQ(c_->state(), aloe::tcp::State::Established);
+    }
+    EXPECT_EQ(c_->retransmit_count(), data_retries);
+    advance(interval_);
+    EXPECT_TRUE(collect().empty());
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.timed_out()) << "data_retries - 3 expiries after the window opened, 3 before it closed";
+    EXPECT_EQ(tcp_->counters().retransmits, 5U + data_retries);
+    EXPECT_EQ(tcp_->counters().connections_timed_out, 1U);
+}
+
+TEST_P(TcpRtoClosedWindow, TheUserTimeoutComesFirstWhenBothFallDue) {
+    // The fixture's RTO is rto_min, 200 ms, after the handshake's zero round trip, with the 100 bytes sent at 0. Under
+    // the default rto_max the unanswered expiries come at 200, 600 and 1400 ms, and the fourth 1600 ms later, at
+    // 3000 ms: three closed-window expiries are out, data_retries, and the head left 3 s ago, the user timeout.
+    open_closed({.data_retries = 3, .user_timeout = std::chrono::seconds{3}});
+    ASSERT_FALSE(HasFatalFailure());
+    for (int expiry = 0; expiry < 3; ++expiry) {
+        expire();
+        ASSERT_FALSE(HasFatalFailure()) << "expiry " << expiry + 1;
+    }
+    advance(1599ms);
+    EXPECT_EQ(c_->state(), aloe::tcp::State::Established) << "the fourth expiry is due at 3000 ms";
+    advance(1ms);
+    EXPECT_TRUE(collect().empty()) << "no resend at the deadline";
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.timed_out());
+    EXPECT_EQ(c_->state(), aloe::tcp::State::Closed);
+    EXPECT_EQ(tcp_->counters().connections_user_timed_out, 1U) << "the user timeout is checked before the count";
+    EXPECT_EQ(tcp_->counters().connections_timed_out, 1U);
+    EXPECT_EQ(tcp_->counters().retransmits, 3U);
+}
+
+TEST_P(TcpRtoClosedWindow, TheBackoffMovesAtAClosedWindow) {
+    open_closed({});
+    ASSERT_FALSE(HasFatalFailure());
+    for (const auto interval : {200ms, 400ms, 800ms}) {
+        advance(interval - 1ms);
+        EXPECT_TRUE(collect().empty()) << "before " << interval.count() << " ms";
+        advance(1ms);
+        ASSERT_EQ(collect().size(), 1U) << "at " << interval.count() << " ms";
+        EXPECT_EQ(c_->rto(), interval * 2);
+        answer();
+    }
+    EXPECT_EQ(tcp_->counters().retransmits, 3U);
+    EXPECT_EQ(c_->retransmit_count(), 0U);
 }

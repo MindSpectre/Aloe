@@ -41,6 +41,7 @@ namespace aloe::tcp {
             { const_ip.address() } -> std::same_as<wire::Ipv4Address>;
             { const_ip.max_l4_size() } -> std::same_as<std::uint16_t>;
             { const_ip.next_hop(address) } -> std::same_as<std::optional<wire::Ipv4Address>>;
+            { const_ip.resolves_neighbours() } -> std::same_as<bool>;
             { ip.queue() } -> std::same_as<loop::ShardQueue<typename Ip::Device>&>;
             { const_ip.generation() } -> std::same_as<std::uint64_t>;
             { ip.prebuild(address, protocol, now) } -> std::same_as<std::expected<net::Ipv4Prebuilt, net::SendError>>;

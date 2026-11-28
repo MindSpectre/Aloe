@@ -1,0 +1,12 @@
+// An active open whose SYN-ACK carries no MSS option, so the peer's MSS is RFC 1122's 536, below a floor raised to 600:
+// the SYN-ACK is answered with <SEQ=SEG.ACK><CTL=RST>, a RST at 1 with no ACK bit, no options and window 0, and the open
+// is refused as one the peer refused, so read reports ECONNREFUSED. Not limited, as no RST is. Linux with
+// net.ipv4.tcp_min_snd_mss at 600 raises the MSS to its floor and completes the open (__tcp_mtu_to_mss).
+--tcp_min_peer_mss=600
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 fcntl(3, F_SETFL, O_RDWR|O_NONBLOCK) = 0
++0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)
++0 > S 0:0(0) win 65535 <mss 1460,sackOK,TS val 0 ecr 0,nop,wscale 3>
++0 < S. 0:0(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > R 1:1(0) win 0
++0 read(3, ..., 1) = -1 ECONNREFUSED

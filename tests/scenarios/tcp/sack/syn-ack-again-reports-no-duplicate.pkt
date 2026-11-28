@@ -1,7 +1,8 @@
-// The peer's SYN-ACK arrives again after the handshake, as when our ACK of it was lost: it lies entirely before
-// RCV.NXT and is answered at once with the edge restated, 46336 units of 8 as the first ACK stated, and with no SACK
-// option. A duplicate SACK reports payload that arrived twice, and the SYN's number is not payload. Linux answers such
-// a SYN-ACK with a challenge ACK (RFC 5961, rate-limited), which reports no block either.
+// The peer's SYN-ACK arrives again after the handshake, as when our ACK of it was lost: a SYN on an established
+// connection, it draws a challenge ACK (RFC 5961 4.2), the first answer of the connection's limiter, with the edge
+// restated, 46336 units of 8 as the first ACK stated, and with no SACK option. A duplicate SACK reports payload that
+// arrived twice, and the SYN's number is not payload. Linux answers such a SYN-ACK with the same challenge, which
+// reports no block either.
 0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
 +0 fcntl(3, F_SETFL, O_RDWR|O_NONBLOCK) = 0
 +0 connect(3, ..., ...) = -1 EINPROGRESS (Operation now in progress)

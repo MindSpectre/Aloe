@@ -1,8 +1,8 @@
 # Core Module
 
 The core module (`common/core/`) is Aloe's foundation: the small things every module links. The library
-version, the clock and stamp types the whole stack shares with the TSC clock behind them, and header-only
-helpers: discarding values on
+version, the clock and stamp types the whole stack shares with the TSC clock behind them, SipHash-2-4 and random
+bytes from the kernel, and header-only helpers: discarding values on
 purpose, choosing a fallback, a string literal as a template parameter, and two guards that pin what a
 member function is. It has no dependencies and keeps none. Everything is reached through the umbrella
 `#include <aloe/core>` (`export/aloe/core`), and targets link `Aloe::Common::Core`. The execution facilities
@@ -27,6 +27,14 @@ and logging are modules of their own, [`execution`](execution.md) and [`log`](lo
 - **`aloe::core::TscScale`** -- ticks to nanoseconds as `(ticks * multiplier) >> shift` with a 32-bit
   multiplier, made by `measured(ticks, nanoseconds)` from one measurement. Exact (rounded down) for any
   count whose result fits 64 bits, about 584 years.
+- **`aloe::core::siphash24(key, message)`**, **`aloe::core::SipHashKey`** -- SipHash-2-4 of a span of bytes under a
+  128-bit key, `constexpr` and `noexcept`, in a header with no state: two compression rounds per eight-byte word and
+  four finalization rounds, as the reference implementation, whose published vectors the tests check. A key is two
+  64-bit words, `k0` from bytes 0 to 7 of the 16-byte key and `k1` from bytes 8 to 15, both little-endian. TCP's initial
+  sequence numbers and timestamp offsets are its first user.
+- **`aloe::core::random_bytes(out)`** -- fills a span from the kernel's random source, `getrandom(2)`, retrying on
+  `EINTR` and on a short read, and throws `std::system_error` on any other failure. Setup only: it may block until the
+  kernel's pool is ready. Where a key is drawn, it is drawn here.
 - **`aloe::core::version_major`, `version_minor`, `version_patch`, `version_string`** -- the library version as
   `constexpr` values, generated from the version in the root `CMakeLists.txt`, so the two cannot drift.
 - **`aloe::core::unused_value(values...)`** -- discards any number of values inside a body, where a
@@ -115,6 +123,13 @@ for every target in `cmake/features.cmake`, so every translation unit reads the 
 tests it and defines no macro of its own. `TscClock`'s stamps count from the counter's zero, not
 from `steady_clock`'s epoch, and the two time point types do not convert: a stamp from the wrong clock does
 not compile where the stack expects one.
+
+**A keyed hash written here.** SipHash is a pseudorandom function: without the key its output cannot be predicted
+from any number of other outputs, which is what a sequence number an attacker must not guess, or a hash table an
+attacker must not fill one bucket of, needs, and it is short enough, about forty lines, to keep `core` free of a
+dependency. The key comes from `getrandom(2)` through glibc, which is no library dependency, and never from
+`std::random_device` or a seeded engine. Linux uses the same function, under a key drawn at boot, for the same
+numbers.
 
 The guards cost nothing: empty `constexpr` functions whose only content is a `static_assert` on the deduced
 type. They exist for handle types such as the ethdev packet, whose state lives behind a pointer. There,

@@ -64,7 +64,7 @@ aloe::loop::ShardQueue<aloe::ethdev::Port> queue{port, 0, 512, counters};
 aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, Clock::now()};
 Ip ip{queue, ip_config};                                              // IPv4 with its ARP and ICMP echo
 Tcp tcp{ip, wheel, config};                                           // depends on the layer below, on nothing above
-Tcp::ConnectionType* session = tcp.connect(exchange, Clock::now()).value();  // the SYN is queued, or waits for ARP
+Tcp::ConnectionType* session = tcp.connect(exchange, Clock::now()).value();  // queued; with learning, may wait for ARP
 
 for (;;) {
     const auto now      = Clock::now();
@@ -122,7 +122,9 @@ freeze at the end of phase 2 fixes that shape.
 
 The seam between IPv4 and the transports is a list: `net::Ipv4::process` sorts the datagrams it
 accepts into one list per transport, and the loop hands `received(Tcp)` to TCP and `received(Udp)` to
-UDP. IPv4 calls nobody above it. ARP is private to the brick, as it is to the kernel.
+UDP. IPv4 calls nobody above it. ARP is private to the brick, as it is to the kernel, and by default the brick knows
+its neighbours from its configuration alone: a static table nothing changes, with resolution on the wire switched on
+only by a deployment that asks for it (see the [net page](net.md)).
 
 Protocol headers include `<aloe/core>`, `<aloe/wire>`, `<aloe/loop>` and `<aloe/device>` and never `<aloe/execution>` or
 `<aloe/log>`. No target below the runtime links `execution` or `log`, so stdexec and quill stay out of the

@@ -1,0 +1,19 @@
+// RFC 5961 3.2: a RST inside the window but not at RCV.NXT does not reset the connection. It draws a challenge ACK,
+// the connection's pure ACK with the edge restated: SND.NXT 1, RCV.NXT 1, and the window the SYN-ACK offered, its edge
+// at 1 + 65535 less RCV.NXT 1, 65535 to this peer, which offers no window scaling. A peer that restarted answers with
+// a RST at the number the challenge acknowledges, which resets the connection. Neither RST carries timestamps: a RST
+// is taken without them. Linux does the same (tcp_validate_incoming, tcp_send_challenge_ack); its windows depend on
+// its buffers.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < R 101:101(0) win 65535
++0 > . 1:1(0) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < R 1:1(0) win 65535
++0 read(4, ..., 1000) = -1 ECONNRESET

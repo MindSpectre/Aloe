@@ -15,7 +15,7 @@ namespace aloe::tcp::detail {
      * PAWS, and Last.ACK.sent.
      *
      * In SynSent `enabled()` is the SYN's offer; from the handshake on it is the option both ends offered. The clock
-     * is the stack's stamp in milliseconds, wrapping, plus an offset drawn per connection.
+     * is the stack's stamp in milliseconds, wrapping, plus the offset of the connection's flow (`IsnGenerator`).
      */
     class Timestamps {
     public:

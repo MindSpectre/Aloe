@@ -27,6 +27,7 @@ namespace {
     using aloe::testing::stack_ip;
     using aloe::testing::stack_mac;
     using aloe::wire::Ipv4Protocol;
+    using Taught = aloe::net::ArpCache::Taught;
 
     class NetSend : public aloe::testing::NetFixture {
     protected:
@@ -76,7 +77,7 @@ namespace {
 }  // namespace
 
 TEST_P(NetSend, AnOnSubnetSendCarriesBothHeadersAndBothChecksums) {
-    ip_.learn(harness_ip, harness_mac, now_);
+    ASSERT_EQ(ip_.learn(harness_ip, harness_mac, now_), Taught::Created);
     const auto payload = aloe::frames::pattern(24);
     ASSERT_TRUE(ip_.send(udp_segment(payload), udp_to(harness_ip), now_).has_value());
 
@@ -105,7 +106,7 @@ TEST_P(NetSend, AnOnSubnetSendCarriesBothHeadersAndBothChecksums) {
 }
 
 TEST_P(NetSend, ATcpSegmentGetsItsChecksumAtOffsetSixteen) {
-    ip_.learn(harness_ip, harness_mac, now_);
+    ASSERT_EQ(ip_.learn(harness_ip, harness_mac, now_), Taught::Created);
     ASSERT_TRUE(ip_.send(tcp_segment(aloe::frames::pattern(10)),
                          {.destination = harness_ip, .protocol = Ipv4Protocol::Tcp, .checksum = L4Checksum::Tcp},
                          now_)
@@ -122,7 +123,7 @@ TEST_P(NetSend, ATcpSegmentGetsItsChecksumAtOffsetSixteen) {
 }
 
 TEST_P(NetSend, WithoutAFillRequestTheL4FieldIsLeftAlone) {
-    ip_.learn(harness_ip, harness_mac, now_);
+    ASSERT_EQ(ip_.learn(harness_ip, harness_mac, now_), Taught::Created);
     Packet packet = udp_segment(aloe::frames::pattern(4));
     aloe::wire::store_be16(packet.data().subspan(6, 2), 0xabcd);
     ASSERT_TRUE(ip_.send(std::move(packet),
@@ -179,7 +180,7 @@ TEST_P(NetSend, AnUnresolvedSendHandsThePacketBackAndRateLimitsRequests) {
 
 TEST_P(NetSend, NoGatewayMeansNoRoute) {
     Ipv4 lone{
-        queue_, {.address = stack_ip, .prefix = 24}
+        queue_, {.address = stack_ip, .prefix = 24, .arp_learning = true}
     };
     const auto result = lone.send(udp_segment(aloe::frames::pattern(8)), udp_to(far_ip), now_);
     ASSERT_FALSE(result.has_value());
@@ -203,7 +204,7 @@ TEST_P(NetSend, BroadcastsAndMulticastGoOutWithoutArp) {
 }
 
 TEST_P(NetSend, AnOversizedSegmentIsRefusedUnchangedAndTheLargestOneGoes) {
-    ip_.learn(harness_ip, harness_mac, now_);
+    ASSERT_EQ(ip_.learn(harness_ip, harness_mac, now_), Taught::Created);
     ASSERT_EQ(ip_.max_l4_size(), 1480);
     Packet too_big = udp_segment(aloe::frames::pattern(1481 - 8));
     EXPECT_EQ(ip_.send(std::move(too_big), udp_to(harness_ip), now_).error(), SendError::Oversized);
@@ -223,7 +224,7 @@ TEST_P(NetSend, ARefusedSendReturnsThePacketExactlyAsBuilt) {
     aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<aloe::testing::StuckPort> queue{stuck, 0, 1, counters};  // a ring of one
     aloe::net::Ipv4<aloe::testing::StuckPort> ip{queue, aloe::testing::stack_config()};
-    ip.learn(harness_ip, harness_mac, now_);
+    ASSERT_EQ(ip.learn(harness_ip, harness_mac, now_), Taught::Created);
 
     ASSERT_TRUE(ip.send(udp_segment(aloe::frames::pattern(4)), udp_to(harness_ip), now_).has_value())
         << "into the ring";
@@ -254,7 +255,7 @@ TEST_P(NetSend, RouteQueryHasNoSideEffects) {
     EXPECT_EQ(ip_.next_hop(harness_ip), harness_ip) << "on the subnet: the destination itself";
     EXPECT_EQ(ip_.next_hop(far_ip), gateway_ip) << "off the subnet: the gateway";
     const Ipv4 without_gateway{
-        queue_, {.address = stack_ip, .prefix = 24}
+        queue_, {.address = stack_ip, .prefix = 24, .arp_learning = true}
     };
     EXPECT_FALSE(without_gateway.next_hop(far_ip).has_value());
     EXPECT_EQ(without_gateway.next_hop(harness_ip), harness_ip);

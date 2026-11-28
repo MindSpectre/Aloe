@@ -2,23 +2,30 @@
 // no coroutine, no sender on the data path. The loop docs/architecture/tcp.md leads with.
 //
 //     tcp_echo <port> <address>/<prefix> [<gateway>] (--listen <port> | --connect <host>:<port>)
-//              [-- <EAL arguments...>]
+//              [--static <address>=<mac>]... [--learn-arp] [-- <EAL arguments...>]
 //
-//     sudo tcp_echo net_tap0 10.78.0.2/24 --listen 7 -- --vdev=net_tap0,iface=aloe0
+//     sudo tcp_echo net_tap0 10.78.0.2/24 --listen 7 --learn-arp -- --vdev=net_tap0,iface=aloe0
 //         then: ip addr add 10.78.0.1/24 dev aloe0 && ip link set aloe0 up && nc 10.78.0.2 7
-//     sudo tcp_echo net_tap0 10.78.0.2/24 --connect 10.78.0.1:7 -- --vdev=net_tap0,iface=aloe0
+//     sudo tcp_echo net_tap0 10.78.0.2/24 --connect 10.78.0.1:7 --learn-arp -- --vdev=net_tap0,iface=aloe0
 //         with an echo server already listening on the kernel side, `socat TCP-LISTEN:7,reuseaddr,fork EXEC:cat`,
 //         then address aloe0 as above: the SYN waits for ARP until the interface answers. The client sends a
 //         line, prints the echo, closes.
 //
+// The brick knows its neighbours from `--static` alone unless `--learn-arp` lets it resolve them on the wire: a tap
+// interface's MAC is new on every run, so the tap lines learn it. Without learning a gateway needs a static entry,
+// and a peer outside the table is unreachable: `--connect` fails with no route, and its SYN is dropped. With neither
+// a `--static` entry nor `--learn-arp` the TCP brick refuses the IP brick, and the program prints why and ends.
+//
 // The echo's copy from the received packet into the prepared one is the application's operation: a program
 // producing new messages encodes them straight into `prepare` and never copies. A multi-queue program over the
-// bricks sets `net::Ipv4Config::accept_unsolicited_replies`, since every queue shares the address; this one runs
-// on one queue and leaves it off.
+// bricks sets `net::Ipv4Config::report_unsolicited_replies`, since every queue shares the address, and hands what
+// each brick's `resolved()` reports to the other bricks' `apply_resolution`; this one runs on one queue and leaves
+// it off.
 
 #include <algorithm>
 #include <aloe/core>
 #include <aloe/ethdev>
+#include <aloe/net>
 #include <aloe/stream>
 #include <aloe/tcp>
 #include <aloe/wire>
@@ -32,6 +39,7 @@
 #include <optional>
 #include <print>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -59,6 +67,10 @@ namespace {
         std::vector<std::string> eal;
     };
 
+    constexpr std::string_view usage = "usage: tcp_echo <port> <address>/<prefix> [<gateway>] "
+                                       "(--listen <port> | --connect <host>:<port>) [--static <address>=<mac>]... "
+                                       "[--learn-arp] [-- <EAL arguments...>]";
+
     [[nodiscard]] std::optional<std::uint16_t> parse_port(const std::string_view text) {
         unsigned value = 0;
         if (std::from_chars(text.data(), text.data() + text.size(), value).ec != std::errc{} || value == 0 ||
@@ -68,8 +80,24 @@ namespace {
         return static_cast<std::uint16_t>(value);
     }
 
+    /// `--static`'s value, `<address>=<mac>`: a neighbour the brick knows without ARP.
+    [[nodiscard]] std::optional<aloe::net::ArpResolution> parse_static(const std::string_view text) {
+        const std::size_t equals = text.find('=');
+        if (equals == std::string_view::npos) {
+            return std::nullopt;
+        }
+        const auto address = aloe::wire::Ipv4Address::parse(text.substr(0, equals));
+        const auto mac     = aloe::wire::MacAddress::parse(text.substr(equals + 1));
+        if (!address || !mac) {
+            return std::nullopt;
+        }
+        return aloe::net::ArpResolution{.address = *address, .mac = *mac};
+    }
+
+    /// The arguments in their order: the port and the address, a gateway when the next one is not an option, the role
+    /// and its target, then `--static` and `--learn-arp` until `--`. Anything out of place is a usage error.
     [[nodiscard]] std::optional<Arguments> parse(const std::span<char*> argv) {
-        if (argv.size() < 4) {
+        if (argv.size() < 3) {
             return std::nullopt;
         }
         Arguments arguments;
@@ -89,7 +117,7 @@ namespace {
         arguments.ip.address = *address;
         arguments.ip.prefix  = static_cast<std::uint8_t>(prefix);
         std::size_t next     = 3;
-        if (!std::string_view{argv[next]}.starts_with("--")) {
+        if (next < argv.size() && !std::string_view{argv[next]}.starts_with("--")) {
             const auto gateway = aloe::wire::Ipv4Address::parse(argv[next]);
             if (!gateway) {
                 return std::nullopt;
@@ -122,6 +150,22 @@ namespace {
             return std::nullopt;
         }
         next += 2;
+        while (next < argv.size() && std::string_view{argv[next]} != "--") {
+            const std::string_view option{argv[next]};
+            if (option == "--static" && next + 1 < argv.size()) {
+                const auto entry = parse_static(argv[next + 1]);
+                if (!entry) {
+                    return std::nullopt;
+                }
+                arguments.ip.static_arp.push_back(*entry);
+                next += 2;
+            } else if (option == "--learn-arp" && !arguments.ip.arp_learning) {
+                arguments.ip.arp_learning = true;  // once: a second is a usage error
+                ++next;
+            } else {
+                return std::nullopt;
+            }
+        }
         arguments.eal.emplace_back("tcp_echo");
         if (next < argv.size()) {
             if (std::string_view{argv[next]} != "--") {
@@ -166,7 +210,7 @@ namespace {
             case aloe::tcp::ConnectError::Unplaceable:
                 return "no local port lands on this queue";
             case aloe::tcp::ConnectError::NoRoute:
-                return "no route: off the subnet and no gateway";
+                return "no route: off the subnet with no gateway, or outside the static table without --learn-arp";
         }
         return "unknown";
     }
@@ -176,10 +220,7 @@ namespace {
 int main(int argc, char** argv) {
     const auto arguments = parse(std::span<char*>{argv, static_cast<std::size_t>(argc)});
     if (!arguments) {
-        std::println(
-            stderr,
-            "usage: tcp_echo <port> <address>/<prefix> [<gateway>] (--listen <port> | --connect <host>:<port>) "
-            "[-- <EAL arguments...>]");
+        std::println(stderr, "{}", usage);
         return EXIT_FAILURE;
     }
     std::signal(SIGINT, on_signal);
@@ -192,9 +233,20 @@ int main(int argc, char** argv) {
     };
     aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<Port> queue{port, 0, 512, counters};
-    Ipv4 ip{queue, arguments->ip};
     aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, aloe::core::Clock::now()};
-    Tcp tcp{ip, wheel, {}};
+    // Both bricks check what the arguments configured: a refusal is a usage error, the IP brick's of a gateway with
+    // neither a static entry nor learning, or the TCP stack's of an IP brick with neither at all.
+    std::optional<Ipv4> brick;
+    std::optional<Tcp> stack;
+    try {
+        brick.emplace(queue, arguments->ip);
+        stack.emplace(*brick, wheel, aloe::tcp::TcpConfig{});
+    } catch (const std::invalid_argument& error) {
+        std::println(stderr, "{}\n{}", error.what(), usage);
+        return EXIT_FAILURE;
+    }
+    Ipv4& ip = *brick;
+    Tcp& tcp = *stack;
     std::vector<Port::Packet> burst(64);
     const std::span<const std::byte> greeting = std::as_bytes(std::span{hello});
     std::size_t offered                       = 0;  // the client's bytes of the greeting committed so far
@@ -270,7 +322,8 @@ int main(int argc, char** argv) {
 
     const aloe::tcp::TcpCounters& c = tcp.counters();
     std::println("{} segments in, {} data out, {} pure ACKs, {} control, {} resets; {} accepted, {} opened, {} closed, "
-                 "{} reset, {} timed out; dropped: {} no connection, {} checksum, {} window, {} resources",
+                 "{} reset, {} timed out; dropped: {} no connection, {} no route, {} checksum, {} window, "
+                 "{} resources",
                  c.segments_received,
                  c.data_segments_sent,
                  c.pure_acks_sent,
@@ -282,6 +335,7 @@ int main(int argc, char** argv) {
                  c.connections_reset,
                  c.connections_timed_out,
                  c.dropped_no_connection,
+                 c.dropped_no_route,
                  c.dropped_bad_checksum,
                  c.dropped_out_of_window + c.dropped_out_of_order + c.dropped_duplicate,
                  c.dropped_no_slot + c.dropped_no_node + c.dropped_table_full + c.allocation_failures);

@@ -506,30 +506,44 @@ TEST_P(TcpReceive, APureAckAboveRcvNxtIsProcessedAndNotAnswered) {
     EXPECT_EQ(c->out_of_order_segments(), 0U);
 }
 
-TEST_P(TcpReceive, ARstAboveAGapResets) {
+TEST_P(TcpReceive, ARstAboveAGapIsChallengedAndNotHeld) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
-    receive(peer_.segment(
-        {TcpFlag::Rst, TcpFlag::Ack}, aloe::frames::pattern(10), peer_.snd_nxt() + 1000U, peer_.rcv_nxt()));
-    EXPECT_EQ(c->state(), aloe::tcp::State::Closed);
-    EXPECT_EQ(tcp_->counters().connections_reset, 1U);
+    const TcpSequence next = peer_.snd_nxt();
+    receive(peer_.segment({TcpFlag::Rst, TcpFlag::Ack}, aloe::frames::pattern(10), next + 1000U, peer_.rcv_nxt()));
+    // The design, "The first checks of a segment", step 3: a RST resets at RCV.NXT, at RCV.NXT - 1 after the peer's
+    // FIN, or at the end of what is held above a gap with SACK; "Any other RST that passed the sequence check is
+    // dropped, counted, and answered with a challenge ACK." This one is above a gap, nothing is held, no SACK.
+    EXPECT_EQ(c->state(), aloe::tcp::State::Established);
+    EXPECT_EQ(tcp_->counters().connections_reset, 0U);
+    EXPECT_EQ(tcp_->counters().dropped_reset_challenged, 1U);
     EXPECT_EQ(c->out_of_order_segments(), 0U);
     EXPECT_EQ(tcp_->counters().out_of_order_held, 0U);
-    const auto event = poll();
-    ASSERT_TRUE(event.has_value());
-    EXPECT_TRUE(event->events.reset());
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->flags, TcpFlags{TcpFlag::Ack});
+    EXPECT_EQ(frames[0].tcp->acknowledgement, next) << "the challenge acknowledges RCV.NXT";
+    EXPECT_EQ(tcp_->counters().challenge_acks_sent, 1U);
 }
 
-TEST_P(TcpReceive, ASynAboveAGapIsDropped) {
+TEST_P(TcpReceive, ASynAboveAGapIsChallengedAndNotHeld) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
-    receive(peer_.segment(
-        {TcpFlag::Syn, TcpFlag::Ack}, aloe::frames::pattern(10), peer_.snd_nxt() + 1000U, peer_.rcv_nxt()));
-    EXPECT_EQ(tcp_->counters().dropped_unexpected, 1U);
+    const TcpSequence next = peer_.snd_nxt();
+    receive(peer_.segment({TcpFlag::Syn, TcpFlag::Ack}, aloe::frames::pattern(10), next + 1000U, peer_.rcv_nxt()));
+    // The design, "The first checks of a segment", step 4: "SYN. On a connection past SynReceived: dropped, counted,
+    // challenged." It is counted in dropped_syn_challenged, no longer in dropped_unexpected, and answered.
+    EXPECT_EQ(tcp_->counters().dropped_syn_challenged, 1U);
+    EXPECT_EQ(tcp_->counters().dropped_unexpected, 0U);
     EXPECT_EQ(tcp_->counters().dropped_out_of_order, 0U);
     EXPECT_EQ(c->out_of_order_segments(), 0U);
     EXPECT_EQ(tcp_->counters().out_of_order_held, 0U);
     EXPECT_EQ(c->state(), aloe::tcp::State::Established);
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(frames[0].tcp->flags, TcpFlags{TcpFlag::Ack});
+    EXPECT_EQ(frames[0].tcp->acknowledgement, next) << "the challenge acknowledges RCV.NXT";
+    EXPECT_EQ(tcp_->counters().challenge_acks_sent, 1U);
 }
 
 TEST_P(TcpSend, PrepareCommitWritesInPlace) {

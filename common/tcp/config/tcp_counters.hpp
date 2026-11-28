@@ -11,6 +11,12 @@ namespace aloe::tcp {
         std::uint64_t pure_acks_sent        = 0;
         std::uint64_t control_segments_sent = 0;  ///< SYN, SYN-ACK, FIN, first sends and retransmits alike.
         std::uint64_t resets_sent           = 0;
+        /// Challenge ACKs the limiter let go (RFC 5961): sent at once, or left for the flush when the device refused
+        /// them. Each is also one of `pure_acks_sent` once it leaves.
+        std::uint64_t challenge_acks_sent   = 0;
+        /// Answers the limiter held back: challenge ACKs, ACKs for a refused segment that occupies no sequence space or
+        /// carries a SYN, and the SYN-ACK sent again for the peer's SYN again in SynReceived.
+        std::uint64_t acks_rate_limited     = 0;
         /// Resends at an expiry of the retransmission timer, of any kept segment, SYN, SYN-ACK, data and FIN: one per
         /// expiry, whether the resend left, waited or was refused.
         std::uint64_t retransmits           = 0;
@@ -65,6 +71,13 @@ namespace aloe::tcp {
         std::uint64_t connections_user_timed_out = 0;  ///< Of connections_timed_out, those the user timeout ended.
         std::uint64_t connections_unresolved     = 0;  ///< Owned connections whose next hop never answered ARP.
         std::uint64_t handshakes_failed          = 0;  ///< A passive open nobody owned yet was reset or timed out.
+        /// Handshakes refused because the peer's MSS, stated or assumed, was below `min_peer_mss`: a SYN to a listener
+        /// that took no slot, or an active open whose SYN-ACK was answered with a RST. Each drew a RST; neither moves
+        /// `connections_reset`.
+        std::uint64_t handshakes_refused_mss     = 0;
+        /// SYNs a listener took that carried payload, which is neither held nor acknowledged: the peer sends it again
+        /// after the handshake. A SYN refused before it takes a slot counts only where it was refused.
+        std::uint64_t syn_payload_discarded      = 0;
 
         std::uint64_t dropped_bad_header    = 0;
         std::uint64_t dropped_bad_checksum  = 0;
@@ -77,7 +90,23 @@ namespace aloe::tcp {
         std::uint64_t dropped_no_slot       = 0;
         std::uint64_t dropped_no_node       = 0;
         std::uint64_t dropped_table_full    = 0;
+        /// SYNs to a listener whose source has no next hop (`net::Ipv4::next_hop`): off the subnet with no gateway, or,
+        /// with the IP brick's learning off, a neighbour outside its static table. Dropped before they take a slot,
+        /// and answered with nothing, since nothing could reach the source.
+        std::uint64_t dropped_no_route      = 0;
         std::uint64_t dropped_paws = 0;  ///< Segments whose timestamp was older than TS.Recent; acknowledged, not kept.
+        /// RSTs inside the window at none of the positions that reset (RFC 5961 3.2): each drew a challenge ACK, or
+        /// was held back by the limiter.
+        std::uint64_t dropped_reset_challenged = 0;
+        /// SYNs on a connection past SynReceived (RFC 5961 4.2), wherever their sequence number lay and whether or not
+        /// they passed PAWS: each drew a challenge ACK, or was held back by the limiter, and moved no other drop
+        /// counter.
+        std::uint64_t dropped_syn_challenged   = 0;
+        /// Segments whose ACK was below SND.UNA less the smaller of the largest window the peer offered and what it
+        /// has acknowledged since the connection became Established (RFC 5961 5.2): dropped whole, payload and FIN
+        /// included, and each drew a challenge ACK, or was held back by the limiter. An ACK above SND.NXT stays in
+        /// `dropped_unexpected`.
+        std::uint64_t dropped_old_ack          = 0;
 
         std::uint64_t send_refused        = 0;
         std::uint64_t send_unresolved     = 0;

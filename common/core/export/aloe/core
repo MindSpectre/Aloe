@@ -1,14 +1,17 @@
 #pragma once
 
 /**
- * Public umbrella for the Aloe core module: the version, the clock aliases and
- * small header-only helpers, with no dependencies, so every module can link it.
+ * Public umbrella for the Aloe core module: the version, the clock aliases,
+ * small header-only helpers, SipHash-2-4 and random bytes from the kernel, with
+ * no dependencies, so every module can link it.
  * Consumers link Aloe::Common::Core and write `#include <aloe/core>`.
  */
 
 #include <clock.hpp>
 #include <fixed_string.hpp>
 #include <guards.hpp>
+#include <random_bytes.hpp>
+#include <siphash.hpp>
 #include <tsc_clock.hpp>
 #include <tsc_scale.hpp>
 #include <values.hpp>

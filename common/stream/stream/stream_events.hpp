@@ -105,8 +105,8 @@ namespace aloe::stream {
         Unplaceable,  ///< No local port makes the card deliver the flow to this shard.
         TableFull,    ///< No free connection slot, or no free listener.
         NoPort,       ///< Every ephemeral port is taken or unplaceable.
-        NoRoute,      ///< The peer is off the subnet and no gateway is configured.
-        Closed,       ///< The connection is closed; the operation cannot complete.
+        NoRoute,  ///< No next hop: off the subnet with no gateway, or, with ARP learning off, outside the static table.
+        Closed,   ///< The connection is closed; the operation cannot complete.
     };
 
 }  // namespace aloe::stream

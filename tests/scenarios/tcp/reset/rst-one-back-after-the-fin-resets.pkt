@@ -1,0 +1,21 @@
+// Once the peer's FIN is taken, a RST at the FIN's own number, RCV.NXT - 1, resets the connection, since macOS sends
+// its RST with the number of the FIN before it (Linux's tcp_reset_check, in CLOSE_WAIT, CLOSING and LAST_ACK). Before
+// the FIN the same position is below RCV.NXT, outside the window, and a RST there is dropped in silence: an answer
+// would stand where the next line expects the FIN's ACK, and a reset would answer the FIN with a RST. The FIN's ACK
+// states 65534: the SYN-ACK's edge, 1 + 65535, less RCV.NXT 2, since the FIN frees less than a segment and the edge
+// stays. Linux does the same; its windows depend on its buffers.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < R 0:0(0) win 65535
++0 < F. 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 2 win 65534 <nop,nop,TS val 0 ecr 100>
++0 read(4, ..., 1000) = 0
++0 < R 1:1(0) win 65535
++0 read(4, ..., 1000) = -1 ECONNRESET

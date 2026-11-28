@@ -40,7 +40,7 @@ namespace aloe::tcp {
         TableFull,    ///< No free connection slot, or no retransmission-queue node for the SYN.
         NoPort,       ///< The ephemeral range has no free port that lands on this queue.
         Unplaceable,  ///< The card hashes addresses only, or steers nothing, and this is not the queue it picks.
-        NoRoute,      ///< Off the subnet with no gateway.
+        NoRoute,      ///< No next hop: off the subnet with no gateway, or, with learning off, outside the static table.
     };
 
     enum class ListenError : std::uint8_t {
@@ -50,6 +50,10 @@ namespace aloe::tcp {
 
     /// The peer's MSS when its SYN carried no option: RFC 1122's default.
     inline constexpr std::uint16_t default_peer_mss = 536;
+
+    /// The lowest `TcpConfig::min_peer_mss` allowed, and its default: Linux's TCP_MIN_SND_MSS, forty bytes of options
+    /// and eight of data.
+    inline constexpr std::uint16_t smallest_min_peer_mss = 48;
 
     struct TcpConfig {
         std::size_t connections      = 1024;  ///< Slots per shard.
@@ -69,8 +73,9 @@ namespace aloe::tcp {
         core::Duration rto_min        = std::chrono::milliseconds{200};  ///< Linux's TCP_RTO_MIN.
         core::Duration rto_max        = std::chrono::seconds{120};       ///< Linux's TCP_RTO_MAX.
         std::uint8_t retries          = 5;  ///< SYN and SYN-ACK retransmits before TimedOut.
-        std::uint8_t data_retries =
-            15;  ///< Data and FIN retransmits, and unanswered zero-window probes, before TimedOut.
+        /// Data and FIN retransmits since the last ACK of new data, or unanswered zero-window probes and resends into
+        /// the peer's closed window since the last acceptable ACK, before TimedOut.
+        std::uint8_t data_retries     = 15;
         core::Duration user_timeout =
             core::Duration::zero();  ///< RFC 5482: unacknowledged this long ends the connection; zero is off.
         bool timestamps     = true;  ///< Offer and use RFC 7323 timestamps.
@@ -84,6 +89,16 @@ namespace aloe::tcp {
         std::uint8_t retransmit_defers  = 1;  ///< Deferred resends of one segment before the copy fallback.
         core::Duration unresolved_retry = std::chrono::milliseconds{10};  ///< A SYN waiting for ARP; not a try.
         std::uint16_t unresolved_polls  = 300;  ///< Polls before Unresolved: 3 s by default, Linux's ARP bound.
+
+        /// The least time between two answers that go through the limiter, per connection (RFC 5961 section 7):
+        /// challenge ACKs, and the ACK for a refused segment that occupies no sequence space or carries a SYN. Zero
+        /// sends every one. Linux's `tcp_invalid_ratelimit`.
+        core::Duration challenge_ack_interval = std::chrono::milliseconds{500};
+
+        /// The least MSS a peer may have, stated in its SYN or SYN-ACK or, without the option, RFC 1122's 536
+        /// (`default_peer_mss`): a handshake with a peer below it is refused, passive or active. Linux's
+        /// `tcp_min_snd_mss`, which raises such an MSS to the floor instead. From 48 to the stack's own MSS.
+        std::uint16_t min_peer_mss = smallest_min_peer_mss;
 
         /// Throws std::invalid_argument naming the first rule broken; `max_l4_size` is the IP brick's and `resolution`
         /// the timer wheel's. Returns the config, so a constructor validates it before sizing anything from it.
@@ -143,6 +158,9 @@ namespace aloe::tcp {
             if (unresolved_polls == 0) {
                 throw std::invalid_argument{"TcpConfig: unresolved_polls must be positive"};
             }
+            if (challenge_ack_interval < core::Duration::zero()) {
+                throw std::invalid_argument{"TcpConfig: challenge_ack_interval must not be negative"};
+            }
             // Bounds the longest handshake delay, rto_initial * 2^retries, and the whole schedule, rto_initial *
             // (2^(retries+1) - 1), to a quarter of core::Duration's range, so no deadline now + delay can overflow;
             // the doubling itself stops at rto_max.
@@ -151,6 +169,10 @@ namespace aloe::tcp {
             }
             if (max_l4_size <= wire::TcpHeader::size) {
                 throw std::invalid_argument{"TcpConfig: the MTU leaves no room for a TCP segment"};
+            }
+            if (min_peer_mss < smallest_min_peer_mss ||
+                std::size_t{min_peer_mss} > std::size_t{max_l4_size} - wire::TcpHeader::size) {
+                throw std::invalid_argument{"TcpConfig: min_peer_mss must be at least 48 and at most the stack's MSS"};
             }
             return *this;
         }

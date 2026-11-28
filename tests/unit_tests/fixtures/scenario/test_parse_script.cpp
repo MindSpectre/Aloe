@@ -291,6 +291,28 @@ TEST(ParseScript, ParsesTheTailProbeAllowanceLine) {
     EXPECT_NE(twice.error().message.find("given twice"), std::string_view::npos);
 }
 
+TEST(ParseScript, ParsesTheChallengeAckIntervalLine) {
+    const auto script =
+        parse_script("--tcp_challenge_ack_interval_ms=0\n0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(script.has_value()) << script.error().message;
+    EXPECT_EQ(script->tcp, (aloe::scenario::ScriptTcpOptions{.challenge_ack_interval = 0ms}));
+    const auto twice = parse_script("--tcp_challenge_ack_interval_ms=10\n--tcp_challenge_ack_interval_ms=20\n");
+    ASSERT_FALSE(twice.has_value());
+    EXPECT_NE(twice.error().message.find("given twice"), std::string_view::npos);
+}
+
+TEST(ParseScript, ParsesTheMinPeerMssLine) {
+    const auto script = parse_script("--tcp_min_peer_mss=600\n0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(script.has_value()) << script.error().message;
+    EXPECT_EQ(script->tcp, (aloe::scenario::ScriptTcpOptions{.min_peer_mss = 600}));
+    const auto twice = parse_script("--tcp_min_peer_mss=48\n--tcp_min_peer_mss=600\n");
+    ASSERT_FALSE(twice.has_value());
+    EXPECT_NE(twice.error().message.find("given twice"), std::string_view::npos);
+    const auto wide = parse_script("--tcp_min_peer_mss=65536\n");
+    ASSERT_FALSE(wide.has_value()) << "the MSS is sixteen bits";
+    EXPECT_NE(wide.error().message.find("out of range"), std::string_view::npos);
+}
+
 TEST(ParseScript, ARepeatedReceiveSideLineIsAnError) {
     const auto twice = parse_script("--tcp_sack=1\n--tcp_sack=1\n");
     ASSERT_FALSE(twice.has_value());

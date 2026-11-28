@@ -33,14 +33,11 @@ namespace aloe::benchmarks {
                 : state_{state},
                   device_{device},
                   queue_{device, 0, 512, counters_},
-                  ip_{queue_, stack_ip_config(peer_config)},
+                  ip_{queue_, stack_ip_config(peer_config, arp_on_wire)},
                   wheel_{std::chrono::milliseconds{1}, core::Clock::now()},
                   tcp_{ip_, wheel_, stack_tcp_config()},
                   deadline_{peer_config.deadline + state.config.gap},  // the gap is silence by design, not a loss
                   progress_{core::Clock::now()} {
-                if (!arp_on_wire) {
-                    ip_.learn(peer_config.peer_ip, peer_config.peer_mac, core::Clock::now());
-                }
                 if (state.config.round == Round::Tick) {
                     if (!tcp_.listen(peer_config.stack_port)) {
                         state.fail("level 0: listen refused");

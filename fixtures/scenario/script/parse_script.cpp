@@ -743,6 +743,12 @@ namespace aloe::scenario {
                 if (name == "tcp_tail_probe_ack_delay_ms") {
                     return set_duration(cursor, tcp.tail_probe_ack_delay, column, name);
                 }
+                if (name == "tcp_challenge_ack_interval_ms") {
+                    return set_duration(cursor, tcp.challenge_ack_interval, column, name);
+                }
+                if (name == "tcp_min_peer_mss") {
+                    return set_count(cursor, tcp.min_peer_mss, column, name);
+                }
                 if (name == "congestion") {
                     if (congestion_given) {
                         return fail(column, "option '--congestion' given twice");
@@ -774,6 +780,8 @@ namespace aloe::scenario {
                                               std::string_view{"tcp_window_scaling"},
                                               std::string_view{"tcp_delayed_ack_ms"},
                                               std::string_view{"tcp_tail_probe_ack_delay_ms"},
+                                              std::string_view{"tcp_challenge_ack_interval_ms"},
+                                              std::string_view{"tcp_min_peer_mss"},
                                               std::string_view{"congestion"}};
 
             [[nodiscard]] bool is_option(const std::string_view name) noexcept {

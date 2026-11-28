@@ -1,3 +1,4 @@
+#include <aloe/core>
 #include <aloe/frames>
 #include <aloe/tcp>
 #include <aloe/wire>
@@ -11,12 +12,15 @@
 // Zero-window probes: a pure ACK at snd_una - 1 after one RTO, then at doubling intervals, while the peer's window is
 // zero and nothing is in flight; unanswered probes count against data_retries, the user timeout bounds a run of
 // unanswered probes from the first of them, so a peer that answers keeps the connection open (RFC 9293), and a window
-// that opens ends probing. A close while probing holds its FIN in the queue, unsent, until the window opens. A
+// that opens ends probing. A close while probing holds its FIN in the queue, unsent, until the window opens. The
+// retransmission timer's expiries at a closed window with data in flight count with the probes (`ZeroWindowProbe::
+// unanswered`; the brick's cases are in test_tcp_rto.cpp), and either run starts from nothing after the other. A
 // handshake with a zero round trip leaves the RTO at rto_min, 200 ms.
 namespace {
 
     using namespace std::chrono_literals;
     using aloe::wire::TcpFlag;
+    using ZeroWindowProbe   = aloe::tcp::detail::ZeroWindowProbe;
     using TcpProbes         = aloe::testing::TcpFixture;
     using TcpProbesRefusing = aloe::testing::TcpRefusingFixture;
 
@@ -32,6 +36,34 @@ namespace {
                              aloe::testing::offloads_name);
 
 }  // namespace
+
+TEST(TcpZeroWindowProbe, AClosedWindowExpiryCountsWithTheProbesAndLeavesTheDeadline) {
+    ZeroWindowProbe probe;
+    const aloe::core::TimePoint start{};
+    const aloe::core::Duration user_timeout = 1s;
+    probe.start(200ms);
+    ASSERT_EQ(probe.expire(start, user_timeout, 3, 120s), ZeroWindowProbe::Expiry::Probe)
+        << "one probe out, stamped at the start, the interval doubled to 400 ms";
+    const aloe::core::TimePoint now      = start + 700ms;
+    const aloe::core::TimePoint interval = probe.deadline(now, aloe::core::Duration::zero());
+    const aloe::core::TimePoint clamped  = probe.deadline(now, user_timeout);
+    ASSERT_EQ(interval, now + 400ms);
+    ASSERT_EQ(clamped, start + user_timeout);
+    EXPECT_TRUE(probe.unanswered(3));
+    EXPECT_EQ(probe.out(), 2U);
+    EXPECT_TRUE(probe.unanswered(3));
+    EXPECT_EQ(probe.out(), 3U);
+    EXPECT_FALSE(probe.unanswered(3)) << "three went unanswered already";
+    EXPECT_EQ(probe.out(), 3U);
+    EXPECT_EQ(probe.deadline(now, aloe::core::Duration::zero()), interval) << "no probe sent: the interval as it was";
+    EXPECT_EQ(probe.deadline(now, user_timeout), clamped) << "and the first unanswered probe's stamp";
+    EXPECT_EQ(probe.expire(now, aloe::core::Duration::zero(), 3, 120s), ZeroWindowProbe::Expiry::TimedOut)
+        << "one count for the probes and the expiries";
+    probe.answered();
+    EXPECT_EQ(probe.out(), 0U);
+    EXPECT_TRUE(probe.unanswered(3));
+    EXPECT_EQ(probe.out(), 1U);
+}
 
 TEST_P(TcpProbes, AZeroWindowWithAnEmptyQueueStartsProbingAtTheRto) {
     auto* c = open_passive(peer_);
@@ -156,6 +188,69 @@ TEST_P(TcpProbes, TheUserTimeoutClampsTheProbeTimerToItsDeadline) {
         << "the deadline, 500 ms after the first unanswered probe, came first";
     EXPECT_TRUE(collect().empty()) << "no probe at the deadline";
     EXPECT_EQ(tcp_->counters().connections_user_timed_out, 1U);
+}
+
+TEST_P(TcpProbes, ProbesAfterExpiriesAtAClosedWindowCountFromNothing) {
+    configure_tcp({.rto_max = std::chrono::seconds{1}, .data_retries = 3});
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    const auto data = collect();
+    ASSERT_EQ(data.size(), 1U);
+    peer_.set_window(0);
+    receive(peer_.ack());  // the window closes on the data in flight
+    advance(200ms);
+    ASSERT_EQ(collect().size(), 1U) << "a resend at the closed window, unanswered";
+    advance(400ms);
+    ASSERT_EQ(collect().size(), 1U) << "and a second";
+    receive(peer_.ack(data[0]));  // the data acknowledged, the window still zero
+    EXPECT_TRUE(c->probing());
+    advance(799ms);
+    EXPECT_TRUE(collect().empty());
+    advance(1ms);
+    ASSERT_EQ(collect().size(), 1U) << "the first probe one RTO on: 800 ms, backed off, since Karn takes no sample";
+    advance(1s);
+    advance(1s);
+    EXPECT_EQ(tcp_->counters().zero_window_probes, 3U);
+    EXPECT_EQ(c->state(), aloe::tcp::State::Established) << "three probes unanswered: the two expiries do not count";
+    advance(1s);
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.timed_out());
+}
+
+TEST_P(TcpProbes, ExpiriesAtAClosedWindowAfterProbesCountFromNothing) {
+    configure_tcp({.rto_max = std::chrono::seconds{1}, .data_retries = 3});
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    peer_.set_window(0);
+    receive(peer_.ack());
+    advance(200ms);
+    advance(400ms);
+    ASSERT_EQ(collect().size(), 2U) << "two probes, both unanswered";
+    peer_.set_window(100);
+    receive(peer_.ack());  // the window opens
+    EXPECT_FALSE(c->probing());
+    EXPECT_TRUE(poll()->events.writable());
+    ASSERT_EQ(c->send(aloe::frames::pattern(100)), 100U);
+    ASSERT_EQ(collect().size(), 1U);
+    peer_.set_window(0);
+    receive(peer_.ack());  // and closes on the data in flight
+    EXPECT_FALSE(c->probing());
+    advance(199ms);
+    EXPECT_TRUE(collect().empty());
+    advance(1ms);
+    ASSERT_EQ(collect().size(), 1U) << "the RTO, 200 ms after the send: the probes never moved it";
+    advance(400ms);
+    ASSERT_EQ(collect().size(), 1U);
+    advance(800ms);
+    ASSERT_EQ(collect().size(), 1U);
+    EXPECT_EQ(c->state(), aloe::tcp::State::Established) << "three resends unanswered: the two probes do not count";
+    advance(1s);
+    const auto event = poll();
+    ASSERT_TRUE(event.has_value());
+    EXPECT_TRUE(event->events.timed_out());
+    EXPECT_EQ(tcp_->counters().retransmits, 3U);
 }
 
 TEST_P(TcpProbes, AZeroWindowInTheSynAckStartsProbing) {

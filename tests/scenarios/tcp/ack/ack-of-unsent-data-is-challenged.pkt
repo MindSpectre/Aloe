@@ -1,0 +1,26 @@
+// RFC 5961 5.2: a segment whose ACK acknowledges what was never sent is dropped whole and answered with a challenge
+// ACK, through the connection's limiter (500 ms) whether or not it carries data. The peer's 100 bytes acknowledging 2,
+// past SND.NXT 1, at 0, 100 and 500 ms draw a challenge at 0 and at 500 ms, and none at 100 ms: an answer at 100 ms
+// would stand where the line at 500 ms expects one, early. Each challenge is the connection's pure ACK: SND.NXT 1,
+// RCV.NXT still 1, since the payload was not taken, and the edge restated, 1 + 65535 less RCV.NXT 1, 65535 to this
+// peer, which offers no window scaling. The same bytes sent again with an acceptable ACK are taken and acknowledged at
+// the flush, the window 65535 less the 100 unread. The stack's ACKs carry TS val 0 and 500, its clock in milliseconds
+// from its SYN-ACK, and echo 100. Linux does the same (tcp_ack's test for unsent data, tcp_send_challenge_ack); its
+// windows depend on its buffers.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:101(100) ack 2 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0.1 < P. 1:101(100) ack 2 win 65535 <nop,nop,TS val 100 ecr 0>
++0.4 < P. 1:101(100) ack 2 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1 win 65535 <nop,nop,TS val 500 ecr 100>
++0 < P. 1:101(100) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 101 win 65435 <nop,nop,TS val 500 ecr 100>
++0 read(4, ..., 1000) = 100

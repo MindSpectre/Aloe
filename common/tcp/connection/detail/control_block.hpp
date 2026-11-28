@@ -11,6 +11,7 @@
 #include <optional>
 
 #include <detail/ack_policy.hpp>
+#include <detail/answer_limiter.hpp>
 #include <detail/connection_list.hpp>
 #include <detail/frame_template.hpp>
 #include <detail/loss_recovery.hpp>
@@ -151,6 +152,7 @@ namespace aloe::tcp::detail {
             timestamps       = {};
             window_use       = {};
             sack             = {};
+            answers          = {};
             timer_kind       = TimerKind::None;
             rto_at           = {};
             retransmit_count = 0;
@@ -197,14 +199,17 @@ namespace aloe::tcp::detail {
         WindowUse window_use{};  ///< Written by each send of new data, read once by an ACK of new data.
         // Behind the parts an in-order segment touches.
         SackBlocks sack{};
+        AnswerLimiter answers{};  ///< Read and written only by the answers to an unacceptable segment.
 
         // The connection's wheel timer: the RTO, the reordering timer, the tail probe, the ARP poll or the zero-window
         // probe.
         TimerNode timer;
         TimerKind timer_kind = TimerKind::None;  ///< What `timer` does when it fires.
         core::TimePoint rto_at{};                ///< The moment the RTO would fire, set wherever it is armed.
-        std::uint8_t retransmit_count  = 0;      ///< Expiries since the last ACK of new data, deferred and refused too.
-        std::uint16_t unresolved_polls = 0;      ///< Polls since the last send that left; the config bounds them.
+        /// Expiries since the last ACK of new data, deferred and refused too, but those at the peer's closed window on
+        /// a synchronized connection, which `probe` counts.
+        std::uint8_t retransmit_count  = 0;
+        std::uint16_t unresolved_polls = 0;  ///< Polls since the last send that left; the config bounds them.
         /// The delayed ACK's wheel timer: armed only while an ACK of in-order data waits for `delayed_ack`.
         TimerNode ack_timer;
     };

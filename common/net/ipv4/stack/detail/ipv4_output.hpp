@@ -12,6 +12,7 @@
 #include <span>
 #include <utility>
 
+#include <arp_cache.hpp>
 #include <detail/ipv4_arp.hpp>
 #include <detail/ipv4_routing.hpp>
 #include <ipv4_config.hpp>
@@ -24,7 +25,8 @@ namespace aloe::net::detail {
      * @brief Everything that leaves the IPv4 brick as a datagram: `send` for a packet the caller lets go of,
      * `prebuild` and `send_frame` for a transport that keeps its packets, the checksums in one place and the
      * identification counter, and `frame_datagram`, the headers and checksums of a datagram to a known MAC, which
-     * the echo reply is built with. Routes through `Routing`, resolves through `Arp`, transmits on the queue.
+     * the echo reply is built with. Routes through `Routing`, answers the route question with what `Arp` may reach
+     * (`next_hop`), resolves through `Arp`, transmits on the queue.
      */
     template <device::IsDevice Device>
     class Output {
@@ -53,11 +55,11 @@ namespace aloe::net::detail {
             assert((request.checksum == device::L4Checksum::None ||
                     packet.size() >= checksum_offset(request.checksum) + 2) &&
                    "a segment shorter than its checksum field");
-            const std::expected<wire::MacAddress, SendError> mac = next_mac(request.destination, now);
-            if (!mac) {
-                return std::unexpected{mac.error()};
+            const std::expected<NextMac, SendError> next = next_mac(request.destination, now);
+            if (!next) {
+                return std::unexpected{next.error()};
             }
-            const wire::MacAddress hop_mac = *mac;
+            const wire::MacAddress hop_mac = next->mac;
             const std::size_t segment_size = packet.size();
             if (segment_size > max_l4_size()) {
                 ++counters_.send_oversized;
@@ -90,13 +92,14 @@ namespace aloe::net::detail {
         [[nodiscard]] std::expected<Ipv4Prebuilt, SendError> prebuild(const wire::Ipv4Address destination,
                                                                       const wire::Ipv4Protocol protocol,
                                                                       const core::TimePoint now) noexcept {
-            const std::expected<wire::MacAddress, SendError> mac = next_mac(destination, now);
-            if (!mac) {
-                return std::unexpected{mac.error()};
+            const std::expected<NextMac, SendError> next = next_mac(destination, now);
+            if (!next) {
+                return std::unexpected{next.error()};
             }
             Ipv4Prebuilt prebuilt{};
-            wire::EthernetHeader{
-                .destination = *mac, .source = queue_.mac(), .ethertype = std::to_underlying(wire::EtherType::Ipv4)}
+            wire::EthernetHeader{.destination = next->mac,
+                                 .source      = queue_.mac(),
+                                 .ethertype   = std::to_underlying(wire::EtherType::Ipv4)}
                 .write(std::span<std::byte>{prebuilt.headers}.first(wire::EthernetHeader::size));
             wire::Ipv4Header{.total_length   = 0,
                              .identification = 0,
@@ -106,7 +109,7 @@ namespace aloe::net::detail {
                              .destination    = destination}
                 .write(std::span<std::byte>{prebuilt.headers}.subspan(wire::EthernetHeader::size));
             prebuilt.valid_until = core::TimePoint::max();
-            if (!routing_.is_broadcast(destination) && !destination.is_multicast()) {
+            if (!next->permanent) {
                 const std::optional<core::TimePoint> confirmed = arp_.confirmed(*routing_.next_hop(destination));
                 const bool fresh     = confirmed.has_value() && now - *confirmed < config_.arp_reachable;
                 prebuilt.valid_until = fresh ? *confirmed + config_.arp_reachable : now + config_.arp_request_interval;
@@ -165,6 +168,16 @@ namespace aloe::net::detail {
             return static_cast<std::uint16_t>(queue_.mtu() - wire::Ipv4Header::size);
         }
 
+        /// The route question, with no side effect; the contract is on `Ipv4::next_hop`. `Routing` gives the hop, and
+        /// with learning off a unicast hop the static table does not hold is nowhere.
+        [[nodiscard]] std::optional<wire::Ipv4Address> next_hop(const wire::Ipv4Address destination) const noexcept {
+            const std::optional<wire::Ipv4Address> hop = routing_.next_hop(destination);
+            if (!hop || routing_.is_broadcast(*hop) || hop->is_multicast() || arp_.may_reach(*hop)) {
+                return hop;
+            }
+            return std::nullopt;
+        }
+
         /**
          * @brief Writes both headers of a datagram to a next hop whose MAC the caller knows, and completes the
          * checksums: what `send` does once the hop is resolved, and all the echo reply needs, since it goes back to
@@ -199,6 +212,13 @@ namespace aloe::net::detail {
         static constexpr std::size_t ipv4_total_length_offset   = 2;
         static constexpr std::size_t ipv4_identification_offset = 4;
         static constexpr std::size_t udp_checksum_offset        = 6;
+
+        /// The MAC a frame goes to, and whether a template built for it stays valid for ever: a group MAC's, or a
+        /// static neighbour's.
+        struct NextMac {
+            wire::MacAddress mac{};
+            bool permanent = false;
+        };
 
         [[nodiscard]] static constexpr std::size_t checksum_offset(const device::L4Checksum l4) noexcept {
             return l4 == device::L4Checksum::Tcp ? wire::TcpHeader::checksum_offset : udp_checksum_offset;
@@ -264,27 +284,28 @@ namespace aloe::net::detail {
             return identification_++;
         }
 
-        /// The MAC a frame to `destination` goes to: a group MAC, or the routed hop's from the cache, counting the
-        /// failures as `send` and `prebuild` report them.
-        [[nodiscard]] std::expected<wire::MacAddress, SendError> next_mac(const wire::Ipv4Address destination,
-                                                                          const core::TimePoint now) noexcept {
+        /// The MAC a frame to `destination` goes to: a group MAC, or the hop's from the cache once the route question
+        /// found one, counting the failures as `send` and `prebuild` report them. A hop the full learned table has no
+        /// slot for is `Unresolved`, as any hop not resolved yet: `Arp::lookup` counts `arp_table_full` beside it.
+        [[nodiscard]] std::expected<NextMac, SendError> next_mac(const wire::Ipv4Address destination,
+                                                                 const core::TimePoint now) noexcept {
             if (routing_.is_broadcast(destination)) {
-                return wire::MacAddress::broadcast();
+                return NextMac{.mac = wire::MacAddress::broadcast(), .permanent = true};
             }
             if (destination.is_multicast()) {
-                return destination.multicast_mac();
+                return NextMac{.mac = destination.multicast_mac(), .permanent = true};
             }
-            const std::optional<wire::Ipv4Address> hop = routing_.next_hop(destination);
+            const std::optional<wire::Ipv4Address> hop = next_hop(destination);
             if (!hop) {
                 ++counters_.send_no_route;
                 return std::unexpected{SendError::NoRoute};
             }
-            const std::optional<wire::MacAddress> mac = arp_.resolve(*hop, now);
-            if (!mac) {
+            const ArpCache::Lookup found = arp_.lookup(*hop, now);
+            if (!found.mac) {
                 ++counters_.send_unresolved;
                 return std::unexpected{SendError::Unresolved};
             }
-            return *mac;
+            return NextMac{.mac = *found.mac, .permanent = found.permanent};
         }
 
         loop::ShardQueue<Device>& queue_;

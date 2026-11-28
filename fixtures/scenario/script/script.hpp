@@ -122,6 +122,8 @@ namespace aloe::scenario {
         std::optional<bool> window_scaling{};
         std::optional<core::Duration> delayed_ack{};
         std::optional<core::Duration> tail_probe_ack_delay{};
+        std::optional<core::Duration> challenge_ack_interval{};
+        std::optional<std::uint16_t> min_peer_mss{};
         friend bool operator==(const ScriptTcpOptions&, const ScriptTcpOptions&) = default;
     };
 

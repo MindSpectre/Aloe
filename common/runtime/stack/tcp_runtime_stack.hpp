@@ -20,15 +20,15 @@ namespace aloe::runtime {
 
         /**
          * The IP config a shard's brick is built with. On a multi-queue device every shard shares one address,
-         * and the reply to a request a sibling sent lands on queue 0, so the brick there must learn replies it did
-         * not solicit in order to forward them.
+         * and the reply to a request a sibling sent lands on queue 0, so the brick there reports replies it did not
+         * solicit, without storing them, for the loop to forward.
          */
         template <device::IsDevice Device>
         [[nodiscard]] net::Ipv4Config shard_ip_config(const loop::ShardQueue<Device>& queue,
                                                       const net::Ipv4Config& config) {
             net::Ipv4Config copy = config;
             if (queue.queue_count() > 1) {
-                copy.accept_unsolicited_replies = true;
+                copy.report_unsolicited_replies = true;
             }
             return copy;
         }
@@ -42,9 +42,10 @@ namespace aloe::runtime {
      * `on_receive` runs IP then TCP at the step's stamp and forwards that pass's ARP resolutions to
      * every sibling once. `on_tick` runs an empty TCP process, which publishes retry hints, then the
      * wake pass. `on_flush` runs the wake pass again, for events timers and tasks raised, then TCP's
-     * flush. On a device with more than one queue the IP brick accepts unsolicited ARP replies, so queue
-     * 0 learns what its siblings asked for. A program that wants another composition writes its own
-     * IsStack over the same bricks.
+     * flush. On a device with more than one queue the IP brick reports unsolicited ARP replies, so queue
+     * 0 passes on the answers to what its siblings asked for, and a sibling applies a forwarded resolution
+     * with `net::Ipv4::apply_resolution`, which only an entry it holds takes. A program that wants another
+     * composition writes its own IsStack over the same bricks.
      */
     template <device::IsDevice Device, typename CongestionControl = tcp::NewReno>
     class TcpStack {
@@ -63,7 +64,7 @@ namespace aloe::runtime {
               ip_{queue, detail::shard_ip_config(queue, ip_config)},
               tcp_{ip_, context.timers(), tcp_config},
               streams_{tcp_, context} {
-            context.set_arp_sink({.object = this, .learn = &TcpStack::learn});
+            context.set_arp_sink({.object = this, .learn = &TcpStack::apply_resolution});
         }
 
         TcpStack(const TcpStack&)            = delete;
@@ -117,11 +118,13 @@ namespace aloe::runtime {
         }
 
     private:
-        static void learn(void* object,
-                          const wire::Ipv4Address address,
-                          const wire::MacAddress mac,
-                          const core::TimePoint now) noexcept {
-            static_cast<TcpStack*>(object)->ip_.learn(address, mac, now);  // reports nothing: no echo between shards
+        /// The ARP sink: a resolution a sibling reported, taken only by an entry this shard holds. Reports nothing, so
+        /// shards never echo each other.
+        static void apply_resolution(void* object,
+                                     const wire::Ipv4Address address,
+                                     const wire::MacAddress mac,
+                                     const core::TimePoint now) noexcept {
+            static_cast<TcpStack*>(object)->ip_.apply_resolution(address, mac, now);
         }
 
         ShardContext& context_;

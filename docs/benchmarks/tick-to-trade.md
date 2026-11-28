@@ -205,8 +205,9 @@ mask.
   refused for leaving nothing to run. `both` runs every cross-core configuration and every same-core one.
 - `--breakdown` stamps the phases of level 0, as "Reading the table" below describes.
 - `--hop` measures the bare cache-line hop between the two cores after the matrix.
-- `--arp-on-wire` makes the stack resolve the venue by ARP instead of learning its MAC with `Ipv4::learn` before
-  the run. It is refused with `--topology same` or `both`: on one thread, the inline venue answers the stack's
+- `--arp-on-wire` makes the stack resolve the venue by ARP instead of knowing it from a static entry: it switches the
+  IP brick's learning on, with lifetimes of 24 and 48 hours so that no refresh falls inside a run. It is refused with
+  `--topology same` or `both`: on one thread, the inline venue answers the stack's
   ARP request while it waits for the next handshake segment, but the stack cannot step to process the reply and
   send that segment while the venue waits.
 - `--out FILE` names the result file.
@@ -776,6 +777,225 @@ against these files, with the two kinds of change set out under the first rerun,
 by field) and a short path for an in-order ACK, which changes the order of an acknowledgement's steps. The author
 decides on both.
 
+### Rerun of step 6's first part: 2026-11-28, the hardening against `main`, host polaris
+
+**The bar is met at p50 and missed at p99 in the headline runs.** The bar is no change beyond run-to-run noise, 10 to
+20 ns, at p50 and p99 of the 64-byte tick at level 0, cross-core. Against `main` at the branch point, 7dae733, run
+alternately with it, that tick is 490 ns at p50 on both sides, and 770 ns at p99 against 720 ns, +50 ns (medians of
+three runs a side). The breakdown runs that followed each headline run do not show it: their round is 520 against
+540 ns at p50 and 830 ns on both sides at p99, and the `tcp` leg 140 ns at p50 on both sides and 240 against 250 ns at
+p99; no leg moved by more than one 10 ns step. Neither do runs of the gated configuration alone, below. No fix was
+attempted.
+
+**What the step changes on the measured path.** The first checks add to an in-order segment the comparison that tells
+a segment with no room from an in-order one, which the edge test already makes, and to an in-order ACK one addition,
+the sum of SND.UNA's advances; the bound on an old ACK, the limiter and the challenge are read only for a segment that
+fails a check, which the venue never sends. A send adds nothing, and an open hashes twelve bytes once. The venue's ARP
+entry differs between the sides as each side runs: the branch knows the venue from a static entry with learning off,
+`main` seeds a learned entry before the run with lifetimes of 24 and 48 hours, which never refreshes within a run
+either, so the kind of entry is not what the comparison measures. The sanity check's lists gained the step's drop and
+refusal counters, and every run left them at zero.
+
+**The runs.** The machine and cores of the recorded run, kernel 7.3.4:
+
+- Both sides were built with the `release` preset and `-DDO_BENCHMARKS=ON`, each configured afresh so that its files
+  record its revision: `main` at 7dae733 in a worktree, and the branch's head, 72df4da, in place. The commits after
+  72df4da change documentation only.
+- The runs were unprivileged, on 64 free hugepages reserved beforehand, with a browser and the desktop open and the
+  CPUs about 98 % idle.
+- There were three rounds. Each ran a headline run of `main`, then one of the branch, `--topology both --hop`, then a
+  breakdown run of each in the same order, `--level 0 --breakdown --topology both`. The twelve runs took 30 seconds.
+- Medians as in step 5's reruns: for each side a file of the field-by-field median of every row over its three runs,
+  compared with `compare-benchmark.py`.
+
+The files under `results/`:
+
+- `2026-11-28-7dae733-polaris.json`, `-run2` and `-run3` are `main`'s headline runs, and `-breakdown`,
+  `-run2-breakdown` and `-run3-breakdown` the breakdown runs that followed each;
+- `2026-11-28-72df4da-polaris.json`, `-run2` and `-run3`, with `-breakdown`, `-run2-breakdown` and `-run3-breakdown`,
+  are the branch's, each made just after `main`'s of its round.
+
+The 64-byte tick at level 0, cross-core, in nanoseconds:
+
+| side                | run 1 p50 | run 2 p50 | run 3 p50 | median p50 | run 1 p99 | run 2 p99 | run 3 p99 | median p99 |
+|---------------------|----------:|----------:|----------:|-----------:|----------:|----------:|----------:|-----------:|
+| `main`, 7dae733     |       480 |       490 |       490 |        490 |       720 |       680 |       730 |        720 |
+| hardening, 72df4da  |       490 |       480 |       490 |        490 |       770 |       700 |       830 |        770 |
+
+Its legs, from the breakdown runs, medians of three:
+
+| side                | receive | ip | tcp | application | tcp-flush | queue-flush | round | tcp p99 | application p99 |
+|---------------------|--------:|---:|----:|------------:|----------:|------------:|------:|--------:|----------------:|
+| `main`, 7dae733     |     120 | 50 | 140 |         180 |        10 |          40 |   540 |     250 |             320 |
+| hardening, 72df4da  |     110 | 40 | 140 |         180 |        10 |          40 |   520 |     240 |             310 |
+
+Every row of the headline, medians of three, in nanoseconds:
+
+| round   | level   | topology   | payload | `main` p50 | branch p50 |  +/- | `main` p99 | branch p99 |  +/- |
+|---------|---------|------------|--------:|-----------:|-----------:|-----:|-----------:|-----------:|-----:|
+| tick    | floor   | cross-core |      64 |        230 |        230 |    0 |        270 |        290 |  +20 |
+| tick    | floor   | cross-core |     256 |        390 |        380 |  -10 |        450 |        450 |    0 |
+| tick    | floor   | cross-core |    1024 |        960 |        950 |  -10 |       1200 |       1160 |  -40 |
+| tick    | floor   | cross-core |    1448 |       1260 |       1260 |    0 |       1590 |       1550 |  -40 |
+| tick    | floor   | same-core  |      64 |        100 |        100 |    0 |        140 |        130 |  -10 |
+| tick    | floor   | same-core  |     256 |        250 |        240 |  -10 |        290 |        280 |  -10 |
+| tick    | floor   | same-core  |    1024 |        810 |        800 |  -10 |        880 |        870 |  -10 |
+| tick    | floor   | same-core  |    1448 |       1120 |       1110 |  -10 |       1200 |       1220 |  +20 |
+| tick    | level 0 | cross-core |      64 |        490 |        490 |    0 |        720 |        770 |  +50 |
+| tick    | level 0 | cross-core |     256 |        660 |        650 |  -10 |        880 |        970 |  +90 |
+| tick    | level 0 | cross-core |    1024 |       1360 |       1340 |  -20 |       1720 |       1810 |  +90 |
+| tick    | level 0 | cross-core |    1448 |       1720 |       1720 |    0 |       2100 |       2220 | +120 |
+| tick    | level 0 | same-core  |      64 |        380 |        380 |    0 |        650 |        660 |  +10 |
+| tick    | level 0 | same-core  |     256 |        530 |        540 |  +10 |        800 |        860 |  +60 |
+| tick    | level 0 | same-core  |    1024 |       1170 |       1180 |  +10 |       1500 |       1570 |  +70 |
+| tick    | level 0 | same-core  |    1448 |       1520 |       1530 |  +10 |       1870 |       1990 | +120 |
+| tick    | level 1 | cross-core |      64 |        530 |        540 |  +10 |        830 |        900 |  +70 |
+| tick    | level 1 | cross-core |     256 |        710 |        750 |  +40 |        990 |       1200 | +210 |
+| tick    | level 1 | cross-core |    1024 |       1370 |       1420 |  +50 |       1770 |       1990 | +220 |
+| tick    | level 1 | cross-core |    1448 |       1760 |       1760 |    0 |       2310 |       2350 |  +40 |
+| gateway | floor   | cross-core |     128 |         60 |         60 |    0 |         80 |         80 |    0 |
+| gateway | floor   | same-core  |     128 |         30 |         30 |    0 |         50 |         50 |    0 |
+| gateway | level 0 | cross-core |     128 |        150 |        160 |  +10 |        250 |        270 |  +20 |
+| gateway | level 0 | same-core  |     128 |        120 |        130 |  +10 |        210 |        220 |  +10 |
+| gateway | level 1 | cross-core |     128 |        170 |        170 |    0 |        290 |        290 |    0 |
+| hop     | -       | cross-core |       0 |         34 |         34 |    0 |         54 |         54 |    0 |
+
+**The noise these files show.** `compare-benchmark.py` over a pair of runs of one binary flags 8 to 16 of `main`'s
+headline percentiles and 22 to 31 of the branch's, and 24 to 38 of either side's breakdown percentiles (each of the
+three pairs of each side). Over the two sides' medians it flags 19 of the headline's and 19 of the breakdown's.
+
+- The p50 of the gated tick moved by one 10 ns step within either side, 480 to 490 ns. Its p99 ran from 680 to 730 ns
+  over `main`'s three runs and from 700 to 830 ns over the branch's.
+- In the branch's first and third headline runs the tick rows at levels 0 and 1 have a raised p90: 590 and 670 ns at
+  64 B, level 0, cross-core, where every run of `main` has 510 to 530 ns, and 950 and 930 ns at 256 B, level 1, where
+  `main` has 740 to 760 ns. That is the slower of the two modes described under "Known artefacts" arriving in longer
+  bursts. The branch's second run has no such rise, and its gated tick is 480 ns at p50 and 700 ns at p99, inside
+  `main`'s range.
+- At 256 and 1024 B level 1's p50 moved by 40 and 50 ns, rows where the two modes move a median by a whole mode.
+
+**What else was measured.** Two more sets, the same day; their files are not kept.
+
+- The same three rounds with the branch first in each: the gated tick at 500 against 490 ns at p50 and 720 against
+  670 ns at p99, medians of three, with a raised p90 in one of the branch's three runs, 730 ns, and in none of
+  `main`'s.
+- `--round tick --level 0 --payload 64`, five runs a side alternating, then the same with `--breakdown`: 480 against
+  490 ns at p50 and 750 ns on both sides at p99; with `--breakdown`, the round at 520 against 530 ns at p50 and 760
+  against 770 ns at p99, and the `tcp` leg at 130 against 140 ns at p50 and 220 ns on both sides at p99.
+
+**What is left.** At p50 the bar is met in every set. At p99 the headline runs give +50 ns in both orders, while the
+breakdown runs and the runs of the gated configuration alone, which go through the same code, give none. Whether the
+branch makes the slower mode's bursts more frequent inside the 25-configuration matrix, or these headline runs caught
+more of them by chance, is not established, and the cause of the bursts is still not identified. The number stands as
+recorded. The second rerun, below, did not reproduce it.
+
+### Second rerun of step 6's first part: 2026-11-28, after the sum's type changed, host polaris
+
+**The bar is met at p50 and at p99.** Against `main` at the branch point, 7dae733, run alternately with it as in the
+first rerun, the 64-byte tick at level 0, cross-core, is 490 ns at p50 on both sides, and 720 ns at p99 against
+740 ns, 20 ns lower (medians of three runs a side). The breakdown runs agree: their round is 540 against 550 ns at p50
+and 760 against 780 ns at p99, and the `tcp` leg 140 against 150 ns at p50 and 220 against 230 ns at p99. The first
+rerun's +50 ns at p99 did not recur.
+
+**What changed between the two reruns.** A review of the whole branch found nothing on the tick's path at the
+instruction level and named the control block's layout as the plausible cause: the sum of SND.UNA's advances, a
+`std::uint64_t`, had taken `SendSequence` from 32 to 40 bytes and its alignment from 4 to 8. The sum is now
+`bytes_acked`, a `std::uint32_t` that stops at the top of 32 bits, which leaves `SendSequence` at 36 bytes and an
+alignment of 4. The control block did not change with it: the member after `SendSequence` is 8-byte aligned, so it and
+every member behind it sit where they sat in the first rerun. Against `main` that is 8 bytes further along as far as
+the SACK blocks, and 24 bytes for what stands behind the answer limiter that follows them, the two timers among it;
+over the benchmark's DPDK port the block is 968 bytes in both reruns and 944 on `main`. On the tick's path the change
+puts a saturating 32-bit addition where a 64-bit one was; the minimum in the bound on an old ACK is read only for an
+ACK below SND.UNA. The other commits between 72df4da and the measured head, 8c5ee5b, change what the IP brick's seed
+answers, the TCP stack's constructor, tests and comments, none of them on the tick's path.
+
+**What this does and does not establish.** The first rerun's rise at p99 is not reproduced: here the gated tick's p99
+runs from 710 to 760 ns over the branch's three runs and over `main`'s alike, and no run of either side has the raised
+p90 that two of the branch's first three had; the gated row's p90 is 520 ns in all six. Since every member behind
+`SendSequence` sits where it did in the first rerun, this set does not test the layout suspicion, and it does not show
+that the change of type removed anything. It shows the branch at `main`'s p99 in a set where neither side caught the
+slower mode's bursts on the gated row; it does not say why the first rerun's headline runs caught more of them on the
+branch's side, and the cause of the bursts is still not identified.
+
+**The runs.** The machine, cores and kernel of the first rerun:
+
+- `main`'s binary is the first rerun's, built at 7dae733 and not rebuilt. The branch was configured afresh at its head,
+  8c5ee5b (`cmake --preset release -DDO_BENCHMARKS=ON`), so that its files record its revision, and built with the
+  `release` preset.
+- The runs were unprivileged, on 64 free hugepages reserved beforehand, with a browser and the desktop open and the
+  CPUs about 98 % idle.
+- There were three rounds, in the first rerun's order: a headline run of `main`, then one of the branch,
+  `--topology both --hop`, then a breakdown run of each in the same order, `--level 0 --breakdown --topology both`. The
+  twelve runs took 30 seconds.
+- Medians as in the first rerun: for each side a file of the field-by-field median of every row over its three runs,
+  compared with `compare-benchmark.py`.
+
+The files under `results/`:
+
+- `2026-11-28-7dae733-polaris-run4.json`, `-run5` and `-run6`, with `-run4-breakdown`, `-run5-breakdown` and
+  `-run6-breakdown`, are `main`'s runs of this rerun, each made just before the branch's of its round. The comparison
+  reads these, not the first rerun's `main` files.
+- `2026-11-28-8c5ee5b-polaris.json`, `-run2` and `-run3`, with `-breakdown`, `-run2-breakdown` and `-run3-breakdown`,
+  are the branch's.
+
+The 64-byte tick at level 0, cross-core, in nanoseconds:
+
+| side                | run 1 p50 | run 2 p50 | run 3 p50 | median p50 | run 1 p99 | run 2 p99 | run 3 p99 | median p99 |
+|---------------------|----------:|----------:|----------:|-----------:|----------:|----------:|----------:|-----------:|
+| `main`, 7dae733     |       490 |       490 |       490 |        490 |       710 |       740 |       760 |        740 |
+| hardening, 8c5ee5b  |       490 |       490 |       490 |        490 |       710 |       720 |       760 |        720 |
+
+Its legs, from the breakdown runs, medians of three:
+
+| side                | receive | ip | tcp | application | tcp-flush | queue-flush | round | tcp p99 | application p99 |
+|---------------------|--------:|---:|----:|------------:|----------:|------------:|------:|--------:|----------------:|
+| `main`, 7dae733     |     120 | 50 | 150 |         180 |        10 |          40 |   550 |     230 |             280 |
+| hardening, 8c5ee5b  |     110 | 50 | 140 |         170 |        10 |          40 |   540 |     220 |             260 |
+
+The same tick and its `tcp` leg in both reruns, medians of three, in nanoseconds:
+
+| side                            | p50, first | p50, now | p99, first | p99, now | `tcp` p50, first | `tcp` p50, now | `tcp` p99, first | `tcp` p99, now |
+|---------------------------------|-----------:|---------:|-----------:|---------:|-----------------:|---------------:|-----------------:|---------------:|
+| `main`, 7dae733                 |        490 |      490 |        720 |      740 |              140 |            150 |              250 |            230 |
+| hardening, 72df4da then 8c5ee5b |        490 |      490 |        770 |      720 |              140 |            140 |              240 |            220 |
+
+Every row of the headline, medians of three, in nanoseconds:
+
+| round   | level   | topology   | payload | `main` p50 | branch p50 |  +/- | `main` p99 | branch p99 |  +/- |
+|---------|---------|------------|--------:|-----------:|-----------:|-----:|-----------:|-----------:|-----:|
+| tick    | floor   | cross-core |      64 |        240 |        230 |  -10 |        280 |        280 |    0 |
+| tick    | floor   | cross-core |     256 |        390 |        380 |  -10 |        450 |        440 |  -10 |
+| tick    | floor   | cross-core |    1024 |        950 |        970 |  +20 |       1150 |       1180 |  +30 |
+| tick    | floor   | cross-core |    1448 |       1250 |       1260 |  +10 |       1410 |       1500 |  +90 |
+| tick    | floor   | same-core  |      64 |        100 |        110 |  +10 |        140 |        140 |    0 |
+| tick    | floor   | same-core  |     256 |        240 |        250 |  +10 |        280 |        290 |  +10 |
+| tick    | floor   | same-core  |    1024 |        810 |        810 |    0 |        870 |        870 |    0 |
+| tick    | floor   | same-core  |    1448 |       1120 |       1120 |    0 |       1180 |       1200 |  +20 |
+| tick    | level 0 | cross-core |      64 |        490 |        490 |    0 |        740 |        720 |  -20 |
+| tick    | level 0 | cross-core |     256 |        660 |        660 |    0 |        920 |        930 |  +10 |
+| tick    | level 0 | cross-core |    1024 |       1320 |       1320 |    0 |       1670 |       1670 |    0 |
+| tick    | level 0 | cross-core |    1448 |       1680 |       1690 |  +10 |       2060 |       2080 |  +20 |
+| tick    | level 0 | same-core  |      64 |        390 |        390 |    0 |        590 |        620 |  +30 |
+| tick    | level 0 | same-core  |     256 |        540 |        550 |  +10 |        770 |        850 |  +80 |
+| tick    | level 0 | same-core  |    1024 |       1180 |       1180 |    0 |       1490 |       1480 |  -10 |
+| tick    | level 0 | same-core  |    1448 |       1530 |       1530 |    0 |       1900 |       1870 |  -30 |
+| tick    | level 1 | cross-core |      64 |        540 |        550 |  +10 |        880 |        860 |  -20 |
+| tick    | level 1 | cross-core |     256 |        720 |        720 |    0 |       1030 |       1050 |  +20 |
+| tick    | level 1 | cross-core |    1024 |       1360 |       1370 |  +10 |       1730 |       1810 |  +80 |
+| tick    | level 1 | cross-core |    1448 |       1720 |       1730 |  +10 |       2160 |       2210 |  +50 |
+| gateway | floor   | cross-core |     128 |         60 |         60 |    0 |         80 |         80 |    0 |
+| gateway | floor   | same-core  |     128 |         30 |         30 |    0 |         50 |         50 |    0 |
+| gateway | level 0 | cross-core |     128 |        160 |        160 |    0 |        240 |        230 |  -10 |
+| gateway | level 0 | same-core  |     128 |        120 |        130 |  +10 |        190 |        220 |  +30 |
+| gateway | level 1 | cross-core |     128 |        180 |        180 |    0 |        260 |        270 |  +10 |
+| hop     | -       | cross-core |       0 |         34 |         34 |    0 |         54 |         60 |   +6 |
+
+**The noise these files show.** `compare-benchmark.py` over a pair of runs of one binary flags 3 to 9 of `main`'s
+headline percentiles and 3 to 10 of the branch's, and 5 to 8 of `main`'s breakdown percentiles and 5 to 15 of the
+branch's (each of the three pairs of each side), fewer than in the first rerun. Over the two sides' medians it flags 4
+of the headline's and 1 of the breakdown's. No p50 of a level 0 or level 1 row moved by more than one 10 ns step. The
+largest moves are at p99, +80 to +90 ns on three rows, one of them the floor's at 1448 B cross-core, which runs no stack
+code.
+
 ## Tracking regressions
 
 Every step of phase 2 reruns both baseline commands on the same machine and the same cores, and commits both
@@ -823,6 +1043,10 @@ because the gate reads it.
 | 2026-11-21 | 13cefd6  | 5. Loss recovery with SACK, medians of 3: the gate is not met | 500 (+40)       | 740 (+70)       | 1300              | 160          | 320            |
 | 2026-11-21 | 1aeddb9  | `main` at step 5's base, beside the cleanup, medians of 3     | 450             | 670             | 970               | 150          | 290            |
 | 2026-11-21 | bbcd1dc  | 5. After the tick path's cleanup, medians of 3: not met       | 490 (+40)       | 730 (+60)       | 1250              | 160          | 320            |
+| 2026-11-28 | 7dae733  | `main` at step 6's base, medians of 3                         | 490             | 720             | 1240              | 150          | 320            |
+| 2026-11-28 | 72df4da  | 6. The hardening, medians of 3: p50 met, p99 not              | 490 (0)         | 770 (+50)       | 1310              | 160          | 410            |
+| 2026-11-28 | 7dae733  | `main` at step 6's base, second rerun, medians of 3           | 490             | 740             | 1240              | 160          | 320            |
+| 2026-11-28 | 8c5ee5b  | 6. The hardening, second rerun, medians of 3: met             | 490 (0)         | 720 (-20)       | 1240              | 160          | 310            |
  
 Step 3 (reliable send) gates on the 64-byte tick at level 0, cross-core: p50 and p99 within 50 ns of a run of `main`
 at the branch's merge base (`git worktree add ../aloe-base $(git merge-base main HEAD)`, built with the `release`
@@ -856,10 +1080,17 @@ recorded there. The work a review then found plainly unnecessary on the tick pat
 it, under "Rerun after the tick path's cleanup", still misses the bar: 40 ns slower at p50 and 60 ns at p99. Winning the
 rest back is an optimization pass of its own.
 
+Step 6's first part (the hardening: keyed initial sequence numbers, RFC 5961's checks and their limited answers, the
+handshake's and the window's edge cases, and ARP from a static table by default) gates the same way, on the same bar,
+against `main` at its base, 7dae733. Its first rerun is recorded under "Rerun of step 6's first part" above: the gated
+tick's p50 is unchanged, 490 ns, and its p99 is 50 ns higher in the headline runs and level in the breakdown runs and in
+runs of that configuration alone. The second, under "Second rerun of step 6's first part", met the bar at both: 490 ns
+at p50 on both sides and 720 against 740 ns at p99. The step's later parts gate against `main` at the same base.
+
 ## What comes next
 
-The second part adds loads on the critical shard, venue responses landing inside the window, idle connections,
-a burst ahead of the tick, a publishing stream and ARP refreshes, and `--isolate`, which moves them to a second
-shard on a core of its own. Loaded against clean is what co-location costs the tail and isolated against clean
-what a second shard recovers; the remainder, less the hop, is the most a shard spanning two cores could win, and
-those numbers decide whether one is built.
+The second part adds loads on the critical shard, venue responses landing inside the window, idle connections, a burst
+ahead of the tick, a publishing stream and, under `--arp-on-wire`, where the venue is learned rather than static, ARP
+refreshes, and `--isolate`, which moves them to a second shard on a core of its own. Loaded against clean is what
+co-location costs the tail and isolated against clean what a second shard recovers; the remainder, less the hop, is the
+most a shard spanning two cores could win, and those numbers decide whether one is built.

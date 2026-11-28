@@ -12,7 +12,9 @@ namespace aloe::tcp::detail {
      *
      * Probing runs while the peer's window is zero and nothing is in flight. Every acceptable ACK answers: the count
      * and the stamp clear, as Linux's `tcp_ack` clears `icsk_probes_out`, so RFC 9293 keeps the connection open while
-     * the peer acknowledges probes and the user timeout bounds a run of unanswered probes only.
+     * the peer acknowledges probes and the user timeout bounds a run of unanswered probes only. With data in flight at
+     * a zero window the retransmission timer's resends are the probes: each expiry counts here (`unanswered`), against
+     * the same limit, and leaves the probe timer's interval and stamp alone.
      */
     class ZeroWindowProbe {
     public:
@@ -74,8 +76,24 @@ namespace aloe::tcp::detail {
             return Expiry::Probe;
         }
 
+        /// An expiry of the retransmission timer that found the peer's window zero: counted with the probes, as an
+        /// unanswered one, with no probe sent and the probes' interval untouched. False when `limit` went unanswered
+        /// already: the connection is given up.
+        [[nodiscard]] bool unanswered(const std::uint8_t limit) noexcept {
+            if (out_ >= limit) {
+                return false;
+            }
+            ++out_;
+            return true;
+        }
+
+        /// Unanswered probes and closed-window expiries since the last acceptable ACK.
+        [[nodiscard]] std::uint8_t out() const noexcept {
+            return out_;
+        }
+
     private:
-        std::uint8_t out_ = 0;                      ///< Probes since the last answer.
+        std::uint8_t out_ = 0;  ///< Unanswered probes and closed-window expiries since the last answer.
         std::optional<core::TimePoint> started_{};  ///< The first unanswered probe: the user timeout's start.
         core::Duration interval_{};                 ///< The next probe's delay: the RTO, doubled per probe.
     };

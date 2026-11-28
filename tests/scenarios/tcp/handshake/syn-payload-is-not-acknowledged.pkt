@@ -1,0 +1,17 @@
+// A SYN with ten bytes of payload to a listener: the payload is neither held nor acknowledged, so the SYN-ACK
+// acknowledges the SYN's number alone, 1. The peer sends the ten bytes again after the handshake, and they are taken as
+// any in-order data: acknowledged at the flush with ack 11 and the window 65535 less the ten unread bytes, 65525, to
+// this peer, which offers no window scaling. Linux without TCP Fast Open does the same: tcp_rcv_state_process frees the
+// SYN once conn_request has answered it.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:10(10) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:11(10) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 11 win 65525 <nop,nop,TS val 0 ecr 100>
++0 read(4, ..., 100) = 10

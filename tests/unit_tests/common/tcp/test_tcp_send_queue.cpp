@@ -346,7 +346,9 @@ TEST_P(TcpRefusingNextHopGone, AFinTheDeviceRefusedLeavesAtTheNextPollOnceTheNex
     std::ignore = collect();
     advance(200ms);  // the expiry: the retry finds no next hop and asks
     ASSERT_EQ(collect().size(), 1U) << "the request";
-    ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_);  // the reply
+    ASSERT_EQ(ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_),
+              aloe::net::ArpCache::Taught::Updated)
+        << "the reply, to the entry the expiry left asking";
     advance(10ms);
     const auto fin = collect();
     ASSERT_EQ(fin.size(), 1U) << "the poll sent the FIN, not the next RTO";

@@ -4,7 +4,10 @@
 
 namespace aloe::net {
 
-    /// A mapping learned from an ARP frame, reported so a loop can forward it to the other shards.
+    /// An IPv4 address and its MAC: an entry of `Ipv4Config::static_arp`, or a mapping `Ipv4::resolved()` reports for a
+    /// loop to forward to the other shards, which an ARP frame gave an entry the brick holds or, with
+    /// `report_unsolicited_replies`, which a reply to us carried about an address the brick does not hold and did not
+    /// store.
     struct ArpResolution {
         wire::Ipv4Address address{};
         wire::MacAddress mac{};

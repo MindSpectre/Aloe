@@ -32,6 +32,7 @@ namespace {
     using Ipv4      = aloe::net::Ipv4<aloe::fabric::Port>;
     using Tcp       = aloe::tcp::Stack<Ipv4>;
     using TimePoint = aloe::core::TimePoint;
+    using Taught    = aloe::net::ArpCache::Taught;
 
     constexpr std::uint16_t queues = 4;
     constexpr std::size_t flows    = 24;
@@ -45,8 +46,8 @@ namespace {
             : queue{
                   port, index, 64, counters
         },
-              ip{queue, {.address = stack_ip, .prefix = 24}}, tcp{ip, wheel, {}} {
-            ip.learn(peer_ip, peer_mac, TimePoint{});
+              ip{queue, {.address = stack_ip, .prefix = 24, .arp_learning = true}}, tcp{ip, wheel, {}} {
+            EXPECT_EQ(ip.learn(peer_ip, peer_mac, TimePoint{}), Taught::Created) << "the peer's seed";
         }
 
         aloe::loop::ShardQueueCounters counters;
@@ -219,7 +220,7 @@ TEST_F(TcpPlacement, AddressesOnlyRssIsUnplaceableOffItsQueue) {
     aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<aloe::testing::TcpTestDevice> queue{device, other, 16, counters};
     aloe::net::Ipv4<aloe::testing::TcpTestDevice> ip{
-        queue, {.address = stack_ip, .prefix = 24}
+        queue, {.address = stack_ip, .prefix = 24, .arp_learning = true}
     };
     aloe::loop::TimerWheel wheel{1ms, TimePoint{}};
     aloe::tcp::Stack<aloe::net::Ipv4<aloe::testing::TcpTestDevice>> tcp{ip, wheel, {}};
@@ -229,10 +230,10 @@ TEST_F(TcpPlacement, AddressesOnlyRssIsUnplaceableOffItsQueue) {
     EXPECT_EQ(tcp.table_size(), 0U);
     aloe::loop::ShardQueue<aloe::testing::TcpTestDevice> right_queue{device, picked, 16, counters};
     aloe::net::Ipv4<aloe::testing::TcpTestDevice> right_ip{
-        right_queue, {.address = stack_ip, .prefix = 24}
+        right_queue, {.address = stack_ip, .prefix = 24, .arp_learning = true}
     };
     aloe::tcp::Stack<aloe::net::Ipv4<aloe::testing::TcpTestDevice>> right{right_ip, wheel, {}};
-    right_ip.learn(peer_ip, peer_mac, now_);
+    ASSERT_EQ(right_ip.learn(peer_ip, peer_mac, now_), Taught::Created);
     EXPECT_TRUE(right.connect({.address = peer_ip, .port = 7}, now_).has_value())
         << "on the picked queue any port does";
 }
@@ -243,7 +244,7 @@ TEST_F(TcpPlacement, DisabledSteeringCannotReachNonzeroQueue) {
     aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<aloe::testing::TcpTestDevice> queue1{device, 1, 16, counters};
     aloe::net::Ipv4<aloe::testing::TcpTestDevice> ip1{
-        queue1, {.address = stack_ip, .prefix = 24}
+        queue1, {.address = stack_ip, .prefix = 24, .arp_learning = true}
     };
     aloe::loop::TimerWheel wheel{1ms, TimePoint{}};
     aloe::tcp::Stack<aloe::net::Ipv4<aloe::testing::TcpTestDevice>> on_one{ip1, wheel, {}};
@@ -252,10 +253,10 @@ TEST_F(TcpPlacement, DisabledSteeringCannotReachNonzeroQueue) {
     EXPECT_EQ(failed.error(), aloe::tcp::ConnectError::Unplaceable);
     aloe::loop::ShardQueue<aloe::testing::TcpTestDevice> queue0{device, 0, 16, counters};
     aloe::net::Ipv4<aloe::testing::TcpTestDevice> ip0{
-        queue0, {.address = stack_ip, .prefix = 24}
+        queue0, {.address = stack_ip, .prefix = 24, .arp_learning = true}
     };
     aloe::tcp::Stack<aloe::net::Ipv4<aloe::testing::TcpTestDevice>> on_zero{ip0, wheel, {}};
-    ip0.learn(peer_ip, peer_mac, now_);
+    ASSERT_EQ(ip0.learn(peer_ip, peer_mac, now_), Taught::Created);
     EXPECT_TRUE(on_zero.connect({.address = peer_ip, .port = 7}, now_).has_value());
 }
 
@@ -267,9 +268,9 @@ TEST_F(TcpPlacement, CursorWrapsSkipsListenersAndOccupiedTuplesThenNoPort) {
     aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<aloe::fabric::Port> queue{single, 0, 16, counters};
     Ipv4 ip{
-        queue, {.address = {10, 0, 0, 3}, .prefix = 24}
+        queue, {.address = {10, 0, 0, 3}, .prefix = 24, .arp_learning = true}
     };
-    ip.learn(peer_ip, peer_mac, now_);
+    ASSERT_EQ(ip.learn(peer_ip, peer_mac, now_), Taught::Created);
     aloe::loop::TimerWheel wheel{1ms, TimePoint{}};
     Tcp tcp{
         ip, wheel, {.ephemeral_first = 40000, .ephemeral_last = 40002}

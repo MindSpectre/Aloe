@@ -1,0 +1,20 @@
+// On a connection that uses SACK, a RST at the end of the highest range held above a gap resets the connection: a
+// peer whose segments below that range were lost resets from its SND.NXT, which is that end (Linux's highest SACK
+// block in tcp_validate_incoming). A RST elsewhere inside the window, here inside the held range, is challenged first,
+// and the challenge, the connection's pure ACK, reports the block. Every ACK here restates the SYN-ACK's edge: 65535 to
+// a peer at our shift 3 is (65535 + 7) >> 3 = 8192. Linux does the same; its windows depend on its buffers.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,sackOK,TS val 100 ecr 0,nop,wscale 7>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,sackOK,TS val 0 ecr 100,nop,wscale 3>
++0 < . 1:1(0) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1001:2001(1000) ack 1 win 512 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1 win 8192 <nop,nop,TS val 0 ecr 100,nop,nop,sack 1001:2001>
++0 < R 1501:1501(0) win 512
++0 > . 1:1(0) ack 1 win 8192 <nop,nop,TS val 0 ecr 100,nop,nop,sack 1001:2001>
++0 < R 2001:2001(0) win 512
++0 read(4, ..., 1000) = -1 ECONNRESET

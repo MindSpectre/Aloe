@@ -22,6 +22,7 @@ namespace {
     using aloe::net::Ipv4Prebuilt;
     using aloe::net::SendError;
     using aloe::wire::Ipv4Protocol;
+    using Taught = aloe::net::ArpCache::Taught;
     class NetPrebuild : public aloe::testing::NetFixture {
     protected:
         /// A frame from `prebuilt` with a TCP header of ACK only (window 0xffff) and `payload`, checksum field zero.
@@ -63,7 +64,7 @@ namespace {
 }  // namespace
 
 TEST_P(NetPrebuild, PrebuildWritesBothHeadersWithThePerDatagramFieldsZero) {
-    ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_);
+    ASSERT_EQ(ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_), Taught::Created);
     const auto prebuilt = ip_.prebuild(aloe::testing::harness_ip, Ipv4Protocol::Tcp, now_);
     ASSERT_TRUE(prebuilt.has_value());
     const auto ethernet = aloe::wire::EthernetHeader::parse(prebuilt->headers);
@@ -87,7 +88,7 @@ TEST_P(NetPrebuild, PrebuildWritesBothHeadersWithThePerDatagramFieldsZero) {
 }
 
 TEST_P(NetPrebuild, PrebuildOffSubnetUsesTheGatewayAndStaleEntriesRebuildPerRequestInterval) {
-    ip_.learn(aloe::testing::gateway_ip, aloe::testing::gateway_mac, now_);
+    ASSERT_EQ(ip_.learn(aloe::testing::gateway_ip, aloe::testing::gateway_mac, now_), Taught::Created);
     const auto fresh = ip_.prebuild(aloe::testing::far_ip, Ipv4Protocol::Tcp, now_);
     ASSERT_TRUE(fresh.has_value());
     EXPECT_EQ(aloe::wire::EthernetHeader::parse(fresh->headers)->destination, aloe::testing::gateway_mac);
@@ -105,7 +106,7 @@ TEST_P(NetPrebuild, PrebuildFailsUnresolvedWithOneRequestAndNoRoute) {
     EXPECT_EQ(ip_.counters().send_unresolved, 1U);
     EXPECT_EQ(ip_.counters().arp_requests_sent, 1U);
     Ipv4 no_gateway{
-        queue_, {.address = aloe::testing::stack_ip, .prefix = 24}
+        queue_, {.address = aloe::testing::stack_ip, .prefix = 24, .arp_learning = true}
     };
     const auto no_route = no_gateway.prebuild(aloe::testing::far_ip, Ipv4Protocol::Tcp, now_);
     ASSERT_FALSE(no_route.has_value());
@@ -114,14 +115,14 @@ TEST_P(NetPrebuild, PrebuildFailsUnresolvedWithOneRequestAndNoRoute) {
 
 TEST_P(NetPrebuild, TheGenerationMovesWithTheCache) {
     const auto before = ip_.generation();
-    ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_);
+    ASSERT_EQ(ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_), Taught::Created);
     EXPECT_EQ(ip_.generation(), before + 1);
-    ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_ + 1s);
+    ASSERT_EQ(ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_ + 1s), Taught::Updated);
     EXPECT_EQ(ip_.generation(), before + 1);
 }
 
 TEST_P(NetPrebuild, SendFrameLendsTransmitsAndCountsAndTheLoanComesBack) {
-    ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_);
+    ASSERT_EQ(ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_), Taught::Created);
     const auto prebuilt = ip_.prebuild(aloe::testing::harness_ip, Ipv4Protocol::Tcp, now_);
     ASSERT_TRUE(prebuilt.has_value());
     const auto payload = aloe::frames::pattern(100);
@@ -153,7 +154,7 @@ TEST_P(NetPrebuild, ARefusedSendFrameReturnsTheLoanAndLeavesTheFrameAsBuilt) {
     aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<aloe::testing::StuckPort> queue{stuck, 0, 1, counters};
     aloe::net::Ipv4<aloe::testing::StuckPort> ip{queue, aloe::testing::stack_config()};
-    ip.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_);
+    ASSERT_EQ(ip.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_), Taught::Created);
     const auto prebuilt = ip.prebuild(aloe::testing::harness_ip, Ipv4Protocol::Tcp, now_);
     ASSERT_TRUE(prebuilt.has_value());
     auto filler = ip.allocate();  // fills the one-slot ring so the next transmit meets a full ring and a stuck device
@@ -172,7 +173,7 @@ TEST_P(NetPrebuild, ARefusedSendFrameReturnsTheLoanAndLeavesTheFrameAsBuilt) {
 }
 
 TEST_P(NetPrebuild, AnOversizedFrameIsRefusedUntouched) {
-    ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_);
+    ASSERT_EQ(ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_), Taught::Created);
     const auto prebuilt = ip_.prebuild(aloe::testing::harness_ip, Ipv4Protocol::Tcp, now_);
     Packet packet       = frame_from(*prebuilt, aloe::frames::pattern(port_.mtu() - 20 - 20 + 1));
     const auto refused  = ip_.send_frame(packet, tcp_to(aloe::testing::harness_ip), now_);

@@ -66,7 +66,7 @@ does; the scenario scripts are Aloe's own. The steps, in order:
    distributions, recorded in [docs/benchmarks/tick-to-trade.md](benchmarks/tick-to-trade.md) before any step
    adds work to the hot path. Every later step reruns it. The loads and the isolated round that inform the
    two-core shard follow in a second part. The benchmark exists, with a run recorded on hugepages on 2026-10-21,
-   though not on a quiet machine, and step 5's reruns against `main`.
+   though not on a quiet machine, and the reruns of step 5 and of step 6's first part against `main`.
 2. **Packet loan and test tools.** A packet the stack must keep after sending is lent to the device and comes
    back when the device is done with it: TCP sees ownership move and return, never a reference count. The
    DPDK backend implements the loan with the mbuf's reference count, the fabric by holding the packet. A
@@ -120,11 +120,23 @@ does; the scenario scripts are Aloe's own. The steps, in order:
    RTO; the TCP page's [note on departures](architecture/tcp.md#where-the-brick-departs-from-the-rfcs-and-from-linux)
    lists it with the others. The tap cases against a Linux receiver, `TcpTapRecovery`, wait for a machine with root,
    beside those of steps 3 and 4. See the [TCP brick](architecture/tcp.md).
-6. **Lifecycle and client hardening.** TIME_WAIT, keepalive, the FIN-WAIT-2 timer, ICMP destination
-   unreachable and path MTU, and the edge cases the phase 1 reviews left open: a RST for a bad ACK in
-   SYN-RECEIVED, refusing a peer MSS of zero or one too small to leave a receive window, reading the
-   acknowledgement of a segment dropped for the window. RFC 6528 initial sequence numbers, RFC 5961 challenge
-   ACKs and ARP-reply rate limiting. The public API freezes as v1 at the end of this step.
+6. **Lifecycle and client hardening**, in four pull requests. The first, hardening and the edge cases, has landed.
+   Initial sequence numbers and timestamp offsets come from SipHash-2-4 over the flow under a key each stack draws from
+   the kernel (RFC 6528). The first checks of a segment follow RFC 5961 in Linux's order: a RST resets only at RCV.NXT
+   and Linux's two other exact positions, a SYN on a synchronized connection is challenged, an ACK of what was never
+   sent or was sent long ago is challenged and its segment dropped whole, and every such answer is limited per
+   connection to one in 500 ms. The edge cases the phase 1 reviews left open are closed: a RST for a bad ACK in
+   SYN-RECEIVED, a peer whose MSS is below a floor of 48 refused, the acknowledgement of a segment the window refuses
+   read, a bare FIN taken at a closed window, and resends into the peer's closed window that no longer end a connection
+   the peer still answers. In place of ARP-reply rate limiting, which would protect no entry in use, the IP brick knows
+   its neighbours from a static table that nothing changes, and resolves nothing on the wire unless the configuration
+   switches learning on; a learned table is fixed, no frame creates an entry in it, no address takes another's place,
+   and every entry expires. On the tick-to-trade benchmark the 64-byte tick at level 0, cross-core, kept its p50 against
+   `main` at the step's base, 490 ns both, and in a second rerun its p99 too, 720 against 740 ns: the 50 ns at p99 the
+   first rerun's headline runs gave did not recur, as its page records. The net and TCP tap suites both changed, and
+   their runs wait for a machine with root. Three pull requests remain: the life cycle (TIME_WAIT, what `release()`
+   means during a close, the FIN-WAIT-2 timer, keepalive), ICMP with path MTU, and the phase's close. The public API
+   freezes as v1 at the end of this step.
 
 Left for after this phase, because a client does not need them yet: CUBIC and pacing, since orders are small;
 SYN cookies and a keyed flow-table hash, which defend a server that accepts connections from strangers.

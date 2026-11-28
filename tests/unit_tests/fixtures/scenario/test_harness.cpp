@@ -150,6 +150,26 @@ TEST(Harness, ConfiguredAppliesTheTailProbeAllowance) {
     EXPECT_EQ(aloe::scenario::configured(HarnessConfig{}, *plain).tcp.tail_probe_ack_delay, 40ms) << "untouched";
 }
 
+TEST(Harness, ConfiguredAppliesTheChallengeAckInterval) {
+    const auto script = aloe::scenario::parse_script(
+        "--tcp_challenge_ack_interval_ms=0\n0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(script.has_value());
+    EXPECT_EQ(aloe::scenario::configured(HarnessConfig{}, *script).tcp.challenge_ack_interval, 0ms);
+    const auto plain = aloe::scenario::parse_script("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(plain.has_value());
+    EXPECT_EQ(aloe::scenario::configured(HarnessConfig{}, *plain).tcp.challenge_ack_interval, 500ms) << "untouched";
+}
+
+TEST(Harness, ConfiguredAppliesTheMinPeerMss) {
+    const auto script =
+        aloe::scenario::parse_script("--tcp_min_peer_mss=600\n0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(script.has_value());
+    EXPECT_EQ(aloe::scenario::configured(HarnessConfig{}, *script).tcp.min_peer_mss, 600U);
+    const auto plain = aloe::scenario::parse_script("0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3\n");
+    ASSERT_TRUE(plain.has_value());
+    EXPECT_EQ(aloe::scenario::configured(HarnessConfig{}, *plain).tcp.min_peer_mss, 48U) << "untouched";
+}
+
 TEST(Harness, BothPoliciesBuild) {
     aloe::scenario::NoCongestionHarness harness{HarnessConfig{}};
     EXPECT_EQ(harness.tcp().capacity(), aloe::tcp::TcpConfig{}.connections);
