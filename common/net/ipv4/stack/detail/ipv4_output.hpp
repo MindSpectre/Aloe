@@ -285,7 +285,8 @@ namespace aloe::net::detail {
         }
 
         /// The MAC a frame to `destination` goes to: a group MAC, or the hop's from the cache once the route question
-        /// found one, counting the failures as `send` and `prebuild` report them.
+        /// found one, counting the failures as `send` and `prebuild` report them. A hop the full learned table has no
+        /// slot for is `Unresolved`, as any hop not resolved yet: `Arp::lookup` counts `arp_table_full` beside it.
         [[nodiscard]] std::expected<NextMac, SendError> next_mac(const wire::Ipv4Address destination,
                                                                  const core::TimePoint now) noexcept {
             if (routing_.is_broadcast(destination)) {

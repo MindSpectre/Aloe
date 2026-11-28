@@ -416,6 +416,33 @@ namespace {
 
     static_assert(aloe::device::IsDevice<LossyDevice<Port>>);
 
+    /**
+     * Resolves the kernel's address on `ip`, receiving on its queue until the kernel's reply has come or the patience
+     * runs out; true when it came. A learning brick no longer takes the kernel's MAC from the kernel's own request (the
+     * design's rule 1: no frame creates an entry), so without this the first SYN-ACK to a kernel that connects would
+     * wait for the stack's own exchange and a 10 ms ARP poll, and under netem a lost reply for a request interval, one
+     * second, the kernel's SYN timeout. A deployment that learns resolves a peer it knows the same way. Runs on the
+     * thread that owns `ip`, before any case connects: nothing listens yet, so whatever else arrives is dropped.
+     */
+    template <typename Ip>
+    [[nodiscard]] bool resolve_kernel(Ip& ip) {
+        std::vector<typename Ip::Packet> burst(64);
+        const auto deadline = std::chrono::steady_clock::now() + patience();
+        while (std::chrono::steady_clock::now() < deadline) {
+            const auto now = aloe::core::Clock::now();
+            if (ip.resolve(kernel_ip, now).has_value()) {
+                return true;
+            }
+            std::ignore                = ip.queue().flush();
+            const std::size_t received = ip.queue().receive(burst);
+            ip.process(std::span<typename Ip::Packet>{burst}.first(received), now);
+            if (received == 0) {
+                std::this_thread::yield();
+            }
+        }
+        return false;
+    }
+
     /// The hand-written echo over the bricks on its own thread: server when `listen`, client to `peer` otherwise.
     template <typename Device>
     class BrickLoop {
@@ -462,6 +489,11 @@ namespace {
         [[nodiscard]] bool ended() const noexcept {
             return ended_.load(std::memory_order_acquire);
         }
+        /// The loop resolved the kernel's address (`resolve_kernel`) and listens or connects: a kernel client waits
+        /// for it before it connects.
+        [[nodiscard]] bool kernel_resolved() const noexcept {
+            return kernel_resolved_.load(std::memory_order_acquire);
+        }
         std::atomic<bool> connected{false};
 
     private:
@@ -477,11 +509,13 @@ namespace {
             Tcp tcp{ip, wheel, {}};
             std::vector<typename Device::Packet> burst(64);
             std::size_t offered = 0;
+            const bool resolved = resolve_kernel(ip);
             if (listen) {
                 std::ignore = tcp.listen(echo_port);
             } else {
                 std::ignore = tcp.connect({.address = kernel_ip, .port = echo_port}, aloe::core::Clock::now());
             }
+            kernel_resolved_.store(resolved, std::memory_order_release);
             while (!stop.stop_requested()) {
                 const auto now             = aloe::core::Clock::now();
                 const std::size_t received = queue.receive(burst);
@@ -554,6 +588,7 @@ namespace {
         std::atomic<bool> timestamps_{false};
         std::atomic<bool> clean_close_{false};  ///< Written by the loop thread, polled by the test thread.
         std::atomic<bool> ended_{false};
+        std::atomic<bool> kernel_resolved_{false};
         std::atomic<std::uint64_t> zero_window_probes_{0};
         std::jthread thread_;
     };
@@ -858,6 +893,8 @@ namespace {
     void brick_server(Device& device, const std::size_t size, const bool lossy) {
         const auto payload = message(size);
         BrickLoop<Device> loop{device, true, {}};
+        ASSERT_TRUE(eventually([&] { return loop.kernel_resolved(); }))
+            << "the brick did not resolve the kernel's address within " << patience().count() << " ms";
         kernel_client_round_trip(payload);
         EXPECT_TRUE(eventually([&] { return loop.clean_close(); }))
             << "the brick saw no clean close within " << patience().count()
@@ -907,6 +944,9 @@ namespace {
             aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24, .arp_learning = true},
             aloe::tcp::TcpConfig{}
         };
+        // On this thread, before the shard's does: as `Streams::ensure_listener` may, the stack is set up first.
+        EXPECT_TRUE(resolve_kernel(runtime.shard(0).stack().ip()))
+            << "the stack did not resolve the kernel's address within " << patience().count() << " ms";
         runtime.start();
         runtime.spawn(0,
                       serve_task<Device>(
@@ -941,6 +981,9 @@ namespace {
             aloe::net::Ipv4Config{.address = stack_ip, .prefix = 24, .arp_learning = true},
             aloe::tcp::TcpConfig{}
         };
+        // On this thread, before the shard's does: as `Streams::ensure_listener` may, the stack is set up first.
+        EXPECT_TRUE(resolve_kernel(runtime.shard(0).stack().ip()))
+            << "the stack did not resolve the kernel's address within " << patience().count() << " ms";
         runtime.start();
         runtime.spawn(0, client_task<Device>(&runtime.shard(0).stack().streams(), payload, &received, &outcome));
         kernel_server_echo(listener, payload.size());
@@ -1074,6 +1117,8 @@ namespace {
         },
               ip_{queue_, {.address = stack_ip, .prefix = 24, .arp_learning = true}},
               wheel_{1ms, aloe::core::Clock::now()}, tcp_{ip_, wheel_, {}}, burst_(Port::max_burst) {
+            EXPECT_TRUE(resolve_kernel(ip_))
+                << "the stack did not resolve the kernel's address within " << patience().count() << " ms";
             if (listen) {
                 EXPECT_TRUE(tcp_.listen(echo_port).has_value()) << "the stack's listen on " << echo_port;
             } else {
@@ -1531,6 +1576,8 @@ namespace {
         },
               ip_{queue_, {.address = stack_ip, .prefix = 24, .arp_learning = true}},
               wheel_{1ms, aloe::core::Clock::now()}, tcp_{ip_, wheel_, {}}, burst_(Port::max_burst) {
+            EXPECT_TRUE(resolve_kernel(ip_))
+                << "the stack did not resolve the kernel's address within " << patience().count() << " ms";
             EXPECT_TRUE(tcp_.listen(echo_port).has_value()) << "the stack's listen on " << echo_port;
         }
 
@@ -1799,6 +1846,8 @@ TEST_F(TcpTap, RuntimeClient) {
 TEST_F(TcpTap, BrickServerProbesAKernelClientThatStopsReading) {
     const auto payload = message(lossy_size);
     BrickLoop<Port> loop{*port_, true, {}};
+    ASSERT_TRUE(eventually([&loop] { return loop.kernel_resolved(); }))
+        << "the brick did not resolve the kernel's address within " << patience().count() << " ms";
     kernel_client_stalled_round_trip(payload, [&loop](const int fd) {
         EXPECT_TRUE(eventually([&loop] { return loop.zero_window_probes() >= 2; }))
             << "the brick sent fewer than two zero-window probes within " << patience().count()

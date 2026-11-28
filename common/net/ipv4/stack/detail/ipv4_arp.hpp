@@ -26,7 +26,8 @@ namespace aloe::net::detail {
      * Private to the brick, as ARP is to a socket. It reaches the queue alone: a request or a reply leaves through
      * `transmit_built`, and the brick's other parts ask it for a MAC or hand it an ARP frame. A frame never changes a
      * static entry, and with learning off no frame teaches anything and no request leaves; a request for our address
-     * is answered in every case.
+     * is answered in every case. With learning on a frame updates an entry the table holds and creates none
+     * (`ArpCache::update`): only a lookup and the program's seed create one.
      */
     template <device::IsDevice Device>
     class Arp {
@@ -48,8 +49,8 @@ namespace aloe::net::detail {
             resolved_.reserve(config.burst_capacity);
         }
 
-        /// An ARP frame for us: a request is answered in its own packet, a reply is learned, and what the wire
-        /// taught is reported.
+        /// An ARP frame for us: a request for our address is answered in its own packet, an entry the table holds
+        /// takes the sender's mapping, and what the wire taught is reported.
         void receive(Packet& packet, const core::TimePoint now) noexcept {
             const std::span<std::byte> frame = packet.data();
             const std::optional<wire::ArpPacket> arp =
@@ -73,13 +74,17 @@ namespace aloe::net::detail {
                 if (arp->target_ip != config_.address) {
                     // Someone else's business; `process` releases it. RFC 826's merge rule: an entry we hold is
                     // refreshed, a new one is never created from a request not meant for us.
-                    if (plausible && !known && cache_.contains(arp->sender_ip)) {
-                        learn_from_wire(arp->sender_ip, arp->sender_mac, now);
+                    if (plausible && !known) {
+                        update_sender(*arp, now);
                     }
                     return;
                 }
-                if (plausible && !known) {  // a probe (RFC 5227) is still answered, but teaches nothing
-                    learn_from_wire(arp->sender_ip, arp->sender_mac, now);
+                // A request for our address updates an entry we hold and creates none: where this departs from RFC 826,
+                // whose merge adds the sender when we are the target, and from Linux, whose `arp_process` creates the
+                // entry at once (`neigh_event_ns`). A frame that can create an entry can fill the table. A probe (RFC
+                // 5227) is still answered, but teaches nothing.
+                if (plausible && !known) {
+                    update_sender(*arp, now);
                 }
                 wire::EthernetHeader{.destination = arp->sender_mac,
                                      .source      = queue_.mac(),
@@ -100,26 +105,30 @@ namespace aloe::net::detail {
                 return;
             }
             if (!cache_.contains(arp->sender_ip)) {
-                // Never asked: nothing on the segment fills the cache, unless a sibling shard asked for our address.
+                // Never asked: nothing on the segment fills the cache, unless a sibling shard asked for our address,
+                // whose reply this shard stores so the loop can forward it.
                 if (config_.arp_learning && config_.accept_unsolicited_replies && arp->target_ip == config_.address &&
                     plausible_sender(*arp)) {
-                    learn_from_wire(arp->sender_ip, arp->sender_mac, now);
+                    record(cache_.seed(arp->sender_ip, arp->sender_mac, now), *arp);
                 } else {
                     ++counters_.dropped_arp_unsolicited;
                 }
                 return;
             }
             if (plausible_sender(*arp)) {
-                learn_from_wire(arp->sender_ip, arp->sender_mac, now);
+                update_sender(*arp, now);
             }
         }
 
         /// The next hop's entry, with the request sent when the cache asks for one: its MAC, or nothing with a request
-        /// on its way, and whether it is static.
+        /// on its way or with the learned table full, which is counted, and whether it is static.
         [[nodiscard]] ArpCache::Lookup lookup(const wire::Ipv4Address hop, const core::TimePoint now) noexcept {
             const ArpCache::Lookup found = cache_.lookup(hop, now);
             if (found.send_request) {
                 request_arp(hop, found.mac);
+            }
+            if (found.full) {
+                ++counters_.arp_table_full;
             }
             return found;
         }
@@ -136,10 +145,13 @@ namespace aloe::net::detail {
             return config_.arp_learning || cache_.is_static(hop);
         }
 
-        /// A seed of the learned table, or a resolution another shard learned: nothing with learning off or for a
-        /// static address. Appends nothing to `resolved()`.
+        /// A seed of the learned table, or a resolution another shard learned: creates the entry when absent, and does
+        /// nothing with learning off or for a static address; a full table refuses it, counted. Appends nothing to
+        /// `resolved()`.
         void learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
-            cache_.learn(address, mac, now);
+            if (cache_.seed(address, mac, now) == ArpCache::Taught::Full) {
+                ++counters_.arp_table_full;
+            }
         }
 
         /// The stamp a reachable or stale entry was last confirmed at (`ArpCache::confirmed`).
@@ -186,17 +198,24 @@ namespace aloe::net::detail {
             return true;
         }
 
-        /// A mapping a frame gave an entry the table may hold: stored and reported with learning on, nothing with it
-        /// off.
-        void learn_from_wire(const wire::Ipv4Address address,
-                             const wire::MacAddress mac,
-                             const core::TimePoint now) noexcept {
-            if (!config_.arp_learning) {
-                return;  // no frame teaches anything
+        /// The frame's sender mapping, for the entry the table holds: filled, refreshed or changed, and reported. A
+        /// frame creates no entry.
+        void update_sender(const wire::ArpPacket& arp, const core::TimePoint now) noexcept {
+            record(cache_.update(arp.sender_ip, arp.sender_mac, now), arp);
+        }
+
+        /**
+         * What the frame's sender mapping did to the table: a mapping an entry took is reported in `resolved()`, a
+         * refresh with the same MAC included, so the shards that forward it stay fresh; a seed the full table refused
+         * is counted. Anything else stored nothing: an address the table does not hold, a static one, or learning off.
+         */
+        void record(const ArpCache::Taught taught, const wire::ArpPacket& arp) noexcept {
+            if (taught == ArpCache::Taught::Updated || taught == ArpCache::Taught::Created) {
+                resolved_.push_back(ArpResolution{.address = arp.sender_ip, .mac = arp.sender_mac});
+                ++counters_.resolutions;
+            } else if (taught == ArpCache::Taught::Full) {
+                ++counters_.arp_table_full;
             }
-            cache_.learn(address, mac, now);
-            resolved_.push_back(ArpResolution{.address = address, .mac = mac});
-            ++counters_.resolutions;
         }
 
         /// A request for `target`: broadcast for an unresolved entry, unicast to `known` for a stale one.

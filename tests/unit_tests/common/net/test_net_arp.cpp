@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include <tuple>
 #include <vector>
@@ -35,7 +36,7 @@ namespace {
 
 }  // namespace
 
-TEST_P(NetArp, ARequestForOurAddressGetsAReplyAndTeachesTheSender) {
+TEST_P(NetArp, ARequestForOurAddressFromAnUnknownSenderIsAnsweredAndTeachesNothing) {
     inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, harness_ip, stack_ip), broadcast));
 
     const auto frames = harness_received();
@@ -47,14 +48,31 @@ TEST_P(NetArp, ARequestForOurAddressGetsAReplyAndTeachesTheSender) {
     ASSERT_TRUE(reply.arp.has_value());
     EXPECT_EQ(*reply.arp, aloe::frames::arp_reply(stack_mac, stack_ip, harness_mac, harness_ip));
     EXPECT_TRUE(burst_empty());
+    EXPECT_TRUE(ip_.resolved().empty());
+    EXPECT_EQ(ip_.counters().arp_requests_received, 1);
+    EXPECT_EQ(ip_.counters().arp_replies_sent, 1);
+    EXPECT_EQ(ip_.counters().resolutions, 0);
+
+    EXPECT_FALSE(ip_.resolve(harness_ip, now_).has_value()) << "the sender was not stored";
+    const auto asked = harness_received();
+    ASSERT_EQ(asked.size(), 1) << "so the next lookup asks for it";
+    const auto request = aloe::frames::parse_frame(asked[0]).value();
+    EXPECT_EQ(request.ethernet.destination, broadcast);
+    ASSERT_TRUE(request.arp.has_value());
+    EXPECT_EQ(*request.arp, aloe::frames::arp_request(stack_mac, stack_ip, harness_ip));
+}
+
+TEST_P(NetArp, ARequestFromASenderWeHoldUpdatesIt) {
+    EXPECT_FALSE(ip_.resolve(harness_ip, now_).has_value());  // the brick's own lookup makes the entry
+    ASSERT_EQ(harness_received().size(), 1) << "its request";
+    inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, harness_ip, stack_ip), broadcast));
+    ASSERT_EQ(harness_received().size(), 1) << "the answer to the harness's request";
 
     ASSERT_EQ(ip_.resolved().size(), 1);
     EXPECT_EQ(ip_.resolved()[0], (aloe::net::ArpResolution{.address = harness_ip, .mac = harness_mac}));
+    EXPECT_EQ(ip_.counters().resolutions, 1);
     EXPECT_EQ(ip_.resolve(harness_ip, now_), harness_mac);
     EXPECT_TRUE(harness_received().empty()) << "no request for what is known";
-    EXPECT_EQ(ip_.counters().arp_requests_received, 1);
-    EXPECT_EQ(ip_.counters().arp_replies_sent, 1);
-    EXPECT_EQ(ip_.counters().resolutions, 1);
 }
 
 TEST_P(NetArp, ARequestForAnotherHostTeachesNothing) {
@@ -135,7 +153,7 @@ TEST_P(NetArp, AReplyToOurRequestResolvesAndIsReported) {
     EXPECT_TRUE(burst_empty());
 }
 
-TEST_P(NetArp, AnUnsolicitedReplyIsDroppedAndTeachesNothing) {
+TEST_P(NetArp, AReplyForAnAddressWeDidNotAskAboutIsDropped) {
     inject(aloe::frames::arp_frame(aloe::frames::arp_reply(stranger_mac, stranger, stack_mac, stack_ip), stack_mac));
     EXPECT_EQ(ip_.counters().dropped_arp_unsolicited, 1);
     EXPECT_EQ(ip_.counters().arp_replies_received, 1);
@@ -176,6 +194,32 @@ TEST_P(NetArp, WithAcceptUnsolicitedRepliesAReplyAddressedToUsIsLearned) {
     EXPECT_EQ(accepting.counters().dropped_arp_unsolicited, 1);
     EXPECT_TRUE(accepting.resolved().empty());
     EXPECT_EQ(accepting.counters().resolutions, 1);
+}
+
+TEST_P(NetArp, ALookupAtAFullTableIsCountedAndTheSendIsUnresolved) {
+    aloe::net::Ipv4Config config = aloe::testing::stack_config();
+    config.arp_capacity          = 8;
+    Ipv4 small{queue_, config};  // over the same queue: the fixture's brick stays idle meanwhile
+    for (std::uint8_t index = 0; index < 8; ++index) {
+        const aloe::wire::Ipv4Address neighbour{10, 0, 0, static_cast<std::uint8_t>(10 + index)};
+        small.learn(neighbour, stranger_mac, now_);
+        ASSERT_EQ(small.resolve(neighbour, now_), stranger_mac);
+    }
+    ASSERT_EQ(small.counters().arp_table_full, 0);
+
+    auto packet = small.allocate();
+    ASSERT_TRUE(packet.has_value());
+    ASSERT_TRUE(packet->append(8).has_value());
+    const auto sent = small.send(std::move(*packet), {.destination = stranger}, now_);
+    ASSERT_FALSE(sent.has_value());
+    EXPECT_EQ(sent.error(), aloe::net::SendError::Unresolved) << "as for any address not resolved yet";
+    EXPECT_EQ(small.counters().arp_table_full, 1);
+    EXPECT_EQ(small.counters().send_unresolved, 1);
+    EXPECT_EQ(small.counters().arp_requests_sent, 0) << "no slot to wait in, so no request";
+    EXPECT_TRUE(harness_received().empty());
+    for (std::uint8_t index = 0; index < 8; ++index) {
+        EXPECT_EQ(small.resolve({10, 0, 0, static_cast<std::uint8_t>(10 + index)}, now_), stranger_mac);
+    }
 }
 
 TEST_P(NetArp, AFrameClaimingOurOwnAddressIsAConflict) {

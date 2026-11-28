@@ -290,9 +290,10 @@ TEST_P(NetReceive, ABadConfigThrows) {
     }),
                  std::invalid_argument);
     // The learned table's settings are read, and refused, only with learning on (the design's configuration table:
-    // "read only with learning on", refused "as today, with learning on").
+    // "read only with learning on", refused "as today, with learning on"). A capacity need only be positive now, as
+    // rule 2 makes the table "an ordinary fixed table of `arp_capacity` entries", so the row refuses zero.
     EXPECT_THROW((Ipv4{
-                     queue_, {.address = stack_ip, .arp_learning = true, .arp_capacity = 100}
+                     queue_, {.address = stack_ip, .arp_learning = true, .arp_capacity = 0}
     }),
                  std::invalid_argument)
         << "ArpCache's check reaches the caller";

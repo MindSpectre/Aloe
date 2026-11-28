@@ -33,8 +33,9 @@ namespace aloe::net {
      * leaves every slot empty; `received` and `resolved` are the lists the caller drains until the next
      * `process`; `send` prepends the headers and fills the checksums by the device's offload or in software.
      * ARP is private: the neighbours in `Ipv4Config::static_arp` resolve with no frame, and nothing else does
-     * unless `Ipv4Config::arp_learning` is on; then `send` fails `Unresolved` while a request is out, `resolved`
-     * reports what was learned, `learn` and `resolve` seed the cache. With learning off a next hop outside the
+     * unless `Ipv4Config::arp_learning` is on; then `send` fails `Unresolved` while a request is out or the learned
+     * table is full, `resolved` reports what frames taught the entries the table holds, `learn` and `resolve` seed
+     * the cache, and no frame creates an entry. With learning off a next hop outside the
      * static table is `NoRoute`. Every member runs on the owning thread. Nothing here
      * is synchronised, blocks, throws after construction, logs, reads a clock, or allocates after
      * construction except packets.
@@ -85,7 +86,7 @@ namespace aloe::net {
             return input_.received(protocol);
         }
 
-        /// The mappings learned from ARP frames in the last `process`, until the next one.
+        /// The mappings ARP frames gave entries the table holds in the last `process`, until the next one.
         [[nodiscard]] std::span<const ArpResolution> resolved() const noexcept {
             return arp_.resolved();
         }
@@ -150,8 +151,9 @@ namespace aloe::net {
             return arp_.resolve(hop, now);
         }
 
-        /// A seed of the learned table, or a resolution another shard learned: nothing with learning off or for a
-        /// static address. Appends nothing to `resolved()`.
+        /// A seed of the learned table, or a resolution another shard learned: creates the entry when absent, and does
+        /// nothing with learning off or for a static address; a full table refuses a new address and counts
+        /// `arp_table_full`. Appends nothing to `resolved()`.
         void learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
             arp_.learn(address, mac, now);
         }

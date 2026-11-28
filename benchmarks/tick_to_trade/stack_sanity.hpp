@@ -76,6 +76,7 @@ namespace aloe::benchmarks {
         expect_zero(ip.dropped_arp_malformed, "ip.dropped_arp_malformed");
         expect_zero(ip.dropped_arp_conflict, "ip.dropped_arp_conflict");
         expect_zero(ip.dropped_arp_static_conflict, "ip.dropped_arp_static_conflict");
+        expect_zero(ip.arp_table_full, "ip.arp_table_full");
         expect_zero(ip.dropped_bad_header, "ip.dropped_bad_header");
         expect_zero(ip.dropped_bad_checksum, "ip.dropped_bad_checksum");
         expect_zero(ip.dropped_fragment, "ip.dropped_fragment");

@@ -124,6 +124,7 @@ TEST(StackSanity, FailsOnEveryDropAndRefusal) {
         {&IpCounters::dropped_arp_malformed,       "ip.dropped_arp_malformed"      },
         {&IpCounters::dropped_arp_conflict,        "ip.dropped_arp_conflict"       },
         {&IpCounters::dropped_arp_static_conflict, "ip.dropped_arp_static_conflict"},
+        {&IpCounters::arp_table_full,              "ip.arp_table_full"             },
         {&IpCounters::dropped_bad_header,          "ip.dropped_bad_header"         },
         {&IpCounters::dropped_bad_checksum,        "ip.dropped_bad_checksum"       },
         {&IpCounters::dropped_fragment,            "ip.dropped_fragment"           },

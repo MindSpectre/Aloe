@@ -13,6 +13,9 @@ namespace aloe::net {
         std::uint64_t delivered_tcp               = 0;
         std::uint64_t delivered_udp               = 0;
         std::uint64_t resolutions                 = 0;  ///< Mappings learned from ARP frames.
+        /// A lookup or a seed of a new address that found the learned table full: nothing was stored, no request left,
+        /// and a send to the address fails `Unresolved`.
+        std::uint64_t arp_table_full              = 0;
         std::uint64_t arp_requests_sent           = 0;
         std::uint64_t arp_replies_sent            = 0;
         std::uint64_t echo_replies_sent           = 0;

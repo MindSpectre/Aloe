@@ -9,16 +9,15 @@ namespace aloe::net {
 
     namespace {
 
-        /// 2^32 / phi, odd: every input bit moves the high output bits, which `home` keeps.
-        constexpr std::uint32_t golden_ratio = 0x9e3779b1U;
-        constexpr unsigned address_bits      = 32;
+        /// Twice this many slots still fit the 32-bit hash `detail::arp_home_slot` takes the home from.
+        constexpr std::size_t max_capacity = std::size_t{1} << 30U;
 
         const ArpCacheConfig& validated(const ArpCacheConfig& config) {
             if (!config.learning) {
                 return config;  // the learned table's settings are never read
             }
-            if (config.capacity < ArpCache::probe_window || !std::has_single_bit(config.capacity)) {
-                throw std::invalid_argument{"ArpCacheConfig::capacity must be a power of two of at least 8"};
+            if (config.capacity == 0 || config.capacity > max_capacity) {
+                throw std::invalid_argument{"ArpCacheConfig::capacity must be positive and at most 2^30"};
             }
             if (config.reachable <= core::Duration::zero() || config.request_interval <= core::Duration::zero()) {
                 throw std::invalid_argument{"ArpCacheConfig durations must be positive"};
@@ -29,20 +28,12 @@ namespace aloe::net {
             return config;
         }
 
-        void reset(auto& entry, const wire::Ipv4Address address) noexcept {
-            entry.address   = address;
-            entry.mac       = {};
-            entry.confirmed = {};
-            entry.requested.reset();
-        }
-
     }  // namespace
 
     ArpCache::ArpCache(const ArpCacheConfig& config, std::vector<ArpResolution> static_entries)
         : config_{validated(config)},
           static_{std::move(static_entries)},
-          slots_(config.learning ? config.capacity : 0),
-          shift_{config.learning ? address_bits - static_cast<unsigned>(std::countr_zero(config.capacity)) : 0} {
+          slots_(config.learning ? std::bit_ceil(2 * config.capacity) : 0) {
     }
 
     const ArpResolution* ArpCache::find_static(const wire::Ipv4Address address) const noexcept {
@@ -51,23 +42,25 @@ namespace aloe::net {
     }
 
     std::size_t ArpCache::home(const wire::Ipv4Address address) const noexcept {
-        return static_cast<std::size_t>((address.to_uint32() * golden_ratio) >> shift_);
+        return detail::arp_home_slot(address, slots_.size());
     }
 
     const ArpCache::Entry* ArpCache::find(const wire::Ipv4Address address) const noexcept {
         if (slots_.empty()) {
             return nullptr;  // learning off: no learned table
         }
-        const std::size_t mask  = slots_.size() - 1;
-        const std::size_t start = home(address);
-        for (std::size_t probe = 0; probe < probe_window; ++probe) {
-            const Entry& slot = slots_[(start + probe) & mask];
-            if (slot.state == State::Free) {
-                return nullptr;  // chains never contain a free slot, so the address is not here
+        const std::size_t mask = slots_.size() - 1;
+        std::size_t slot       = home(address);
+        // At most half the slots are held, so a chain always ends at a free slot; the count only bounds the loop.
+        for (std::size_t probed = 0; probed < slots_.size(); ++probed) {
+            const Entry& entry = slots_[slot];
+            if (entry.state == State::Free) {
+                return nullptr;
             }
-            if (slot.address == address) {
-                return &slot;
+            if (entry.address == address) {
+                return &entry;
             }
+            slot = (slot + 1) & mask;
         }
         return nullptr;
     }
@@ -76,60 +69,52 @@ namespace aloe::net {
         return const_cast<Entry*>(std::as_const(*this).find(address));  // one search, two constnesses
     }
 
-    bool ArpCache::expired(const Entry& entry, const core::TimePoint now) const noexcept {
-        switch (entry.state) {
-            case State::Free:
-                return true;
-            case State::Incomplete:
-                return entry.requested.has_value() && now - *entry.requested >= config_.expire;
-            case State::Reachable:
-                return now - entry.confirmed >= config_.expire;
+    bool ArpCache::reusable(const Entry& entry, const core::TimePoint now) const noexcept {
+        if (entry.state == State::Reachable) {
+            return now - entry.confirmed >= config_.expire;
         }
-        std::unreachable();
+        return !entry.requested.has_value() || now - *entry.requested >= config_.request_interval;
     }
 
-    bool ArpCache::pending(const Entry& entry, const core::TimePoint now) const noexcept {
-        return entry.state == State::Incomplete && entry.requested.has_value() &&
-               now - *entry.requested < config_.request_interval;
+    ArpCache::Entry* ArpCache::insert(const wire::Ipv4Address address, const core::TimePoint now) noexcept {
+        if (held_ == config_.capacity) {
+            // Linux's neigh_alloc makes room by a forced collection (neigh_forced_gc); here a full table refuses, and
+            // only a slot no mapping needs is taken. The scan reads every slot, and only a new address at a full table
+            // makes it.
+            const auto taken = std::ranges::find_if(
+                slots_, [this, now](const Entry& entry) { return entry.state != State::Free && reusable(entry, now); });
+            if (taken == slots_.end()) {
+                return nullptr;
+            }
+            if (taken->state == State::Reachable) {
+                ++generation_;  // its MAC goes: an Ipv4Prebuilt of this generation may still name it
+            }
+            remove(static_cast<std::size_t>(taken - slots_.begin()));
+        }
+        const std::size_t mask = slots_.size() - 1;
+        std::size_t slot       = home(address);
+        while (slots_[slot].state != State::Free) {
+            slot = (slot + 1) & mask;
+        }
+        slots_[slot] = Entry{.address = address, .state = State::Incomplete};
+        ++held_;
+        return &slots_[slot];
     }
 
-    ArpCache::Entry& ArpCache::insert(const wire::Ipv4Address address, const core::TimePoint now) noexcept {
-        const std::size_t mask  = slots_.size() - 1;
-        const std::size_t start = home(address);
-        Entry* first_expired    = nullptr;
-        Entry* first_lapsed     = nullptr;  // incomplete, and its request is too old for a reply to be coming
-        Entry* oldest_reachable = nullptr;
-        Entry* oldest_pending   = nullptr;  // incomplete, with a request still waiting for its reply
-        for (std::size_t probe = 0; probe < probe_window; ++probe) {
-            Entry& slot = slots_[(start + probe) & mask];
-            if (slot.state == State::Free) {
-                ++occupied_;
-                reset(slot, address);
-                slot.state = State::Incomplete;
-                return slot;
-            }
-            if (expired(slot, now)) {
-                first_expired = first_expired != nullptr ? first_expired : &slot;
-            } else if (pending(slot, now)) {
-                if (oldest_pending == nullptr || *slot.requested < *oldest_pending->requested) {
-                    oldest_pending = &slot;
-                }
-            } else if (slot.state == State::Incomplete) {
-                first_lapsed = first_lapsed != nullptr ? first_lapsed : &slot;
-            } else if (oldest_reachable == nullptr || slot.confirmed < oldest_reachable->confirmed) {
-                oldest_reachable = &slot;
+    void ArpCache::remove(const std::size_t slot) noexcept {
+        const std::size_t mask = slots_.size() - 1;
+        const auto distance    = [mask](const std::size_t from, const std::size_t to) { return (to - from) & mask; };
+        std::size_t hole       = slot;
+        for (std::size_t next = (hole + 1) & mask; slots_[next].state != State::Free; next = (next + 1) & mask) {
+            // An entry moves back into the hole only if the hole is not before its home on its probe path.
+            if (const std::size_t its_home = home(slots_[next].address);
+                distance(its_home, hole) < distance(its_home, next)) {
+                slots_[hole] = slots_[next];
+                hole         = next;
             }
         }
-        Entry* victim = first_expired;
-        for (Entry* candidate : {first_lapsed, oldest_reachable, oldest_pending}) {
-            victim = victim != nullptr ? victim : candidate;
-        }
-        if (victim->state == State::Reachable) {
-            ++generation_;  // its MAC goes, expired or not: an Ipv4Prebuilt of this generation may still name it
-        }
-        reset(*victim, address);
-        victim->state = State::Incomplete;
-        return *victim;
+        slots_[hole] = Entry{};
+        --held_;
     }
 
     bool ArpCache::request_due(Entry& entry, const core::TimePoint now) const noexcept {
@@ -138,6 +123,16 @@ namespace aloe::net {
         }
         entry.requested = now;
         return true;
+    }
+
+    void ArpCache::confirm(Entry& entry, const wire::MacAddress mac, const core::TimePoint now) noexcept {
+        if (entry.state != State::Reachable || entry.mac != mac) {
+            ++generation_;
+        }
+        entry.mac       = mac;
+        entry.state     = State::Reachable;
+        entry.confirmed = now;
+        entry.requested.reset();
     }
 
     ArpCache::Lookup ArpCache::lookup(const wire::Ipv4Address address, const core::TimePoint now) noexcept {
@@ -151,7 +146,10 @@ namespace aloe::net {
         }
         Entry* entry = find(address);
         if (entry == nullptr) {
-            entry = &insert(address, now);
+            entry = insert(address, now);
+            if (entry == nullptr) {
+                return {.mac = std::nullopt, .send_request = false, .permanent = false, .full = true};
+            }
         }
         if (entry->state == State::Incomplete) {
             return {.mac = std::nullopt, .send_request = request_due(*entry, now)};
@@ -170,22 +168,33 @@ namespace aloe::net {
         return {.mac = std::nullopt, .send_request = request_due(*entry, now)};
     }
 
-    void
-    ArpCache::learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
-        if (!config_.learning || is_static(address)) {
-            return;  // nothing is kept but the static table, which nothing changes
+    ArpCache::Taught
+    ArpCache::update(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
+        if (const ArpResolution* known = find_static(address); known != nullptr) {
+            return known->mac == mac ? Taught::Static : Taught::Conflict;  // nothing changes the static table
+        }
+        if (!config_.learning) {
+            return Taught::Off;
         }
         Entry* entry = find(address);
         if (entry == nullptr) {
-            entry = &insert(address, now);
+            return Taught::Unknown;
         }
-        if (entry->state != State::Reachable || entry->mac != mac) {
-            ++generation_;
+        confirm(*entry, mac, now);
+        return Taught::Updated;
+    }
+
+    ArpCache::Taught
+    ArpCache::seed(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
+        if (const Taught taught = update(address, mac, now); taught != Taught::Unknown) {
+            return taught;
         }
-        entry->mac       = mac;
-        entry->state     = State::Reachable;
-        entry->confirmed = now;
-        entry->requested.reset();
+        Entry* entry = insert(address, now);
+        if (entry == nullptr) {
+            return Taught::Full;
+        }
+        confirm(*entry, mac, now);
+        return Taught::Created;
     }
 
     std::optional<core::TimePoint> ArpCache::confirmed(const wire::Ipv4Address address) const noexcept {
