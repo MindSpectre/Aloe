@@ -1,0 +1,15 @@
+// RFC 9293 3.5.2: in SYN-RECEIVED a segment whose ACK does not acknowledge the SYN-ACK draws <SEQ=SEG.ACK><CTL=RST>,
+// and the half-open connection stays as it was. The peer's ACK of 5, past SND.NXT 1, is answered at once with a RST at
+// 5: no ACK bit, no options and a window of 0, not held back by the connection's limiter, as no RST is. The right ACK
+// that follows completes the handshake, and accept returns the connection. Linux does the same: tcp_check_req hands
+// the segment back to the listener before it checks the window, and tcp_v4_send_reset builds the same RST.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 5 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > R 5:5(0) win 0
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4

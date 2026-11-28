@@ -289,11 +289,21 @@ namespace aloe::tcp::detail {
         }
 
     private:
-        /// Established: the FIN's node set aside and the policy's first window taken from the negotiated MSS.
+        /**
+         * Established: the FIN's node set aside, the policy's first window taken from the negotiated MSS, and the sum
+         * of SND.UNA's advances zeroed. Both opens come here after the handshake's own ACK moved SND.UNA
+         * (`AckProcessor::handshake_acknowledged`), so the SYN's number is not in the sum and, until the peer
+         * acknowledges data, every ACK below SND.UNA is too old (`SendSequence::ack_floor`). That is Linux's passive
+         * open, whose child `tcp_create_openreq_child` builds with SND.UNA already past the SYN-ACK and `bytes_acked`
+         * at zero. Where this departs from Linux: its active open counts the SYN, since `tcp_rcv_synsent_state_process`
+         * takes the SYN-ACK through `tcp_ack` and `tcp_snd_una_update`, and so takes an ACK of the ISS as old rather
+         * than too old.
+         */
         void establish(ControlBlock& block) noexcept {
             block.state = State::Established;
             transmitter_.reserve_fin_node(block);
             block.recovery.establish(block.mss());
+            block.send.acknowledged = 0;
         }
 
         void free_slot(ControlBlock& block) noexcept {

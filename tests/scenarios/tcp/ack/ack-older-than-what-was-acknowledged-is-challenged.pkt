@@ -1,0 +1,25 @@
+// RFC 5961 5.2 as Linux bounds it (tcp_ack): an ACK below SND.UNA less the smaller of the largest window the peer
+// offered and what it has acknowledged is too old to be the peer's, and the whole segment is dropped and answered with
+// a challenge ACK. The stack writes 1000 bytes and the peer acknowledges them: SND.UNA 1001, 1000 acknowledged, the
+// largest window 65535, so the bound is 1001 - 1000 = 1. The peer's 100 bytes acknowledging 1, old but at the bound,
+// are taken and acknowledged at the flush, the window 65535 less the 100 unread. Its next 100 bytes acknowledging 0,
+// one below the bound, draw the challenge: the connection's pure ACK at SND.NXT 1001, RCV.NXT still 101, and the edge
+// restated, 1 + 65535 less RCV.NXT 101. Only the first 100 bytes are read. The stack's segments carry TS val 0, its
+// clock in milliseconds from its SYN-ACK, and echo 100. Linux does the same; its windows depend on its buffers.
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 65535 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 1000) = 1000
++0 > P. 1:1001(1000) ack 1 win 65535 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1001 win 65535 <nop,nop,TS val 100 ecr 0>
++0 < P. 1:101(100) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1001:1001(0) ack 101 win 65435 <nop,nop,TS val 0 ecr 100>
++0 < P. 101:201(100) ack 0 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1001:1001(0) ack 101 win 65435 <nop,nop,TS val 0 ecr 100>
++0 read(4, ..., 1000) = 100

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <aloe/fabric>
 #include <aloe/frames>
 #include <aloe/tcp>
@@ -17,7 +18,10 @@
 // the end of what is held above a gap on a connection that uses SACK; any other RST inside the window draws a challenge
 // ACK, and one outside it is dropped in silence. A SYN on an established connection draws a challenge ACK wherever it
 // lies and whether or not it passed PAWS. Every challenge, and the ACK for a refused segment that occupies no sequence
-// space, goes through one limiter per connection: one answer per `challenge_ack_interval`, 500 ms.
+// space, goes through one limiter per connection: one answer per `challenge_ack_interval`, 500 ms. RFC 5961 section 5,
+// as Linux's `tcp_ack`: an ACK of what was never sent, or one below SND.UNA less the smaller of the largest window the
+// peer offered and what it has acknowledged since the connection became established, drops the whole segment and
+// draws a challenge ACK.
 namespace {
 
     using namespace std::chrono_literals;
@@ -29,17 +33,7 @@ namespace {
     using aloe::wire::TcpFlag;
     using aloe::wire::TcpFlags;
     using aloe::wire::TcpSequence;
-    using TcpChallenge         = aloe::testing::TcpFixture;
     using TcpChallengeRefusing = aloe::testing::TcpRefusingFixture;
-
-    INSTANTIATE_TEST_SUITE_P(Offloads,
-                             TcpChallenge,
-                             ::testing::Values(EmulatedOffloads::None, EmulatedOffloads::Checksums),
-                             aloe::testing::offloads_name);
-    INSTANTIATE_TEST_SUITE_P(Offloads,
-                             TcpChallengeRefusing,
-                             ::testing::Values(EmulatedOffloads::None, EmulatedOffloads::Checksums),
-                             aloe::testing::offloads_name);
 
     /// The peer's RST at `sequence`, with no ACK bit and the peer's state unchanged.
     [[nodiscard]] std::vector<std::byte> rst_at(const TcpPeer& peer, const TcpSequence sequence) {
@@ -54,6 +48,40 @@ namespace {
     [[nodiscard]] std::vector<std::byte> payload(const std::size_t count) {
         return std::vector<std::byte>(count, std::byte{0x61});
     }
+
+    /// The peer's data at `sequence` acknowledging `acknowledgement`, with the peer's state unchanged.
+    [[nodiscard]] std::vector<std::byte>
+    data_at(const TcpPeer& peer, const TcpSequence sequence, const TcpSequence acknowledgement) {
+        return peer.segment(TcpFlags{TcpFlag::Psh, TcpFlag::Ack}, payload(10), sequence, acknowledgement);
+    }
+
+    /// The brick over a fabric port, with a peer that acknowledges what the stack sends.
+    class TcpChallenge : public aloe::testing::TcpFixture {
+    protected:
+        /// Has `c` send `count` bytes in as many rounds as the windows need, `peer` seeing each round's segments and
+        /// acknowledging them whole: SND.UNA moves by `count`, and the sum of its advances with it.
+        void send_acknowledged(Connection& c, TcpPeer& peer, const std::size_t count) {
+            for (std::size_t sent = 0; sent < count;) {
+                const std::size_t accepted = c.send(payload(std::min(count - sent, c.writable())));
+                ASSERT_GT(accepted, 0U) << "the windows let nothing go";
+                for (const ParsedFrame& frame : collect()) {
+                    peer.see(frame);
+                }
+                receive(peer.ack());
+                sent += accepted;
+            }
+            ASSERT_EQ(c.unacknowledged(), 0U);
+        }
+    };
+
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpChallenge,
+                             ::testing::Values(EmulatedOffloads::None, EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
+    INSTANTIATE_TEST_SUITE_P(Offloads,
+                             TcpChallengeRefusing,
+                             ::testing::Values(EmulatedOffloads::None, EmulatedOffloads::Checksums),
+                             aloe::testing::offloads_name);
 
     /// `frame` is a pure ACK at `sequence` acknowledging `acknowledgement`: what a challenge looks like, and the answer
     /// to a refused segment.
@@ -377,6 +405,7 @@ TEST_P(TcpChallengeRefusing, AChallengeTheDeviceRefusesGoesAtTheFlushOnce) {
 TEST_P(TcpChallenge, TheNextConnectionOnTheSlotStartsClean) {
     auto* c = open_passive(peer_);
     ASSERT_NE(c, nullptr);
+    ASSERT_NO_FATAL_FAILURE(send_acknowledged(*c, peer_, 3000));  // the first connection's sum stands at 3000
     const TcpSequence next = peer_.snd_nxt();
     receive(rst_at(peer_, next + 1U));
     ASSERT_EQ(collect().size(), 1U) << "challenged";
@@ -394,6 +423,11 @@ TEST_P(TcpChallenge, TheNextConnectionOnTheSlotStartsClean) {
     ASSERT_EQ(frames.size(), 1U) << "challenged at once: the slot's limiter was cleared with it";
     expect_pure_ack(frames[0], d->committed(), second.snd_nxt());
     EXPECT_EQ(tcp_->counters().acks_rate_limited, 0U);
+    advance(500ms);
+    receive(data_at(second, second.snd_nxt(), back(d->acknowledged(), 1)));
+    EXPECT_EQ(tcp_->counters().dropped_old_ack, 1U) << "too old: the slot's sum of acknowledged bytes went with it";
+    EXPECT_EQ(d->unread().size(), 0U);
+    EXPECT_EQ(collect().size(), 1U) << "challenged";
 }
 
 TEST_P(TcpChallenge, TheResetPositionsHoldAcrossTheTopOfTheSequenceSpace) {
@@ -588,4 +622,174 @@ TEST_P(TcpChallenge, ASynThatOverlapsRcvNxtIsChallengedAndNothingIsTaken) {
     EXPECT_EQ(frames[0].tcp->data_offset, 20U) << "no duplicate reported: no SACK option";
     EXPECT_EQ(tcp_->counters().dropped_syn_challenged, 1U);
     EXPECT_EQ(tcp_->counters().challenge_acks_sent, 1U);
+}
+
+TEST_P(TcpChallenge, AnAckOfUnsentDataIsChallengedAndItsPayloadNotTaken) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence next = peer_.snd_nxt();
+    TcpCounters expected   = tcp_->counters();
+    receive(data_at(peer_, next, c->committed() + 1U));
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "one challenge";
+    expect_pure_ack(frames[0], c->committed(), next);
+    EXPECT_EQ(c->unread().size(), 0U) << "dropped whole";
+    expected.segments_received   += 1;
+    expected.dropped_unexpected  += 1;
+    expected.challenge_acks_sent += 1;
+    expected.pure_acks_sent      += 1;
+    EXPECT_EQ(tcp_->counters(), expected) << "counted in dropped_unexpected, as before, and challenged";
+}
+
+TEST_P(TcpChallenge, AnAckBelowSndUnaBeforeAnythingWasAcknowledgedIsTooOld) {
+    // The handshake's own ACK is not in the sum, on either open: the bound is SND.UNA itself.
+    for (const bool active : {false, true}) {
+        SCOPED_TRACE(active ? "an active open" : "a passive open");
+        TcpPeer peer{aloe::testing::peer_spec(active ? aloe::testing::tcp_peer_port + 1 : aloe::testing::tcp_peer_port),
+                     TcpSequence{aloe::testing::tcp_peer_isn}};
+        auto* c = active ? open_active(peer) : open_passive(peer);
+        ASSERT_NE(c, nullptr);
+        const TcpSequence next = peer.snd_nxt();
+        TcpCounters expected   = tcp_->counters();
+        receive(data_at(peer, next, back(c->acknowledged(), 1)));
+        const auto frames = collect();
+        ASSERT_EQ(frames.size(), 1U) << "one challenge";
+        expect_pure_ack(frames[0], c->committed(), next);
+        EXPECT_EQ(c->unread().size(), 0U) << "dropped whole";
+        expected.segments_received   += 1;
+        expected.dropped_old_ack     += 1;
+        expected.challenge_acks_sent += 1;
+        expected.pure_acks_sent      += 1;
+        EXPECT_EQ(tcp_->counters(), expected) << "counted in dropped_old_ack alone";
+    }
+}
+
+TEST_P(TcpChallenge, AnAckJustInsideTheBoundIsOldAndItsPayloadIsTaken) {
+    peer_.set_timestamps(100);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_NO_FATAL_FAILURE(send_acknowledged(*c, peer_, 3000));
+    const TcpSequence next         = peer_.snd_nxt();
+    const TcpSequence acknowledged = c->acknowledged();
+    peer_.set_timestamps(200);  // newer, at RCV.NXT: an old ACK inside the bound passed every check, and takes it
+    receive(data_at(peer_, next, back(acknowledged, 3000)));
+    EXPECT_EQ(c->unread().size(), 10U) << "taken";
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "the ACK of the data, and no challenge";
+    expect_pure_ack(frames[0], c->committed(), next + 10U);
+    EXPECT_EQ(ts_echo_of(frames[0]), 200U) << "the segment wrote TS.Recent";
+    EXPECT_EQ(c->acknowledged(), acknowledged) << "an old ACK moves no SND.UNA";
+    EXPECT_EQ(tcp_->counters().dropped_old_ack, 0U);
+    EXPECT_EQ(tcp_->counters().challenge_acks_sent, 0U);
+}
+
+TEST_P(TcpChallenge, AnAckOneBelowTheBoundIsChallengedWithItsFin) {
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_NO_FATAL_FAILURE(send_acknowledged(*c, peer_, 3000));
+    const TcpSequence next = peer_.snd_nxt();
+    TcpCounters expected   = tcp_->counters();
+    receive(peer_.segment(
+        TcpFlags{TcpFlag::Fin, TcpFlag::Psh, TcpFlag::Ack}, payload(10), next, back(c->acknowledged(), 3001)));
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "one challenge";
+    expect_pure_ack(frames[0], c->committed(), next);
+    EXPECT_FALSE(c->peer_closed()) << "the FIN is dropped with the payload";
+    EXPECT_EQ(c->state(), State::Established);
+    EXPECT_EQ(c->unread().size(), 0U);
+    expected.segments_received   += 1;
+    expected.dropped_old_ack     += 1;
+    expected.challenge_acks_sent += 1;
+    expected.pure_acks_sent      += 1;
+    EXPECT_EQ(tcp_->counters(), expected);
+}
+
+TEST_P(TcpChallenge, TheBoundIsTheLargestWindowOnceMoreWasAcknowledged) {
+    peer_.set_window(1000);  // throughout: the largest window the peer ever offered is 1000
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_NO_FATAL_FAILURE(send_acknowledged(*c, peer_, 3000));
+    const TcpSequence next = peer_.snd_nxt();
+    receive(data_at(peer_, next, back(c->acknowledged(), 1000)));
+    EXPECT_EQ(c->unread().size(), 10U) << "at the bound: taken";
+    EXPECT_EQ(tcp_->counters().dropped_old_ack, 0U);
+    std::ignore = collect();
+    receive(data_at(peer_, next + 10U, back(c->acknowledged(), 1001)));
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "one challenge";
+    expect_pure_ack(frames[0], c->committed(), next + 10U);
+    EXPECT_EQ(c->unread().size(), 10U) << "one below it: dropped whole";
+    EXPECT_EQ(tcp_->counters().dropped_old_ack, 1U);
+    EXPECT_EQ(tcp_->counters().challenge_acks_sent, 1U);
+}
+
+TEST_P(TcpChallenge, TheAckBoundHoldsAcrossTheTopOfTheSequenceSpace) {
+    force_next_isn(TcpSequence{0xfffffff0U});
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_NO_FATAL_FAILURE(send_acknowledged(*c, peer_, 3000));
+    ASSERT_EQ(c->acknowledged().value, 0xba9U) << "0xfffffff1 + 3000: SND.UNA wrapped";
+    const TcpSequence bound = back(c->acknowledged(), 3000);
+    ASSERT_EQ(bound.value, 0xfffffff1U);
+    const TcpSequence next = peer_.snd_nxt();
+    receive(data_at(peer_, next, bound));
+    EXPECT_EQ(c->unread().size(), 10U) << "at the bound, across zero: taken";
+    EXPECT_EQ(tcp_->counters().dropped_old_ack, 0U);
+    std::ignore = collect();
+    receive(data_at(peer_, next + 10U, back(bound, 1)));
+    const auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "one challenge";
+    expect_pure_ack(frames[0], c->committed(), next + 10U);
+    EXPECT_EQ(c->unread().size(), 10U) << "one below it: dropped whole";
+    EXPECT_EQ(tcp_->counters().dropped_old_ack, 1U);
+    EXPECT_EQ(tcp_->counters().challenge_acks_sent, 1U);
+}
+
+TEST_P(TcpChallenge, AnAckOutsideItsBoundsLeavesTsRecentAlone) {
+    peer_.set_timestamps(100);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    const TcpSequence next = peer_.snd_nxt();
+    // Newer values at RCV.NXT, which is Last.ACK.sent: a segment that passed the ACK's checks would take them.
+    peer_.set_timestamps(200);
+    receive(data_at(peer_, next, back(c->acknowledged(), 1)));  // too old
+    peer_.set_timestamps(300);
+    receive(data_at(peer_, next, c->committed() + 1U));  // of what was never sent
+    EXPECT_EQ(tcp_->counters().dropped_old_ack, 1U);
+    EXPECT_EQ(tcp_->counters().dropped_unexpected, 1U);
+    auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "the first challenge; the limiter holds the second back";
+    EXPECT_EQ(ts_echo_of(frames[0]), 100U);
+    ASSERT_EQ(c->send(payload(1)), 1U);
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U);
+    EXPECT_EQ(ts_echo_of(frames[0]), 100U) << "the stack's next segment: neither segment wrote TS.Recent";
+}
+
+TEST_P(TcpChallenge, ASegmentAboveAGapWithAnAckBelowTheBoundIsNotHeldAndARstAtItsEndIsChallenged) {
+    peer_.set_sack_permitted(true);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(c->sack());
+    const TcpSequence next = peer_.snd_nxt();
+    // Held, its end would be a position at which a RST resets: the ACK's check comes before the hold.
+    receive(
+        peer_.segment(TcpFlags{TcpFlag::Psh, TcpFlag::Ack}, payload(100), next + 1000U, back(c->acknowledged(), 1)));
+    EXPECT_EQ(c->out_of_order_segments(), 0U) << "nothing held";
+    EXPECT_EQ(tcp_->counters().dropped_old_ack, 1U);
+    EXPECT_EQ(tcp_->counters().out_of_order_held, 0U);
+    auto frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "challenged";
+    expect_pure_ack(frames[0], c->committed(), next);
+    EXPECT_EQ(frames[0].tcp->data_offset, 20U) << "no block reported";
+    advance(500ms);  // past the interval, so the limiter lets the next challenge go
+    receive(rst_at(peer_, next + 1100U));
+    EXPECT_EQ(c->state(), State::Established);
+    EXPECT_FALSE(c->events().reset());
+    frames = collect();
+    ASSERT_EQ(frames.size(), 1U) << "challenged, as a RST at no exact position";
+    expect_pure_ack(frames[0], c->committed(), next);
+    EXPECT_EQ(tcp_->counters().dropped_reset_challenged, 1U);
+    EXPECT_EQ(tcp_->counters().challenge_acks_sent, 2U);
+    EXPECT_EQ(tcp_->counters().connections_reset, 0U);
 }

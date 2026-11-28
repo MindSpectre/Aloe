@@ -28,12 +28,12 @@ namespace aloe::tcp::detail {
 
     /**
      * @brief What a datagram does to a connection: the header and checksum, the lookup, the handshake, RFC 9293's
-     * order on a synchronized connection (PAWS, the sequence check, RST, SYN, ACK, payload, FIN) with RFC 5961's
-     * positions for a RST, its rule for a SYN and their challenge ACKs, the answers that go through the connection's
-     * limiter, the hold of a segment above a gap and the join when it fills, and `consume`. It owns no state; it drives
-     * the block's receive side, reassembly queue and limiter, hands an acceptable ACK to the AckProcessor, leaves every
-     * change of the connection's state to the Lifecycle and sends through the Transmitter, in place, as each step of
-     * the procedure asks.
+     * order on a synchronized connection (in SynReceived the ACK of the SYN-ACK first, then PAWS, the sequence check,
+     * RST, SYN, ACK, payload, FIN) with RFC 5961's positions for a RST, its rules for a SYN and for an ACK and their
+     * challenge ACKs, the answers that go through the connection's limiter, the hold of a segment above a gap and the
+     * join when it fills, and `consume`. It owns no state; it drives the block's receive side, reassembly queue and
+     * limiter, hands an acceptable ACK to the AckProcessor, leaves every change of the connection's state to the
+     * Lifecycle and sends through the Transmitter, in place, as each step of the procedure asks.
      */
     template <typename Ip, typename CongestionControl>
     class Receiver {
@@ -304,6 +304,19 @@ namespace aloe::tcp::detail {
             // that carries both is a RST, as Linux's tcp_validate_incoming takes its RST bit first at every step.
             const bool syn         = !rst && segment.header.flags.has(wire::TcpFlag::Syn);
             const Sequence arrived = segment.header.sequence;  // SEG.SEQ before any trim: TS.Recent, a RST's place
+
+            // 0. In SynReceived, an ACK that does not acknowledge the SYN-ACK, whatever else the segment carries, a SYN
+            // at the first SYN's number included: RFC 9293 3.5.2's reset for a non-synchronized state,
+            // `<SEQ=SEG.ACK><CTL=RST>`, and the connection stays as it was, its SYN-ACK's timer running on. Before PAWS
+            // and the sequence check, as Linux's tcp_check_req hands such a segment back to the listener, which resets
+            // it, before it checks the window. Not limited, as no RST is. A RST is exempt: step 3 judges it.
+            if (block.state == State::SynReceived && !rst && segment.header.flags.has(wire::TcpFlag::Ack) &&
+                segment.header.acknowledgement != block.send.nxt) {
+                ++context_.counters.dropped_unexpected;
+                transmitter_.reply_reset(datagram.source, segment.header, segment.length());
+                return;
+            }
+
             if (segment.payload_length > 0) {
                 block.sack.forget_duplicate();  // a duplicate not yet reported is not reported late (`tcp_data_queue`)
             }
@@ -365,9 +378,15 @@ namespace aloe::tcp::detail {
                 }
                 assert(!segment.header.flags.has(wire::TcpFlag::Syn) && "the trim took the SYN at the first number");
             }
-            block.timestamps.update(segment.ts_value, arrived, context_.now);  // acceptable, trimmed or not
 
-            // 5. ACK, whatever the segment's place: one above a gap moves the send side like any other.
+            // 5. ACK, whatever the segment's place: one above a gap is held only once its ACK passed, so the end of
+            // what is held, where a RST resets, is never set by a segment whose ACK was too old or of what was never
+            // sent. TS.Recent moves only for a segment that passed these checks, as Linux's tcp_ack replaces
+            // `ts_recent` after its tests for an ACK too old and of unsent data, an old ACK inside the bound included.
+            if (!accept_ack(block, segment)) {
+                return;
+            }
+            block.timestamps.update(segment.ts_value, arrived, context_.now);  // acceptable, trimmed or not
             if (!receive_ack(block, segment)) {
                 return;
             }
@@ -473,32 +492,46 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * The ACK. In SynReceived it completes the passive open. What an acceptable ACK does to the send side is the
-         * AckProcessor's (`AckProcessor::on_ack`); this step publishes what it reports, `Acked` and `Writable`, and
-         * moves the close on once our FIN is acknowledged. False when the segment goes no further: no ACK, an ACK of
-         * what was never sent, or a connection that finished.
+         * The ACK's checks, with SND.UNA as the segment finds it (RFC 5961 5.2, as Linux's `tcp_ack`). A segment with
+         * no ACK flag is dropped. One whose ACK is above SND.NXT, of what was never sent, or before
+         * `SendSequence::ack_floor`, too old to be the peer's, is dropped whole, payload and FIN included, counted and
+         * challenged; the bound is read only for an ACK below SND.UNA, so an in-order ACK pays one comparison. False
+         * when the segment goes no further. In SynReceived step 0 reset every ACK but SND.NXT, which passes.
          */
-        [[nodiscard]] bool receive_ack(ControlBlock& block, const Segment& segment) noexcept {
+        [[nodiscard]] bool accept_ack(ControlBlock& block, const Segment& segment) noexcept {
             const wire::TcpHeader& header = segment.header;
             if (!header.flags.has(wire::TcpFlag::Ack)) {
                 ++context_.counters.dropped_unexpected;
                 return false;
             }
             const Sequence ack = header.acknowledgement;
+            if (ack.after(block.send.nxt)) {
+                ++context_.counters.dropped_unexpected;  // acknowledges what was never sent
+                challenge(block);
+                return false;
+            }
+            if (ack.before(block.send.una) && ack.before(block.send.ack_floor())) {
+                ++context_.counters.dropped_old_ack;
+                challenge(block);
+                return false;
+            }
+            return true;
+        }
+
+        /**
+         * An ACK that passed `accept_ack`. In SynReceived it completes the passive open. What an acceptable ACK does to
+         * the send side is the AckProcessor's (`AckProcessor::on_ack`); this step publishes what it reports, `Acked`
+         * and `Writable`, and moves the close on once our FIN is acknowledged. False when the connection finished.
+         */
+        [[nodiscard]] bool receive_ack(ControlBlock& block, const Segment& segment) noexcept {
+            const wire::TcpHeader& header = segment.header;
+            const Sequence ack            = header.acknowledgement;
             if (block.state == State::SynReceived) {
-                if (ack != block.send.nxt) {
-                    ++context_.counters.dropped_unexpected;
-                    return false;
-                }
+                assert(ack == block.send.nxt && "step 0 reset every other ACK in SynReceived");
                 // Frees the SYN-ACK's entry: a sample, and the timer stopped with the queue empty.
                 acks_.handshake_acknowledged(block, ack, segment.ts_echo);
                 lifecycle_.accepted(block);
                 // The same segment may carry data or a FIN: keep going.
-            }
-            if (ack.after(block.send.nxt)) {
-                ++context_.counters.dropped_unexpected;  // acknowledges what was never sent
-                ack_now(block, Edge::Restate);
-                return false;
             }
             const typename AckProcessor::Outcome outcome =
                 acks_.on_ack(block, header, segment.payload_length, segment.ts_echo, segment.sack);

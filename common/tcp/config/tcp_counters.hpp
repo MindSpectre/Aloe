@@ -91,6 +91,11 @@ namespace aloe::tcp {
         /// they passed PAWS: each drew a challenge ACK, or was held back by the limiter, and moved no other drop
         /// counter.
         std::uint64_t dropped_syn_challenged   = 0;
+        /// Segments whose ACK was below SND.UNA less the smaller of the largest window the peer offered and what it
+        /// has acknowledged since the connection became Established (RFC 5961 5.2): dropped whole, payload and FIN
+        /// included, and each drew a challenge ACK, or was held back by the limiter. An ACK above SND.NXT stays in
+        /// `dropped_unexpected`.
+        std::uint64_t dropped_old_ack          = 0;
 
         std::uint64_t send_refused        = 0;
         std::uint64_t send_unresolved     = 0;

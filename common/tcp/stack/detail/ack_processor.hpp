@@ -67,8 +67,8 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * An ACK on a synchronized connection, of nothing past SND.NXT, in the order of Linux's `tcp_ack` and
-         * `tcp_fastretrans_alert`:
+         * An ACK on a synchronized connection, of nothing past SND.NXT and nothing before `SendSequence::ack_floor`,
+         * in the order of Linux's `tcp_ack` and `tcp_fastretrans_alert`:
          *
          * 1. The SACK option's blocks, `sack`, eight bytes each and empty without one, read into the scoreboard
          *    (`read_blocks`), on an ACK below SND.UNA too; each entry they newly report advances RACK. A believed
@@ -269,24 +269,22 @@ namespace aloe::tcp::detail {
 
         /**
          * The first step of an acceptable ACK: its SACK option read into the scoreboard. Nothing on a connection that
-         * does not use SACK, with no option, or for an ACK older than SND.UNA by more than the largest window the peer
-         * offered (`tcp_sacktag_write_queue`). The duplicate report is recognised first, from the option alone, kept
-         * for the tail probe's verdict, and counted when believed (`RetransmissionQueue::duplicate_report`); then each
-         * other block that is valid marks the entries it covers whole, lowest first, as Linux sorts them, so lower data
-         * reported in the same option is not taken for reordering. A believed duplicate report that is valid and names
-         * a resent entry a block reported shows reordering. Blocks a correct peer never sends mark nothing and are not
-         * an error.
+         * does not use SACK or with no option. An ACK older than SND.UNA by more than the largest window the peer
+         * offered, whose blocks `tcp_sacktag_write_queue` ignores, never reaches it: the Receiver drops every ACK
+         * before `SendSequence::ack_floor`, which is never further back. The duplicate report is recognised first, from
+         * the option alone, kept for the tail probe's verdict, and counted when believed
+         * (`RetransmissionQueue::duplicate_report`); then each other block that is valid marks the entries it covers
+         * whole, lowest first, as Linux sorts them, so lower data reported in the same option is not taken for
+         * reordering. A believed duplicate report that is valid and names a resent entry a block reported shows
+         * reordering. Blocks a correct peer never sends mark nothing and are not an error.
          *
-         * Two departures from Linux. A duplicate report on an ACK too old for its blocks is ignored with them, where
-         * `tcp_sacktag_write_queue` runs `tcp_check_dsack` before it returns for such an ACK, so Linux still counts the
-         * report and may take it off `undo_retrans`. And a duplicate report of the highest entry reported, when that
-         * entry was resent, shows reordering as one of a lower entry does, where `tcp_check_sack_reordering` returns
-         * for a sequence at or above the highest reported (`tcp_highest_sack_seq`) and counts reordering only below it.
+         * One departure from Linux: a duplicate report of the highest entry reported, when that entry was resent, shows
+         * reordering as one of a lower entry does, where `tcp_check_sack_reordering` returns for a sequence at or above
+         * the highest reported (`tcp_highest_sack_seq`) and counts reordering only below it.
          */
         [[nodiscard]] Blocks
         read_blocks(ControlBlock& block, const Sequence ack, const std::span<const std::byte> sack) noexcept {
-            if (!block.sack.in_use() || sack.empty() ||
-                ack.before(Sequence{block.send.una.value - block.send.max_wnd})) {
+            if (!block.sack.in_use() || sack.empty()) {
                 return {};
             }
             ++context_.counters.sack_acks_received;
@@ -514,8 +512,9 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * SND.UNA moves to `ack`: the queue frees what it covers (`Transmitter::acknowledge`; a partial entry stays
-         * whole), then the sample and the timer (`on_acknowledged`). On a connection that uses SACK each entry it
+         * SND.UNA moves to `ack`, here alone, and the sum of its advances with it, which the bound on an old ACK reads
+         * (`SendSequence::ack_floor`): the queue frees what it covers (`Transmitter::acknowledge`; a partial entry
+         * stays whole), then the sample and the timer (`on_acknowledged`). On a connection that uses SACK each entry it
          * frees that no block reported advances RACK, as Linux's `tcp_clean_rtx_queue` calls `tcp_rack_advance`
          * unless `tcp_skb_spurious_retrans`: a resend is skipped when the ACK's echo is older than the resend
          * (`echo_before`). One such entry never resent that lies below `highest`, the highest sequence reported
@@ -541,8 +540,9 @@ namespace aloe::tcp::detail {
                     cumulative.reordering =
                         cumulative.reordering || (!resent && highest && entry.first.before(*highest));
                 });
-            block.send.una = ack;
-            cumulative.rtt = on_acknowledged(block, cumulative.freed, echo);
+            block.send.acknowledged += static_cast<std::uint32_t>(ack - block.send.una);  // Linux's bytes_acked
+            block.send.una           = ack;
+            cumulative.rtt           = on_acknowledged(block, cumulative.freed, echo);
             return cumulative;
         }
 
