@@ -72,6 +72,12 @@ TEST(TcpIsn, TheClockTermWrapsWithTheSequenceSpace) {
     const std::uint32_t later  = numbers(generator, flow, t0 + 275s).isn.value;
     const auto units           = static_cast<std::uint32_t>(std::uint64_t{275'000'000'000} >> 6U);
     EXPECT_EQ(static_cast<std::uint32_t>(later - before), units) << "275 s is past 2^32 units of 64 ns";
+    // The nanoseconds are shifted in 64 bits, then truncated. At 275 s the order does not show, since 275e9 >> 32 is
+    // 64, a multiple of 64; at 300 s truncating first would give 56988384.
+    const std::uint32_t further = numbers(generator, flow, t0 + 300s).isn.value;
+    const auto more_units       = static_cast<std::uint32_t>(std::uint64_t{300'000'000'000} >> 6U);
+    EXPECT_EQ(more_units, 392532704U);
+    EXPECT_EQ(static_cast<std::uint32_t>(further - before), more_units) << "shifted before it is truncated";
 }
 
 TEST(TcpIsn, TheOffsetIsTheSameForOneFlowAtAnyStamp) {
