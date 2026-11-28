@@ -1051,9 +1051,9 @@ The first checks add little to that path: an in-order segment makes the comparis
 which the edge test already makes, and its RST and SYN tests are flag tests; an in-order ACK adds one addition, to the
 sum of SND.UNA's advances, since the bound on an old ACK is read only for an ACK below SND.UNA; a send adds nothing; and
 the limiter is read only by the answers to a segment that failed a check. Measured against `main` at its base, the
-64-byte tick at level 0, cross-core, is 490 ns at p50 on both sides; at p99 the headline runs gave 770 against 720 ns,
-which neither the breakdown runs, where the `tcp` leg is 240 against 250 ns at p99, nor runs of that configuration alone
-showed. The benchmark page records the runs.
+64-byte tick at level 0, cross-core, is 490 ns at p50 on both sides and 720 against 740 ns at p99, the `tcp` leg 220
+against 230 ns at p99. A first rerun's headline runs had given 770 against 720 ns at p99, which neither its breakdown
+runs nor a second rerun reproduced. The benchmark page records both.
 
 **A silent peer holds what the caps allow.** A peer that never acknowledges keeps a connection's entries, and
 their packets, until `data_retries` or the user timeout ends the connection. `send_segments` bounds what one
@@ -1359,9 +1359,9 @@ it, is refused as out of the window and its answer limited, where Linux accepts 
 brick makes no deployment or latency claim yet: the [tick-to-trade benchmark](../benchmarks/tick-to-trade.md) has a
 recorded baseline; its reruns for loss recovery with SACK found the 64-byte tick 40 ns slower at p50 than before it,
 after the cleanup of the tick path too, as the note on what an in-order ACK and a send cost says, and winning that back
-is work of its own; its rerun for the first checks found the p50 unchanged and the p99 50 ns higher in the headline runs
-only, not in its breakdown or single-configuration runs, for a cause not yet found; its reruns with reliable send and
-with the receive side alone are owed, as its page says.
+is work of its own; its reruns for the first checks found the p50 unchanged, and the p99 too in the second, where the
+first's 50 ns at p99 in its headline runs did not recur; its reruns with reliable send and with the receive side alone
+are owed, as its page says.
 
 **What hardening is left.** The brick is hardened against a peer off the path: its initial sequence numbers and
 timestamp offsets cannot be predicted, a RST resets only at an exact position, a SYN never ends a synchronized

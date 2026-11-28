@@ -37,8 +37,8 @@ the end of phase 2, and the stack makes no deployment or latency claim yet.
 - **Step 6, its first part landed:** the hardening (keyed initial sequence
   numbers, RFC 5961's checks with limited challenge ACKs, the edge cases of the
   handshake and the window) and ARP from a static table by default. The
-  benchmark's 64-byte tick kept its p50; its p99 came out 50 ns higher in the
-  headline runs and level in the breakdown runs, for a cause not yet found.
+  benchmark's 64-byte tick kept its p50 and, in a second rerun, its p99: the
+  50 ns at p99 the first rerun's headline runs gave did not recur.
 - **Next:** the rest of step 6, the life cycle (TIME_WAIT, keepalive, the
   FIN-WAIT-2 timer), ICMP and path MTU, and the phase's close, where the API
   freezes. TLS and HTTP/1.1 with WebSocket follow.

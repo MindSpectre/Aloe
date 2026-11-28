@@ -132,11 +132,11 @@ does; the scenario scripts are Aloe's own. The steps, in order:
    its neighbours from a static table that nothing changes, and resolves nothing on the wire unless the configuration
    switches learning on; a learned table is fixed, no frame creates an entry in it, no address takes another's place,
    and every entry expires. On the tick-to-trade benchmark the 64-byte tick at level 0, cross-core, kept its p50 against
-   `main` at the step's base, 490 ns both; its p99 came out 50 ns higher in the headline runs and level in the breakdown
-   and single-configuration runs, as its page records. The net and TCP tap suites both changed, and their runs wait for
-   a machine with root. Three pull requests remain: the life cycle (TIME_WAIT, what `release()` means during a close,
-   the FIN-WAIT-2 timer, keepalive), ICMP with path MTU, and the phase's close. The public API freezes as v1 at the end
-   of this step.
+   `main` at the step's base, 490 ns both, and in a second rerun its p99 too, 720 against 740 ns: the 50 ns at p99 the
+   first rerun's headline runs gave did not recur, as its page records. The net and TCP tap suites both changed, and
+   their runs wait for a machine with root. Three pull requests remain: the life cycle (TIME_WAIT, what `release()`
+   means during a close, the FIN-WAIT-2 timer, keepalive), ICMP with path MTU, and the phase's close. The public API
+   freezes as v1 at the end of this step.
 
 Left for after this phase, because a client does not need them yet: CUBIC and pacing, since orders are small;
 SYN cookies and a keyed flow-table hash, which defend a server that accepts connections from strangers.
