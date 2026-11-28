@@ -106,7 +106,9 @@ namespace {
         aloe::frames::TcpPeer peer_{aloe::testing::peer_spec(), TcpSequence{aloe::testing::tcp_peer_isn}};
 
         StreamsTest() {
-            ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_);
+            EXPECT_EQ(ip_.learn(aloe::testing::harness_ip, aloe::testing::harness_mac, now_),
+                      aloe::net::ArpCache::Taught::Created)
+                << "the harness's seed";
         }
 
         /// The receive half of a step: inject nothing or `frame`, process IP and TCP, then the first wake.

@@ -43,7 +43,9 @@ namespace aloe::scenario {
                               .arp_reachable = config.arp_lifetime,
                               .arp_expire    = 2 * config.arp_lifetime}},
           wheel_{config.resolution, core::TimePoint{}}, tcp_{ip_, wheel_, config.tcp}, burst_(burst_size) {
-        ip_.learn(config.peer_address, config.peer_mac, core::TimePoint{});
+        if (ip_.learn(config.peer_address, config.peer_mac, core::TimePoint{}) != net::ArpCache::Taught::Created) {
+            throw std::runtime_error{"the harness could not seed the peer's ARP entry"};
+        }
     }
 
     template <typename CongestionControl>

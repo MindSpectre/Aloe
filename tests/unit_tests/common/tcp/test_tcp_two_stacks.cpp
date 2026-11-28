@@ -24,6 +24,7 @@ namespace {
     using Ipv4      = aloe::net::Ipv4<aloe::fabric::Port>;
     using Config    = aloe::tcp::TcpConfig;
     using TimePoint = aloe::core::TimePoint;
+    using Taught    = aloe::net::ArpCache::Taught;
     using aloe::fabric::Action;
     using aloe::fabric::Egress;
     using aloe::fabric::Verdict;
@@ -208,8 +209,8 @@ namespace {
         /// Learns both MACs, listens, connects, and ticks until both ends are Established. Null on failure. Over a path
         /// `one_way` late each way the server accepts at the 16th tick.
         [[nodiscard]] typename Tcp::ConnectionType* establish(typename Tcp::ConnectionType*& client) {
-            server_.ip.learn(client_ip, client_mac, now_);
-            client_.ip.learn(server_ip, server_mac, now_);
+            EXPECT_EQ(server_.ip.learn(client_ip, client_mac, now_), Taught::Created);
+            EXPECT_EQ(client_.ip.learn(server_ip, server_mac, now_), Taught::Created);
             if (!server_.tcp.listen(7).has_value()) {
                 return nullptr;
             }
@@ -256,8 +257,8 @@ namespace {
         [[nodiscard]] bool run_echo(const std::size_t bytes,
                                     const int ticks,
                                     const std::size_t chunk = std::numeric_limits<std::size_t>::max()) {
-            server_.ip.learn(client_ip, client_mac, now_);
-            client_.ip.learn(server_ip, server_mac, now_);
+            EXPECT_EQ(server_.ip.learn(client_ip, client_mac, now_), Taught::Created);
+            EXPECT_EQ(client_.ip.learn(server_ip, server_mac, now_), Taught::Created);
             if (!server_.tcp.listen(7).has_value()) {
                 return false;
             }
@@ -541,8 +542,8 @@ TEST_P(TcpTwoStacks, ALostSynIsRetransmittedAndTheConnectionEstablishes) {
             }
             return std::nullopt;
         }});
-    server_.ip.learn(client_ip, client_mac, now_);
-    client_.ip.learn(server_ip, server_mac, now_);
+    ASSERT_EQ(server_.ip.learn(client_ip, client_mac, now_), Taught::Created);
+    ASSERT_EQ(client_.ip.learn(server_ip, server_mac, now_), Taught::Created);
     ASSERT_TRUE(server_.tcp.listen(7).has_value());
     const auto session = client_.tcp.connect({.address = server_ip, .port = 7}, now_);
     ASSERT_TRUE(session.has_value());

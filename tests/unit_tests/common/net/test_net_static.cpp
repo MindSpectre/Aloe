@@ -33,6 +33,7 @@ namespace {
     using aloe::testing::stack_ip;
     using aloe::testing::stack_mac;
     using aloe::wire::Ipv4Protocol;
+    using Taught = aloe::net::ArpCache::Taught;
 
     constexpr aloe::wire::Ipv4Address stranger{10, 0, 0, 77};  ///< On the subnet, in no static entry.
     constexpr aloe::wire::MacAddress stranger_mac{0x02, 0, 0, 0, 0, 0x77};
@@ -214,7 +215,7 @@ TEST_P(NetStatic, NothingChangesTheStaticTable) {
     for (Ipv4* brick : {&ip_, &learning}) {
         SCOPED_TRACE(brick == &ip_ ? "learning off" : "learning on");
         const std::uint64_t generation = brick->generation();
-        brick->learn(gateway_ip, stranger_mac, now_);
+        EXPECT_EQ(brick->learn(gateway_ip, stranger_mac, now_), Taught::Conflict) << "a static address, another MAC";
         inject_into(*brick, contradicting_reply());
         inject_into(*brick, contradicting_gratuitous_arp());
         inject_into(*brick, contradicting_request_for_us());
@@ -274,7 +275,7 @@ TEST_P(NetStatic, WithLearningOffARequestForOurAddressIsAnswered) {
 }
 
 TEST_P(NetStatic, WithLearningOffLearnDoesNothing) {
-    ip_.learn(stranger, stranger_mac, now_);
+    EXPECT_EQ(ip_.learn(stranger, stranger_mac, now_), Taught::Off) << "nothing stored";
     const auto sent = ip_.send(udp_segment(), udp_to(stranger), now_);
     ASSERT_FALSE(sent.has_value());
     EXPECT_EQ(sent.error(), SendError::NoRoute);

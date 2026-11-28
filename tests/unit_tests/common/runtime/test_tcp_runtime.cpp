@@ -60,7 +60,9 @@ namespace {
         std::list<Shard> more_{};  ///< After the ports they use, so destroyed before them.
 
         TcpRuntime() {
-            shard_.stack().ip().learn(aloe::testing::harness_ip, aloe::testing::harness_mac, start);
+            EXPECT_EQ(shard_.stack().ip().learn(aloe::testing::harness_ip, aloe::testing::harness_mac, start),
+                      aloe::net::ArpCache::Taught::Created)
+                << "the harness's seed";
         }
 
     public:
@@ -206,7 +208,8 @@ TEST_F(TcpRuntime, ZeroWindowReopeningIsAdvertisedInTheSameTick) {
                                                     .prefix = 24, .arp_learning = true
     },
                                               aloe::tcp::TcpConfig{.receive_segments = 1, .receive_window = 1460});
-    tiny.stack().ip().learn(aloe::testing::harness_ip, aloe::testing::harness_mac, start);
+    ASSERT_EQ(tiny.stack().ip().learn(aloe::testing::harness_ip, aloe::testing::harness_mac, start),
+              aloe::net::ArpCache::Taught::Created);
     int echoed = 0;
     {
         const aloe::runtime::ShardContext::Current current{tiny.context()};

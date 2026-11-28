@@ -151,12 +151,16 @@ namespace aloe::net::detail {
             return config_.arp_learning || cache_.is_static(hop);
         }
 
-        /// The program's seed of the learned table: creates the entry when absent, and does nothing with learning off
-        /// or for a static address; a full table refuses it, counted. Appends nothing to `resolved()`.
-        void learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
-            if (cache_.seed(address, mac, now) == ArpCache::Taught::Full) {
+        /// The program's seed of the learned table, and what it did (`ArpCache::seed`): creates the entry when absent,
+        /// and does nothing with learning off or for a static address; a full table refuses it, counted. Appends
+        /// nothing to `resolved()`.
+        [[nodiscard]] ArpCache::Taught
+        learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
+            const ArpCache::Taught taught = cache_.seed(address, mac, now);
+            if (taught == ArpCache::Taught::Full) {
                 ++counters_.arp_table_full;
             }
+            return taught;
         }
 
         /// A resolution another shard reported, taken as a frame's mapping is (`ArpCache::update`): it fills, refreshes

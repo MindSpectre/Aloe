@@ -118,7 +118,7 @@ TEST_F(NetRing, ASentSegmentComesBackThroughTheRingIntoTheUdpList) {
     Ipv4 peer{
         queue_, {.address = peer_ip, .prefix = 24, .arp_learning = true}
     };
-    peer.learn(stack_ip, port_.mac(), now_);
+    ASSERT_EQ(peer.learn(stack_ip, port_.mac(), now_), aloe::net::ArpCache::Taught::Created);
     auto packet = peer.allocate();
     ASSERT_TRUE(packet.has_value());
     const auto payload = aloe::frames::pattern(16);

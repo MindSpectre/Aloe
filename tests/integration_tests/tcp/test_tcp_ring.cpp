@@ -66,7 +66,7 @@ namespace {
         };
 
         TcpRing() {
-            ip_.learn(peer_ip, peer_mac, now_);
+            EXPECT_EQ(ip_.learn(peer_ip, peer_mac, now_), aloe::net::ArpCache::Taught::Created) << "the peer's seed";
         }
 
         /// Flushes, then reads back what the stack put on the ring: its own transmissions, taken apart.

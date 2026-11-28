@@ -26,8 +26,11 @@ here names the asynchronous model, logs, or reads a clock.
   device and transmits the loan, leaving the packet with the caller; `generation()` says when headers built
   earlier may name a stale next hop. `resolve(next_hop, now)`, `learn(address, mac, now)` and
   `apply_resolution(address, mac, now)` are the ways into the ARP cache from outside: the first asks, the second is
-  the program's seed of the learned table, and the third takes a resolution another shard reported. Nothing here
-  blocks, throws after construction, or allocates anything but packets after construction.
+  the program's seed of the learned table, and the third takes a resolution another shard reported. `learn` answers
+  what it did, an `ArpCache::Taught`: `Created` or `Updated` when it stored the mapping, and otherwise `Full` for a
+  new address the learned table has no slot for, `Static` or `Conflict` for an address of the static table, and `Off`
+  with learning off, where a neighbour is named in `static_arp` instead. Nothing here blocks, throws after
+  construction, or allocates anything but packets after construction.
   **Transport access:** `Device` is the template parameter, `queue()` is the shard queue the brick was built
   over (its index, steering, ring and device), and `next_hop(destination)` answers the route question with no
   side effect: the destination on the subnet, the gateway off it, nothing with no gateway, and, with learning off,
@@ -215,7 +218,7 @@ With learning off, the default:
   unanswered. Nothing polls and nothing waits, and since the static table cannot change, a connection that opened
   never meets `NoRoute` afterwards.
 - The constructor refuses a gateway with no static entry: a start that fails instead of every connect failing.
-- `learn` does nothing, and `resolve` answers from the static table alone.
+- `learn` stores nothing and answers `Off`, and `resolve` answers from the static table alone.
 
 For a static address, in both modes:
 

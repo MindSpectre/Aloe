@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include <arp_cache.hpp>
 #include <arp_resolution.hpp>
 #include <detail/ipv4_arp.hpp>
 #include <detail/ipv4_input.hpp>
@@ -154,11 +155,18 @@ namespace aloe::net {
             return arp_.resolve(hop, now);
         }
 
-        /// The program's seed of the learned table: creates the entry when absent, and does nothing with learning off
-        /// or for a static address; a full table refuses a new address and counts `arp_table_full`. Appends nothing to
-        /// `resolved()`. A resolution another shard reported goes to `apply_resolution`, which creates nothing.
-        void learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
-            arp_.learn(address, mac, now);
+        /**
+         * @brief The program's seed of the learned table, and what it did (`ArpCache::seed`).
+         *
+         * `Created` for a new entry and `Updated` for one the table held, either way confirmed at `now` with `mac`.
+         * Otherwise nothing is stored: `Full` when the table has no slot for a new address, counted in
+         * `arp_table_full`; `Static` or `Conflict` for an address of the static table; and `Off` with learning off,
+         * where a neighbour is named in `Ipv4Config::static_arp` instead. Appends nothing to `resolved()`. A
+         * resolution another shard reported goes to `apply_resolution`, which creates nothing.
+         */
+        [[nodiscard]] ArpCache::Taught
+        learn(const wire::Ipv4Address address, const wire::MacAddress mac, const core::TimePoint now) noexcept {
+            return arp_.learn(address, mac, now);
         }
 
         /// A resolution another shard reported: fills, refreshes or changes an entry this brick holds, and otherwise

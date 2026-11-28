@@ -25,7 +25,8 @@ namespace {
     using aloe::testing::harness_mac;
     using aloe::testing::stack_ip;
     using aloe::testing::stack_mac;
-    using Brick = aloe::net::Ipv4<aloe::fabric::Port>;
+    using Brick  = aloe::net::Ipv4<aloe::fabric::Port>;
+    using Taught = aloe::net::ArpCache::Taught;
 
     constexpr aloe::wire::Ipv4Address stranger{10, 0, 0, 77};
     constexpr aloe::wire::MacAddress stranger_mac{0x02, 0, 0, 0, 0, 0x77};
@@ -153,7 +154,7 @@ TEST_P(NetArp, ARequestFromAGroupMacIsNeitherAnsweredNorLearned) {
 // frame is reported and gives the entry its MAC; the entry still expires 120 s after the seed.
 TEST_P(NetArp, ARequestForAnotherHostChangesTheMacOfAnEntryWeHoldAndNotItsLife) {
     const TimePoint seeded = now_;
-    ip_.learn(harness_ip, stranger_mac, seeded);  // a stale MAC
+    ASSERT_EQ(ip_.learn(harness_ip, stranger_mac, seeded), Taught::Created);  // a stale MAC
     now_ += 100s;
     inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, harness_ip, {10, 0, 0, 9}), broadcast));
 
@@ -340,7 +341,7 @@ TEST_P(NetArp, ALookupAtAFullTableIsCountedAndTheSendIsUnresolved) {
     Ipv4 small{queue_, config};  // over the same queue: the fixture's brick stays idle meanwhile
     for (std::uint8_t index = 0; index < 8; ++index) {
         const aloe::wire::Ipv4Address neighbour{10, 0, 0, static_cast<std::uint8_t>(10 + index)};
-        small.learn(neighbour, stranger_mac, now_);
+        ASSERT_EQ(small.learn(neighbour, stranger_mac, now_), Taught::Created);
         ASSERT_EQ(small.resolve(neighbour, now_), stranger_mac);
     }
     ASSERT_EQ(small.counters().arp_table_full, 0);
@@ -378,7 +379,7 @@ TEST_P(NetArp, AMalformedArpFrameIsDropped) {
 }
 
 TEST_P(NetArp, LearnSeedsTheCacheAndReportsNothing) {
-    ip_.learn(gateway_ip, gateway_mac, now_);
+    EXPECT_EQ(ip_.learn(gateway_ip, gateway_mac, now_), Taught::Created);
     EXPECT_TRUE(ip_.resolved().empty());
     EXPECT_EQ(ip_.counters().resolutions, 0);
     EXPECT_EQ(ip_.resolve(gateway_ip, now_), gateway_mac);
@@ -387,7 +388,7 @@ TEST_P(NetArp, LearnSeedsTheCacheAndReportsNothing) {
 
 TEST_P(NetArp, AStaleEntryRefreshesByUnicastWhileStillInUse) {
     // The harness plays the peer: the fabric delivers a unicast frame only to the port that owns the MAC.
-    ip_.learn(harness_ip, harness_mac, now_);
+    ASSERT_EQ(ip_.learn(harness_ip, harness_mac, now_), Taught::Created);
     now_ += 61s;
     EXPECT_EQ(ip_.resolve(harness_ip, now_), harness_mac) << "stale, still usable";
     auto frames = harness_received();
@@ -411,7 +412,7 @@ TEST_P(NetArp, AStaleEntryRefreshesByUnicastWhileStillInUse) {
 // Renamed by the design's rule 1, as amended: a frame nobody asked for "never moves the confirmation stamp", so this
 // one refreshes nothing; it is reported all the same, since a sibling shard may be the one that asked.
 TEST_P(NetArp, AFrameAboutAnEntryWeHoldIsReportedEvenWhenItChangesNothing) {
-    ip_.learn(harness_ip, harness_mac, now_);  // seeded: no event
+    ASSERT_EQ(ip_.learn(harness_ip, harness_mac, now_), Taught::Created);  // seeded: no event
     inject(aloe::frames::arp_frame(aloe::frames::arp_request(harness_mac, harness_ip, stack_ip), broadcast));
     EXPECT_EQ(ip_.resolved().size(), 1) << "every mapping from the wire is reported, so other shards stay fresh";
     std::ignore = harness_received();

@@ -184,7 +184,10 @@ namespace aloe::testing {
               queue_{device, 0, ring_capacity, counters_},
               ip_{queue_, ip_config},
               tcp_{std::make_unique<Tcp>(ip_, wheel_, config)} {
-            ip_.learn(harness_ip, harness_mac, now_);
+            // Every test relies on the harness resolving: a learned entry made here, or a static one already.
+            const net::ArpCache::Taught seeded = ip_.learn(harness_ip, harness_mac, now_);
+            EXPECT_TRUE(seeded == net::ArpCache::Taught::Created || seeded == net::ArpCache::Taught::Static)
+                << "the harness's ARP seed did not take";
         }
 
         /// The next connection the stack opens takes `isn` as its initial sequence number.

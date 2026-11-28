@@ -32,6 +32,7 @@ namespace {
     using Ipv4      = aloe::net::Ipv4<aloe::fabric::Port>;
     using Tcp       = aloe::tcp::Stack<Ipv4>;
     using TimePoint = aloe::core::TimePoint;
+    using Taught    = aloe::net::ArpCache::Taught;
 
     constexpr std::uint16_t queues = 4;
     constexpr std::size_t flows    = 24;
@@ -46,7 +47,7 @@ namespace {
                   port, index, 64, counters
         },
               ip{queue, {.address = stack_ip, .prefix = 24, .arp_learning = true}}, tcp{ip, wheel, {}} {
-            ip.learn(peer_ip, peer_mac, TimePoint{});
+            EXPECT_EQ(ip.learn(peer_ip, peer_mac, TimePoint{}), Taught::Created) << "the peer's seed";
         }
 
         aloe::loop::ShardQueueCounters counters;
@@ -232,7 +233,7 @@ TEST_F(TcpPlacement, AddressesOnlyRssIsUnplaceableOffItsQueue) {
         right_queue, {.address = stack_ip, .prefix = 24, .arp_learning = true}
     };
     aloe::tcp::Stack<aloe::net::Ipv4<aloe::testing::TcpTestDevice>> right{right_ip, wheel, {}};
-    right_ip.learn(peer_ip, peer_mac, now_);
+    ASSERT_EQ(right_ip.learn(peer_ip, peer_mac, now_), Taught::Created);
     EXPECT_TRUE(right.connect({.address = peer_ip, .port = 7}, now_).has_value())
         << "on the picked queue any port does";
 }
@@ -255,7 +256,7 @@ TEST_F(TcpPlacement, DisabledSteeringCannotReachNonzeroQueue) {
         queue0, {.address = stack_ip, .prefix = 24, .arp_learning = true}
     };
     aloe::tcp::Stack<aloe::net::Ipv4<aloe::testing::TcpTestDevice>> on_zero{ip0, wheel, {}};
-    ip0.learn(peer_ip, peer_mac, now_);
+    ASSERT_EQ(ip0.learn(peer_ip, peer_mac, now_), Taught::Created);
     EXPECT_TRUE(on_zero.connect({.address = peer_ip, .port = 7}, now_).has_value());
 }
 
@@ -269,7 +270,7 @@ TEST_F(TcpPlacement, CursorWrapsSkipsListenersAndOccupiedTuplesThenNoPort) {
     Ipv4 ip{
         queue, {.address = {10, 0, 0, 3}, .prefix = 24, .arp_learning = true}
     };
-    ip.learn(peer_ip, peer_mac, now_);
+    ASSERT_EQ(ip.learn(peer_ip, peer_mac, now_), Taught::Created);
     aloe::loop::TimerWheel wheel{1ms, TimePoint{}};
     Tcp tcp{
         ip, wheel, {.ephemeral_first = 40000, .ephemeral_last = 40002}
