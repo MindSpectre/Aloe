@@ -347,19 +347,23 @@ namespace aloe::tcp::detail {
             }
 
             // 4. SYN (RFC 5961 4.2), as it arrived, and before TS.Recent moves as for the RST. Past SynReceived it is
-            // challenged, and in SynReceived the peer's SYN again draws the SYN-ACK again (`answer_syn`). Any other SYN
-            // in SynReceived ends the half-open connection: it is answered with RFC 793's reset for a segment with no
-            // connection, which the trim leaves right since it keeps SEG.SEQ + SEG.LEN, and the slot is freed as a RST
-            // frees it, in silence and counted in `handshakes_failed`, as Linux's tcp_check_req takes a RST and a SYN
-            // to one place, `embryonic_reset`. Linux first takes the SYN off a segment at the first SYN's number, so a
-            // SYN with ACK there that carries payload or a FIN goes on as the handshake's ACK; here it is reset, as a
-            // SYN-ACK in SynReceived belongs to a simultaneous open, which the brick does not make.
+            // challenged, and in SynReceived the peer's SYN again draws the SYN-ACK again (`answer_syn`). In
+            // SynReceived a SYN with ACK at the first SYN's number, which passed the check with payload or a FIN, lost
+            // its SYN to the trim (RFC 9293 3.10.7.4) and goes on as the handshake's ACK, as Linux's tcp_check_req
+            // clears the SYN of a segment at `rcv_isn`. A SYN at any other number in SynReceived ends the half-open
+            // connection: it is answered with RFC 793's reset for a segment with no connection, which the trim leaves
+            // right since it keeps SEG.SEQ + SEG.LEN, and the slot is freed as a RST frees it, in silence and counted
+            // in `handshakes_failed`, as tcp_check_req takes a RST and a SYN to one place, `embryonic_reset`.
             if (syn) {
-                if (!answer_syn(block, segment, arrived)) {
+                if (answer_syn(block, segment, arrived)) {
+                    return;
+                }
+                if (!at_first_syn(block, arrived)) {
                     transmitter_.reply_reset(datagram.source, segment.header, segment.length());
                     lifecycle_.peer_reset(block);
+                    return;
                 }
-                return;
+                assert(!segment.header.flags.has(wire::TcpFlag::Syn) && "the trim took the SYN at the first number");
             }
             block.timestamps.update(segment.ts_value, arrived, context_.now);  // acceptable, trimmed or not
 
@@ -797,24 +801,38 @@ namespace aloe::tcp::detail {
          * (`challenge_syn`). In SynReceived the peer's SYN again, at its first number with no ACK, draws the SYN-ACK
          * again from its entry, through the limiter, as Linux's tcp_check_req resends it for a retransmitted SYN; the
          * entry is marked lost so a resend that waits for its packet leaves at the flush. False for any other SYN in
-         * SynReceived, which is the caller's: the sequence check answers one it refused, and one that passed it ends
-         * the half-open connection.
+         * SynReceived, which is the caller's: the sequence check answers one it refused, and of one that passed it the
+         * SYN step takes one with ACK at the first SYN's number as the handshake's ACK and resets any other.
          */
         [[nodiscard]] bool answer_syn(ControlBlock& block, const Segment& segment, const Sequence arrived) noexcept {
             if (block.state != State::SynReceived) {
                 challenge_syn(block);
                 return true;
             }
-            if (segment.header.flags.has(wire::TcpFlag::Ack) || arrived + 1U != block.receive.next()) {
+            if (segment.header.flags.has(wire::TcpFlag::Ack) || !at_first_syn(block, arrived)) {
                 return false;
             }
-            if (!block.answers.allow(context_.now, context_.config.challenge_ack_interval)) {
-                ++context_.counters.acks_rate_limited;
+            if (may_answer(block)) {
+                transmitter_.mark_head_lost(block);
+                std::ignore = transmitter_.resend(block, block.queue.head());
+            }
+            return true;
+        }
+
+        /// In SynReceived, whether `arrived`, a SEG.SEQ before any trim, is the number of the peer's first SYN: RCV.NXT
+        /// stands one past it until the handshake completes.
+        [[nodiscard]] static bool at_first_syn(const ControlBlock& block, const Sequence arrived) noexcept {
+            return block.state == State::SynReceived && arrived + 1U == block.receive.next();
+        }
+
+        /// The connection's limiter at the context's stamp: true, with the stamp taken, when an answer may go; counted
+        /// as held back otherwise. The one place an answer asks it.
+        [[nodiscard]] bool may_answer(ControlBlock& block) noexcept {
+            if (block.answers.allow(context_.now, context_.config.challenge_ack_interval)) {
                 return true;
             }
-            transmitter_.mark_head_lost(block);
-            std::ignore = transmitter_.resend(block, block.queue.head());
-            return true;
+            ++context_.counters.acks_rate_limited;
+            return false;
         }
 
         /// The ACK that answers a refused segment: through the limiter when the segment occupies no sequence space or
@@ -831,8 +849,7 @@ namespace aloe::tcp::detail {
         /// context's stamp; counted as held back otherwise. True when it was sent or left for the flush: a refused send
         /// keeps the stamp.
         [[nodiscard]] bool answer_through_limiter(ControlBlock& block) noexcept {
-            if (!block.answers.allow(context_.now, context_.config.challenge_ack_interval)) {
-                ++context_.counters.acks_rate_limited;
+            if (!may_answer(block)) {
                 return false;
             }
             ack_now(block, Edge::Restate);
