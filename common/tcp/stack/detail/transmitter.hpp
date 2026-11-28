@@ -1419,8 +1419,10 @@ namespace aloe::tcp::detail {
          * (`AckProcessor::update_probing`): the connection stays open while the peer answers and ends after
          * `data_retries` such expiries in a row with no acceptable ACK between them, and the retry count stands where
          * it stood, so they bring it no nearer to the cap once the window opens. A run's first expiry, which may set
-         * the policy's target again, is the first since the last ACK of new data, and at a closed window the first
-         * since the last acceptable ACK. Unless given up, the expiry marks what it holds lost (`mark_timeout`), puts a
+         * the policy's target again, is one with no expiry at an open window since the last ACK of new data, as Linux's
+         * `tcp_enter_loss` reads `!icsk_retransmits`, which its closed-window branch never moves: the first at an open
+         * window, every one at a closed window until then. Unless given up, the expiry marks what it holds lost
+         * (`mark_timeout`), puts a
          * synchronized connection in the loss state (`LossRecovery::on_timeout`), where the policy's window restarts at
          * what is in flight after the marking plus one segment, and resends the head, one segment and no more, as
          * Linux's `tcp_retransmit_timer` does, at a closed window too; the other entries marked leave by the resend
@@ -1456,11 +1458,10 @@ namespace aloe::tcp::detail {
                 if (!block.probe.unanswered(context_.config.data_retries)) {
                     return TimerExpiry::TimedOut;
                 }
-                // The first since the last acceptable ACK, so each expiry the peer answers is a run's first. Linux's
-                // `tcp_enter_loss` reads `icsk_retransmits`, which this branch never moves: it sets the target again
-                // at every expiry here, answered or not, unless an expiry at an open window came since the last ACK
-                // of new data, and then at none.
-                first = block.probe.out() == 1;
+                // Linux's `!icsk_retransmits` in `tcp_enter_loss`: this branch never moves the retry count, so every
+                // expiry here is a run's first, answered or not, unless one at an open window came since the last ACK
+                // of new data.
+                first = block.retransmit_count == 0;
             } else {
                 if (block.retransmit_count >= (handshake ? context_.config.retries : context_.config.data_retries)) {
                     return TimerExpiry::TimedOut;
