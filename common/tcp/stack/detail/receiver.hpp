@@ -29,7 +29,8 @@ namespace aloe::tcp::detail {
     /**
      * @brief What a datagram does to a connection: the header and checksum, the lookup, the handshake, RFC 9293's
      * order on a synchronized connection (in SynReceived the ACK of the SYN-ACK first, then PAWS, the sequence check,
-     * RST, SYN, ACK, payload, FIN) with RFC 5961's positions for a RST, its rules for a SYN and for an ACK and their
+     * RST, SYN, ACK, payload, FIN, a segment at RCV.NXT with no room for its payload going as far as its ACK before
+     * the payload is refused) with RFC 5961's positions for a RST, its rules for a SYN and for an ACK and their
      * challenge ACKs, the answers that go through the connection's limiter, the hold of a segment above a gap and the
      * join when it fills, and `consume`. It owns no state; it drives the block's receive side, reassembly queue and
      * limiter, hands an acceptable ACK to the AckProcessor, leaves every change of the connection's state to the
@@ -159,8 +160,12 @@ namespace aloe::tcp::detail {
             Refused,   ///< It goes no further: dropped, counted and answered (`answer_refused`), a RST in silence,
                        ///< a SYN as `answer_syn` says; or a RST one back after the peer's FIN, which reset the
                        ///< connection.
-            InOrder,   ///< At RCV.NXT, trimmed to it, or occupying no sequence space inside the window.
+            InOrder,   ///< At RCV.NXT, trimmed to it, with its payload inside the window and a FIN at most one past
+                       ///< the edge; or occupying no sequence space from RCV.NXT to the offered edge, the edge itself
+                       ///< included.
             AboveGap,  ///< Payload or a FIN above RCV.NXT, inside the window.
+            NoRoom,    ///< At RCV.NXT, with payload the window does not cover: its RST, SYN and ACK are processed and
+                       ///< its payload refused.
         };
 
         /// What the receive path parsed from one datagram.
@@ -340,7 +345,8 @@ namespace aloe::tcp::detail {
                 return;
             }
 
-            // 2. Sequence check against [rcv_nxt, the offered edge).
+            // 2. The sequence check against RCV.NXT and the offered edge: refused, in order, above a gap, or at RCV.NXT
+            // with no room for its payload, which goes on to the RST, SYN and ACK steps and is refused at step 6.
             const Sequenced sequenced = accept_sequence(block, segment);
             if (sequenced == Sequenced::Refused) {
                 return;
@@ -395,7 +401,15 @@ namespace aloe::tcp::detail {
                 return;
             }
 
-            // 6. Payload.
+            // 6. Payload. A segment with no room has had its ACK read, and its payload is refused here, counted as out
+            // of the window and answered at once with the edge restated: it carries data, so never through the limiter
+            // (`answer_refused`). The FIN behind it is not taken.
+            if (sequenced == Sequenced::NoRoom) {
+                assert(segment.payload_length > 0 && "only payload past the edge leaves a segment at RCV.NXT no room");
+                ++context_.counters.dropped_out_of_window;
+                answer_refused(block, segment);
+                return;
+            }
             if (segment.payload_length > 0 && !receive_payload(block, datagram, segment)) {
                 return;
             }
@@ -413,25 +427,38 @@ namespace aloe::tcp::detail {
         }
 
         /**
-         * The sequence check against `[rcv_nxt, offered edge)`. A segment entirely before RCV.NXT or past the edge is
-         * dropped and answered with an ACK that restates the edge (`answer_refused`), unless it is a RST, which is
-         * dropped in silence except at RCV.NXT - 1 after the peer's FIN, where it resets, or a SYN, which `answer_syn`
-         * challenges past SynReceived or, the peer's SYN again in SynReceived, answers with the SYN-ACK again; the
-         * payload of one before RCV.NXT is reported as a duplicate. One that overlaps RCV.NXT loses its old prefix, a
-         * SYN with it, and reports the prefix's payload as a duplicate; a RST or a SYN reports nothing, since neither
-         * reaches the payload step. One whose payload or FIN starts above RCV.NXT inside the window is above a gap; a
-         * segment that occupies no sequence space never is.
+         * The sequence check against RCV.NXT and the offered edge (RFC 9293 3.10.7.4), with Linux's two allowances
+         * (`tcp_sequence`): a FIN's own number is never held against the edge, since it takes no slot, and a segment
+         * that occupies no sequence space is acceptable at the edge itself, where a peer that filled the window above a
+         * hole sends its ACKs and its RST from. A segment entirely before RCV.NXT, starting past the edge, or above a
+         * gap with payload that ends past the edge is refused: dropped and answered with an ACK that restates the edge
+         * (`answer_refused`), unless it is a RST, which is dropped in silence except at RCV.NXT - 1 after the peer's
+         * FIN, where it resets, or a SYN, which `answer_syn` challenges past SynReceived or, the peer's SYN again in
+         * SynReceived, answers with the SYN-ACK again; the payload of one before RCV.NXT is reported as a duplicate.
+         * One that overlaps RCV.NXT loses its old prefix, a SYN with it, and reports the prefix's payload as a
+         * duplicate; a RST or a SYN reports nothing, since neither reaches the payload step. One whose payload or FIN
+         * starts above RCV.NXT inside the window is above a gap; a segment that occupies no sequence space never is.
+         * One that starts at RCV.NXT, trimmed or not, is in order unless its payload ends past the edge, so a bare FIN
+         * is in order at any window, for stacks that resend one forever at a zero window: then it has no room, the
+         * window being zero or too small for it, and it goes on through the RST, SYN and ACK steps before its payload
+         * is refused, its ACK read as RFC 9293 asks ("special allowance should be made to accept valid ACKs, URGs, and
+         * RSTs").
          */
         [[nodiscard]] Sequenced accept_sequence(ControlBlock& block, Segment& segment) noexcept {
             wire::TcpHeader& header    = segment.header;
             const bool rst             = header.flags.has(wire::TcpFlag::Rst);
             const bool syn             = !rst && header.flags.has(wire::TcpFlag::Syn);  // before the trim clears it
             const Sequence next        = block.receive.next();
-            const Sequence edge        = block.window.edge();
+            // Zero once a FIN taken one past the edge put RCV.NXT past it, and the edge then RCV.NXT, as Linux's
+            // `tcp_max_receive_window` reads an edge RCV.NXT passed.
             const std::uint32_t window = block.window.window(next);
+            const Sequence edge        = next + window;
             const Sequence sequence    = header.sequence;
             const Sequence end         = sequence + segment.length();
-            const auto drop            = [this, &block, &segment, rst, syn, sequence](std::uint64_t& counter) {
+            // The end of the payload, held against the edge, which the trim below leaves where it is: a FIN's number is
+            // not, as in Linux's `tcp_sequence`, where RFC 9293 3.10.7.4 holds every number against the window.
+            const Sequence data_end{end.value - (header.flags.has(wire::TcpFlag::Fin) ? 1U : 0U)};
+            const auto drop = [this, &block, &segment, rst, syn, sequence](std::uint64_t& counter) {
                 if (rst && one_back_after_fin(block, sequence)) {
                     lifecycle_.peer_reset(block);  // the one position outside the window that resets
                     return Sequenced::Refused;
@@ -454,8 +481,9 @@ namespace aloe::tcp::detail {
                 return Sequenced::Refused;
             };
             if (segment.length() == 0) {
-                const bool acceptable =
-                    window == 0 ? sequence == next : !sequence.before(next) && sequence.before(edge);
+                // The edge itself included, as Linux's `tcp_sequence` accepts it, where RFC 9293 3.10.7.4's test stops
+                // below it; at a zero window only RCV.NXT.
+                const bool acceptable = !sequence.before(next) && !sequence.after(edge);
                 return acceptable ? Sequenced::InOrder : drop(context_.counters.dropped_out_of_window);
             }
             if (!end.after(next)) {  // entirely before rcv_nxt
@@ -465,7 +493,7 @@ namespace aloe::tcp::detail {
                 return drop(context_.counters.dropped_duplicate);
             }
             if (sequence.after(next)) {  // a gap before it
-                if (window == 0 || end.after(edge)) {
+                if (window == 0 || data_end.after(edge)) {
                     return drop(context_.counters.dropped_out_of_window);
                 }
                 return Sequenced::AboveGap;
@@ -485,10 +513,11 @@ namespace aloe::tcp::detail {
                 segment.payload_length = static_cast<std::uint16_t>(segment.payload_length - trim);
                 header.sequence        = next;
             }
-            if (window == 0 || end.after(edge)) {
-                return drop(context_.counters.dropped_out_of_window);
-            }
-            return Sequenced::InOrder;
+            // Payload past the edge, at a zero window any payload, has no room, and the segment's ACK is still read, as
+            // RFC 9293 3.10.7.4 asks, where Linux's `tcp_sequence` drops it whole unless its receive queue is empty. A
+            // bare FIN is in order at any window, as Linux's `tcp_data_queue` takes it, where RFC 9293's table refuses
+            // it at a zero window.
+            return data_end.after(edge) ? Sequenced::NoRoom : Sequenced::InOrder;
         }
 
         /**

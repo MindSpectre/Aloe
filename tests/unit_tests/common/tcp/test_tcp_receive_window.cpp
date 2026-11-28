@@ -193,6 +193,23 @@ TEST(ReceiveWindow, AConsumeOwesAnUpdateOnlyWhenTheWindowDoubles) {
     EXPECT_FALSE(window.update_due(start + 40000U, 10000, false)) << "no slot: the edge may not move";
 }
 
+TEST(ReceiveWindow, AFinTakenOnePastTheEdgeLeavesNoWindow) {
+    for (const std::optional<std::uint8_t> scale : {std::optional<std::uint8_t>{}, std::optional<std::uint8_t>{3}}) {
+        SCOPED_TRACE(scale ? "scaled" : "unscaled");
+        ReceiveWindow window;
+        window.open(start, 2920, 1460, scale);
+        const TcpSequence past = start + 2921U;  // the peer's FIN, its number in no slot, one past the edge
+        EXPECT_EQ(window.window(past), 0U) << "no window, not a wrapped one";
+        const auto restated = window.restate(past);
+        EXPECT_EQ(restated.field, 0);
+        EXPECT_EQ(restated.edge, past);
+        const auto offer = window.offer(past, 2920, true);
+        EXPECT_EQ(offer.field, 0) << "nothing read: the budget allows no more";
+        EXPECT_TRUE(window.record(offer)) << "the ACK of the FIN states the edge from RCV.NXT";
+        EXPECT_EQ(window.edge(), past);
+    }
+}
+
 TEST(ReceiveWindow, WrapsAcrossTheTopOfTheSequenceSpace) {
     ReceiveWindow window;
     const TcpSequence high{0xffffff00U};

@@ -1,0 +1,31 @@
+// The peer closes while the stack's reader is stalled at a zero window: its bare FIN at RCV.NXT is taken, a FIN's
+// number taking no slot, and acknowledged at the flush with no window, from the new RCV.NXT one past the edge. With four
+// slots and timestamps the budget is 4 * 1448 / 2 = 2896 and the edge stands at 1 + 2896 = 2897, so two full segments
+// close the window and the FIN at 2897 moves RCV.NXT to 2898. The application learns of the FIN once it has read the
+// 2896 bytes. Its close states the window the budget allows from 2898 with nothing unread, 2896, and the peer's ACK of
+// that FIN, at the new RCV.NXT, ends the connection. Linux takes the bare FIN the same way (tcp_data_queue), since some
+// stacks resend a bare FIN forever at a zero window, where RFC 9293 3.10.7.4 accepts no segment that occupies sequence
+// space at a zero window.
+--tcp_receive_segments=4
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 1460,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 2896 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 < P. 1:1449(1448) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 1449 win 1448 <nop,nop,TS val 0 ecr 100>
++0 < P. 1449:2897(1448) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 > . 1:1(0) ack 2897 win 0 <nop,nop,TS val 0 ecr 100>
+
++0.01 < F. 2897:2897(0) ack 1 win 65535 <nop,nop,TS val 110 ecr 0>
++0 > . 1:1(0) ack 2898 win 0 <nop,nop,TS val 10 ecr 110>
++0 read(4, ..., 4000) = 2896
++0 read(4, ..., 4000) = 0
+
++0 close(4) = 0
++0 > F. 1:1(0) ack 2898 win 2896 <nop,nop,TS val 10 ecr 110>
++0 < . 2898:2898(0) ack 2 win 65535 <nop,nop,TS val 120 ecr 10>
