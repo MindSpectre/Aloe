@@ -65,6 +65,29 @@ target_include_directories(${CORE}.FixedString INTERFACE
 ##############################################################################
 
 ##############################################################################
+# Hash: SipHash-2-4, a keyed hash from bytes to 64 bits
+##############################################################################
+add_library(${CORE}.Hash INTERFACE
+        hash/siphash.hpp
+)
+target_include_directories(${CORE}.Hash INTERFACE
+        hash/
+)
+##############################################################################
+
+##############################################################################
+# Random: bytes from the kernel's random source, for keys drawn at setup
+##############################################################################
+add_library(${CORE}.Random STATIC
+        random/random_bytes.hpp
+        random/random_bytes.cpp
+)
+target_include_directories(${CORE}.Random PUBLIC
+        random/
+)
+##############################################################################
+
+##############################################################################
 # Core exported library
 ##############################################################################
 add_combined_library(${CORE}
@@ -78,6 +101,8 @@ add_combined_library(${CORE}
         ${CORE}.Values
         ${CORE}.Guards
         ${CORE}.FixedString
+        ${CORE}.Hash
+        ${CORE}.Random
 )
 
 add_library(Aloe::Common::Core ALIAS ${CORE})

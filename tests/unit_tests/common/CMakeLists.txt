@@ -58,6 +58,32 @@ target_link_libraries(${UNIT_TESTING_TARGET}.Core.Helpers
 ##############################################################################
 
 ##############################################################################
+# Test Core: SipHash-2-4 against the reference vectors
+##############################################################################
+add_unit_test(${UNIT_TESTING_TARGET}.Core.Hash
+        core/test_siphash.cpp
+)
+target_link_libraries(${UNIT_TESTING_TARGET}.Core.Hash
+        PRIVATE
+        Aloe::Common::Core
+        ${TEST_LIBS}
+)
+##############################################################################
+
+##############################################################################
+# Test Core: random bytes from the kernel
+##############################################################################
+add_unit_test(${UNIT_TESTING_TARGET}.Core.Random
+        core/test_random_bytes.cpp
+)
+target_link_libraries(${UNIT_TESTING_TARGET}.Core.Random
+        PRIVATE
+        Aloe::Common::Core
+        ${TEST_LIBS}
+)
+##############################################################################
+
+##############################################################################
 # Test Execution: the facilities alias
 ##############################################################################
 add_unit_test(${UNIT_TESTING_TARGET}.Execution
