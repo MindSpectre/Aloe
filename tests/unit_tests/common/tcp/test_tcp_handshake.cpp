@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -1127,6 +1128,31 @@ TEST_P(TcpHandshake, ConfigValidation) {
     EXPECT_EQ(capped.mss(), aloe::testing::tcp_fabric_mss);
     EXPECT_EQ(capped.capacity(), 1024U);
     EXPECT_EQ(wheel_.pending(), 0U) << "construction arms nothing";
+}
+
+TEST_P(TcpHandshake, AStackOverABrickThatResolvesNoNeighbourIsRefused) {
+    // Learning off and an empty static table: every SYN would be dropped as having no next hop and every connect would
+    // find no route, so the stack refuses to start and says what to do.
+    const aloe::net::Ipv4Config config{.address = aloe::testing::stack_ip, .prefix = 24};
+    Ipv4 bare{queue_, config};  // over the fixture's queue: its own brick stays idle meanwhile
+    ASSERT_FALSE(bare.resolves_neighbours());
+    std::string message;
+    try {
+        const Tcp refused{bare, wheel_, {}};
+    } catch (const std::invalid_argument& error) {
+        message = error.what();
+    }
+    ASSERT_FALSE(message.empty()) << "the stack was built";
+    EXPECT_NE(message.find("Ipv4Config::static_arp"), std::string::npos) << message;
+    EXPECT_NE(message.find("arp_learning"), std::string::npos) << message;
+}
+
+TEST_P(TcpHandshake, AStackOverABrickWithOneStaticNeighbourAndLearningOffIsBuilt) {
+    aloe::net::Ipv4Config config{.address = aloe::testing::stack_ip, .prefix = 24};
+    config.static_arp.push_back({.address = aloe::testing::harness_ip, .mac = aloe::testing::harness_mac});
+    Ipv4 one{queue_, config};  // over the fixture's queue: its own brick stays idle meanwhile
+    ASSERT_TRUE(one.resolves_neighbours());
+    EXPECT_NO_THROW((std::ignore = Tcp{one, wheel_, {}}));
 }
 
 TEST_P(TcpHandshake, TheFloorsBoundsAreValidated) {

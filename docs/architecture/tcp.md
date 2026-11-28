@@ -20,9 +20,11 @@ link `Aloe::Common::Tcp`. It depends on [`net`](net.md), [`stream`](stream.md), 
 
 - **`aloe::tcp::Stack<Ip, CongestionControl = NewReno>`** -- the brick, templated on the IP brick below it
   (`net::Ipv4<Device>`) and on a congestion control (see [below](#congestion-control)). Constructed from the IP brick, a
-  `loop::TimerWheel&` and a `TcpConfig`, which it validates (throwing `std::invalid_argument`); every slot, node and
-  list is allocated there and never again, and the key of its initial sequence numbers is drawn there from the kernel
-  (throwing `std::system_error` when the kernel gives no random bytes). `process(segments, now)` takes
+  `loop::TimerWheel&` and a `TcpConfig`, which it validates (throwing `std::invalid_argument`); it refuses the same way
+  an IP brick that can resolve no neighbour, with learning off and an empty static table, whose message says to name
+  the neighbours in `Ipv4Config::static_arp` or switch `arp_learning` on. Every slot, node and list is allocated there
+  and never again, and the key of its initial sequence numbers is drawn there from the kernel (throwing
+  `std::system_error` when the kernel gives no random bytes). `process(segments, now)` takes
   `ip.received(Ipv4Protocol::Tcp)` and leaves every packet moved out or released; `poll_event()` removes one pending
   notification; `flush(now)` retries the resends that waited for their packet, a tail probe's among them, and sends the
   ordinary ACKs that waited. `listen(port)` and `unlisten(port)` manage listeners; `connect(peer, now)` returns a
@@ -83,8 +85,8 @@ link `Aloe::Common::Tcp`. It depends on [`net`](net.md), [`stream`](stream.md), 
   regulates, what an ACK of new data tells it, whether the window was in use among it, and its two models; see
   [below](#congestion-control).
 - **`aloe::tcp::IsIp`** -- what the brick asks of the IP layer: `allocate`, `send`, `address`, `max_l4_size`,
-  `next_hop` and `queue`, and for the frame template `prebuild`, `send_frame` and `generation` (see the
-  [net page](net.md)). `net::Ipv4<Device>` models it.
+  `next_hop`, `resolves_neighbours` and `queue`, and for the frame template `prebuild`, `send_frame` and `generation`
+  (see the [net page](net.md)). `net::Ipv4<Device>` models it.
 - **`aloe::tcp::FlowTable`** -- the fixed open-addressing index from a `FlowKey` (remote address, remote
   port, local port) to a slot: linear probing, backward-shift deletion, at most half full, no allocation
   after construction.
@@ -142,7 +144,8 @@ while (running) {
 The IP brick resolves nothing on the wire unless its configuration says so. An echo server that answers whoever
 connects from the subnet switches ARP learning on, as above; a client of venues it knows names its next hops in
 `Ipv4Config::static_arp` instead and leaves learning off, the default, and then a SYN from a neighbour outside that
-table is dropped as `dropped_no_route` and a `connect` to one returns `NoRoute` (see the [net page](net.md)).
+table is dropped as `dropped_no_route` and a `connect` to one returns `NoRoute` (see the [net page](net.md)). A brick
+with neither, learning off and no static entry, can reach nobody, and the `Stack` constructor refuses it.
 
 The drain is explicit: nothing calls back into the program, and the program decides what to do with each
 connection and in which order. A client is the same loop with `tcp.connect(peer, Clock::now())` before it
@@ -400,7 +403,7 @@ ARP forwards between shards (see the [runtime page](runtime.md)).
 ## Configuration
 
 `TcpConfig` is validated by the `Stack` constructor, which throws `std::invalid_argument` for a config it
-cannot run. Every shard gets the same config.
+cannot run, and for an IP brick that can resolve no neighbour. Every shard gets the same config.
 
 | Field                               | Default      | Meaning                                                                                                                                                              | Rejected when                                                                                                         |
 |-------------------------------------|--------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------|

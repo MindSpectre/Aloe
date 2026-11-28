@@ -12,6 +12,7 @@
 #include <expected>
 #include <optional>
 #include <span>
+#include <stdexcept>
 
 #include <congestion_control.hpp>
 #include <detail/ack_processor.hpp>
@@ -68,8 +69,9 @@ namespace aloe::tcp {
         using EventType      = ConnectionEvent<Ip, CongestionControl>;
         using Sequence       = wire::TcpSequence;
 
-        /// Validates and throws std::invalid_argument; draws the key of its initial sequence numbers, and throws
-        /// std::system_error when the kernel gives no random bytes; allocates everything; sends nothing.
+        /// Validates and throws std::invalid_argument, for the config and for an IP brick that can resolve no
+        /// neighbour; draws the key of its initial sequence numbers, and throws std::system_error when the kernel gives
+        /// no random bytes; allocates everything; sends nothing.
         Stack(Ip& ip, loop::TimerWheel& wheel, const TcpConfig& config)
             : context_{ip,
                        config.validate(ip.max_l4_size(), wheel.resolution()),
@@ -80,6 +82,12 @@ namespace aloe::tcp {
               lifecycle_{context_, transmitter_},
               acks_{context_, transmitter_},
               receiver_{context_, lifecycle_, acks_, transmitter_} {
+            if (!ip.resolves_neighbours()) {
+                // Every SYN would be dropped unanswered as dropped_no_route and every connect would return NoRoute: a
+                // start that fails instead, as the IP brick refuses a gateway it could not reach.
+                throw std::invalid_argument{"tcp::Stack: the IP brick can resolve no neighbour: name them in "
+                                            "Ipv4Config::static_arp or switch arp_learning on"};
+            }
             for (ControlBlock& block : context_.blocks) {
                 connections_.emplace_back(typename ConnectionType::PrivateTag{}, block);
             }

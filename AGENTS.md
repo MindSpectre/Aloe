@@ -416,7 +416,9 @@ basenames are unique across modules: `packet.hpp` is the concept,
 - ARP learning is off by default: an IP brick then resolves only its `static_arp` neighbours and sends no ARP request.
   A test, fixture or example that builds one sets `.arp_learning = true`, as the net fixture's `stack_config()`, the
   TCP fixture and the scenario harness do, or names its neighbours in `static_arp`; a gateway with neither is refused
-  at construction, and a SYN from a neighbour outside the table is dropped as `dropped_no_route`.
+  at construction, a `tcp::Stack` over a brick with neither learning nor any static entry is refused at its own
+  construction (the brick alone is built), and a SYN from a neighbour outside the table is dropped as
+  `dropped_no_route`. `learn` answers `Off` with learning off and stores nothing, so a seed a test relies on checks it.
 - `Ipv4Config` holds a `std::vector`, `static_arp`, so a function that returns one cannot be `noexcept` or `constexpr`
   (`stack_ip_config` in `level_bricks.hpp` lost both), and clang-tidy's `modernize-pass-by-value` wants a constructor
   that keeps one to take it by value and move it.

@@ -169,6 +169,13 @@ namespace aloe::net {
             return arp_.learn(address, mac, now);
         }
 
+        /// Whether a unicast next hop can ever have a MAC: learning is on, or the static table holds an entry. When
+        /// false, every unicast `send` and `prebuild` fails `NoRoute`, while ARP and echo requests are still answered
+        /// at the frame's source MAC; `tcp::Stack` refuses such a brick.
+        [[nodiscard]] bool resolves_neighbours() const noexcept {
+            return config_.arp_learning || !config_.static_arp.empty();
+        }
+
         /// A resolution another shard reported: fills, refreshes or changes an entry this brick holds, and otherwise
         /// does nothing. Reports nothing in `resolved()`, so shards never echo each other. As for a frame's mapping, it
         /// extends the entry's life only when it answers a request this brick has outstanding (`ArpCache::update`).

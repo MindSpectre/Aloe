@@ -35,7 +35,9 @@ here names the asynchronous model, logs, or reads a clock.
   over (its index, steering, ring and device), and `next_hop(destination)` answers the route question with no
   side effect: the destination on the subnet, the gateway off it, nothing with no gateway, and, with learning off,
   nothing for a hop outside the static table. `send` decides through the same call, and a transport asks it before
-  committing resources, so a connect to an unroutable peer takes no slot. `Ipv4Config::report_unsolicited_replies`
+  committing resources, so a connect to an unroutable peer takes no slot. `resolves_neighbours()` says whether any
+  unicast next hop can have a MAC: learning is on, or the static table holds an entry; a `tcp::Stack` refuses a brick
+  that answers false. `Ipv4Config::report_unsolicited_replies`
   (off by default) lets the shard whose queue receives a reply that a sibling shard solicited report it in
   `resolved()` for forwarding, without storing it, since a multi-queue device's shards share one address; only a
   reply addressed to our address from a plausible sender is reported, and only with learning on.
@@ -218,6 +220,9 @@ With learning off, the default:
   unanswered. Nothing polls and nothing waits, and since the static table cannot change, a connection that opened
   never meets `NoRoute` afterwards.
 - The constructor refuses a gateway with no static entry: a start that fails instead of every connect failing.
+- A brick with no static entry at all is still built, since an echo responder or a program that only receives needs
+  no neighbour; it answers ARP and echo requests at the frame's source MAC, and `resolves_neighbours()` is false. A
+  `tcp::Stack` over it is refused at construction, for the same reason as the gateway.
 - `learn` stores nothing and answers `Off`, and `resolve` answers from the static table alone.
 
 For a static address, in both modes:

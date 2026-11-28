@@ -282,6 +282,29 @@ TEST_P(NetStatic, WithLearningOffLearnDoesNothing) {
     EXPECT_EQ(ip_.resolve(stranger, now_), std::nullopt);
 }
 
+TEST_P(NetStatic, ABrickThatResolvesNoNeighbourIsBuiltAndAnswersAnEcho) {
+    // Learning off and an empty static table: no unicast next hop can have a MAC, but an echo responder or a
+    // receive-only program needs none, so the brick alone is built; a TCP stack over it is refused.
+    const aloe::net::Ipv4Config no_neighbours{.address = stack_ip, .prefix = 24};
+    Ipv4 bare{queue_, no_neighbours};  // over the same queue: the fixture's brick stays idle meanwhile
+    EXPECT_FALSE(bare.resolves_neighbours());
+    EXPECT_TRUE(ip_.resolves_neighbours()) << "the static table holds two neighbours";
+    const aloe::net::Ipv4Config learning_on{.address = stack_ip, .prefix = 24, .arp_learning = true};
+    const Ipv4 learning{queue_, learning_on};
+    EXPECT_TRUE(learning.resolves_neighbours()) << "with learning on any neighbour may be resolved";
+
+    const aloe::frames::EchoSpec echo{
+        .destination_mac = stack_mac, .source_mac = harness_mac, .source = harness_ip, .destination = stack_ip};
+    inject_into(bare, aloe::frames::icmp_echo_frame(echo, aloe::frames::pattern(8)));
+    const auto replies = received_by(harness_);
+    ASSERT_EQ(replies.size(), 1U) << "answered at the request's source MAC, with no ARP";
+    EXPECT_EQ(replies[0].ethernet.destination, harness_mac);
+    ASSERT_TRUE(replies[0].icmp.has_value());
+    EXPECT_EQ(replies[0].icmp->type, aloe::wire::IcmpType::EchoReply);
+    EXPECT_EQ(bare.counters().echo_replies_sent, 1U);
+    EXPECT_EQ(bare.counters().arp_requests_sent, 0U);
+}
+
 TEST_P(NetStatic, TheRouteQuestionKnowsTheStaticTable) {
     const aloe::net::Ipv4Counters before = ip_.counters();
     EXPECT_EQ(ip_.next_hop(harness_ip), harness_ip);

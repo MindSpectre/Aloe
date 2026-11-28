@@ -253,8 +253,8 @@ int main(int argc, char** argv) {
     const sigset_t signals = block_termination_signals();
     aloe::ethdev::Eal eal{arguments->eal};
     Port port{{.name = arguments->port}};
-    // Every shard's brick checks what the arguments configured: a refusal, a gateway with neither a static entry nor
-    // learning for instance, is a usage error.
+    // Every shard's bricks check what the arguments configured: a refusal is a usage error, the IP brick's of a gateway
+    // with neither a static entry nor learning, or the TCP stack's of an IP brick with neither at all.
     std::optional<Runtime> built;
     try {
         built.emplace(

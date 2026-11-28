@@ -232,18 +232,20 @@ int main(int argc, char** argv) {
     };
     aloe::loop::ShardQueueCounters counters;
     aloe::loop::ShardQueue<Port> queue{port, 0, 512, counters};
-    // The brick checks what the arguments configured: a refusal, a gateway with neither a static entry nor
-    // learning for instance, is a usage error.
+    aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, aloe::core::Clock::now()};
+    // Both bricks check what the arguments configured: a refusal is a usage error, the IP brick's of a gateway with
+    // neither a static entry nor learning, or the TCP stack's of an IP brick with neither at all.
     std::optional<Ipv4> brick;
+    std::optional<Tcp> stack;
     try {
         brick.emplace(queue, arguments->ip);
+        stack.emplace(*brick, wheel, aloe::tcp::TcpConfig{});
     } catch (const std::invalid_argument& error) {
         std::println(stderr, "{}\n{}", error.what(), usage);
         return EXIT_FAILURE;
     }
     Ipv4& ip = *brick;
-    aloe::loop::TimerWheel wheel{std::chrono::milliseconds{1}, aloe::core::Clock::now()};
-    Tcp tcp{ip, wheel, {}};
+    Tcp& tcp = *stack;
     std::vector<Port::Packet> burst(64);
     const std::span<const std::byte> greeting = std::as_bytes(std::span{hello});
     std::size_t offered                       = 0;  // the client's bytes of the greeting committed so far
