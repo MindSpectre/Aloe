@@ -323,6 +323,33 @@ TEST_P(TcpChallenge, ARstAtTheEdgeThatIsTheEndOfWhatIsHeldResets) {
     EXPECT_TRUE(collect().empty());
 }
 
+TEST_P(TcpChallenge, ARstOnePastAHeldFinAtTheEdgeIsDroppedInSilence) {
+    configure_tcp({.receive_segments = 4});  // two full segments of budget
+    peer_.set_sack_permitted(true);
+    auto* c = open_passive(peer_);
+    ASSERT_NE(c, nullptr);
+    ASSERT_TRUE(c->sack());
+    constexpr std::uint16_t full = aloe::testing::tcp_fabric_mss;
+    const TcpSequence next       = peer_.snd_nxt();
+    const TcpSequence edge       = next + c->receive_window();
+    ASSERT_EQ(edge, next + (2U * full));
+    // Above a hole of one full segment, payload that ends at the edge with a FIN one past it: held, the FIN remembered,
+    // and the end of what is held, the FIN's number included, one past the edge.
+    receive(
+        peer_.segment(TcpFlags{TcpFlag::Fin, TcpFlag::Psh, TcpFlag::Ack}, payload(full), next + full, peer_.rcv_nxt()));
+    ASSERT_EQ(c->out_of_order_segments(), 1U);
+    std::ignore          = collect();
+    TcpCounters expected = tcp_->counters();
+    // An empty segment past the edge: the sequence check refuses it before the RST rule, as Linux's tcp_sequence does.
+    receive(rst_at(peer_, edge + 1U));
+    expected.segments_received     += 1;
+    expected.dropped_out_of_window += 1;
+    EXPECT_EQ(tcp_->counters(), expected) << "no counter moves but the drop's";
+    EXPECT_EQ(c->state(), State::Established);
+    EXPECT_FALSE(c->events().reset());
+    EXPECT_TRUE(collect().empty()) << "nothing sent: a RST outside the window goes in silence";
+}
+
 TEST_P(TcpChallenge, ARstAtTheEdgeWithNothingHeldIsChallenged) {
     peer_.set_sack_permitted(true);
     auto* c = open_passive(peer_);

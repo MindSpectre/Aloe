@@ -1,0 +1,22 @@
+// A SYN whose MSS is below the floor, min_peer_mss at its default of 48, takes no slot and is answered with RFC 793's
+// reset for a segment with no connection: RST and ACK at sequence 0, acknowledging the SYN, window 0. The same peer's
+// SYN at the floor, MSS 48, opens: the floor is inclusive and the refused SYN left nothing behind. With the timestamps
+// a full segment is 48 - 12 = 36 bytes, so the budget is 512 * 36 / 2 = 9216, which the SYN-ACK states unscaled, and a
+// write of 72 leaves as two segments of 36 (NewReno's initial window, min(10 * 36, max(2 * 36, 14600)) = 360, covers
+// both). Linux answers the SYN at 47 with a SYN-ACK too: it raises an MSS below its floor, tcp_min_snd_mss, to the floor
+// and goes on (__tcp_mtu_to_mss).
+0 socket(..., SOCK_STREAM, IPPROTO_TCP) = 3
++0 bind(3, ..., ...) = 0
++0 listen(3, 1) = 0
+
++0 < S 0:0(0) win 65535 <mss 47,nop,nop,TS val 100 ecr 0>
++0 > R. 0:0(0) ack 1 win 0
++0 < S 0:0(0) win 65535 <mss 48,nop,nop,TS val 100 ecr 0>
++0 > S. 0:0(0) ack 1 win 9216 <mss 1460,nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 1 win 65535 <nop,nop,TS val 100 ecr 0>
++0 accept(3, ..., ...) = 4
+
++0 write(4, ..., 72) = 72
++0 > P. 1:37(36) ack 1 win 9216 <nop,nop,TS val 0 ecr 100>
++0 > P. 37:73(36) ack 1 win 9216 <nop,nop,TS val 0 ecr 100>
++0 < . 1:1(0) ack 73 win 65535 <nop,nop,TS val 100 ecr 0>

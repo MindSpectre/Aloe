@@ -51,6 +51,10 @@ namespace aloe::tcp {
     /// The peer's MSS when its SYN carried no option: RFC 1122's default.
     inline constexpr std::uint16_t default_peer_mss = 536;
 
+    /// The lowest `TcpConfig::min_peer_mss` allowed, and its default: Linux's TCP_MIN_SND_MSS, forty bytes of options
+    /// and eight of data.
+    inline constexpr std::uint16_t smallest_min_peer_mss = 48;
+
     struct TcpConfig {
         std::size_t connections      = 1024;  ///< Slots per shard.
         std::size_t listeners        = 8;
@@ -90,6 +94,11 @@ namespace aloe::tcp {
         /// challenge ACKs, and the ACK for a refused segment that occupies no sequence space or carries a SYN. Zero
         /// sends every one. Linux's `tcp_invalid_ratelimit`.
         core::Duration challenge_ack_interval = std::chrono::milliseconds{500};
+
+        /// The least MSS a peer may have, stated in its SYN or SYN-ACK or, without the option, RFC 1122's 536
+        /// (`default_peer_mss`): a handshake with a peer below it is refused, passive or active. Linux's
+        /// `tcp_min_snd_mss`, which raises such an MSS to the floor instead. From 48 to the stack's own MSS.
+        std::uint16_t min_peer_mss = smallest_min_peer_mss;
 
         /// Throws std::invalid_argument naming the first rule broken; `max_l4_size` is the IP brick's and `resolution`
         /// the timer wheel's. Returns the config, so a constructor validates it before sizing anything from it.
@@ -160,6 +169,10 @@ namespace aloe::tcp {
             }
             if (max_l4_size <= wire::TcpHeader::size) {
                 throw std::invalid_argument{"TcpConfig: the MTU leaves no room for a TCP segment"};
+            }
+            if (min_peer_mss < smallest_min_peer_mss ||
+                std::size_t{min_peer_mss} > std::size_t{max_l4_size} - wire::TcpHeader::size) {
+                throw std::invalid_argument{"TcpConfig: min_peer_mss must be at least 48 and at most the stack's MSS"};
             }
             return *this;
         }

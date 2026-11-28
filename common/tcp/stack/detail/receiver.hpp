@@ -228,7 +228,24 @@ namespace aloe::tcp::detail {
             return wire::checksum_finish(wire::checksum_add(pseudo, l4)) == 0;
         }
 
+        /// Whether the peer's MSS, the value its SYN or SYN-ACK states or RFC 1122's 536 without the option, is below
+        /// `min_peer_mss`, a stated zero included: the handshake is then refused.
+        [[nodiscard]] bool below_mss_floor(const Segment& segment) const noexcept {
+            return segment.mss.value_or(default_peer_mss) < context_.config.min_peer_mss;
+        }
+
+        /// A SYN to a listener. The checks that refuse it come first, before the retransmission-queue node and the slot
+        /// are looked at, so a refused SYN takes neither.
         void passive_open(Datagram& datagram, const Segment& segment) noexcept {
+            // The MSS floor: a peer whose MSS, stated or assumed, is below `min_peer_mss` is answered with RFC 793's
+            // reset for a segment with no connection, a RST with ACK acknowledging the SYN, not limited as no RST is.
+            // Where this departs from Linux, which raises an MSS below its floor, `tcp_min_snd_mss`, to the floor and
+            // goes on (`__tcp_mtu_to_mss`).
+            if (below_mss_floor(segment)) {
+                ++context_.counters.handshakes_refused_mss;
+                transmitter_.reply_reset(datagram.source, segment.header, segment.length());
+                return;
+            }
             if (transmitter_.nodes_available() == 0) {
                 ++context_.counters.dropped_no_node;  // no retransmission-queue node for the SYN-ACK
                 return;
@@ -240,6 +257,12 @@ namespace aloe::tcp::detail {
             if (opened == nullptr) {
                 ++context_.counters.dropped_table_full;
                 return;
+            }
+            if (segment.payload_length > 0) {
+                // Neither held nor acknowledged: the SYN-ACK acknowledges the SYN's number alone and the peer sends the
+                // payload again after the handshake, as in Linux without Fast Open, whose tcp_rcv_state_process frees
+                // the SYN once `conn_request` has answered it.
+                ++context_.counters.syn_payload_discarded;
             }
             ControlBlock& block = *opened;
             block.send.peer_mss = segment.mss.value_or(default_peer_mss);
@@ -276,6 +299,17 @@ namespace aloe::tcp::detail {
             }
             if (!header.flags.has(wire::TcpFlag::Syn) || !header.flags.has(wire::TcpFlag::Ack)) {
                 ++context_.counters.dropped_unexpected;  // a simultaneous open is out of scope
+                return;
+            }
+            // The MSS floor, on a SYN-ACK that acknowledges our SYN: a peer whose MSS, stated or assumed, is below
+            // `min_peer_mss` is answered with `<SEQ=SEG.ACK><CTL=RST>`, RFC 793's reset for a segment that carries an
+            // ACK, not limited as no RST is, and the open is refused as one the peer refused. Where this departs from
+            // Linux, which raises an MSS below its floor, `tcp_min_snd_mss`, to the floor and completes the open
+            // (`__tcp_mtu_to_mss`).
+            if (below_mss_floor(segment)) {
+                ++context_.counters.handshakes_refused_mss;
+                transmitter_.reply_reset(datagram.source, header, segment.length());
+                lifecycle_.refuse_open(block);
                 return;
             }
             block.timestamps.answer(segment.ts_value, context_.now);  // our offer, answered
@@ -828,7 +862,10 @@ namespace aloe::tcp::detail {
         /// The end of the highest range held above a gap, a remembered FIN's number included, on a connection that
         /// uses SACK: the end of the reassembly queue's highest range, where Linux reads only the up to four SACK
         /// blocks it reports and takes the highest of their ends. A FIN takes no node, so one at or past the highest
-        /// node's end is the higher. Nothing without SACK or with nothing held.
+        /// node's end is the higher. Nothing without SACK or with nothing held. When a remembered FIN sits exactly at
+        /// the offered edge, that end is the edge plus one, which the sequence check refuses for an empty segment, so a
+        /// RST there is dropped in silence and never reaches the RST rule; Linux behaves the same: `tcp_sequence`
+        /// refuses it and only `tcp_reset_check` applies.
         [[nodiscard]] static std::optional<Sequence> held_end(const ControlBlock& block) noexcept {
             if (!block.sack.in_use()) {
                 return std::nullopt;

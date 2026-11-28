@@ -152,6 +152,9 @@ namespace aloe::scenario {
         if (options.challenge_ack_interval) {
             tcp.challenge_ack_interval = *options.challenge_ack_interval;
         }
+        if (options.min_peer_mss) {
+            tcp.min_peer_mss = *options.min_peer_mss;
+        }
         return base;
     }
 

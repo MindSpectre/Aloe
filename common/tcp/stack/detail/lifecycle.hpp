@@ -250,6 +250,14 @@ namespace aloe::tcp::detail {
             raise(block, stream::Event::Reset);
         }
 
+        /// An active open the stack refuses on the peer's SYN-ACK: Closed, with `Reset` raised, as an open the peer
+        /// refused. Not counted in `connections_reset`, which counts RSTs received.
+        void refuse_open(ControlBlock& block) noexcept {
+            assert(block.state == State::SynSent && "only an active open is refused on its SYN-ACK");
+            set_closed(block);
+            raise(block, stream::Event::Reset);
+        }
+
         void abort(ControlBlock& block) noexcept {
             if (block.state == State::Closed) {
                 return;

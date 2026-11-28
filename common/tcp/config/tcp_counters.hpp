@@ -71,6 +71,13 @@ namespace aloe::tcp {
         std::uint64_t connections_user_timed_out = 0;  ///< Of connections_timed_out, those the user timeout ended.
         std::uint64_t connections_unresolved     = 0;  ///< Owned connections whose next hop never answered ARP.
         std::uint64_t handshakes_failed          = 0;  ///< A passive open nobody owned yet was reset or timed out.
+        /// Handshakes refused because the peer's MSS, stated or assumed, was below `min_peer_mss`: a SYN to a listener
+        /// that took no slot, or an active open whose SYN-ACK was answered with a RST. Each drew a RST; neither moves
+        /// `connections_reset`.
+        std::uint64_t handshakes_refused_mss     = 0;
+        /// SYNs a listener took that carried payload, which is neither held nor acknowledged: the peer sends it again
+        /// after the handshake. A SYN refused before it takes a slot counts only where it was refused.
+        std::uint64_t syn_payload_discarded      = 0;
 
         std::uint64_t dropped_bad_header    = 0;
         std::uint64_t dropped_bad_checksum  = 0;
